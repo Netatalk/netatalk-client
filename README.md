@@ -9,14 +9,17 @@ notably personal file sharing on older Mac OS X and Classic Mac OS computers,
 Apple AirPort and Time Capsule products as well as other AFP enabled NAS devices from various vendors.
 
 Netatalk Client is an improved fork of [afpfs-ng](https://sourceforge.net/projects/afpfs-ng/).
+It supports most major features of the AFP protocol v2.1 through v3.4, secure authentication,
+file and directory operations, filesystem extended attributes, and FUSE-based mounting of AFP shares
 
 ## Usage
 
-You can use Netatalk Client either to mount an AFP share with FUSE, or interactively with the command-line client.
+You can use Netatalk Client either to mount an AFP share with FUSE,
+or interactively with the command-line client.
 
-The AFP client library can also be used to add AFP support to other applications.
-For instance, [kio-afp](https://invent.kde.org/dmark/kio-afp) provides a KDE KIO worker for browsing
-AFP shares in Dolphin and other KDE applications, using the *libafpclient* shared library.
+The shared library *libafpclient* can also be used to add AFP support to other applications.
+For instance, [kio-afp](https://invent.kde.org/dmark/kio-afp) which provides a KDE KIO worker for browsing
+AFP shares in Dolphin and other KDE applications.
 
 ### FUSE
 
@@ -84,20 +87,21 @@ Use *afpcmd* in batch mode to download files from the AFP share to the local mac
         Transferred 108320 bytes in 0.015 seconds. (7200 kB/s)
     Transfer complete. 108320 bytes received.
 
-## Credits and license
+## License
 
 Netatalk Client is distributed under the terms of the GNU General Public License v2.
 See COPYING in this repository for the full text of the license
 
-It was forked from *afpfs-ng* by Daniel Markstedt in 2024.
+## Credits
 
-*afpfs-ng* was created by Alex deVries in 2006.
+This project was forked from [afpfs-ng](https://sourceforge.net/projects/afpfs-ng/) by Daniel Markstedt in 2024
+and renamed to *Netatalk Client* to serve as a companion to the [Netatalk](https://netatalk.io/) AFP file server project.
+*afpfs-ng* was created by Alex deVries in 2006 and maintained until 2009.
+It was in turn inspired by the 1996 Linux kernel module [afpfs](https://github.com/heksterb/afpfs) by Ben Hekster.
+
 It also contains elements from a [historical afpfs-ng fork](https://github.com/simonvetter/afpfs-ng)
 created by Simon Vetter in 2015, which added IPv6 support, UTF8 support and various bug fixes
 from the Boxee and XBMC (Kodi) projects.
-
-*afpfs-ng* was in turn inspired by [afpfs](https://github.com/rdmark/afpfs)
-which is a Linux kernel extension for AFP created by Ben Hekster in 1996.
 
 A heartfelt thank you to everyone who has contributed to making AFP a cross-platform
 file sharing platform over the years!
