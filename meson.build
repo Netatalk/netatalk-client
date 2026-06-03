@@ -1,5 +1,5 @@
 project(
-    'afpfs-ng',
+    'netatalk_client',
     'c',
     version: '0.9.4',
     license: 'GPLv2',
@@ -195,7 +195,7 @@ if get_option('enable-docs')
 
     install_data(
         ['AUTHORS', 'COPYING', 'NEWS', 'README.md'],
-        install_dir: datadir / 'doc' / 'afpfs-ng',
+        install_dir: datadir / 'doc' / 'netatalk_client',
     )
 endif
 

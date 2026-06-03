@@ -1,10 +1,10 @@
-# Developer Documentation for afpfs-ng
+# Developer Documentation for Netatalk Client
 
 The Apple Filing Protocol is a network filesystem that is commonly used
 to share files between Apple Macintosh computers.
 
 A network connection must be established to a server and maintained.  
-afpfs-ng provides a basic library on which to build full clients
+Netatalk Client provides a basic library on which to build full clients
 (called libafpclient), and a sample of clients (FUSE and a simple
 command line).
 
@@ -179,7 +179,7 @@ for fault isolation (see Multi-Mount Architecture section).
 
 ## Multi-Mount Architecture for FUSE
 
-**Design Choice**: The afpfs-ng FUSE client uses a manager daemon architecture
+**Design Choice**: The Netatalk Client FUSE client uses a manager daemon architecture
 where each mount gets its own isolated daemon process,
 providing fault isolation and simpler state management for multiple mounts.
 
@@ -294,7 +294,7 @@ Use NULL mountpoint in `daemon_connect()`, which causes:
 
 ### Stateless Client Library (libafpsl)
 
-afpfs-ng provides a stateless client library (`libafpsl.so`) for applications that need to perform AFP operations
+Netatalk Client provides a stateless client library (`libafpsl.so`) for applications that need to perform AFP operations
 without managing persistent connections or event loops.
 Unlike libafpclient which requires a long-lived stateful process with its own event loop,
 the stateless library delegates connection management to a daemon process.

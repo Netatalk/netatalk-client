@@ -1,4 +1,4 @@
-# Compatibility details for afpfs-ng
+# Compatibility details for Netatalk Client
 
 ## A. Login methods
 
@@ -34,7 +34,7 @@ The client doesn't recover if the server goes down partway through a transaction
 
 One area of complication is around UID and GID mappings.  These may differ
 between the client and server.  There are two modes that are enabled in
-afpfs-ng:
+Netatalk Client:
 
 ### Common user directory
 
@@ -60,7 +60,7 @@ not implemented.
 This is where a file is read that translates client and server ids.  This is
 not implemented.
 
-afpfs-ng attempts to detect the mapping type automatically; do 'afp_client
+Netatalk Client attempts to detect the mapping type automatically; do 'afp_client
 status' (for FUSE monts) or 'status' within afpcmd to see what it guessed.
 
 ## D. Meta information
@@ -85,7 +85,7 @@ The permissions of the resource fork are the same as the data fork.
 #### When using extended attributes
 
 Resource forks are stored in the extended attribute named "com.apple.ResourceFork".
-The afpfs-ng FUSE client does *NOT* reading and writing this extended attribute yet,
+The Netatalk Client FUSE client does *NOT* reading and writing this extended attribute yet,
 so resource forks will not be visible when using extended attributes,
 and if you write files with resource forks, they will be lost.
 
@@ -191,7 +191,7 @@ To copy files with extended attributes preserved on FreeBSD:
 
 #### EA Filtering
 
-afpfs-ng automatically filters internal server metadata to prevent corruption:
+Netatalk Client automatically filters internal server metadata to prevent corruption:
 
 - `org.netatalk.Metadata` - Internal netatalk server metadata (always filtered)
 
@@ -225,7 +225,7 @@ need to use the IP or DNS name.
 
 ## H. Server-specific information
 
-afpfs-ng detects the server type by parsing the Machine Type field in
+Netatalk Client detects the server type by parsing the Machine Type field in
 getstatus.  The command line 'afpgetstatus' will show this without you having
 to log in.  'status' will show you this also.
 
@@ -233,7 +233,7 @@ The detection is done in order to deal with some details.
 
 ### Mac OS 8
 
-afpfs-ng has never been used with Mac OS 8, so there's no data.  You could do
+Netatalk Client has never been used with Mac OS 8, so there's no data.  You could do
 this with AFP over TCP/IP, but this could be difficult. Email me if you have any info.
 
 ### Mac OS 9
@@ -268,7 +268,7 @@ oddities:
   device.  I won't describe the problem in any more detail.  Apple has
   acknowledged the problem, but hasn't yet released updated firmware.
 
-Note that the Airport can serve up SMB and AFP disks; afpfs-ng only handles
+Note that the Airport can serve up SMB and AFP disks; Netatalk Client only handles
 AFP.
 
 ### Time Capsule
@@ -278,18 +278,15 @@ backups over AFP.  It supports the SRP, DHX2, and DHCAST128 UAMs.
 
 ### Netatalk
 
-This open source server has been extensively tested with afpfs-ng
-and should work well with afpfs-ng.
+Netatalk Client was forked from afpfs-ng with the intention of
+being developed as a companion client to the Netatalk AFP server project.
 
-You must use netatalk 2.0.4 or later with afpfs-ng as earlier versions has
+You must use Netatalk 2.0.4 or later because earlier versions of the server has
 broken Unix privilege support, notably when setting the execute bit.
 
 ### LaCie devices
 
-The LaCie device has an ARM processor in it, and speaks netatalk.  Part of the
-problem with that some login crypto is so slow that older versions of afpfs-ng
-timeout before the server can complete the crypto.  This should be fixed as of
-0.8, but this hasn't been tested properly.
+The LaCie device has an ARM processor in it, and speaks Netatalk.
 
 ## I. FUSE-specific bugs
 
@@ -308,20 +305,3 @@ Not all references are easy to find. The useful ones are:
 - Apple Filing Protocol Programming Guide, Version 3.2, 2005-06-04
 - AppleTalk Filing Protocol, Versions 2.1 and version 2.2., Apple Computer Inc, 1999
 - Inside Macintosh, Macintosh Toolbox Essentials, 1992
-
-And other software:
-
-- netatalk: Netatalk is the server side, and it implements AFP 3.4 over
-  Appletalk and TCP/IP. It has a long history and has been heavily tested.
-
-- afpfs: The original afpfs was last released for Linux kernel 2.2.5 and was
-  written in kernel space. It was written by Ben Hekster, then taken over by
-  David Foster. I think it was last maintained in 1999 and only handled AFP 2.x.
-  Truly, afpfs-ng was intended to take over where they left off, but this is a
-  complete rewrite in order to fit into FUSE.
-
-- hfsplus: This might not seem related, but the way that hfsplus handles
-  presenting resource forks to userspace may be relevant to how afpfs-ng does
-  the same.
-
-- wireshark (aka ethereal): the AFP packet parsing is excellent

@@ -284,7 +284,7 @@ static int getstatus(char *address_string, unsigned int port)
 
 static void usage(void)
 {
-    printf("afpfs-ng %s - get Apple Filing Protocol server status\n"
+    printf("Netatalk Client %s - get Apple Filing Protocol server status\n"
            "Usage:\n"
            "\tgetstatus [afp_url|ipaddress[:port]] [-i] [-v loglevel]\n"
            "Options:\n"

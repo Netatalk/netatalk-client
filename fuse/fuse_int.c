@@ -1,6 +1,6 @@
 /*
 
-    fuse.c, FUSE interfaces for afpfs-ng
+    fuse.c, FUSE interfaces for Netatalk Client
 
     Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
     Copyright (C) 2025 Daniel Markstedt <daniel@mindani.net>

@@ -6,7 +6,7 @@ On 10.5, locally:
     user	0m13.647s
     sys	0m4.395s
 
-On afpfs-ng, to 10.5 server, over parallels:
+On Netatalk Client, to 10.5 server, over parallels:
 
 at least:
 

@@ -1,7 +1,7 @@
-# Getting Started with afpfs-ng
+# Getting Started with Netatalk Client
 
 This is a quick guide on how to use the two different AFP clients
-in afpfs-ng.
+in Netatalk Client.
 
 ## The FUSE client
 

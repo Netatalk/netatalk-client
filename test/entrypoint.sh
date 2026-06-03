@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# afpfs-ng AFP client testsuite container entrypoint
+# Netatalk Client AFP client testsuite container entrypoint
 # Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
 #
 # This program is free software; you can redistribute it and/or
