@@ -35,6 +35,7 @@ jobs:
               curl \
               gcc \
               git \
+              gnupg \
               libfuse3-dev \
               libgcrypt20-dev \
               libreadline-dev \
