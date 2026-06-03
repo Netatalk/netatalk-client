@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-# afpfs-ng FUSE client tests
+# Netatalk Client FUSE client tests
 # Based on the original test/Makefile by Simon Vetter
 # Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
 #

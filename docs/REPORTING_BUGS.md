@@ -1,6 +1,6 @@
 # Reporting Bugs
 
-This quick document describes how to gather debugging information for afpfs-ng.
+This quick document describes how to gather debugging information for Netatalk Client.
 
 Thank you for contributing to the project by submitting a bug report!  This
 software's quality is heavily influenced by reported bugs.  We will help

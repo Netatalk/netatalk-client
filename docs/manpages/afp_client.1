@@ -1,6 +1,6 @@
 .Dd January 25, 2026
 .Dt AFP_CLIENT 1
-.Os afpfs-ng
+.Os Netatalk Client
 .Sh NAME
 .Nm afp_client
 .Nd Mount, unmount and control Apple Filing Protocol (AFP) sessions using the FUSE infrastructure
@@ -23,7 +23,7 @@ in conjunction with
 .Xr afpfsd 1 .
 afpcmd, on the other hand, is an interactive CLI client
 that can also be used for batch file transfers.
-Both of them use the afpfs-ng libraries.
+Both of them use the Netatalk Client libraries.
 .Pp
 The
 .Xr mount_afpfs 1
@@ -103,7 +103,7 @@ Short form first, formal protocol name in parentheses.
 .El
 .Pp
 If you do not specify a UAM, the most secure one common to both the
-server and client (afpfs-ng) will be chosen.
+server and client will be chosen.
 .It Fl m , Fl -map Ar mapping
 Set the method used to map local to server UID and GIDs.
 Possible values are:
@@ -145,13 +145,13 @@ Authenticate with the AFP server as
 .Ar username .
 .It Fl v , Fl -afpversion Ar afp_version
 Specify the AFP protocol version that will be used for a mount.
-By default afpfs-ng will choose the highest AFP version shared between
+By default Netatalk Client will choose the highest AFP version shared between
 the client and server.
-afpfs-ng supports AFP 2.0 up to 3.4.
+Netatalk Client supports AFP 2.0 up to 3.4.
 .El
 .Sh HISTORY
 .Nm
-is part of the FUSE implementation of afpfs-ng.
+is part of the FUSE implementation of Netatalk Client.
 .Sh SEE ALSO
 .Xr afpfsd 1 ,
 .Xr mount_afpfs 1

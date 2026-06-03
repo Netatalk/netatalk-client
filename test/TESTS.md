@@ -1,4 +1,4 @@
-# Integration tests for afpfs-ng
+# Integration tests for Netatalk Client
 
 ## Test suite overview
 
@@ -23,18 +23,18 @@ See Manual environment prep below for setup instructions.
 ## Container tests (batch + interactive only)
 
 Build and run the container friendly tests inside a self-contained container image.
-The image compiles afpfs-ng from source and includes a netatalk AFP server.
+The image compiles netatalk_client from source and includes a netatalk AFP server.
 
 ### Build
 
 ```sh
-podman build -f test/Dockerfile -t afpfs-ng-test .
+podman build -f test/Dockerfile -t netatalk_client-test .
 ```
 
 ### Run
 
 ```sh
-podman run --rm afpfs-ng-test
+podman run --rm netatalk_client-test
 ```
 
 `prove` exits non-zero on any test failure, which causes the container to exit with a non-zero status.
@@ -45,7 +45,7 @@ podman run --rm afpfs-ng-test
 
 ### Prerequisites
 
-- afpfs-ng built and installed (`afpcmd`, `afpfsd`, `mount_afpfs`, `afp_client` on `PATH`)
+- Netatalk Client built and installed (`afpcmd`, `afpfsd`, `mount_afpfs`, `afp_client` on `PATH`)
 - netatalk installed and configured (see Manual environment prep below)
 - Perl (any recent version; all modules used are in core)
 

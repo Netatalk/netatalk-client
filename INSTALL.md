@@ -1,8 +1,8 @@
 # Installation Instructions
 
-This is a quick guide on how to install afpfs-ng.
+This is a quick guide on how to install Netatalk Client.
 
-afpfs-ng has been tested on many Linux distros, FreeBSD, NetBSD, OpenBSD, and macOS.
+Netatalk Client has been tested on many Linux distros, FreeBSD, NetBSD, OpenBSD, and macOS.
 
 ## Requirements
 

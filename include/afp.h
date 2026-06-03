@@ -114,7 +114,7 @@ struct afp_volume {
     char volume_name_printable[AFP_VOLUME_NAME_UTF8_LEN];
     unsigned short dtrefnum;
     char volpassword[AFP_VOLPASS_LEN];
-    unsigned int extra_flags; /* This is an afpfs-ng specific field */
+    unsigned int extra_flags; /* This is a Netatalk Client specific field */
     time_t mount_time; /* Time when the volume was mounted */
 
     /* Our directory ID cache */

@@ -10,7 +10,7 @@ Apple AirPort and Time Capsule products as well as other AFP enabled NAS devices
 
 Netatalk Client is an improved fork of [afpfs-ng](https://sourceforge.net/projects/afpfs-ng/).
 It supports most major features of the AFP protocol v2.1 through v3.4, secure authentication,
-file and directory operations, filesystem extended attributes, and FUSE-based mounting of AFP shares
+file and directory operations, filesystem extended attributes, and FUSE-based mounting of AFP shares.
 
 ## Usage
 

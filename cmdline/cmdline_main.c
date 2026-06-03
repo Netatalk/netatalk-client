@@ -450,7 +450,7 @@ void cmdline_loop_started(void)
 static void usage(void)
 {
     printf(
-        "afpfs-ng %s - Apple Filing Protocol CLI client application\n"
+        "Netatalk Client %s - Apple Filing Protocol CLI client application\n"
         "afpcmd [-h] [-r] [-V] [-v loglevel] <afp url>\n"
         "Options:\n"
         "\t-h:          show this help message\n"

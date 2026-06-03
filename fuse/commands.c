@@ -518,7 +518,7 @@ found:
     return AFP_SERVER_RESULT_OKAY;
 notfound:
     log_for_client((void *)c, AFPFSD, LOG_WARNING,
-                   "afpfs-ng doesn't have anything mounted on %s", req.mountpoint);
+                   "Netatalk Client doesn't have anything mounted on %s", req.mountpoint);
     return AFP_SERVER_RESULT_ERROR;
 }
 

@@ -1,4 +1,4 @@
-afpfs-ng Improvements
+Netatalk Client Improvements
 =====================
 
 General client shortcomings
@@ -64,7 +64,7 @@ packet
 Protocol bugs
 -------------
 
-* afpfs-ng doesn't handle the situation where the server is shutdown
+* Netatalk Client doesn't handle the situation where the server is shutdown
 * reconnect isn't reliable
 * If a DSI stream gets broken or there's a protocol error, the connection
   should be reset

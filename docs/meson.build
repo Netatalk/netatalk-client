@@ -8,7 +8,7 @@ readme_docs_files = [
 
 install_data(
     readme_docs_files,
-    install_dir: datadir / 'doc' / 'afpfs-ng',
+    install_dir: datadir / 'doc' / 'netatalk_client',
 )
 
 subdir('manpages')
