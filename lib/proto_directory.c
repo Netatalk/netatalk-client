@@ -276,7 +276,7 @@ int afp_enumerateext2_reply(struct afp_server *server, char * buf,
     int i;
     //char  *max=buf+size;
     struct afp_file_info * filebase = NULL, *filecur = NULL, *new_file = NULL,
-                                                              **x = (struct afp_file_info **) other;
+                           **x = (struct afp_file_info **) other;
 
     if (reply->dsi_header.return_code.error_code) {
         return reply->dsi_header.return_code.error_code;
