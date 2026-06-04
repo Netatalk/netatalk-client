@@ -194,7 +194,7 @@ if get_option('enable-docs')
     subdir('docs')
 
     install_data(
-        ['AUTHORS', 'COPYING', 'NEWS', 'README.md'],
+        ['AUTHORS', 'COPYING', 'NEWS.md', 'README.md'],
         install_dir: datadir / 'doc' / 'netatalk_client',
     )
 endif
