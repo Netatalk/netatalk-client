@@ -26,7 +26,7 @@ AFP shares in Dolphin and other KDE applications.
 Mount the *File Sharing* volume from afpserver.local on /home/myuser/fusemount
 authenticated as user *myuser* (you will be prompted for the password):
 
-    % afp_client mount --user myuser "afpserver.local/File Sharing" /home/myuser/fusemount
+    % afp_client mount --user myuser "afpserver.local:File Sharing" /home/myuser/fusemount
 
 Get status information about all AFP volumes mounted by the current user:
 
