@@ -1,5 +1,17 @@
 # NEWS
 
+## Netatalk Client v0.9.5, June 4, 2026
+
+Note: As of this release version, this fork of _afpfs-ng_ is now known as _Netatalk Client_.
+The names of tools and libraries will not be changed to signal continuity and compatibility.
+
+### AFP Client Library Improvements
+
+- Support for the SRP UAM (Secure Remote Password), which is the most modern and secure password-based authentication
+  method in the AFP protocol: supported by Mac OS X 10.7 Lion, Netatalk 4.5 and later
+- Harden and bugfix libafpclient UAM handling code
+- We now detect 2000s era Mac OS X servers, Time Capsules, and Windows (SFM, PCMacLan) servers
+
 ## afpfs-ng 0.9.4 (February 28, 2026)
 
 ### New Test Suite
