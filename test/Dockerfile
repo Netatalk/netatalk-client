@@ -26,7 +26,7 @@ RUN apt-get update \
     $RUN_DEPS \
     $BUILD_DEPS
 
-WORKDIR /netatalk_client-code
+WORKDIR /netatalk-client-code
 COPY cmdline/ ./cmdline/
 COPY daemon/ ./daemon/
 COPY fuse/ ./fuse/

@@ -1,5 +1,5 @@
 project(
-    'netatalk_client',
+    'netatalk-client',
     'c',
     version: '0.9.5',
     license: 'GPLv2',
@@ -195,7 +195,7 @@ if get_option('enable-docs')
 
     install_data(
         ['AUTHORS', 'COPYING', 'NEWS.md', 'README.md'],
-        install_dir: datadir / 'doc' / 'netatalk_client',
+        install_dir: datadir / 'doc' / 'netatalk-client',
     )
 endif
 

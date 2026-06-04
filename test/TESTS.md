@@ -23,18 +23,18 @@ See Manual environment prep below for setup instructions.
 ## Container tests (batch + interactive only)
 
 Build and run the container friendly tests inside a self-contained container image.
-The image compiles netatalk_client from source and includes a netatalk AFP server.
+The image compiles Netatalk Client from source and includes a Netatalk AFP server.
 
 ### Build
 
 ```sh
-podman build -f test/Dockerfile -t netatalk_client-test .
+podman build -f test/Dockerfile -t netatalk-client-test .
 ```
 
 ### Run
 
 ```sh
-podman run --rm netatalk_client-test
+podman run --rm netatalk-client-test
 ```
 
 `prove` exits non-zero on any test failure, which causes the container to exit with a non-zero status.

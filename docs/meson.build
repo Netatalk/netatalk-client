@@ -8,7 +8,7 @@ readme_docs_files = [
 
 install_data(
     readme_docs_files,
-    install_dir: datadir / 'doc' / 'netatalk_client',
+    install_dir: datadir / 'doc' / 'netatalk-client',
 )
 
 subdir('manpages')
