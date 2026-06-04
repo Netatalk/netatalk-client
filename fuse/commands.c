@@ -27,7 +27,6 @@
 #include <unistd.h>
 #include <sys/time.h>
 #include <time.h>
-#include <stdarg.h>
 #include <getopt.h>
 #include <signal.h>
 #include <sys/socket.h>
@@ -60,6 +59,48 @@ static int volopen(struct fuse_client * c, struct afp_volume * volume);
 static int process_command(struct fuse_client * c);
 static struct afp_volume *mount_volume(struct fuse_client * c,
                                        struct afp_server * server, char *volname, char *volpassword) ;
+
+static unsigned int fuse_client_response_len(struct fuse_client *c)
+{
+    size_t len = strnlen(c->client_string, sizeof(c->client_string));
+
+    if (len == sizeof(c->client_string)) {
+        c->client_string[sizeof(c->client_string) - 1] = '\0';
+        len = sizeof(c->client_string) - 1;
+    }
+
+    return (unsigned int)len;
+}
+
+static void fuse_client_append(struct fuse_client *c, const char *text)
+{
+    size_t len = fuse_client_response_len(c);
+    size_t remaining;
+    size_t text_len;
+
+    if (len >= sizeof(c->client_string) - 1) {
+        return;
+    }
+
+    remaining = sizeof(c->client_string) - len - 1;
+    text_len = strnlen(text, remaining);
+    memcpy(c->client_string + len, text, text_len);
+    c->client_string[len + text_len] = '\0';
+}
+
+static void fuse_client_append_line(struct fuse_client *c, const char *text)
+{
+    size_t len;
+    fuse_client_append(c, text);
+    len = fuse_client_response_len(c);
+
+    if (len >= sizeof(c->client_string) - 1) {
+        return;
+    }
+
+    c->client_string[len] = '\n';
+    c->client_string[len + 1] = '\0';
+}
 
 void fuse_set_log_method(int new_method)
 {
@@ -188,7 +229,6 @@ static void fuse_log_for_client(void * priv,
                                 __attribute__((unused)) enum logtypes logtype,
                                 int loglevel, const char *message)
 {
-    int len = 0;
     struct fuse_client * c = priv;
     int type_rank = loglevel_to_rank(loglevel);
 
@@ -197,10 +237,7 @@ static void fuse_log_for_client(void * priv,
     }
 
     if (c) {
-        len = strlen(c->client_string);
-        snprintf(c->client_string + len,
-                 MAX_CLIENT_RESPONSE - len,
-                 "%s\n", message);
+        fuse_client_append_line(c, message);
     } else {
         if (fuse_log_method & LOG_METHOD_SYSLOG) {
             syslog(loglevel, "%s", message);
@@ -541,8 +578,7 @@ static unsigned char process_status(struct fuse_client * c)
     struct afp_server * s;
     struct afp_server_status_request req;
     char text[40960];
-    int len = 40960;
-    int buflen = 0;
+    int len;
 
     if (((unsigned long) c->incoming_size + 1) < sizeof(struct
             afp_server_status_request)) {
@@ -554,20 +590,21 @@ static unsigned char process_status(struct fuse_client * c)
 
     /* Only show header if no specific mountpoint requested */
     if (req.mountpoint[0] == '\0') {
+        len = sizeof(text);
+
         if (afp_status_header(text, &len) < 0) {
             return AFP_SERVER_RESULT_ERROR;
         }
 
-        buflen += snprintf(c->client_string + buflen, MAX_CLIENT_RESPONSE - buflen,
-                           "%s", text);
+        fuse_client_append(c, text);
     }
 
     s = get_server_base();
 
     for (s = get_server_base(); s; s = s->next) {
+        len = sizeof(text);
         afp_status_server(s, text, &len);
-        buflen += snprintf(c->client_string + buflen, MAX_CLIENT_RESPONSE - buflen,
-                           "%s", text);
+        fuse_client_append(c, text);
     }
 
     return AFP_SERVER_RESULT_OKAY;
@@ -792,7 +829,7 @@ static void *process_command_thread(void * other)
     unsigned char command = c->incoming_string[0];
     int command_result = ret;
     response.result = ret;
-    response.len = strlen(c->client_string);
+    response.len = fuse_client_response_len(c);
     bcopy(&response, tosend, sizeof(response));
     bcopy(c->client_string, tosend + sizeof(response), response.len);
     ret = write(c->fd, tosend, sizeof(response) + response.len);
