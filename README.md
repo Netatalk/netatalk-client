@@ -87,6 +87,24 @@ Use *afpcmd* in batch mode to download files from the AFP share to the local mac
         Transferred 108320 bytes in 0.015 seconds. (7200 kB/s)
     Transfer complete. 108320 bytes received.
 
+## Differences from afpfs-ng
+
+Netatalk Client has the goal of maintaining continuity with afpfs-ng commands and APIs,
+so that moving from one to the other is as seamless as possible. However we do not guarantee
+libafpclient ABI compatibility with afpfs-ng, and some differences in behavior and supported features may exist.
+
+- afpfsd.h is now a shim header which includes afp_server.h
+- afpfs-ng had to be built either with FUSE or Stateless API support, but Netatalk Client supports both simultaneously
+- As a result of the above, the Stateless client controller daemon is now called *afpsld* instead of *afpfsd*
+  to avoid namespace conflicts with the FUSE controller daemon
+- *mount_afp* has been renamed to *mount_afpfs* to avoid namespace conflicts with the macOS *mount_afp* command
+- The *afpcmd* command line client has been rewritten to use the Stateless API instead of implementing
+  libafpclient calls directly, and now relies on the *afpsld* daemon to manage AFP sessions and connections
+  instead of implementing its own session management
+
+We have also introduced numerous new options and features, which will not be listed in full here
+but can be found in the documentation and command line help.
+
 ## License
 
 Netatalk Client is distributed under the terms of the GNU General Public License v2.
