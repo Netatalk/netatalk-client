@@ -11,29 +11,39 @@
 .Sh DESCRIPTION
 The
 .Nm
-command allows you to perform some basic functions to
-access AFP volumes, such as mount, unmount, get status, suspend and
-resume.
+command is the user-facing control utility for AFP volumes mounted through
+the Netatalk Client FUSE infrastructure.
+It mounts AFP volumes, unmounts them, reports mount status, suspends and
+resumes server connections, and shuts down the per-user mount manager.
 .Pp
-Do not confuse this with
-.Xr afpcmd 1 ;
-.Nm
-is to be used only for the FUSE client,
-in conjunction with
-.Xr afpfsd 1 .
-afpcmd, on the other hand, is an interactive CLI client
-that can also be used for batch file transfers.
-Both of them use the Netatalk Client libraries.
+Each mount request talks to a per-user manager daemon, which spawns a
+per-mount
+.Xr afpfsd 1
+daemon that owns that FUSE mount.
+Multiple volumes can be mounted simultaneously on all supported platforms.
 .Pp
 The
 .Xr mount_afpfs 1
 command is in fact a symlink to
 .Nm .
-When invoked with a fully formed AFP URL, it will execute a FUSE mount command.
+It is functionally equivalent to
+.Nm
+.Cm mount ,
+but takes a fully qualified
+.Li afp://
+URL instead of the server address accepted by
+.Nm
+.Cm mount .
 .Pp
-Multiple volumes can be mounted simultaneously on all supported platforms.
-Each mount request talks to a per-user manager daemon, which spawns a
-per-mount afpfsd daemon that owns that FUSE mount.
+.Nm
+is distinct from
+.Xr afpcmd 1 .
+It is used only for the FUSE client,
+in conjunction with
+.Xr afpfsd 1 .
+afpcmd, on the other hand, is an interactive CLI client
+that can also be used for batch file transfers.
+Both of them use the Netatalk Client libraries.
 .Sh COMMANDS
 .Bl -tag -width Ds
 .It Cm mount Oo Ar mount options Oc Ar server:volume Ar mountpoint
@@ -149,6 +159,45 @@ By default Netatalk Client will choose the highest AFP version shared between
 the client and server.
 Netatalk Client supports AFP 2.0 up to 3.4.
 .El
+.Sh EXAMPLES
+Mount the AFP volume
+.Li sharedDocs
+from
+.Li fileserver.example.net
+at
+.Pa /mnt/shared
+as user
+.Li user123 :
+.Bd -literal -offset indent
+mkdir -p /mnt/shared
+afp_client mount --user user123 fileserver.example.net:sharedDocs /mnt/shared
+.Ed
+.Pp
+Mount the same volume using the equivalent
+.Xr mount_afpfs 1
+AFP URL syntax:
+.Bd -literal -offset indent
+mkdir -p /mnt/shared
+mount_afpfs afp://user123@fileserver.example.net/sharedDocs/ /mnt/shared
+.Ed
+.Pp
+Show status information for all AFP mounts owned by the current user:
+.Pp
+.Dl afp_client status
+.Pp
+Show detailed status information for a specific mount:
+.Pp
+.Dl afp_client status /mnt/shared
+.Pp
+Suspend and later resume the server connection for a mount:
+.Bd -literal -offset indent
+afp_client suspend /mnt/shared
+afp_client resume /mnt/shared
+.Ed
+.Pp
+Unmount the volume when it is no longer needed:
+.Pp
+.Dl afp_client unmount /mnt/shared
 .Sh HISTORY
 .Nm
 is part of the FUSE implementation of Netatalk Client.
