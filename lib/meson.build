@@ -1,3 +1,12 @@
+libafpclient_version_major = 1
+libafpclient_version_minor = 0
+libafpclient_version_patch = 0
+libafpclient_version = '@0@.@1@.@2@'.format(
+    libafpclient_version_major,
+    libafpclient_version_minor,
+    libafpclient_version_patch,
+)
+
 libafpclient_sources = files(
     'afp.c',
     'afp_url.c',
@@ -55,18 +64,19 @@ libafpclient = shared_library(
     dependencies: [root_dependencies, libiconv_dep, gcrypt_dep, pthread_dep],
     include_directories: incdir,
     install: true,
-    version: afpfsng_version,
+    version: libafpclient_version,
+    soversion: libafpclient_version_major,
 )
 
 pkg.generate(
     libafpclient,
     description: 'AFP client library',
     name: 'libafpclient',
-    version: afpfsng_version,
+    version: libafpclient_version,
 )
 
 afpclient_dep = declare_dependency(
     link_with: libafpclient,
     include_directories: incdir,
-    version: afpfsng_version,
+    version: libafpclient_version,
 )
