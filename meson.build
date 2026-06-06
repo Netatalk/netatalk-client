@@ -73,7 +73,7 @@ endif
 gcrypt_dep = dependency('libgcrypt', version: '>=1.2.3', required: false)
 fuse_dep = dependency('fuse3', version: '>=3.0.0', required: false)
 if not fuse_dep.found() or get_option('force-fuse-v2')
-    fuse_dep = dependency('fuse', version: '>=2.9.0', required: false)
+    fuse_dep = dependency('fuse', version: '>=2.0.0', required: false)
 endif
 
 with_afpcmd = readline_dep.found() or editline_dep.found()

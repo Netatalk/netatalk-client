@@ -375,7 +375,7 @@ jobs:
           path: build/meson-logs
 
   build-openbsd:
-    name: OpenBSD
+    name: OpenBSD (with FUSE v2)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

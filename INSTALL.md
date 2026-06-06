@@ -21,7 +21,7 @@ You also want *pkg-config* that is used by the build system to find libraries.
 | libgcrypt  | encrypted UAMs                                            |
 | readline   | afpcmd client                                             |
 | libedit    | alternative to *readline* on f.e. Alpine Linux or FreeBSD |
-| libfuse    | FUSE client; v3 recommended, compatible with v2.9         |
+| libfuse    | FUSE client; v3 recommended, compatible with v2           |
 | libbsd     | mandatory on Linux when glibc < 2.38                      |
 
 #### macOS
