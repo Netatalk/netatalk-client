@@ -27,8 +27,8 @@ on:
       - 'TODO'
 
 jobs:
-  build-alpine:
-    name: Alpine Linux
+  build-alpine-fuse2:
+    name: Alpine Linux (with FUSE v2)
     runs-on: ubuntu-latest
     container:
       image: alpine:3.22.1
@@ -51,8 +51,6 @@ jobs:
         run: meson install -C build
       - name: Run
         run: afpcmd -h
-      - name: Uninstall
-        run: ninja -C build uninstall
       - name: Upload meson logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -60,8 +58,39 @@ jobs:
           name: meson-logs-${{ github.job }}
           path: build/meson-logs
 
-  build-fedora:
-    name: Fedora Linux
+  build-alpine-fuse3:
+    name: Alpine Linux (with FUSE v3)
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.22.1
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install dependencies
+        run: |
+          apk add --no-cache \
+            build-base \
+            fuse3-dev \
+            libedit-dev \
+            libgcrypt-dev \
+            meson \
+            ninja
+      - name: Setup
+        run: meson setup build --prefix=/usr
+      - name: Compile
+        run: meson compile -C build
+      - name: Install
+        run: meson install -C build
+      - name: Run
+        run: afpcmd -h
+      - name: Upload meson logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: meson-logs-${{ github.job }}
+          path: build/meson-logs
+
+  build-fedora-fuse2:
+    name: Fedora Linux (with FUSE v2)
     runs-on: ubuntu-latest
     container:
       image: fedora:42
@@ -84,8 +113,37 @@ jobs:
         run: sudo meson install -C build
       - name: Run
         run: afpcmd -h
-      - name: Uninstall
-        run: sudo ninja -C build uninstall
+      - name: Upload meson logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: meson-logs-${{ github.job }}
+          path: build/meson-logs
+
+  build-fedora-fuse3:
+    name: Fedora Linux (with FUSE v3)
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:42
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install dependencies
+        run: |
+          dnf --setopt=install_weak_deps=False --assumeyes install \
+            fuse3-devel \
+            gcc \
+            libgcrypt-devel \
+            meson \
+            ninja-build \
+            readline-devel
+      - name: Setup
+        run: meson setup build --prefix=/usr
+      - name: Compile
+        run: meson compile -C build
+      - name: Install
+        run: sudo meson install -C build
+      - name: Run
+        run: afpcmd -h
       - name: Upload meson logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -118,8 +176,6 @@ jobs:
         run: sudo meson install -C build
       - name: Run
         run: afpcmd -h
-      - name: Uninstall
-        run: sudo ninja -C build uninstall
       - name: Upload meson logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -151,8 +207,6 @@ jobs:
         run: sudo meson install -C build
       - name: Run
         run: afpcmd -h
-      - name: Uninstall
-        run: sudo ninja -C build uninstall
       - name: Upload meson logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -182,8 +236,6 @@ jobs:
         run: sudo meson install -C build
       - name: Run
         run: afpcmd -h
-      - name: Uninstall
-        run: sudo ninja -C build uninstall
       - name: Upload meson logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -213,8 +265,6 @@ jobs:
         run: sudo meson install -C build
       - name: Run
         run: afpcmd -h
-      - name: Uninstall
-        run: sudo ninja -C build uninstall
       - name: Upload meson logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -251,7 +301,6 @@ jobs:
             meson compile -C build
             meson install -C build
             afpcmd -h
-            ninja -C build uninstall
       - name: Upload meson logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -287,7 +336,6 @@ jobs:
             meson compile -C build
             meson install -C build
             afpcmd -h
-            ninja -C build uninstall
       - name: Upload meson logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -296,7 +344,7 @@ jobs:
           path: build/meson-logs
 
   build-netbsd:
-    name: NetBSD
+    name: NetBSD (with FUSE v2)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -319,7 +367,6 @@ jobs:
             meson setup build
             meson compile -C build
             meson install -C build
-            ninja -C build uninstall
       - name: Upload meson logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -340,17 +387,14 @@ jobs:
           sync: sshfs
           prepare: |
             pkg_add -I \
-              gcc-11.2.0p19 \
               libgcrypt \
-              meson \
-              pkgconfig
+              meson
           run: |
             set -e
             meson setup build
             meson compile -C build
             meson install -C build
             afpcmd -h
-            ninja -C build uninstall
       - name: Upload meson logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
