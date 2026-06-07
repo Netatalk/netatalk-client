@@ -2,6 +2,7 @@
  *  proto_attr.c
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
  *
  */
 
@@ -73,7 +74,7 @@ int afp_listextattr(struct afp_volume * volume,
 
 int afp_listextattrs_reply(__attribute__((unused)) struct afp_server * server,
                            char *buf,
-                           __attribute__((unused)) unsigned int size, void * x)
+                           unsigned int size, void *x)
 {
     const struct {
         struct dsi_header header __attribute__((__packed__));
@@ -82,13 +83,43 @@ int afp_listextattrs_reply(__attribute__((unused)) struct afp_server * server,
         char data[] ;
     } __attribute__((__packed__)) * reply = (void *) buf;
     struct afp_extattr_info * i = x;
+    unsigned int datalength;
+    unsigned int available;
+    unsigned int len;
+
+    if (!i) {
+        return 0;
+    }
+
+    i->size = 0;
+
+    if (size < sizeof(struct dsi_header)) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Short ListExtAttrs reply header: %u byte(s)", size);
+        return 0;
+    }
 
     /* Check for error before parsing reply data */
     if (reply->header.return_code.error_code != 0) {
         return 0;  /* DSI extracts error_code from header automatically */
     }
 
-    unsigned int len = min(i->maxsize, ntohl(reply->datalength));
+    if (size < sizeof(*reply)) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Short ListExtAttrs reply: %u byte(s)", size);
+        return 0;
+    }
+
+    datalength = ntohl(reply->datalength);
+    available = size - sizeof(*reply);
+    len = min(i->maxsize, min(datalength, available));
+
+    if (datalength > available) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Truncated ListExtAttrs reply: declared=%u available=%u",
+                       datalength, available);
+    }
+
     i->size = len;
 
     if (len > 0) {
@@ -100,7 +131,7 @@ int afp_listextattrs_reply(__attribute__((unused)) struct afp_server * server,
 
 int afp_getextattr_reply(__attribute__((unused)) struct afp_server * server,
                          char *buf,
-                         __attribute__((unused)) unsigned int size, void * x)
+                         unsigned int size, void *x)
 {
     const struct {
         struct dsi_header header __attribute__((__packed__));
@@ -109,6 +140,19 @@ int afp_getextattr_reply(__attribute__((unused)) struct afp_server * server,
         char data[];
     } __attribute__((__packed__)) * reply = (void *) buf;
     struct afp_extattr_info * i = x;
+    unsigned int datalength;
+    unsigned int available;
+    unsigned int len;
+
+    if (i) {
+        i->size = 0;
+    }
+
+    if (size < sizeof(struct dsi_header)) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Short GetExtAttr reply header: %u byte(s)", size);
+        return 0;
+    }
 
     /* Check for error before parsing reply data */
     if (reply->header.return_code.error_code != 0) {
@@ -116,11 +160,26 @@ int afp_getextattr_reply(__attribute__((unused)) struct afp_server * server,
     }
 
     if (i) {
-        unsigned int len = min(i->maxsize, ntohl(reply->datalength));
+        if (size < sizeof(*reply)) {
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "Short GetExtAttr reply: %u byte(s)", size);
+            return 0;
+        }
+
+        datalength = ntohl(reply->datalength);
+        available = size - sizeof(*reply);
+        len = min(i->maxsize, min(datalength, available));
+
+        if (datalength > available) {
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "Truncated GetExtAttr reply: declared=%u available=%u",
+                           datalength, available);
+        }
+
         i->size = len;
 
         if (len > 0) {
-            memcpy(&i->data, reply->data, len);
+            memcpy(i->data, reply->data, len);
         }
     }
 
@@ -149,8 +208,8 @@ int afp_getextattr(struct afp_volume * volume, unsigned int dirid,
         } __attribute__((__packed__)) *request_packet;
         struct afp_server * server = volume->server;
         unsigned int pathlen = sizeof_path_header(server) + strlen(pathname);
-        /* Calculate padding: 1 if pathlen is odd, 0 if even */
-        unsigned int padding = pathlen & 1;
+        unsigned int path_offset = sizeof(*request_packet);
+        unsigned int padding = (path_offset + pathlen) & 1;
         unsigned int len = sizeof(*request_packet) + pathlen + padding + 2 + namelen;
         char *p, *p2;
         char *msg = malloc(len);
@@ -181,9 +240,9 @@ int afp_getextattr(struct afp_volume * volume, unsigned int dirid,
         unixpath_to_afppath(server, p);
         p2 = p + pathlen;
 
-        /* Pad to even boundary if needed (AFP protocol requirement) */
-        if ((unsigned long)p2 & 1) {
-            p2++;
+        /* Pad the following EA name field to an even packet offset. */
+        if (padding) {
+            *p2++ = 0;
         }
 
         /* EA name: length-prefixed (2 bytes length + name) */
@@ -216,8 +275,8 @@ int afp_setextattr(struct afp_volume * volume, unsigned int dirid,
         } __attribute__((__packed__)) *request_packet;
         struct afp_server * server = volume->server;
         unsigned int pathlen = sizeof_path_header(server) + strlen(pathname);
-        /* Calculate padding: 1 if pathlen is odd, 0 if even */
-        unsigned int padding = pathlen & 1;
+        unsigned int path_offset = sizeof(*request_packet);
+        unsigned int padding = (path_offset + pathlen) & 1;
         unsigned int len = sizeof(*request_packet) + pathlen + padding + 2 + namelen +
                            4 + attribdatalen;
         char *p, *p2;
@@ -247,9 +306,9 @@ int afp_setextattr(struct afp_volume * volume, unsigned int dirid,
         unixpath_to_afppath(server, p);
         p2 = p + pathlen;
 
-        /* Pad to even boundary if needed (AFP protocol requirement) */
-        if ((unsigned long)p2 & 1) {
-            p2++;
+        /* Pad the following EA name field to an even packet offset. */
+        if (padding) {
+            *p2++ = 0;
         }
 
         /* EA name: length-prefixed (2 bytes length + name) */
@@ -290,8 +349,8 @@ int afp_removeextattr(struct afp_volume * volume, unsigned int dirid,
         } __attribute__((__packed__)) *request_packet;
         struct afp_server * server = volume->server;
         unsigned int pathlen = sizeof_path_header(server) + strlen(pathname);
-        /* Calculate padding: 1 if pathlen is odd, 0 if even */
-        unsigned int padding = pathlen & 1;
+        unsigned int path_offset = sizeof(*request_packet);
+        unsigned int padding = (path_offset + pathlen) & 1;
         unsigned int len = sizeof(*request_packet) + pathlen + padding + 2 + namelen;
         char *p, *p2;
         char *msg = malloc(len);
@@ -316,9 +375,9 @@ int afp_removeextattr(struct afp_volume * volume, unsigned int dirid,
         unixpath_to_afppath(server, p);
         p2 = p + pathlen;
 
-        /* Pad to even boundary if needed (AFP protocol requirement) */
-        if ((unsigned long)p2 & 1) {
-            p2++;
+        /* Pad the following EA name field to an even packet offset. */
+        if (padding) {
+            *p2++ = 0;
         }
 
         /* EA name: length-prefixed (2 bytes length + name) */

@@ -29,6 +29,10 @@ int appledouble_readdir(struct afp_volume * volume,
 int appledouble_open(struct afp_volume * volume, const char * path, int flags,
                      struct afp_file_info *newfp);
 
+int appledouble_open_meta(struct afp_volume * volume, const char * path,
+                          unsigned int resource, int flags,
+                          struct afp_file_info *fp);
+
 int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
                      char *buf, size_t size, off_t offset, size_t *amount_read,
                      int *eof);
@@ -67,4 +71,3 @@ int appledouble_rename(struct afp_volume * volume, const char * path_from,
 
 
 #endif
-

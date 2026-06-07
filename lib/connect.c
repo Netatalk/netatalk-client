@@ -131,6 +131,18 @@ struct afp_server *afp_server_full_connect(void * priv,
             goto error;
         }
 
+        s->supported_uams = uams;
+        memcpy(s->signature, signature, AFP_SIGNATURE_LEN);
+        memcpy(s->server_name, server_name, AFP_SERVER_NAME_LEN);
+        memcpy(s->server_name_utf8, server_name_utf8,
+               AFP_SERVER_NAME_UTF8_LEN);
+        memcpy(s->server_name_printable, server_name_printable,
+               AFP_SERVER_NAME_UTF8_LEN);
+        memcpy(s->machine_type, machine_type, AFP_MACHINETYPE_LEN);
+        memcpy(s->icon, icon, AFP_SERVER_ICON_LEN);
+        s->rx_quantum = rx_quantum;
+        afp_server_identify(s);
+
         /* if our user and password strings are both empty, or if the username
          * is "nobody" (AFP guest user), and the server supports guest logins,
          * fall back to "No User Authent" (guest) UAM */
@@ -148,17 +160,6 @@ struct afp_server *afp_server_full_connect(void * priv,
             s = NULL;
             goto error;
         }
-
-        s->supported_uams = uams;
-        memcpy(s->signature, signature, AFP_SIGNATURE_LEN);
-        memcpy(s->server_name, server_name, AFP_SERVER_NAME_LEN);
-        memcpy(s->server_name_utf8, server_name_utf8,
-               AFP_SERVER_NAME_UTF8_LEN);
-        memcpy(s->server_name_printable, server_name_printable,
-               AFP_SERVER_NAME_UTF8_LEN);
-        memcpy(s->machine_type, machine_type, AFP_MACHINETYPE_LEN);
-        memcpy(s->icon, icon, AFP_SERVER_ICON_LEN);
-        s->rx_quantum = rx_quantum;
     }
 
 have_server:

@@ -61,6 +61,8 @@ struct afp_file_info {
     unsigned int fileid;
     unsigned short offspring;
     unsigned char sync;
+    unsigned char writable;
+    unsigned char dirty;
     char finderinfo[32];
     char name[AFP_MAX_PATH];
     char basename[AFP_MAX_PATH];
@@ -191,6 +193,7 @@ struct afp_server {
     unsigned int rx_quantum;
 
     unsigned int tx_delay;
+    int dsi_default_timeout;
 
     /* Connection information */
     //the linked list returned by getaddrinfo
@@ -592,6 +595,11 @@ int afp_byterangelockext(struct afp_volume * volume,
                          unsigned short forkid,
                          uint64_t offset,
                          uint64_t len, uint64_t *generated_offset);
+
+int afp_exchangefiles(struct afp_volume *volume,
+                      unsigned int src_did,
+                      unsigned int dst_did,
+                      char *src_path, char *dst_path);
 
 int afp_moveandrename(struct afp_volume *volume,
                       unsigned int src_did,

@@ -59,10 +59,6 @@ int translate_uidgid_to_server(struct afp_volume * volume,
 int translate_uidgid_to_client(struct afp_volume * volume,
                                unsigned int *newuid, unsigned int *newgid)
 {
-    log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "UID/GID translation: mapping=%d, input uid=%u gid=%u",
-                   volume->mapping, *newuid, *newgid);
-
     switch (volume->mapping) {
     case AFP_MAPPING_COMMON:
         /* The user databases are the same, don't do
@@ -73,10 +69,6 @@ int translate_uidgid_to_client(struct afp_volume * volume,
         /* This is the case where we always return the uid/gid
          * of the user who ran afpfsd.
          */
-        log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                       "UID/GID mapping LOGINIDS: %u/%u -> %u/%u",
-                       *newuid, *newgid,
-                       volume->server->passwd.pw_uid, volume->server->passwd.pw_gid);
         *newuid = volume->server->passwd.pw_uid;
         *newgid = volume->server->passwd.pw_gid;
         break;
@@ -166,6 +158,5 @@ int afp_detect_mapping(struct afp_volume * volume)
 
     return 0;
 }
-
 
 

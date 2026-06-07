@@ -73,6 +73,7 @@ Examples of available commands:
 - get _filename_: retrieves the filename
 - put _filename_: send the file
 - ls: show directory listings
+- xattr / finderinfo / resourcefork: inspect and modify AFP metadata
 
 Others are available too; touch, chmod, chown, rm, mv, etc.  See
 afpcmd(1) for more.
@@ -91,6 +92,11 @@ E.g.
     Transferred 39172170 bytes in 2.862 seconds. (13687 kB/s)
 
 See afpcmd(1) for more information.
+
+Transfers preserve FinderInfo, resource forks, generic extended attributes,
+file modes, and modification times by default. Use `--metadata=sys`,
+`--metadata=macos`, or `--metadata=netatalk` to select local metadata storage,
+and `--data-only` to transfer only the data fork.
 
 ## getting status
 

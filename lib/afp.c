@@ -63,7 +63,7 @@ int (*afp_replies[])(struct afp_server * server, char * buf, unsigned int len,
     NULL, afp_write_reply, afp_getfiledirparms_reply, afp_blank_reply,
     afp_changepassword_reply, afp_getuserinfo_reply, afp_getsrvrmsg_reply, NULL,      /*32 - 39 */
 
-    NULL, NULL, NULL, NULL,
+    NULL, NULL, afp_blank_reply, NULL,
     NULL, NULL, NULL, NULL,                       /*40 - 47 */
     afp_opendt_reply, afp_blank_reply, NULL, afp_geticon_reply,
     NULL, NULL, NULL, NULL,                       /*48 - 55 */
@@ -556,6 +556,7 @@ struct afp_server *afp_server_init(struct addrinfo * address)
     memset((void *) s, 0, sizeof(*s));
     s->exit_flag = 0;
     s->path_encoding = kFPUTF8Name; /* This is a default */
+    s->dsi_default_timeout = DSI_DEFAULT_TIMEOUT;
     s->next = NULL;
     s->bufsize = 128 * 1024;
     s->incoming_buffer = malloc(s->bufsize);
@@ -791,12 +792,19 @@ int afp_connect_volume(struct afp_volume * volume, struct afp_server * server,
         goto error;
     }
 
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "Volume attributes: 0x%04x (UnixPrivs=%d ExtAttrs=%d UTF8Names=%d NoNetworkUIDs=%d)",
+                   volume->attributes,
+                   !!(volume->attributes & kSupportsUnixPrivs),
+                   !!(volume->attributes & kSupportsExtAttrs),
+                   !!(volume->attributes & kSupportsUTF8Names),
+                   !!(volume->attributes & kNoNetworkUserIDs));
+
     if (server->using_version->av_number >= 30) {
-        if ((volume->server->server_type == AFPFS_SERVER_TYPE_NETATALK) &&
-                (~ volume->attributes & kSupportsUnixPrivs)) {
-            volume->extra_flags &= ~VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX;
-        } else {
+        if (volume->attributes & kSupportsUnixPrivs) {
             volume->extra_flags |= VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX;
+        } else {
+            volume->extra_flags &= ~VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX;
         }
     } else {
         /* This is very odd, but AFP 2.x doesn't give timestamps for directories */

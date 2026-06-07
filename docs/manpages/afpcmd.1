@@ -1,4 +1,4 @@
-.Dd January 26, 2026
+.Dd June 12, 2026
 .Dt AFPCMD 1
 .Os Netatalk Client
 .Sh NAME
@@ -8,15 +8,18 @@
 .Nm
 .Op Fl rV
 .Op Fl v Ar loglevel
+.Op Fl M Ar mode
 .Ar afp_url
 .Nm
 .Op Fl rV
 .Op Fl v Ar loglevel
+.Op Fl M Ar mode
 .Ar afp_url
 .Ar local_path
 .Nm
 .Op Fl rV
 .Op Fl v Ar loglevel
+.Op Fl M Ar mode
 .Ar local_path
 .Ar afp_url
 .Nm
@@ -62,6 +65,34 @@ and
 Default is
 .Cm notice .
 Logs are written to syslog.
+.It Fl M , Fl -metadata Ar mode
+Preserves FinderInfo, resource forks, generic extended attributes, modes,
+and modification times during transfers.
+The storage mode may be
+.Cm auto ,
+.Cm sys ,
+.Cm macos ,
+.Cm netatalk ,
+or
+.Cm none .
+The default
+.Cm auto
+mode uses local filesystem extended attributes first and falls back to
+AppleDouble sidecars.
+.Cm sys
+uses only local filesystem extended attributes.
+.Cm macos
+uses macOS-compatible
+.Pa ._name
+AppleDouble files for FinderInfo and resource forks.
+.Cm netatalk
+uses
+.Pa .AppleDouble/name
+and
+.Pa name::EA
+files.
+.Cm none
+transfers only the data fork.
 .It Ar afp_url
 Uses the standard AFP URL format.
 .El
@@ -80,6 +111,9 @@ flag is provided, the transfer is recursive (for directories).
 If the
 .Fl V
 flag is provided, detailed transfer information is displayed for each file.
+Metadata preservation is enabled by default in both batch and interactive
+transfers.
+Symbolic links are rejected.
 .Sh INTERACTIVE MODE
 If a URL is provided on the command line,
 .Nm
@@ -140,6 +174,31 @@ Show the contents of file
 Change the mode of a file on the server
 .It Cm rm Ar file
 Remove file from the server
+.El
+.Ss Metadata commands
+.Bl -tag -width Ds
+.It Cm xattr list Ar path
+List generic extended attributes.
+.It Cm xattr get Ar path Ar name Op Ar output
+Read an extended attribute, writing binary data to
+.Ar output
+when supplied or showing bounded hexadecimal output otherwise.
+.It Cm xattr set Ar path Ar name Ar input
+Set an extended attribute from a local binary file.
+.It Cm xattr remove Ar path Ar name
+Remove an extended attribute.
+.It Cm finderinfo get Ar path Op Ar output
+Read the 32-byte FinderInfo value.
+.It Cm finderinfo set Ar path Ar input
+Set FinderInfo from an exactly 32-byte local file.
+.It Cm finderinfo remove Ar path
+Clear FinderInfo.
+.It Cm resourcefork get Ar path Op Ar output
+Read a resource fork.
+.It Cm resourcefork set Ar path Ar input
+Set a resource fork from a local binary file.
+.It Cm resourcefork remove Ar path
+Remove a resource fork.
 .El
 .Ss Status commands
 .Bl -tag -width Ds

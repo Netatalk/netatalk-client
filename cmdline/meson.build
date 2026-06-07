@@ -10,7 +10,11 @@ executable(
 if with_afpcmd
     executable(
         'afpcmd',
-        sources: ['cmdline_afp.c', 'cmdline_main.c'],
+        sources: [
+            'cmdline_afp.c',
+            'cmdline_main.c',
+            'metadata.c',
+        ],
         include_directories: incdir,
         link_with: [libafpclient, libafpsl],
         dependencies: [root_dependencies, cmdline_dependencies],
