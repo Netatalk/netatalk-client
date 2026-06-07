@@ -32,6 +32,7 @@ COPY daemon/ ./daemon/
 COPY fuse/ ./fuse/
 COPY include/ ./include/
 COPY lib/ ./lib/
+COPY test/ ./test/
 COPY meson_options.txt .
 COPY meson.build .
 RUN rm -rf build

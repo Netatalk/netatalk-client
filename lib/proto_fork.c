@@ -2,7 +2,7 @@
  *  proto_fork.c
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
- *  Copyright (C) 2025 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
  *
 */
 
@@ -82,7 +82,7 @@ int afp_closefork(struct afp_volume * volume,
     request_packet.pad = 0;
     request_packet.forkid = htons(forkid);
     return dsi_send(volume->server, (char *) &request_packet,
-                    sizeof(request_packet), DSI_DEFAULT_TIMEOUT, afpFlushFork, NULL);
+                    sizeof(request_packet), DSI_DEFAULT_TIMEOUT, afpCloseFork, NULL);
 }
 
 

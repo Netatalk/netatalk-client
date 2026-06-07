@@ -3,7 +3,7 @@
     fuse.c, FUSE interfaces for Netatalk Client
 
     Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
-    Copyright (C) 2025 Daniel Markstedt <daniel@mindani.net>
+    Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
 
     Heavily modifed from the example code provided by:
     Copyright (C) 2001-2005  Miklos Szeredi <miklos@szeredi.hu>
@@ -34,6 +34,14 @@
 #include <sys/types.h>
 #include <pwd.h>
 
+#ifndef ENOATTR
+#ifdef ENODATA
+#define ENOATTR ENODATA
+#else
+#define ENOATTR ENOENT
+#endif
+#endif
+
 /* Extended attribute headers - platform dependent */
 #if defined(HAVE_ATTR_XATTR_H)
 #include <attr/xattr.h>
@@ -51,6 +59,27 @@
 #define XATTR_REPLACE 0x2
 #endif
 
+#ifdef __APPLE__
+#define AFP_XATTR_RESOURCEFORK "com.apple.ResourceFork"
+#define AFP_XATTR_FINDERINFO "com.apple.FinderInfo"
+#define AFP_FINDERINFO_FLAG_INVISIBLE 0x4000
+#define AFP_ACCESS_UNKNOWN_BITS 0x000fc001
+#define AFP_ACCESS_READ_BITS    ((1U << 1) | (1U << 7) | (1U << 9) | (1U << 11))
+#define AFP_ACCESS_WRITE_BITS   ((1U << 2) | (1U << 4) | (1U << 5) | \
+                                 (1U << 6) | (1U << 8) | (1U << 10))
+#define AFP_ACCESS_OWNER_BITS   ((1U << 12) | (1U << 13))
+#define AFP_ACCESS_EXEC_BITS    (1U << 3)
+#ifndef UF_HIDDEN
+#define UF_HIDDEN 0x00008000
+#endif
+#ifndef RENAME_SWAP
+#define RENAME_SWAP 0x00000002
+#endif
+#ifndef RENAME_EXCL
+#define RENAME_EXCL 0x00000004
+#endif
+#endif
+
 /* If not defined by the build system, default to 0 (old API) */
 #ifndef FUSE_NEW_API
 #define FUSE_NEW_API 0
@@ -61,6 +90,66 @@
 #include "codepage.h"
 #include "midlevel.h"
 #include "fuse_error.h"
+
+#ifdef __APPLE__
+static int xattr_list_contains(const char *list, size_t used,
+                               const char *name)
+{
+    size_t namelen = strlen(name);
+    size_t offset = 0;
+
+    while (offset < used) {
+        size_t remaining = used - offset;
+        size_t entrylen = strnlen(list + offset, remaining);
+
+        if (entrylen == remaining) {
+            return 0;
+        }
+
+        if (entrylen == namelen &&
+                memcmp(list + offset, name, namelen) == 0) {
+            return 1;
+        }
+
+        offset += entrylen + 1;
+    }
+
+    return 0;
+}
+
+static int append_xattr_name(char *list, size_t size, size_t *used,
+                             const char *name)
+{
+    size_t namelen = strlen(name) + 1;
+
+    if (list && size > 0) {
+        if (xattr_list_contains(list, *used, name)) {
+            return 0;
+        }
+
+        if (*used + namelen > size) {
+            return -ERANGE;
+        }
+
+        memcpy(list + *used, name, namelen);
+    }
+
+    *used += namelen;
+    return 0;
+}
+
+static uint16_t finderinfo_get_flags(const char finderinfo[32])
+{
+    return ((uint16_t)(unsigned char)finderinfo[8] << 8)
+           | (uint16_t)(unsigned char)finderinfo[9];
+}
+
+static void finderinfo_set_flags(char finderinfo[32], uint16_t flags)
+{
+    finderinfo[8] = (char)((flags >> 8) & 0xff);
+    finderinfo[9] = (char)(flags & 0xff);
+}
+#endif
 
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30
 /* Helper function to convert struct stat to struct fuse_darwin_attr on macOS */
@@ -82,6 +171,7 @@ static void stat_to_darwin_attr(const struct stat *st,
     attr->size = st->st_size;
     attr->blocks = st->st_blocks;
     attr->blksize = st->st_blksize;
+    attr->flags = st->st_flags;
 }
 
 #endif
@@ -140,6 +230,25 @@ static int fuse_getxattr(const char *path, const char *name, char *value,
         ((struct fuse_context *)(fuse_get_context()))->private_data;
 #ifdef __APPLE__
 
+    if (strcmp(name, AFP_XATTR_RESOURCEFORK) == 0) {
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "*** getxattr resource fork %s (size=%zu position=%u)",
+                       path, size, position);
+        ret = ml_getresourcefork(volume, path, value, size, position);
+        return ret;
+    }
+
+    if (strcmp(name, AFP_XATTR_FINDERINFO) == 0) {
+        if (position != 0) {
+            return -EOPNOTSUPP;
+        }
+
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "*** getxattr FinderInfo %s (size=%zu)", path, size);
+        ret = ml_getfinderinfo(volume, path, value, size);
+        return ret;
+    }
+
     /* AFP does not support positioned xattrs; ignore non-zero positions */
     if (position != 0) {
         return -EOPNOTSUPP;
@@ -182,10 +291,26 @@ static int fuse_setxattr(const char *path, const char *name,
 #endif
 #ifdef __APPLE__
 
-    /* FIXME: macOS uses position for resource forks stored in xattr */
+    if (strcmp(name, AFP_XATTR_RESOURCEFORK) == 0) {
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "*** setxattr resource fork %s (size=%zu position=%u)",
+                       path, size, position);
+        ret = ml_setresourcefork(volume, path, value, size, position);
+        return ret;
+    }
+
+    if (strcmp(name, AFP_XATTR_FINDERINFO) == 0) {
+        if (position != 0) {
+            return -EOPNOTSUPP;
+        }
+
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "*** setxattr FinderInfo %s (size=%zu)", path, size);
+        ret = ml_setfinderinfo(volume, path, value, size);
+        return ret;
+    }
+
     if (position != 0) {
-        log_for_client(NULL, AFPFSD, LOG_WARNING,
-                       "Positioned xattrs not supported (resource forks)");
         return -EOPNOTSUPP;
     }
 
@@ -202,9 +327,64 @@ static int fuse_listxattr(const char *path, char *list, size_t size)
     struct afp_volume * volume =
         (struct afp_volume *)
         ((struct fuse_context *)(fuse_get_context()))->private_data;
+#ifdef __APPLE__
+    char scratch[4096];
+    char *target = list;
+    size_t target_size = size;
+#endif
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** listxattr %s (size=%zu)", path, size);
+#ifdef __APPLE__
+
+    if (!list || size == 0) {
+        target = scratch;
+        target_size = sizeof(scratch);
+    }
+
+    ret = ml_listxattr(volume, path, target, target_size);
+#else
     ret = ml_listxattr(volume, path, list, size);
+#endif
+#ifdef __APPLE__
+
+    if (ret >= 0) {
+        size_t used = ret;
+        char finderinfo[32];
+
+        if (ml_getresourcefork(volume, path, NULL, 0, 0) > 0) {
+            ret = append_xattr_name(target, target_size, &used,
+                                    AFP_XATTR_RESOURCEFORK);
+
+            if (ret < 0) {
+                return ret;
+            }
+        }
+
+        if (ml_getfinderinfo(volume, path, finderinfo, sizeof(finderinfo)) == 32
+                && memcmp(finderinfo, "\0\0\0\0\0\0\0\0"
+                          "\0\0\0\0\0\0\0\0"
+                          "\0\0\0\0\0\0\0\0"
+                          "\0\0\0\0\0\0\0\0", 32) != 0) {
+            ret = append_xattr_name(target, target_size, &used,
+                                    AFP_XATTR_FINDERINFO);
+
+            if (ret < 0) {
+                return ret;
+            }
+        }
+
+        if (target != list && list && size > 0) {
+            if (used > size) {
+                return -ERANGE;
+            }
+
+            memcpy(list, target, used);
+        }
+
+        ret = used;
+    }
+
+#endif
     return ret;
 }
 
@@ -216,6 +396,19 @@ static int fuse_removexattr(const char *path, const char *name)
         ((struct fuse_context *)(fuse_get_context()))->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** removexattr %s:%s", path, name);
+#ifdef __APPLE__
+
+    if (strcmp(name, AFP_XATTR_RESOURCEFORK) == 0) {
+        ret = ml_removeresourcefork(volume, path);
+        return ret;
+    }
+
+    if (strcmp(name, AFP_XATTR_FINDERINFO) == 0) {
+        ret = ml_removefinderinfo(volume, path);
+        return ret;
+    }
+
+#endif
     ret = ml_removexattr(volume, path, name);
     return ret;
 }
@@ -310,14 +503,17 @@ static int fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi)
                        "*** create: file exists, attempting to open anyway");
     }
 
-    /* Open it - ml_open will handle O_TRUNC if present in flags */
-    ret = ml_open(volume, path, fi->flags, &fp);
+    /* Open it. Strip O_CREAT and O_EXCL: ml_creat already created the file,
+     * and sending a second FPCreateFile (hard create) for an existing file
+     * causes Time Capsule to return kFPMiscErr on the subsequent FPWriteExt.
+     * ml_open will handle O_TRUNC if present in flags. */
+    ret = ml_open(volume, path, fi->flags & ~(O_CREAT | O_EXCL), &fp);
 
     if (ret == 0) {
         fi->fh = (unsigned long) fp;
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                       "*** create succeeded, fh=%lu, forkid=%d",
-                       fi->fh, fp->forkid);
+                       "*** cache create \"%s\" flags=0x%x fh=%lu forkid=%d",
+                       path, fi->flags, fi->fh, fp->forkid);
     } else {
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "*** create open failed with ret=%d", ret);
@@ -333,7 +529,10 @@ static int fuse_flush(const char *path, struct fuse_file_info *fi)
         (struct afp_volume *)
         ((struct fuse_context *)(fuse_get_context()))->private_data;
     int ret = 0;
-    log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** flush of %s", path);
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "*** cache flush \"%s\" forkid=%d writable=%u resource=%u",
+                   path, fp ? fp->forkid : -1, fp ? fp->writable : 0,
+                   fp ? fp->resource : 0);
 
     if (!fp) {
         return 0;
@@ -343,17 +542,24 @@ static int fuse_flush(const char *path, struct fuse_file_info *fi)
     ret = afp_flushfork(volume, fp->forkid);
 
     if (ret != 0) {
+        int eret;
+
         /* Map AFP errors to errno */
         switch (ret) {
         case kFPAccessDenied:
-            return -EACCES;
+            eret = -EACCES;
+            break;
 
         case kFPParamErr:
-            return -EINVAL;
+            eret = -EINVAL;
+            break;
 
         default:
-            return -EIO;
+            eret = -EIO;
+            break;
         }
+
+        return eret;
     }
 
     /* NOTE: We do NOT call afp_setforkparms here because it appears to
@@ -369,16 +575,13 @@ static int fuse_release(const char * path, struct fuse_file_info * fi)
     struct afp_volume * volume =
         (struct afp_volume *)
         ((struct fuse_context *)(fuse_get_context()))->private_data;
-    log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** release of %s", path);
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "*** cache release \"%s\" forkid=%d writable=%u resource=%u",
+                   path, fp ? fp->forkid : -1, fp ? fp->writable : 0,
+                   fp ? fp->resource : 0);
     ret = ml_close(volume, path, fp);
-
-    if (ret < 0) {
-        goto error;
-    }
-
-    return ret;
-error:
     free((void *) fi->fh);
+    fi->fh = 0;
     return ret;
 }
 
@@ -390,12 +593,14 @@ static int fuse_open(const char *path, struct fuse_file_info *fi)
         (struct afp_volume *)
         ((struct fuse_context *)(fuse_get_context()))->private_data;
     int flags = fi->flags;
-    log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "*** Opening path %s with flags 0x%x", path, flags);
     ret = ml_open(volume, path, flags, &fp);
 
     if (ret == 0) {
         fi->fh = (unsigned long) fp;
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "*** cache open \"%s\" flags=0x%x fh=%lu forkid=%d writable=%u resource=%u",
+                       path, flags, fi->fh, fp->forkid, fp->writable,
+                       fp->resource);
     }
 
     return ret;
@@ -411,12 +616,10 @@ static int fuse_write(const char * path, const char *data,
     struct fuse_context * context = fuse_get_context();
     struct afp_volume * volume = (void *) context->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "*** write of %s from %llu for %llu bytes",
+                   "*** cache write \"%s\" offset=%llu size=%llu",
                    path, (unsigned long long) offset, (unsigned long long) size);
     ret = ml_write(volume, path, data, size, offset, fp,
                    context->uid, context->gid);
-    log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "*** write returned %d", ret);
     return ret;
 }
 
@@ -432,6 +635,44 @@ static int fuse_mkdir(const char * path, mode_t mode)
     return ret;
 }
 
+#ifdef __APPLE__
+static int fuse_opendir(const char *path, struct fuse_file_info *fi)
+{
+    struct stat stbuf;
+    int ret;
+    struct afp_volume *volume =
+        (struct afp_volume *)fuse_get_context()->private_data;
+    ret = ml_getattr(volume, path, &stbuf);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (!S_ISDIR(stbuf.st_mode)) {
+        return -ENOTDIR;
+    }
+
+    if (fi) {
+        fi->fh = 0;
+    }
+
+    return 0;
+}
+
+static int fuse_releasedir(__attribute__((unused)) const char *path,
+                           __attribute__((unused)) struct fuse_file_info *fi)
+{
+    return 0;
+}
+
+static int fuse_fsyncdir(__attribute__((unused)) const char *path,
+                         __attribute__((unused)) int datasync,
+                         __attribute__((unused)) struct fuse_file_info *fi)
+{
+    return 0;
+}
+#endif
+
 static int fuse_read(const char *path, char *buf, size_t size, off_t offset,
                      struct fuse_file_info *fi)
 {
@@ -442,6 +683,10 @@ static int fuse_read(const char *path, char *buf, size_t size, off_t offset,
         ((struct fuse_context *)(fuse_get_context()))->private_data;
     int eof;
     size_t amount_read = 0;
+    off_t original_offset = offset;
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "*** cache read \"%s\" offset=%llu size=%zu",
+                   path, (unsigned long long)offset, size);
 
     if (!fi || !fi->fh) {
         return -EBADF;
@@ -454,6 +699,13 @@ static int fuse_read(const char *path, char *buf, size_t size, off_t offset,
 
         if (ret < 0) {
             goto error;
+        }
+
+        if (ret == 0) {
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "*** read of %s made no progress at offset %llu, eof=%d",
+                           path, (unsigned long long)offset, eof);
+            goto out;
         }
 
         amount_read += ret;
@@ -472,10 +724,42 @@ static int fuse_read(const char *path, char *buf, size_t size, off_t offset,
     }
 
 out:
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "*** cache read \"%s\" offset=%llu returned=%zu eof=%d",
+                   path, (unsigned long long)original_offset, amount_read, eof);
     return amount_read;
 error:
     return ret;
 }
+
+#ifdef __APPLE__
+static int fuse_access(const char *path, int mask)
+{
+    struct stat stbuf;
+    struct fuse_context *context = fuse_get_context();
+    struct afp_volume *volume = (struct afp_volume *)context->private_data;
+    int ret;
+    ret = ml_getattr(volume, path, &stbuf);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (mask & ~(AFP_ACCESS_UNKNOWN_BITS | AFP_ACCESS_READ_BITS |
+                 AFP_ACCESS_WRITE_BITS | AFP_ACCESS_OWNER_BITS |
+                 AFP_ACCESS_EXEC_BITS)) {
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "*** access ignoring unknown Darwin mask bits 0x%x",
+                       mask & ~(AFP_ACCESS_UNKNOWN_BITS | AFP_ACCESS_READ_BITS |
+                                AFP_ACCESS_WRITE_BITS | AFP_ACCESS_OWNER_BITS |
+                                AFP_ACCESS_EXEC_BITS));
+    }
+
+    /* macFUSE passes KAUTH-style masks. Authorization is ultimately enforced
+     * by the AFP operation because server ACLs cannot be reconstructed here. */
+    return 0;
+}
+#endif
 
 #if FUSE_NEW_API
 static int fuse_chown(const char * path, uid_t uid, gid_t gid,
@@ -608,7 +892,7 @@ static int fuse_utimens(const char *path, const struct timespec tv[2])
         (struct afp_volume *)
         ((struct fuse_context *)(fuse_get_context()))->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "** utimens");
+                   "*** utimens \"%s\"", path);
     struct utimbuf timebuf;
 
     if (!tv) {
@@ -616,28 +900,42 @@ static int fuse_utimens(const char *path, const struct timespec tv[2])
         time_t now = time(NULL);
         timebuf.actime = now;
         timebuf.modtime = now;
-        ret = ml_utime(volume, path, &timebuf);
+    } else {
+        /*
+         * AFP only supports modification time, so we only need to check
+         * tv[1] (mtime).  If mtime is UTIME_OMIT, there is nothing to do.
+         */
+        if (tv[1].tv_nsec == UTIME_OMIT) {
+            return 0;
+        }
+
+        if (tv[1].tv_nsec == UTIME_NOW) {
+            timebuf.modtime = time(NULL);
+        } else {
+            timebuf.modtime = tv[1].tv_sec;
+        }
+
+        /* unused by AFP, just initialize */
+        timebuf.actime = timebuf.modtime;
+    }
+
+    ret = ml_utime(volume, path, &timebuf);
+
+    /* Timestamp failures are non-fatal: same reasoning as fuse_setattr */
+    if (ret == -ENOSYS || ret == -EPERM || ret == -ENOENT || ret == -EACCES) {
+        if (ret != 0)
+            log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                           "*** utimens \"%s\" ignored: %d", path, ret);
+
+        return 0;
+    } else if (ret < 0) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "*** utimens \"%s\" failed: %d", path, ret);
         return ret;
     }
 
-    /*
-     * AFP only supports modification time, so we only need to check
-     * tv[1] (mtime).  If mtime is UTIME_OMIT, there is nothing to do.
-     */
-    if (tv[1].tv_nsec == UTIME_OMIT) {
-        return 0;
-    }
-
-    if (tv[1].tv_nsec == UTIME_NOW) {
-        timebuf.modtime = time(NULL);
-    } else {
-        timebuf.modtime = tv[1].tv_sec;
-    }
-
-    /* unused by AFP, just initialize */
-    timebuf.actime = timebuf.modtime;
-    ret = ml_utime(volume, path, &timebuf);
-    return ret;
+    log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** utimens \"%s\" ok", path);
+    return 0;
 }
 
 #else
@@ -712,11 +1010,39 @@ static int fuse_symlink(const char * path1, const char * path2)
 static int fuse_rename(const char * path_from, const char * path_to,
                        unsigned int flags)
 {
-    (void) flags;
     int ret;
     struct afp_volume * volume =
         (struct afp_volume *)
         ((struct fuse_context *)(fuse_get_context()))->private_data;
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "*** rename %s -> %s flags=0x%x", path_from, path_to, flags);
+#ifdef __APPLE__
+    struct stat stbuf;
+
+    if (flags & RENAME_SWAP) {
+        ret = ml_exchange(volume, path_from, path_to);
+        return ret;
+    }
+
+    if (flags & RENAME_EXCL) {
+        ret = ml_getattr(volume, path_to, &stbuf);
+
+        if (ret == 0) {
+            return -EEXIST;
+        }
+
+        if (ret != -ENOENT) {
+            return ret;
+        }
+    }
+
+#else
+
+    if (flags != 0) {
+        return -EINVAL;
+    }
+
+#endif
     ret = ml_rename(volume, path_from, path_to);
     return ret;
 }
@@ -728,10 +1054,60 @@ static int fuse_rename(const char * path_from, const char * path_to)
     struct afp_volume * volume =
         (struct afp_volume *)
         ((struct fuse_context *)(fuse_get_context()))->private_data;
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "*** rename %s -> %s", path_from, path_to);
     ret = ml_rename(volume, path_from, path_to);
     return ret;
 }
 
+#endif
+
+#if defined(__APPLE__) && !FUSE_NEW_API
+static int fuse_renamex(const char *path_from, const char *path_to,
+                        unsigned int flags)
+{
+    int ret;
+    struct stat stbuf;
+    struct afp_volume * volume =
+        (struct afp_volume *)
+        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "*** renamex %s -> %s flags=0x%x", path_from, path_to, flags);
+
+    if (flags & RENAME_SWAP) {
+        ret = ml_exchange(volume, path_from, path_to);
+        return ret;
+    }
+
+    if (flags & RENAME_EXCL) {
+        ret = ml_getattr(volume, path_to, &stbuf);
+
+        if (ret == 0) {
+            return -EEXIST;
+        }
+
+        if (ret != -ENOENT) {
+            return ret;
+        }
+    }
+
+    ret = ml_rename(volume, path_from, path_to);
+    return ret;
+}
+
+static int fuse_exchange(const char *path_from, const char *path_to,
+                         unsigned long options)
+{
+    int ret;
+    struct afp_volume * volume =
+        (struct afp_volume *)
+        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "*** exchange %s <-> %s options=0x%lx",
+                   path_from, path_to, options);
+    ret = ml_exchange(volume, path_from, path_to);
+    return ret;
+}
 #endif
 
 #ifdef __APPLE__
@@ -754,8 +1130,13 @@ static int fuse_statfs(const char *path, struct statvfs *stat)
         stat->f_blocks = vfsstat.f_blocks;
         stat->f_bfree = vfsstat.f_bfree;
         stat->f_bavail = vfsstat.f_bavail;
-        stat->f_files = vfsstat.f_files;
-        stat->f_ffree = vfsstat.f_ffree;
+        /* AFP has no inode counts, but macOS copy preflight treats zero free
+         * files as a hard destination limit. Keep this workaround local. */
+        stat->f_files = vfsstat.f_files ? vfsstat.f_files
+                        : (vfsstat.f_blocks ? vfsstat.f_blocks : 1);
+        stat->f_ffree = vfsstat.f_ffree ? vfsstat.f_ffree
+                        : (vfsstat.f_bfree < stat->f_files
+                           ? vfsstat.f_bfree : stat->f_files);
     }
 
     return ret;
@@ -776,6 +1157,160 @@ static int fuse_statfs(const char *path, struct statvfs *stat)
 
 
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30
+
+/* FUSE_SET_ATTR_* bitmask constants (from fuse3/fuse_lowlevel.h) */
+#ifndef FUSE_SET_ATTR_MODE
+#define FUSE_SET_ATTR_MODE      (1 << 0)
+#define FUSE_SET_ATTR_UID       (1 << 1)
+#define FUSE_SET_ATTR_GID       (1 << 2)
+#define FUSE_SET_ATTR_SIZE      (1 << 3)
+#define FUSE_SET_ATTR_ATIME     (1 << 4)
+#define FUSE_SET_ATTR_MTIME     (1 << 5)
+#define FUSE_SET_ATTR_ATIME_NOW (1 << 7)
+#define FUSE_SET_ATTR_MTIME_NOW (1 << 8)
+#define FUSE_SET_ATTR_BTIME     (1 << 28)
+#endif
+#ifndef FUSE_SET_ATTR_FLAGS
+#define FUSE_SET_ATTR_FLAGS     (1U << 31)
+#endif
+
+static int fuse_apply_chflags(struct afp_volume *volume, const char *path,
+                              unsigned int flags)
+{
+    char finderinfo[32] = {0};
+    uint16_t finder_flags;
+    int ret;
+    ret = ml_getfinderinfo(volume, path, finderinfo, sizeof(finderinfo));
+
+    if (ret < 0 && ret != -ENOATTR && ret != -ENOENT) {
+        return ret;
+    }
+
+    finder_flags = finderinfo_get_flags(finderinfo);
+
+    if (flags & UF_HIDDEN) {
+        finder_flags |= AFP_FINDERINFO_FLAG_INVISIBLE;
+    } else {
+        finder_flags &= ~AFP_FINDERINFO_FLAG_INVISIBLE;
+    }
+
+    finderinfo_set_flags(finderinfo, finder_flags);
+    return ml_setfinderinfo(volume, path, finderinfo, sizeof(finderinfo));
+}
+
+/* Darwin-specific combined setattr callback.  macFUSE with FUSE_USE_VERSION >= 30
+ * routes ALL setattrlist() calls here instead of to the individual chmod/chown/
+ * truncate/utimens callbacks.  Without this, setattrlist returns ENOSYS and
+ * macOS copyfile() aborts the copy before writing any data. */
+static int fuse_setattr(const char *path, struct fuse_darwin_attr *attr,
+                        int to_set, struct fuse_file_info *fi)
+{
+    struct afp_volume * volume =
+        (struct afp_volume *)
+        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    int ret = 0;
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "*** setattr \"%s\" to_set=0x%x", path, to_set);
+
+    if (to_set & FUSE_SET_ATTR_FLAGS) {
+        ret = fuse_apply_chflags(volume, path, attr->flags);
+
+        if (ret < 0) {
+            return ret;
+        }
+    }
+
+    if (to_set & FUSE_SET_ATTR_MODE) {
+        ret = ml_chmod(volume, path, attr->mode);
+
+        /* Ignore ENOSYS/EPERM/EACCES: server may not support Unix privs.
+         * Ignore ENOENT: transient kFPObjectNotFound after catalog updates. */
+        if (ret == -ENOSYS || ret == -EPERM || ret == -EACCES || ret == -ENOENT) {
+            if (ret != 0)
+                log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                               "*** setattr chmod \"%s\" ignored: %d", path, ret);
+
+            ret = 0;
+        } else if (ret < 0) {
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "*** setattr chmod \"%s\" failed: %d", path, ret);
+            return ret;
+        } else {
+            log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                           "*** setattr chmod \"%s\" ok", path);
+        }
+    }
+
+    if (to_set & (FUSE_SET_ATTR_UID | FUSE_SET_ATTR_GID)) {
+        ret = ml_chown(volume, path, attr->uid, attr->gid);
+
+        /* Same rationale: best-effort, ENOENT is non-fatal */
+        if (ret == -ENOSYS || ret == -EPERM || ret == -EACCES || ret == -ENOENT) {
+            if (ret != 0)
+                log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                               "*** setattr chown \"%s\" ignored: %d", path, ret);
+
+            ret = 0;
+        } else if (ret < 0) {
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "*** setattr chown \"%s\" failed: %d", path, ret);
+            return ret;
+        }
+    }
+
+    if (to_set & FUSE_SET_ATTR_SIZE) {
+        if (fi && fi->fh) {
+            struct afp_file_info *fp = (struct afp_file_info *) fi->fh;
+
+            if (fp->size != (uint64_t)attr->size) {
+                ret = ml_setfork_size(volume, fp->forkid, 0, attr->size);
+
+                if (ret == 0) {
+                    fp->size = attr->size;
+                }
+            }
+        } else {
+            ret = ml_truncate(volume, path, attr->size);
+        }
+
+        if (ret < 0) {
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "*** setattr truncate \"%s\" failed: %d", path, ret);
+            return ret;
+        }
+    }
+
+    if (to_set & (FUSE_SET_ATTR_MTIME | FUSE_SET_ATTR_MTIME_NOW)) {
+        struct utimbuf timebuf;
+        timebuf.modtime = (to_set & FUSE_SET_ATTR_MTIME_NOW)
+                          ? time(NULL) : (time_t)attr->mtimespec.tv_sec;
+        timebuf.actime  = timebuf.modtime;
+        ret = ml_utime(volume, path, &timebuf);
+
+        /* Treat timestamp-setting failures as non-fatal on AFP volumes:
+         * kFPObjectNotFound (ENOENT) can occur transiently after catalog
+         * updates, and EACCES may indicate a read-only fork; neither
+         * should cause macOS to abort an otherwise-successful safe-save. */
+        if (ret == -ENOSYS || ret == -EPERM || ret == -ENOENT || ret == -EACCES) {
+            if (ret != 0)
+                log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                               "*** setattr utime \"%s\" ignored: %d", path, ret);
+
+            ret = 0;
+        } else if (ret < 0) {
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "*** setattr utime \"%s\" failed: %d", path, ret);
+            return ret;
+        } else {
+            log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                           "*** setattr utime \"%s\" ok", path);
+        }
+    }
+
+    /* Birth time / backup time: AFP has no API for setting these */
+    return 0;
+}
+
 static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
                                __attribute__((unused)) struct fuse_file_info *fi)
 {
@@ -785,8 +1320,6 @@ static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
         (struct afp_volume *)
         ((struct fuse_context *)(fuse_get_context()))->private_data;
     int ret;
-    log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** getattr of \"%s\"", path);
-
     /* Oddly, we sometimes get <dir1>/<dir2>/(null) for the path */
 
     if (!path) {
@@ -803,7 +1336,25 @@ static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
     ret = ml_getattr(volume, path, &stbuf);
 
     if (ret == 0) {
+        char finderinfo[32];
         stat_to_darwin_attr(&stbuf, attr);
+
+        if (ml_getfinderinfo(volume, path, finderinfo, sizeof(finderinfo)) == 32
+                && (finderinfo_get_flags(finderinfo)
+                    & AFP_FINDERINFO_FLAG_INVISIBLE)) {
+            attr->flags |= UF_HIDDEN;
+        }
+
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "*** getattr \"%s\" -> mode=0%o uid=%d gid=%d size=%lld ino=%llu mtime=%lld.%09ld",
+                       path, stbuf.st_mode, stbuf.st_uid, stbuf.st_gid,
+                       (long long)stbuf.st_size,
+                       (unsigned long long)stbuf.st_ino,
+                       (long long)stbuf.st_mtimespec.tv_sec,
+                       stbuf.st_mtimespec.tv_nsec);
+    } else {
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "*** getattr \"%s\" -> error %d", path, ret);
     }
 
     return ret;
@@ -846,11 +1397,39 @@ static int fuse_getattr(const char *path, struct stat *stbuf)
 #if FUSE_NEW_API
 static void *afp_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
-    (void) conn;
-    (void) cfg;
     struct afp_volume * vol = (struct afp_volume *)
                               ((struct fuse_context *)(fuse_get_context()))->private_data;
     struct fuse_context *ctx = fuse_get_context();
+#ifdef __APPLE__
+
+    if (conn) {
+#ifdef FUSE_CAP_RENAME_SWAP
+        conn->want |= FUSE_CAP_RENAME_SWAP;
+#endif
+#ifdef FUSE_CAP_RENAME_EXCL
+        conn->want |= FUSE_CAP_RENAME_EXCL;
+#endif
+#ifdef FUSE_CAP_EXCHANGE_DATA
+        conn->want |= FUSE_CAP_EXCHANGE_DATA;
+#endif
+#ifdef FUSE_CAP_ACCESS_EXTENDED
+        conn->want |= FUSE_CAP_ACCESS_EXTENDED;
+#endif
+#ifdef FUSE_DARWIN_CAP_ACCESS_EXT
+        fuse_darwin_set_feature_flag(conn, FUSE_DARWIN_CAP_ACCESS_EXT);
+#endif
+    }
+
+#else
+    (void) conn;
+#endif
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "*** fuse init entry_timeout=%.3f negative_timeout=%.3f attr_timeout=%.3f capable=0x%x want=0x%x",
+                   cfg ? cfg->entry_timeout : -1.0,
+                   cfg ? cfg->negative_timeout : -1.0,
+                   cfg ? cfg->attr_timeout : -1.0,
+                   conn ? conn->capable : 0,
+                   conn ? conn->want : 0);
 
     if (ctx && ctx->fuse) {
         vol->priv = ctx->fuse;
@@ -886,13 +1465,13 @@ static void *afp_init(__attribute__((unused)) struct fuse_conn_info * o)
 #endif
 
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30
-static int fuse_chflags(__attribute__((unused)) const char *path,
+static int fuse_chflags(const char *path,
                         __attribute__((unused)) struct fuse_file_info *fi,
-                        __attribute__((unused)) unsigned int flags)
+                        unsigned int flags)
 {
-    /* AFP doesn't support BSD file flags, so we just return success
-     * to avoid "Function not implemented" errors when using mv/cp */
-    return 0;
+    struct afp_volume *volume =
+        (struct afp_volume *)fuse_get_context()->private_data;
+    return fuse_apply_chflags(volume, path, flags);
 }
 
 #endif
@@ -900,8 +1479,13 @@ static int fuse_chflags(__attribute__((unused)) const char *path,
 static struct fuse_operations afp_oper = {
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30
     .getattr    = fuse_getattr_darwin,
+    .setattr    = fuse_setattr,
     .readdir    = fuse_readdir_darwin,
     .chflags    = fuse_chflags,
+#if !FUSE_NEW_API
+    .renamex    = fuse_renamex,
+    .exchange   = fuse_exchange,
+#endif
 #else
     .getattr    = fuse_getattr,
     .readdir    = fuse_readdir,
@@ -909,6 +1493,11 @@ static struct fuse_operations afp_oper = {
     .open       = fuse_open,
     .read       = fuse_read,
     .mkdir      = fuse_mkdir,
+#ifdef __APPLE__
+    .opendir    = fuse_opendir,
+    .releasedir = fuse_releasedir,
+    .fsyncdir   = fuse_fsyncdir,
+#endif
     .readlink   = fuse_readlink,
     .rmdir      = fuse_rmdir,
     .unlink     = fuse_unlink,
@@ -924,6 +1513,9 @@ static struct fuse_operations afp_oper = {
     .chmod      = fuse_chmod,
     .symlink    = fuse_symlink,
     .chown      = fuse_chown,
+#ifdef __APPLE__
+    .access     = fuse_access,
+#endif
     .truncate   = fuse_truncate,
     .rename     = fuse_rename,
 #if FUSE_USE_VERSION >= 30
@@ -940,7 +1532,20 @@ static struct fuse_operations afp_oper = {
 int afp_register_fuse(int fuseargc, char *fuseargv[], struct afp_volume * vol)
 {
     int ret;
+    struct fuse_operations oper = afp_oper;
+    /* FinderInfo and resource forks use the xattr callbacks on macOS even
+     * when the AFP volume does not support generic extended attributes. */
+#ifndef __APPLE__
+
+    if (!(vol->attributes & kSupportsExtAttrs)) {
+        oper.getxattr    = NULL;
+        oper.setxattr    = NULL;
+        oper.listxattr   = NULL;
+        oper.removexattr = NULL;
+    }
+
+#endif
     fuse_capture_stderr_start();
-    ret = fuse_main(fuseargc, fuseargv, &afp_oper, (void *) vol);
+    ret = fuse_main(fuseargc, fuseargv, &oper, (void *) vol);
     return ret;
 }

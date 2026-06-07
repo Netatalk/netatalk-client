@@ -8,6 +8,7 @@
 
 #include <string.h>
 #include "afp.h"
+#include "dsi.h"
 
 /*
  * afp_server_identify()
@@ -21,6 +22,8 @@
 
 void afp_server_identify(struct afp_server * s)
 {
+    s->dsi_default_timeout = DSI_DEFAULT_TIMEOUT;
+
     if (strncmp(s->machine_type, "Netatalk", 8) == 0) {
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "Identified server %s as Netatalk",
@@ -43,6 +46,7 @@ void afp_server_identify(struct afp_server * s)
                        "Identified server %s as Time Capsule",
                        s->server_name_printable);
         s->server_type = AFPFS_SERVER_TYPE_TIMECAPSULE;
+        s->dsi_default_timeout = DSI_TIMECAPSULE_DEFAULT_TIMEOUT;
     } else if (strncmp(s->machine_type, "Windows", 7) == 0) {
         /* PCMacLan returns "Windows based PC"; Windows SFM returns "Windows NT"*/
         log_for_client(NULL, AFPFSD, LOG_DEBUG,

@@ -10,6 +10,9 @@ int com_get(char *filename);
 int com_view(char *arg);
 int com_rename(char *arg);
 int com_copy(char *arg);
+int com_xattr(char *arg);
+int com_finderinfo(char *arg);
+int com_resourcefork(char *arg);
 int com_delete(char *arg);
 int com_mkdir(char *arg);
 int com_rmdir(char *arg);
@@ -29,6 +32,7 @@ int cmdline_afp_setup(int recursive, int batch_mode, char * url_string);
 void cmdline_afp_setup_client(void);
 void cmdline_set_log_level(int loglevel);
 void cmdline_set_verbose(int verbose);
+int cmdline_set_metadata_mode(const char *mode);
 int cmdline_batch_transfer(char * local_path, int direction, int recursive);
 char *afp_remote_file_generator(const char *text, int state);
 

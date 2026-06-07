@@ -58,6 +58,9 @@ int ml_symlink(struct afp_volume *vol, const char * path1, const char * path2);
 int ml_rename(struct afp_volume * vol,
               const char *path_from, const char *path_to);
 
+int ml_exchange(struct afp_volume * vol,
+                const char *path_from, const char *path_to);
+
 int ml_statfs(struct afp_volume * vol, const char *path, struct statvfs *stat);
 
 void afp_ml_filebase_free(struct afp_file_info **filebase);
@@ -78,6 +81,22 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
 
 int ml_removexattr(struct afp_volume * volume, const char *path,
                    const char *name);
+
+int ml_getresourcefork(struct afp_volume * volume, const char *path,
+                       void *value, size_t size, off_t position);
+
+int ml_setresourcefork(struct afp_volume * volume, const char *path,
+                       const void *value, size_t size, off_t position);
+
+int ml_removeresourcefork(struct afp_volume * volume, const char *path);
+
+int ml_getfinderinfo(struct afp_volume * volume, const char *path,
+                     void *value, size_t size);
+
+int ml_setfinderinfo(struct afp_volume * volume, const char *path,
+                     const void *value, size_t size);
+
+int ml_removefinderinfo(struct afp_volume * volume, const char *path);
 
 
 #endif

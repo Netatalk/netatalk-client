@@ -173,6 +173,7 @@ enum AFPFunction {
     afpSetForkParms, afpSetVolParms, afpWrite, afpGetFileDirParms,
     afpSetFileDirParms, afpChangePassword,
     afpGetUserInfo = 37, afpGetSrvrMsg = 38,
+    afpExchangeFiles = 42,
     afpOpenDT = 48,
     afpCloseDT = 49,
     afpGetIcon = 51, afpGetIconInfo = 52,

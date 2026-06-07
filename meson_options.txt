@@ -1,4 +1,14 @@
 option(
+    'enable-debugging',
+    type: 'array',
+    choices: [
+        'afp',
+        'dsi',
+    ],
+    value: [],
+    description: 'Enable verbose debug logs for the AFP or DSI protocols',
+)
+option(
     'enable-docs',
     type: 'boolean',
     value: true,
