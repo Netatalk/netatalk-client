@@ -2,6 +2,7 @@
  *  proto_files.c
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
  *
  */
 
@@ -318,21 +319,24 @@ int afp_getfiledirparms_reply(struct afp_server *server, char * buf,
     }  __attribute__((__packed__)) * reply_packet = (void *) buf;
     struct afp_file_info * filecur = other;
 
-    if (reply_packet->header.return_code.error_code) {
-        return reply_packet->header.return_code.error_code;
-    }
-
     if (size < sizeof(*reply_packet)) {
         return -1;
     }
 
-    parse_reply_block(server,
-                      buf + (sizeof(*reply_packet)),
-                      size,
-                      reply_packet->isdir,
-                      ntohs(reply_packet->filebitmap),
-                      ntohs(reply_packet->dirbitmap),
-                      filecur);
+    if (reply_packet->header.return_code.error_code) {
+        return reply_packet->header.return_code.error_code;
+    }
+
+    if (parse_reply_block(server,
+                          buf + (sizeof(*reply_packet)),
+                          size - sizeof(*reply_packet),
+                          reply_packet->isdir,
+                          ntohs(reply_packet->filebitmap),
+                          ntohs(reply_packet->dirbitmap),
+                          filecur) < 0) {
+        return -1;
+    }
+
     filecur->isdir = reply_packet->isdir;
     return 0;
 }
@@ -546,4 +550,3 @@ int afp_writeext_reply(__attribute__((unused)) struct afp_server *server,
 
     return 0;
 }
-

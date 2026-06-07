@@ -1,7 +1,7 @@
 #ifndef __AFP_REPLIES_H_
 #define __AFP_REPLIES_H_
 
-int parse_reply_block(struct afp_server *server, char * buf,
+int parse_reply_block(struct afp_server *server, const char * buf,
                       unsigned int size, unsigned char isdir,
                       unsigned int filebitmap, unsigned int dirbitmap,
                       struct afp_file_info * filecur);

@@ -2,6 +2,7 @@
  *  proto_directory.c
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
  *
  */
 
@@ -25,6 +26,17 @@ typedef struct ext2_reply_entry {
     uint8_t isdir;
     uint8_t pad;
 } __attribute__((__packed__)) ext2_reply_entry;
+
+static void free_file_list(struct afp_file_info *base)
+{
+    struct afp_file_info *next;
+
+    while (base) {
+        next = base->next;
+        free(base);
+        base = next;
+    }
+}
 
 int afp_moveandrename(struct afp_volume *volume,
                       unsigned int src_did,
@@ -215,24 +227,34 @@ int afp_enumerate_reply(struct afp_server *server, char * buf,
     struct afp_file_info * filebase = NULL, *filecur = NULL, *prev = NULL;
     void **x = other;
 
-    if (reply->dsi_header.return_code.error_code) {
-        return reply->dsi_header.return_code.error_code;
-    }
-
     if (size < sizeof(*reply)) {
         return -1;
     }
 
-    for (i = 0; i < ntohs(reply->reqcount); i++) {
-        entry = (reply_entry *) p;
+    if (reply->dsi_header.return_code.error_code) {
+        return reply->dsi_header.return_code.error_code;
+    }
 
-        if (p > max) {
+    for (i = 0; i < ntohs(reply->reqcount); i++) {
+        unsigned int entry_size;
+
+        if ((size_t)(max - p) < sizeof(*entry)) {
+            free_file_list(filebase);
+            return -1;
+        }
+
+        entry = (reply_entry *) p;
+        entry_size = entry->size;
+
+        if (entry_size < sizeof(*entry) || (size_t)(max - p) < entry_size) {
+            free_file_list(filebase);
             return -1;
         }
 
         prev = filecur;
 
         if ((filecur = malloc(sizeof(struct afp_file_info))) == NULL) {
+            free_file_list(filebase);
             return -1;
         }
 
@@ -243,12 +265,16 @@ int afp_enumerate_reply(struct afp_server *server, char * buf,
             prev->next = filecur;
         }
 
-        parse_reply_block(server, p + sizeof(*entry),
-                          ntohs(entry->size), entry->isdir,
-                          ntohs(reply->filebitmap),
-                          ntohs(reply->dirbitmap),
-                          filecur);
-        p += entry->size;
+        if (parse_reply_block(server, p + sizeof(*entry),
+                              entry_size - sizeof(*entry), entry->isdir,
+                              ntohs(reply->filebitmap),
+                              ntohs(reply->dirbitmap),
+                              filecur) < 0) {
+            free_file_list(filebase);
+            return -1;
+        }
+
+        p += entry_size;
     }
 
     *x = filebase;
@@ -272,32 +298,38 @@ int afp_enumerateext2_reply(struct afp_server *server, char * buf,
         uint16_t reqcount;
     } __attribute__((__packed__)) * reply = (void *) buf;
     const ext2_reply_entry *entry;
-    char *p = buf + sizeof(*reply);
-    /* FIXME: max was stubbed out and the bounds check was never implemented.
-     * The loop advances p by entry->size (uint16_t, server-supplied) with no
-     * validation, so a malicious or buggy server can walk p past buf+size.
-     * Per the spec, ActualCount (here: reqcount) bounds the iteration, but
-     * each entry->size must also be validated:
-     *   1. p + sizeof(*entry) <= max  — before casting p to ext2_reply_entry*
-     *   2. ntohs(entry->size) >= sizeof(*entry)  — prevent stall/underflow
-     *   3. p + ntohs(entry->size) <= max  — before advancing p
-     * Restore 'char *max = buf + size' and add these three guards inside the
-     * loop, breaking out (not returning an error) on violation per spec note:
-     * "enumerate until kFPObjectNotFound... filter out duplicates". */
+    const char *p = buf + sizeof(*reply);
+    const char *max = buf + size;
     int i;
     struct afp_file_info * filebase = NULL, *filecur = NULL, *new_file = NULL,
                            **x = (struct afp_file_info **) other;
-
-    if (reply->dsi_header.return_code.error_code) {
-        return reply->dsi_header.return_code.error_code;
-    }
 
     if (size < sizeof(*reply)) {
         return -1;
     }
 
+    if (reply->dsi_header.return_code.error_code) {
+        return reply->dsi_header.return_code.error_code;
+    }
+
     for (i = 0; i < ntohs(reply->reqcount); i++) {
+        unsigned int entry_size;
+
+        if ((size_t)(max - p) < sizeof(*entry)) {
+            free_file_list(filebase);
+            return -1;
+        }
+
+        entry = (const void *) p;
+        entry_size = ntohs(entry->size);
+
+        if (entry_size < sizeof(*entry) || (size_t)(max - p) < entry_size) {
+            free_file_list(filebase);
+            return -1;
+        }
+
         if ((new_file = malloc(sizeof(struct afp_file_info))) == NULL) {
+            free_file_list(filebase);
             return -1;
         }
 
@@ -311,13 +343,16 @@ int afp_enumerateext2_reply(struct afp_server *server, char * buf,
             filecur = new_file;
         }
 
-        entry = (ext2_reply_entry *) p;
-        parse_reply_block(server, p + sizeof(*entry),
-                          ntohs(entry->size), entry->isdir,
-                          ntohs(reply->filebitmap),
-                          ntohs(reply->dirbitmap),
-                          filecur);
-        p += ntohs(entry->size);
+        if (parse_reply_block(server, p + sizeof(*entry),
+                              entry_size - sizeof(*entry), entry->isdir,
+                              ntohs(reply->filebitmap),
+                              ntohs(reply->dirbitmap),
+                              filecur) < 0) {
+            free_file_list(filebase);
+            return -1;
+        }
+
+        p += entry_size;
     }
 
     *x = filebase;
