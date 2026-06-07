@@ -36,8 +36,8 @@ struct afp_server *afp_server_complete_connection(
     unsigned int len = 0;
     memset(loginmsg, 0, AFP_LOGINMESG_LEN);
     server->requested_version = requested_version;
-    memcpy(server->username, username, sizeof(server->username));
-    memcpy(server->password, password, sizeof(server->password));
+    strlcpy(server->username, username, sizeof(server->username));
+    strlcpy(server->password, password, sizeof(server->password));
     add_fd_and_signal(server->fd);
     dsi_opensession(server);
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
