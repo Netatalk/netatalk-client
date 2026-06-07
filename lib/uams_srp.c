@@ -30,6 +30,9 @@
 #define SRP_SHA1_LEN      20
 #define SRP_MAX_NBYTES    256
 
+/* observed on Apple AFP servers with SRP UAM, not a standard AFP error code */
+#define SRP_AUTH_FAILURE  (-6754)
+
 /* Read a 2-byte big-endian unsigned integer and advance the pointer. */
 static uint16_t read_uint16_be(unsigned char **p)
 {
@@ -166,10 +169,14 @@ int srp_login(struct afp_server *server, char *username, char *passwd)
                        (char *)init_marker, sizeof(init_marker), &rbuf);
 
     if (ret != kFPAuthContinue) {
+        if (ret == SRP_AUTH_FAILURE) {
+            ret = kFPUserNotAuth;
+        }
+
         log_for_client(NULL, AFPFSD, LOG_ERR,
                        "SRP: FPLoginExt failed (ret=%d, expected kFPAuthContinue)",
                        ret);
-        goto srp_fail;
+        goto srp_cleanup;
     }
 
     /*
@@ -465,6 +472,11 @@ int srp_login(struct afp_server *server, char *username, char *passwd)
     ret = afp_logincont(server, 0, (char *)ai, ai_len, &rbuf);
 
     if (ret != 0) {
+        if (ret == SRP_AUTH_FAILURE) {
+            ret = kFPUserNotAuth;
+            goto srp_cleanup;
+        }
+
         log_for_client(NULL, AFPFSD, LOG_ERR,
                        "SRP: authentication failed (ret=%d)", ret);
         goto srp_cleanup;
