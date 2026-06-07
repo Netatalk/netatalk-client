@@ -26,14 +26,19 @@ cflags = [
     '-DAFPFS_VERSION="' + afpfsng_version + '"',
     '-DBINDIR="' + bindir + '"',
     '-D_FILE_OFFSET_BITS=64',
-    '-D_GNU_SOURCE',
 ]
 
-if build_type == 'debug'
-    cflags += '-DDEBUG'
+if 'afp' in get_option('enable-debugging')
+    cflags += '-DDEBUG_AFP_LOOP'
 endif
 
-if host_os in ['dragonfly', 'freebsd', 'openbsd']
+if 'dsi' in get_option('enable-debugging')
+    cflags += '-DDEBUG_DSI'
+endif
+
+if host_os == 'linux'
+    cflags += '-D_GNU_SOURCE'
+elif host_os in ['dragonfly', 'freebsd', 'openbsd']
     libsearch_dirs += '/usr/local/lib'
     include_dirs += ['/usr/local/include']
     cflags += '-DLIBICONV_PLUG'
@@ -183,6 +188,7 @@ endif
 subdir('lib')
 subdir('daemon')
 subdir('cmdline')
+subdir('test')
 
 if with_fuse
     subdir('fuse')

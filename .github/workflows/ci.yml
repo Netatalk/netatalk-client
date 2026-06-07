@@ -47,6 +47,8 @@ jobs:
         run: meson setup build --prefix=/usr
       - name: Compile
         run: meson compile -C build
+      - name: Test
+        run: meson test -C build
       - name: Install
         run: meson install -C build
       - name: Run
@@ -78,6 +80,8 @@ jobs:
         run: meson setup build --prefix=/usr
       - name: Compile
         run: meson compile -C build
+      - name: Test
+        run: meson test -C build
       - name: Install
         run: meson install -C build
       - name: Run
@@ -109,6 +113,8 @@ jobs:
         run: meson setup build --prefix=/usr
       - name: Compile
         run: meson compile -C build
+      - name: Test
+        run: meson test -C build
       - name: Install
         run: sudo meson install -C build
       - name: Run
@@ -140,6 +146,8 @@ jobs:
         run: meson setup build --prefix=/usr
       - name: Compile
         run: meson compile -C build
+      - name: Test
+        run: meson test -C build
       - name: Install
         run: sudo meson install -C build
       - name: Run
@@ -172,6 +180,8 @@ jobs:
         run: meson setup build --prefix=/usr
       - name: Compile
         run: meson compile -C build
+      - name: Test
+        run: meson test -C build
       - name: Install
         run: sudo meson install -C build
       - name: Run
@@ -203,6 +213,8 @@ jobs:
         run: meson setup build --prefix=/usr
       - name: Compile
         run: meson compile -C build
+      - name: Test
+        run: meson test -C build
       - name: Install
         run: sudo meson install -C build
       - name: Run
@@ -232,6 +244,8 @@ jobs:
         run: meson setup build -Dforce-fuse-v2=true
       - name: Compile
         run: meson compile -C build
+      - name: Test
+        run: meson test -C build
       - name: Install
         run: sudo meson install -C build
       - name: Run
@@ -261,6 +275,8 @@ jobs:
         run: meson setup build
       - name: Compile
         run: meson compile -C build
+      - name: Test
+        run: meson test -C build
       - name: Install
         run: sudo meson install -C build
       - name: Run
@@ -299,6 +315,7 @@ jobs:
             meson setup build \
               -Dpkg_config_path=/usr/local/libdata/pkgconfig
             meson compile -C build
+            meson test -C build
             meson install -C build
             afpcmd -h
       - name: Upload meson logs
@@ -334,6 +351,7 @@ jobs:
             meson setup build \
               -Dpkg_config_path=/usr/local/libdata/pkgconfig
             meson compile -C build
+            meson test -C build
             meson install -C build
             afpcmd -h
       - name: Upload meson logs
@@ -366,6 +384,7 @@ jobs:
             set -e
             meson setup build
             meson compile -C build
+            meson test -C build
             meson install -C build
       - name: Upload meson logs
         if: always()
@@ -393,6 +412,7 @@ jobs:
             set -e
             meson setup build
             meson compile -C build
+            meson test -C build
             meson install -C build
             afpcmd -h
       - name: Upload meson logs

@@ -1,11 +1,12 @@
 # Getting Started with Netatalk Client
 
 This is a quick guide on how to use the two different AFP clients
-in Netatalk Client.
+included with the Netatalk Client suite: the FUSE client and the command line client.
 
 ## The FUSE client
 
-This will let you mount remote filesystems.
+This will let you mount remote filesystems over AFP,
+and access them as if they were local filesystems.
 
 As the user who will be needing to access the files, start the management daemon
 by running:
@@ -36,17 +37,20 @@ The same, but forcing the UAM of your choice with the _AUTH_ parameter (usually 
 You can see status by running 'afp_client status'.  See afpfsd(1),
 mount_afpfs(1) and afp_client(1) for more info.
 
-To add an AFP mount to fstab so it mounts automatically on boot:
+### Mounting on boot
+
+For operating systems that support it, add an AFP mount to fstab so it mounts automatically on boot.
+The FUSE filesystem source is 'afpfs', and can be configured as follows:
 
 1. create a file called '/etc/fuse.conf' with one line:
 `user_allow_other`
 2. make sure that any user doing a mount is a member of the group 'fuse' so it can read and write to /dev/fuse
 3. create an entry in /etc/fstab entry in the following format:
 
-    afpfs#afp://username:mypass10.211.55.2/alexdevries /tmp/xa20 fuse user=adevries,group=fuse 0 0
+    afpfs#afp://username:mypass10.211.55.2/myafpvol /tmp/xa20 fuse user=myuser,group=fuse 0 0
 
 Here, username and mypass are the login information on the server 10.211.55.2.
-The volume name is alexdevries.  /tmp/xa20 is the name of the mountpoint.  
+The volume name is myafpvol.  /tmp/xa20 is the name of the mountpoint.
 The user= field is the local user, group needs to be the same the group owner of /dev/fuse (which is typically fuse).
 
 Yes, you will need to put your password in clear text.  There is currently no facility to handle open directory.
@@ -73,6 +77,7 @@ Examples of available commands:
 - get _filename_: retrieves the filename
 - put _filename_: send the file
 - ls: show directory listings
+- xattr / finderinfo / resourcefork: inspect and modify AFP metadata
 
 Others are available too; touch, chmod, chown, rm, mv, etc.  See
 afpcmd(1) for more.
@@ -89,6 +94,11 @@ E.g.
     Connected to volume alexdevries
         Getting file /linux-2.6.14.tar.bz2
     Transferred 39172170 bytes in 2.862 seconds. (13687 kB/s)
+
+Transfers preserve FinderInfo, resource forks, generic extended attributes,
+file modes, and modification times by default. Use '-M sys', '-M macos',
+or '-M netatalk' to select local metadata storage,
+and '-M none' to transfer only the data fork.
 
 See afpcmd(1) for more information.
 

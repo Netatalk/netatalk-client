@@ -2,7 +2,7 @@
     midlevel.c: some funtions to abstract some of the common functions
 
     Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
-    Copyright (C) 2025 Daniel Markstedt <daniel@mindani.net>
+    Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
 
     This program can be distributed under the terms of the GNU GPL.
     See the file COPYING.
@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <string.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
@@ -42,6 +43,28 @@
 
 
 #define min(a,b) (((a)<(b)) ? (a) : (b))
+#define AFP_XATTR_NAME_MAX 255U
+
+static int normalize_xattr_name(const char *name, const char **afp_name,
+                                unsigned short *afp_namelen)
+{
+    size_t length = strnlen(name, AFP_XATTR_NAME_MAX + 1U);
+
+    if (length > AFP_XATTR_NAME_MAX) {
+        return -ENAMETOOLONG;
+    }
+
+    *afp_name = name;
+
+    if (length >= sizeof("user.") - 1U
+            && memcmp(name, "user.", sizeof("user.") - 1U) == 0) {
+        *afp_name += sizeof("user.") - 1U;
+        length -= sizeof("user.") - 1U;
+    }
+
+    *afp_namelen = (unsigned short)length;
+    return 0;
+}
 
 static int get_unixprivs(struct afp_volume * volume,
                          unsigned int dirid,
@@ -78,7 +101,8 @@ static int set_unixprivs(struct afp_volume * vol,
 	(S_IRUSR |S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP | \
 	 S_IROTH | S_IWOTH | S_IXOTH )
     int ret = 0, rc;
-    fp->unixprivs.ua_permissions = 0;
+    /* Do not zero ua_permissions here; callers populate it from get_unixprivs
+     * and Time Capsule uses the "User is the owner" bit to enforce write access. */
 
     if (!(vol->extra_flags & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX)) {
         return 0;
@@ -248,10 +272,9 @@ error:
 
 int ml_creat(struct afp_volume * volume, const char *path, mode_t mode)
 {
-    int ret = 0;
+    int ret;
     char basename[AFP_MAX_PATH];
     unsigned int dirid;
-    struct afp_file_info fp;
     int rc;
     char converted_path[AFP_MAX_PATH];
 
@@ -278,108 +301,45 @@ int ml_creat(struct afp_volume * volume, const char *path, mode_t mode)
         return -ENAMETOOLONG;
     }
 
-    get_dirid(volume, converted_path, basename, &dirid);
+    ret = get_dirid(volume, converted_path, basename, &dirid);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    /* Skip FPSetFileDirParms after FPCreateFile.  Time Capsule (and likely other
+     * servers) can return kFPMiscErr on subsequent FPWriteExt if we mutate the
+     * file's permissions/attrs between create and open.  macOS never calls
+     * FPSetFileDirParms in its create sequence either.  If the caller needs to
+     * set permissions it will do so via fuse_chmod -> ml_chmod afterward. */
     rc = afp_createfile(volume, kFPSoftCreate, dirid, basename);
 
     switch (rc) {
+    case kFPNoErr:
+    case kFPObjectExists:
+        /* kFPSoftCreate may succeed for an existing file.  Treat an explicit
+         * kFPObjectExists the same way so retry after transient create/open
+         * races can continue into the caller's open path. */
+        return 0;
+
     case kFPAccessDenied:
-        ret = EACCES;
-        break;
+        return -EACCES;
 
     case kFPDiskFull:
-        ret = ENOSPC;
-        break;
-
-    case kFPObjectExists:
-        /* File exists - this can happen on retry after transient failure.
-         * Continue to ensure permissions are set correctly for writing. */
-        ret = EEXIST;
-        break;
+        return -ENOSPC;
 
     case kFPObjectNotFound:
-        ret = ENOENT;
-        break;
+        return -ENOENT;
 
     case kFPFileBusy:
     case kFPVolLocked:
-        ret = EBUSY;
-        break;
-
-    case kFPNoErr:
-        ret = 0;
-        break;
+        return -EBUSY;
 
     default:
     case kFPParamErr:
     case kFPMiscErr:
-        ret = EIO;
+        return -EIO;
     }
-
-    /* Return early only for fatal errors, not EEXIST */
-    if (ret && ret != EEXIST) {
-        return -ret;
-    }
-
-    /* If we don't support unixprivs, just exit */
-    if (~ volume->extra_flags & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX) {
-        return 0;
-    }
-
-    /* Figure out the privs of the file we just created */
-    if ((ret = get_unixprivs(volume,
-                             dirid, basename, &fp))) {
-        return rc;
-    }
-
-    if (ret) {
-        return -ret;
-    }
-
-    /* Strip file type bits, keep only permission bits */
-    mode &= 07777;
-
-    /* If no permission bits are set, use a sensible default (0644) */
-    if (mode == 0) {
-        mode = 0644;
-    }
-
-    /* Ensure owner write permission for initial creation to allow subsequent writes */
-    mode |= S_IWUSR;
-
-    if (fp.unixprivs.permissions == mode) {
-        return 0;
-    }
-
-    fp.unixprivs.ua_permissions = 0;
-    fp.unixprivs.permissions = mode;
-    fp.isdir = 0; /* Anything you make with mknod is a file */
-    /* note that we're not monkeying with the ownership here */
-    rc = set_unixprivs(volume, dirid, basename, &fp);
-
-    switch (rc) {
-    case kFPAccessDenied:
-        ret = EPERM;
-        goto error;
-
-    case kFPObjectNotFound:
-        ret = ENOENT;
-        goto error;
-
-    case 0:
-        ret = 0;
-        break;
-
-    case kFPBitmapErr:
-    case kFPMiscErr:
-    case kFPObjectTypeErr:
-    case kFPParamErr:
-    default:
-        ret = EIO;
-        goto error;
-    }
-
-error:
-    return -ret;
 }
 
 
@@ -709,7 +669,7 @@ int ml_close(struct afp_volume * volume, const char * path,
     /* The logic here is that if we don't have an fp anymore, then the
        fork must already be closed. */
     if (!fp) {
-        return EBADF;
+        return -EBADF;
     }
 
     if (fp->icon) {
@@ -728,12 +688,13 @@ int ml_close(struct afp_volume * volume, const char * path,
     case kFPParamErr:
     case kFPMiscErr:
         ret = EIO;
+        remove_opened_fork(volume, fp);
         goto error;
     }
 
     remove_opened_fork(volume, fp);
 error:
-    return ret;
+    return -ret;
 }
 
 int ml_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf)
@@ -913,16 +874,16 @@ int ml_readlink(struct afp_volume * vol, const char * path,
     switch (rc) {
     case kFPAccessDenied:
         ret = EACCES;
-        goto error;
+        goto close_error;
 
     case kFPLockErr:
         ret = EBUSY;
-        goto error;
+        goto close_error;
 
     case kFPMiscErr:
     case kFPParamErr:
         ret = EIO;
-        goto error;
+        goto close_error;
 
     case kFPEOFErr:
     case kFPNoErr:
@@ -937,6 +898,7 @@ int ml_readlink(struct afp_volume * vol, const char * path,
     case kFPParamErr:
     case kFPMiscErr:
         ret = EIO;
+        remove_opened_fork(vol, &fp);
         goto error;
     }
 
@@ -945,6 +907,9 @@ int ml_readlink(struct afp_volume * vol, const char * path,
     convert_path_to_unix(vol->server->path_encoding,
                          buf, (char *) link_path, AFP_MAX_PATH);
     return 0;
+close_error:
+    afp_closefork(vol, fp.forkid);
+    remove_opened_fork(vol, &fp);
 error:
     return -ret;
 }
@@ -1239,6 +1204,7 @@ int ml_symlink(struct afp_volume *vol, const char * path1, const char * path2)
     int ret;
     struct afp_file_info fp;
     uint64_t written;
+    size_t converted_path1_len;
     int rc;
     unsigned int dirid2;
     char basename2[AFP_MAX_PATH];
@@ -1261,6 +1227,12 @@ int ml_symlink(struct afp_volume *vol, const char * path1, const char * path2)
     if (convert_path_to_afp(vol->server->path_encoding,
                             converted_path2, (char *) path2, AFP_MAX_PATH)) {
         return -EINVAL;
+    }
+
+    converted_path1_len = strnlen(converted_path1, sizeof(converted_path1));
+
+    if (converted_path1_len == sizeof(converted_path1)) {
+        return -ENAMETOOLONG;
     }
 
     if (volume_is_readonly(vol)) {
@@ -1304,7 +1276,6 @@ int ml_symlink(struct afp_volume *vol, const char * path1, const char * path2)
         goto error;
 
     case kFPNoErr:
-        ret = 0;
         break;
 
     default:
@@ -1320,7 +1291,7 @@ int ml_symlink(struct afp_volume *vol, const char * path1, const char * path2)
                       AFP_OPENFORK_ALLOWWRITE | AFP_OPENFORK_ALLOWREAD,
                       basename2, &fp);
 
-    switch (ret) {
+    switch (rc) {
     case kFPAccessDenied:
         ret = EACCES;
         goto error;
@@ -1361,8 +1332,34 @@ int ml_symlink(struct afp_volume *vol, const char * path1, const char * path2)
 
     add_opened_fork(vol, &fp);
     /* Write the name of the file to it */
-    rc = afp_writeext(vol, fp.forkid, 0, strlen(converted_path1),
+    rc = afp_writeext(vol, fp.forkid, 0, converted_path1_len,
                       converted_path1, &written);
+
+    switch (rc) {
+    case kFPNoErr:
+        if (written != converted_path1_len) {
+            ret = EIO;
+            goto close_error;
+        }
+
+        break;
+
+    case kFPAccessDenied:
+        ret = EACCES;
+        goto close_error;
+
+    case kFPDiskFull:
+        ret = ENOSPC;
+        goto close_error;
+
+    case kFPObjectNotFound:
+        ret = ENOENT;
+        goto close_error;
+
+    default:
+        ret = EIO;
+        goto close_error;
+    }
 
     switch (afp_closefork(vol, fp.forkid)) {
     case kFPNoErr:
@@ -1372,6 +1369,7 @@ int ml_symlink(struct afp_volume *vol, const char * path1, const char * path2)
     case kFPParamErr:
     case kFPMiscErr:
         ret = EIO;
+        remove_opened_fork(vol, &fp);
         goto error;
     }
 
@@ -1417,12 +1415,18 @@ int ml_symlink(struct afp_volume *vol, const char * path1, const char * path2)
 
 error:
     return -ret;
+close_error:
+    afp_closefork(vol, fp.forkid);
+    remove_opened_fork(vol, &fp);
+    return -ret;
 }
 
 int ml_rename(struct afp_volume * vol,
               const char *path_from, const char *path_to)
 {
     int ret, rc;
+    int dst_lookup_rc;
+    struct afp_file_info dst_info;
     char basename_from[AFP_MAX_PATH];
     char basename_to[AFP_MAX_PATH];
     char converted_path_from[AFP_MAX_PATH];
@@ -1443,17 +1447,61 @@ int ml_rename(struct afp_volume * vol,
         return -EACCES;
     }
 
-    get_dirid(vol, converted_path_from, basename_from, &dirid_from);
-    get_dirid(vol, converted_path_to, basename_to, &dirid_to);
+    ret = get_dirid(vol, converted_path_from, basename_from, &dirid_from);
 
-    if (is_dir(vol, dirid_to, converted_path_to)) {
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = get_dirid(vol, converted_path_to, basename_to, &dirid_to);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    memset(&dst_info, 0, sizeof(dst_info));
+    dst_lookup_rc = afp_getfiledirparms(vol, dirid_to,
+                                        0, 0, basename_to, &dst_info);
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "ml_rename: from dirid=%u name=%s  to dirid=%u name=%s dst_lookup=%d dst_isdir=%u",
+                   dirid_from, basename_from, dirid_to, basename_to,
+                   dst_lookup_rc, dst_info.isdir);
+
+    if (dst_lookup_rc == kFPNoErr && dst_info.isdir) {
         rc = afp_moveandrename(vol,
                                dirid_from, dirid_to,
                                basename_from, basename_to, basename_from);
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "ml_rename: afp_moveandrename rc=%d", rc);
     } else {
+        /* When the destination is an existing file, use FPExchangeFiles if the
+         * server supports it. This preserves the destination file's FileID
+         * (which becomes the inode), preventing macOS from seeing a stale vnode
+         * and reporting "file does not exist" after a safe-save rename.
+         * After exchange, the source path holds the old content; delete it. */
+        if (dst_lookup_rc == kFPNoErr && !(vol->attributes & kNoExchangeFiles)) {
+            rc = afp_exchangefiles(vol,
+                                   dirid_from, dirid_to,
+                                   basename_from, basename_to);
+            log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                           "ml_rename: afp_exchangefiles rc=%d", rc);
+
+            if (rc == kFPNoErr) {
+                int del_rc = afp_delete(vol, dirid_from, basename_from);
+                log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                               "ml_rename: afp_delete(src) rc=%d", del_rc);
+                return 0;
+            }
+
+            /* Exchange failed (dst doesn't exist, or not supported); fall
+             * through to regular moveandrename. */
+        }
+
         rc = afp_moveandrename(vol,
                                dirid_from, dirid_to,
                                basename_from, NULL, basename_to);
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "ml_rename: afp_moveandrename rc=%d", rc);
     }
 
     switch (rc) {
@@ -1546,6 +1594,74 @@ int ml_rename(struct afp_volume * vol,
     return -ret;
 }
 
+int ml_exchange(struct afp_volume * vol,
+                const char *path_from, const char *path_to)
+{
+    int ret;
+    int rc;
+    char basename_from[AFP_MAX_PATH];
+    char basename_to[AFP_MAX_PATH];
+    char converted_path_from[AFP_MAX_PATH];
+    char converted_path_to[AFP_MAX_PATH];
+    unsigned int dirid_from;
+    unsigned int dirid_to;
+
+    if (vol->attributes & kNoExchangeFiles) {
+        return -ENOSYS;
+    }
+
+    if (convert_path_to_afp(vol->server->path_encoding,
+                            converted_path_from, (char *) path_from, AFP_MAX_PATH)) {
+        return -EINVAL;
+    }
+
+    if (convert_path_to_afp(vol->server->path_encoding,
+                            converted_path_to, (char *) path_to, AFP_MAX_PATH)) {
+        return -EINVAL;
+    }
+
+    if (volume_is_readonly(vol)) {
+        return -EACCES;
+    }
+
+    if (get_dirid(vol, converted_path_from, basename_from, &dirid_from) < 0
+            || get_dirid(vol, converted_path_to, basename_to, &dirid_to) < 0) {
+        return -ENOENT;
+    }
+
+    rc = afp_exchangefiles(vol, dirid_from, dirid_to,
+                           basename_from, basename_to);
+
+    switch (rc) {
+    case kFPNoErr:
+        ret = 0;
+        break;
+
+    case kFPAccessDenied:
+        ret = EACCES;
+        break;
+
+    case kFPObjectTypeErr:
+        ret = EISDIR;
+        break;
+
+    case kFPObjectNotFound:
+    case kFPIDNotFound:
+        ret = ENOENT;
+        break;
+
+    case kFPCallNotSupported:
+        ret = ENOSYS;
+        break;
+
+    default:
+        ret = EIO;
+        break;
+    }
+
+    return -ret;
+}
+
 int ml_statfs(struct afp_volume * vol, __attribute__((unused)) const char *path,
               struct statvfs *stat)
 {
@@ -1597,12 +1713,273 @@ int ml_passwd(struct afp_server *server,
 
 /* Extended Attributes (AFP 3.2+) */
 
+static int open_appledouble_meta(struct afp_volume *volume, const char *path,
+                                 unsigned int resource, int flags,
+                                 struct afp_file_info *fp)
+{
+    char converted_path[AFP_MAX_PATH];
+
+    if (!volume || !path || !fp) {
+        return -EINVAL;
+    }
+
+    if (convert_path_to_afp(volume->server->path_encoding,
+                            converted_path, (char *) path, AFP_MAX_PATH)) {
+        return -EINVAL;
+    }
+
+    if (invalid_filename(volume->server, converted_path)) {
+        return -ENAMETOOLONG;
+    }
+
+    return appledouble_open_meta(volume, converted_path, resource, flags, fp);
+}
+
+int ml_getresourcefork(struct afp_volume * volume, const char *path,
+                       void *value, size_t size, off_t position)
+{
+    struct stat stbuf;
+    struct afp_file_info fp;
+    char converted_path[AFP_MAX_PATH];
+    size_t total = 0;
+    uint64_t remaining;
+    int ret;
+
+    if (!volume || !path) {
+        return -EINVAL;
+    }
+
+    if (convert_path_to_afp(volume->server->path_encoding,
+                            converted_path, (char *) path, AFP_MAX_PATH)) {
+        return -EINVAL;
+    }
+
+    ret = ll_getattr(volume, converted_path, &stbuf, 1);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (stbuf.st_size == 0) {
+        return -ENOATTR;
+    }
+
+    if (size == 0) {
+        if (stbuf.st_size > INT_MAX) {
+            return -EFBIG;
+        }
+
+        return (int)stbuf.st_size;
+    }
+
+    if (position < 0 || (uint64_t)position >= (uint64_t)stbuf.st_size) {
+        return 0;
+    }
+
+    ret = open_appledouble_meta(volume, path, AFP_META_RESOURCE, O_RDONLY, &fp);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    remaining = (uint64_t)stbuf.st_size - (uint64_t)position;
+
+    while (total < size && remaining > 0) {
+        int eof = 0;
+        size_t amount_read = 0;
+        size_t chunk = min(size - total, remaining);
+        ret = appledouble_read(volume, &fp, (char *)value + total, chunk,
+                               position + total, &amount_read, &eof);
+
+        if (ret < 0) {
+            appledouble_close(volume, &fp);
+            return ret;
+        }
+
+        if (ret != 1) {
+            appledouble_close(volume, &fp);
+            return -EIO;
+        }
+
+        if (amount_read == 0) {
+            break;
+        }
+
+        total += amount_read;
+        remaining -= amount_read;
+
+        if (eof) {
+            break;
+        }
+    }
+
+    appledouble_close(volume, &fp);
+
+    if (total > INT_MAX) {
+        return -EFBIG;
+    }
+
+    return (int)total;
+}
+
+int ml_setresourcefork(struct afp_volume * volume, const char *path,
+                       const void *value, size_t size, off_t position)
+{
+    struct afp_file_info fp;
+    size_t written = 0;
+    int ret;
+
+    if (!volume || !path || (!value && size > 0) || position < 0) {
+        return -EINVAL;
+    }
+
+    if (volume_is_readonly(volume)) {
+        return -EACCES;
+    }
+
+    ret = open_appledouble_meta(volume, path, AFP_META_RESOURCE, O_RDWR, &fp);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (position == 0) {
+        ret = ll_zero_file(volume, fp.forkid, 1);
+
+        if (ret != 0) {
+            appledouble_close(volume, &fp);
+            return -ret;
+        }
+
+        fp.resourcesize = 0;
+    }
+
+    if (size > 0) {
+        ret = appledouble_write(volume, &fp, value, size, position, &written);
+
+        if (ret < 0) {
+            appledouble_close(volume, &fp);
+            return ret;
+        }
+
+        if (ret != 1 || written != size) {
+            appledouble_close(volume, &fp);
+            return -EIO;
+        }
+    }
+
+    ret = appledouble_close(volume, &fp);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    return 0;
+}
+
+int ml_removeresourcefork(struct afp_volume * volume, const char *path)
+{
+    return ml_setresourcefork(volume, path, NULL, 0, 0);
+}
+
+int ml_getfinderinfo(struct afp_volume * volume, const char *path,
+                     void *value, size_t size)
+{
+    struct afp_file_info fp;
+    char finderinfo[32];
+    static const char empty_finderinfo[32] = {0};
+    size_t amount_read = 0;
+    int eof = 0;
+    int ret;
+
+    if (!volume || !path) {
+        return -EINVAL;
+    }
+
+    ret = open_appledouble_meta(volume, path, AFP_META_FINDERINFO, O_RDONLY, &fp);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = appledouble_read(volume, &fp, finderinfo, sizeof(finderinfo), 0,
+                           &amount_read, &eof);
+    appledouble_close(volume, &fp);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (ret != 1 || amount_read != sizeof(finderinfo)) {
+        return -EIO;
+    }
+
+    if (memcmp(finderinfo, empty_finderinfo, sizeof(empty_finderinfo)) == 0) {
+        return -ENOATTR;
+    }
+
+    if (size == 0) {
+        return sizeof(finderinfo);
+    }
+
+    if (!value || size < sizeof(finderinfo)) {
+        return -ERANGE;
+    }
+
+    memcpy(value, finderinfo, sizeof(finderinfo));
+    return sizeof(finderinfo);
+}
+
+int ml_setfinderinfo(struct afp_volume * volume, const char *path,
+                     const void *value, size_t size)
+{
+    struct afp_file_info fp;
+    size_t written = 0;
+    int ret;
+
+    if (!volume || !path || (!value && size > 0) || size != 32) {
+        return -EINVAL;
+    }
+
+    if (volume_is_readonly(volume)) {
+        return -EACCES;
+    }
+
+    ret = open_appledouble_meta(volume, path, AFP_META_FINDERINFO, O_RDWR, &fp);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = appledouble_write(volume, &fp, value, size, 0, &written);
+    appledouble_close(volume, &fp);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (ret != 1 || written != size) {
+        return -EIO;
+    }
+
+    return 0;
+}
+
+int ml_removefinderinfo(struct afp_volume * volume, const char *path)
+{
+    char finderinfo[32];
+    memset(finderinfo, 0, sizeof(finderinfo));
+    return ml_setfinderinfo(volume, path, finderinfo, sizeof(finderinfo));
+}
+
 int ml_getxattr(struct afp_volume * volume, const char *path,
                 const char *name, void *value, size_t size)
 {
     struct afp_extattr_info info;
     unsigned int dirid;
     char basename[AFP_MAX_PATH];
+    const char *afp_name;
+    unsigned short afp_namelen;
     int ret;
 
     if (!volume || !path || !name) {
@@ -1624,6 +2001,12 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
         return -ENOATTR;
     }
 
+    ret = normalize_xattr_name(name, &afp_name, &afp_namelen);
+
+    if (ret < 0) {
+        return ret;
+    }
+
     /* Parse path into directory ID and basename */
     ret = get_dirid(volume, path, basename, &dirid);
 
@@ -1633,21 +2016,12 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
 
     /* Note: We don't call ll_get_directory_entry here to avoid file locking
      * conflicts. The FUSE layer already verified the file exists via getattr.
-     * If the file doesn't exist, the AFP command will return kFPObjectNotFound. */
-    /* Prepare info structure
-     * Add overhead for AFP response header (bitmap=2 + datalength=4 = 6 bytes) */
-    info.maxsize = (size > 0 && size < 1024) ? (size + 6) : 1024;
+     * If the file doesn't exist, the AFP command will return kFPObjectNotFound.
+     *
+     * Time Capsule rejects small MaxReplySize values.  The reply buffer is
+     * fixed-size, so cap the request at the storage we actually have. */
+    info.maxsize = sizeof(info.data);
     info.size = 0;
-    /* Strip "user." prefix from EA name for AFP protocol
-     * Linux requires "user." prefix, but AFP doesn't use it */
-    const char *afp_name = name;
-    size_t afp_namelen = strlen(name);
-
-    if (strncmp(name, "user.", 5) == 0) {
-        afp_name = name + 5;
-        afp_namelen = strlen(afp_name);
-    }
-
     /* Get the extended attribute */
     ret = afp_getextattr(volume, dirid, 0, info.maxsize,
                          basename, afp_namelen, afp_name, &info);
@@ -1658,8 +2032,10 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
 
     case kFPItemNotFound:
     case kFPMiscErr:
-        /* AFP 3.2/3.3 returns kFPMiscErr for "attribute not found"
-         * AFP 3.4+ returns kFPItemNotFound instead */
+    case kFPParamErr:
+        /* AFP 3.2/3.3 returns kFPMiscErr for "attribute not found".
+         * AFP 3.4 returns kFPItemNotFound instead.
+         * Apple AFP servers may return kFPParamErr when an xattr doesn't exist. */
         return -ENOATTR;
 
     case kFPAccessDenied:
@@ -1695,6 +2071,8 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
 {
     unsigned int dirid;
     char basename[AFP_MAX_PATH];
+    const char *afp_name;
+    unsigned short afp_namelen;
     unsigned short bitmap = 0;
     int ret;
 
@@ -1717,6 +2095,12 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
         return 0;
     }
 
+    ret = normalize_xattr_name(name, &afp_name, &afp_namelen);
+
+    if (ret < 0) {
+        return ret;
+    }
+
     /* Parse path into directory ID and basename */
     ret = get_dirid(volume, path, basename, &dirid);
 
@@ -1735,17 +2119,6 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
 
     if (flags & kXAttrREplace) {
         bitmap |= kXAttrREplace;
-    }
-
-    /* Strip "user." prefix from EA name for AFP protocol
-     * Linux requires "user." prefix, but AFP doesn't use it
-     * Netatalk will add it back when storing on the server */
-    const char *afp_name = name;
-    size_t afp_namelen = strlen(name);
-
-    if (strncmp(name, "user.", 5) == 0) {
-        afp_name = name + 5;
-        afp_namelen = strlen(afp_name);
     }
 
     /* Set the extended attribute */
@@ -1805,8 +2178,8 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
     /* Note: We don't call ll_get_directory_entry here to avoid file locking
      * conflicts. The FUSE layer already verified the file exists via getattr.
      * If the file doesn't exist, the AFP command will return kFPObjectNotFound. */
-    /* Prepare info structure */
-    info.maxsize = (size > 0 && size < 1024) ? size : 1024;
+    /* Same minimum-1024 rule as ml_getxattr, capped to the fixed reply buffer. */
+    info.maxsize = sizeof(info.data);
     info.size = 0;
     /* List extended attributes */
     ret = afp_listextattr(volume, dirid, 0, basename, &info);
@@ -1821,11 +2194,18 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
     case kFPObjectNotFound:
         return -ENOENT;
 
+    case kFPParamErr:
+        /* TC returns kFPParamErr when MaxReplySize is too small; treat as
+         * empty list so callers see no attributes rather than a hard error. */
+        return 0;
+
     default:
         return -EIO;
     }
 
-    /* Filter out internal server EAs from the list and add "user." prefix for Linux */
+    /* Filter out internal server EAs from the list.
+     * On Linux, prepend "user." namespace prefix (required by the kernel EA
+     * interface).  On macOS, AFP xattr names are passed as-is; no prefix. */
     const char *src = info.data;
     char *dst = list;
     size_t remaining = info.size;
@@ -1846,21 +2226,34 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
 
         /* Only include this EA if it's not filtered */
         if (!IS_INTERNAL_SERVER_EA(src)) {
-            /* On Linux, add "user." prefix to EA names returned by server */
+#ifdef __APPLE__
+            /* macOS: return the raw AFP name (e.g. "com.apple.FinderInfo") */
+            size_t output_namelen = namelen;
+
+            if (list && size > 0) {
+                if (filtered_size + output_namelen + 1 <= size) {
+                    memcpy(dst, src, namelen + 1);
+                    dst += output_namelen + 1;
+                } else {
+                    return -ERANGE;
+                }
+            }
+
+#else
+            /* Linux: prepend "user." namespace prefix */
             size_t output_namelen = namelen + 5;  /* "user." + name */
 
-            /* If we have a buffer and space, copy the name with prefix */
             if (list && size > 0) {
                 if (filtered_size + output_namelen + 1 <= size) {
                     memcpy(dst, "user.", 5);
                     memcpy(dst + 5, src, namelen + 1);
                     dst += output_namelen + 1;
-                } else if (size > 0) {
-                    /* Buffer too small */
+                } else {
                     return -ERANGE;
                 }
             }
 
+#endif
             filtered_size += output_namelen + 1;
         }
 
@@ -1876,6 +2269,8 @@ int ml_removexattr(struct afp_volume * volume, const char *path,
 {
     unsigned int dirid;
     char basename[AFP_MAX_PATH];
+    const char *afp_name;
+    unsigned short afp_namelen;
     int ret;
 
     if (!volume || !path || !name) {
@@ -1897,6 +2292,12 @@ int ml_removexattr(struct afp_volume * volume, const char *path,
         return -EACCES;
     }
 
+    ret = normalize_xattr_name(name, &afp_name, &afp_namelen);
+
+    if (ret < 0) {
+        return ret;
+    }
+
     /* Parse path into directory ID and basename */
     ret = get_dirid(volume, path, basename, &dirid);
 
@@ -1907,16 +2308,6 @@ int ml_removexattr(struct afp_volume * volume, const char *path,
     /* Note: We don't call ll_get_directory_entry here to avoid file locking
      * conflicts. The FUSE layer already verified the file exists via getattr.
      * If the file doesn't exist, the AFP command will return kFPObjectNotFound. */
-    /* Strip "user." prefix from EA name for AFP protocol
-     * Linux requires "user." prefix, but AFP doesn't use it */
-    const char *afp_name = name;
-    size_t afp_namelen = strlen(name);
-
-    if (strncmp(name, "user.", 5) == 0) {
-        afp_name = name + 5;
-        afp_namelen = strlen(afp_name);
-    }
-
     /* Remove the extended attribute */
     ret = afp_removeextattr(volume, dirid, 0, basename,
                             afp_namelen, afp_name);
@@ -1927,8 +2318,10 @@ int ml_removexattr(struct afp_volume * volume, const char *path,
 
     case kFPItemNotFound:
     case kFPMiscErr:
-        /* AFP 3.2/3.3 returns kFPMiscErr for "attribute not found"
-         * AFP 3.4+ returns kFPItemNotFound instead */
+    case kFPParamErr:
+        /* AFP 3.2/3.3 returns kFPMiscErr for "attribute not found".
+         * AFP 3.4 returns kFPItemNotFound instead.
+         * Apple AFP servers may return kFPParamErr when an xattr doesn't exist. */
         return -ENOATTR;
 
     case kFPAccessDenied:

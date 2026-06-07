@@ -2,7 +2,7 @@
  *  resource.c
  *
  *  Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
- *  Copyright (C) 2025 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
  *
  */
 
@@ -226,8 +226,16 @@ int appledouble_unlink(struct afp_volume * volume, const char *path)
 
 int appledouble_close(struct afp_volume * volume, struct afp_file_info * fp)
 {
+    int ret;
+
     switch (fp->resource) {
     case AFP_META_RESOURCE:
+        ret = kFPNoErr;
+
+        if (fp->dirty) {
+            ret = afp_flushfork(volume, fp->forkid);
+        }
+
         switch (afp_closefork(volume, fp->forkid)) {
         case kFPNoErr:
             break;
@@ -235,16 +243,18 @@ int appledouble_close(struct afp_volume * volume, struct afp_file_info * fp)
         default:
         case kFPParamErr:
         case kFPMiscErr:
+            remove_opened_fork(volume, fp);
             return -EIO;
         }
 
-        return 0;
+        remove_opened_fork(volume, fp);
+        return ret == kFPNoErr ? 0 : -EIO;
 
     case AFP_META_APPLEDOUBLE:
         return -EBADF;
 
     case AFP_META_SERVER_ICON:
-        return 1;
+        return 0;
 
     case AFP_META_FINDERINFO:
         return 0;
@@ -263,13 +273,18 @@ int appledouble_write(struct afp_volume * volume, struct afp_file_info *fp,
     switch (fp->resource) {
     case AFP_META_RESOURCE:
         ret = ll_write(volume, data, size, offset, fp, totalwritten);
-        return ret;
+
+        if (ret < 0) {
+            return ret;
+        }
+
+        return 1;
 
     case AFP_META_APPLEDOUBLE:
         return -EBADF;
 
     case AFP_META_FINDERINFO:
-        if (offset >= 32) {
+        if (offset < 0 || offset >= 32) {
             return -EINVAL;
         }
 
@@ -281,11 +296,26 @@ int appledouble_write(struct afp_volume * volume, struct afp_file_info *fp,
         ret = ll_get_directory_entry(volume, fp->basename, fp->did,
                                      kFPFinderInfoBit, kFPFinderInfoBit, &fp2);
 
-        if (ret < 0) {
-            return ret;
+        switch (ret) {
+        case kFPNoErr:
+            break;
+
+        case kFPAccessDenied:
+            return -EACCES;
+
+        case kFPObjectNotFound:
+            return -ENOENT;
+
+        case kFPBitmapErr:
+        case kFPMiscErr:
+        case kFPObjectTypeErr:
+        case kFPParamErr:
+        default:
+            return -EIO;
         }
 
         /* Copy in only the parts we got */
+        memcpy(fp->finderinfo, fp2.finderinfo, sizeof(fp->finderinfo));
         memcpy(fp->finderinfo + offset, data, towrite);
         ret = afp_setfiledirparms(volume,
                                   fp->did, fp->basename,
@@ -306,7 +336,7 @@ int appledouble_write(struct afp_volume * volume, struct afp_file_info *fp,
         case kFPObjectTypeErr:
         case kFPParamErr:
         default:
-            break;
+            return -EIO;
         }
 
         *totalwritten = towrite;
@@ -346,40 +376,66 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
     struct afp_comment comment;
     *amount_read = 0;
     *eof = 0;
-    comment.data = malloc(size);
-    comment.maxsize = size;
 
     switch (fp->resource) {
     case AFP_META_RESOURCE:
         ret = ll_read(volume, buf, size, offset, fp, eof);
-        return ret;
+
+        if (ret < 0) {
+            return ret;
+        }
+
+        *amount_read = ret;
+        return 1;
 
     case AFP_META_APPLEDOUBLE:
         return -EBADF;
 
     case AFP_META_FINDERINFO:
-        if (offset > 32) {
+        if (offset < 0 || offset > 32) {
             return -EFAULT;
         }
 
         ret = ll_get_directory_entry(volume, fp->basename, fp->did,
                                      kFPFinderInfoBit, kFPFinderInfoBit, fp);
 
-        if (ret < 0) {
-            return ret;
+        switch (ret) {
+        case kFPNoErr:
+            break;
+
+        case kFPAccessDenied:
+            return -EACCES;
+
+        case kFPObjectNotFound:
+            return -ENOENT;
+
+        case kFPBitmapErr:
+        case kFPMiscErr:
+        case kFPObjectTypeErr:
+        case kFPParamErr:
+        default:
+            return -EIO;
         }
 
         tocopy = min(size, (32 - (unsigned long) offset));
-        memcpy(buf + offset, fp->finderinfo, tocopy);
+        memcpy(buf, fp->finderinfo + offset, tocopy);
 
         if (offset + tocopy == 32) {
             *eof = 1;
         }
 
         *amount_read = tocopy;
-        break;
+        return 1;
 
     case AFP_META_COMMENT:
+        comment.data = malloc(size);
+
+        if (size > 0 && comment.data == NULL) {
+            return -ENOMEM;
+        }
+
+        comment.maxsize = size;
+
         if (fp->eof) {
             ret = 1;
         }  else
@@ -415,21 +471,18 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
         return ret;
 
     case AFP_META_SERVER_ICON:
-        free(comment.data);
-
-        if (offset > AFP_SERVER_ICON_LEN) {
+        if (offset < 0 || offset > AFP_SERVER_ICON_LEN) {
             return -EFAULT;
         }
 
         tocopy = min(size, (AFP_SERVER_ICON_LEN - (unsigned long) offset));
-        memcpy(buf + offset, volume->server->icon, tocopy);
+        memcpy(buf, volume->server->icon + offset, tocopy);
         *eof = 1;
         fp->eof = 1;
         *amount_read = tocopy;
         return 1;
     }
 
-    free(comment.data);
     return 0;
 }
 
@@ -445,16 +498,45 @@ int appledouble_truncate(struct afp_volume * volume, const char * path,
 
     switch (resource) {
     case AFP_META_RESOURCE:
-        get_dirid(volume, newpath, basename, &dirid);
-        ret = afp_openfork(volume, 1, dirid, O_WRONLY,
-                           basename, &fp);
-        ret = ll_zero_file(volume, fp.forkid, 0);
+        ret = get_dirid(volume, newpath, basename, &dirid);
 
         if (ret < 0) {
+            free(newpath);
+            return ret;
+        }
+
+        ret = afp_openfork(volume, 1, dirid,
+                           AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE,
+                           basename, &fp);
+
+        if (ret != kFPNoErr) {
+            free(newpath);
+
+            switch (ret) {
+            case kFPAccessDenied:
+                return -EACCES;
+
+            case kFPObjectNotFound:
+                return -ENOENT;
+
+            case kFPObjectLocked:
+            case kFPVolLocked:
+            case kFPDenyConflict:
+                return -EBUSY;
+
+            default:
+                return -EIO;
+            }
+        }
+
+        add_opened_fork(volume, &fp);
+        ret = ll_zero_file(volume, fp.forkid, 1);
+
+        if (ret != 0) {
             afp_closefork(volume, fp.forkid);
             remove_opened_fork(volume, &fp);
             free(newpath);
-            return ret;
+            return -ret;
         }
 
         free(newpath);
@@ -510,6 +592,7 @@ int appledouble_open(struct afp_volume * volume, const char * path, int flags,
 
     case AFP_META_FINDERINFO:
         if (get_dirid(volume, newpath, fp->basename, &fp->did) < 0) {
+            free(newpath);
             return -ENOENT;
         }
 
@@ -547,6 +630,37 @@ int appledouble_open(struct afp_volume * volume, const char * path, int flags,
 error:
     free(newpath);
     return ret;
+}
+
+int appledouble_open_meta(struct afp_volume * volume, const char * path,
+                          unsigned int resource, int flags,
+                          struct afp_file_info *fp)
+{
+    if (!volume || !path || !fp) {
+        return -EINVAL;
+    }
+
+    memset(fp, 0, sizeof(*fp));
+    fp->resource = resource;
+
+    switch (resource) {
+    case AFP_META_RESOURCE:
+        if (get_dirid(volume, path, fp->basename, &fp->did) < 0) {
+            return -ENOENT;
+        }
+
+        return ll_open(volume, path, flags, fp);
+
+    case AFP_META_FINDERINFO:
+        if (get_dirid(volume, path, fp->basename, &fp->did) < 0) {
+            return -ENOENT;
+        }
+
+        return 0;
+
+    default:
+        return -EINVAL;
+    }
 }
 
 int appledouble_getattr(struct afp_volume * volume,
@@ -832,4 +946,3 @@ int appledouble_rename(struct afp_volume * volume,
 
     return -EPERM;
 }
-

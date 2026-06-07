@@ -10,7 +10,6 @@ General client shortcomings
 Command line client
 -------------------
 
-* read and write extended attributes
 * paginate directory listings with >256 files
 
 FUSE client
@@ -18,8 +17,6 @@ FUSE client
 
 * do correct address/signature matching; right now we don't actually use
   the signature.
-* retain resource fork data stored in extended attributes when copying
-* parse Classic Mac OS icons from resource forks
 
 AFP 3.x
 -------

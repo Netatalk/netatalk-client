@@ -3,7 +3,7 @@
 	so the same code can be used between meta and normal files
 
     Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
-    Copyright (C) 2025 Daniel Markstedt <daniel@mindani.net>
+    Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
 
     This program can be distributed under the terms of the GNU GPL.
     See the file COPYING.
@@ -14,6 +14,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <fcntl.h>
+#include <limits.h>
 #include "afp.h"
 #include "afp_protocol.h"
 #include "codepage.h"
@@ -246,7 +247,10 @@ int ll_open(struct afp_volume * volume,
     if (access_mode == O_RDONLY) {
         aflags |= AFP_OPENFORK_ALLOWREAD;
     } else if (access_mode == O_WRONLY) {
-        aflags |= AFP_OPENFORK_ALLOWWRITE;
+        /* Always request read+write even for O_WRONLY. macOS AFP always opens
+         * forks with AccessMode=0x0003 (Read|Write) when writing; Time Capsule
+         * returns kFPMiscErr on FPWriteExt if the fork was opened write-only. */
+        aflags |= (AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE);
     } else if (access_mode == O_RDWR) {
         aflags |= (AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE);
     }
@@ -267,6 +271,8 @@ int ll_open(struct afp_volume * volume,
     */
     /*this will be used later for caching*/
     fp->sync = (unsigned char)(flags & (O_SYNC));
+    fp->writable = (aflags & AFP_OPENFORK_ALLOWWRITE) ? 1 : 0;
+    fp->dirty = 0;
 
     /* Handle file creation properly when O_CREAT is set */
     if ((flags & O_CREAT) && (aflags & AFP_OPENFORK_ALLOWWRITE)) {
@@ -395,29 +401,41 @@ error:
 }
 
 
-/* FIXME: chunked reads are not implemented. The original intent was to loop,
- * issuing rx_quantum-sized requests until all bytes were read (see the #if 0
- * bytesleft block below). Currently a single afp_read/afp_readext call is
- * issued for the full size, which means when size > rx_quantum the server is
- * asked for more data than buffer.maxsize can hold. Either restore the loop or
- * remove the rx_quantum cap on buffer.maxsize and document that chunking is
- * delegated to the AFP layer. */
 int ll_read(struct afp_volume * volume,
             char *buf, size_t size, off_t offset,
             struct afp_file_info *fp, int *eof)
 {
-#if 0
-    int bytesleft = size;
-#endif
-    int totalsize = 0;
+    size_t totalsize = 0;
     int ret = 0;
     int rc;
-    unsigned int bufsize = min(volume->server->rx_quantum, size);
+    unsigned int rx_quantum = volume->server->rx_quantum;
+    int locked = 0;
     struct afp_rx_buffer buffer;
     *eof = 0;
-    buffer.data = buf;
-    buffer.maxsize = bufsize;
-    buffer.size = 0;
+
+    if (!fp) {
+        return -EBADF;
+    }
+
+    if (size == 0) {
+        return 0;
+    }
+
+    if (size > (size_t)INT_MAX) {
+        size = INT_MAX;
+    }
+
+    if (offset < 0) {
+        return -EINVAL;
+    }
+
+    flush_dirty_forks_for_file(volume, fp);
+
+    if (rx_quantum == 0) {
+        log_for_client(NULL, AFPFSD, LOG_ERR,
+                       "ll_read: rx_quantum is 0, cannot read");
+        return -EIO;
+    }
 
     /* Lock the range */
     if (ll_handle_locking(volume, fp->forkid, offset, size)) {
@@ -426,11 +444,66 @@ int ll_read(struct afp_volume * volume,
         goto error;
     }
 
-    if (volume->server->using_version->av_number < 30) {
-        rc = afp_read(volume, fp->forkid, offset, size, &buffer);
-    } else {
-        rc = afp_readext(volume, fp->forkid, offset, size, &buffer);
+    locked = 1;
+
+    while (totalsize < size) {
+        size_t remaining = size - totalsize;
+        size_t chunksize = min((size_t)rx_quantum, remaining);
+        uint64_t read_offset = (uint64_t)offset + totalsize;
+        buffer.data = buf + totalsize;
+        buffer.maxsize = (unsigned int)chunksize;
+        buffer.size = 0;
+        buffer.errorcode = 0;
+
+        if (volume->server->using_version->av_number < 30) {
+            if (read_offset > UINT32_MAX) {
+                ret = EFBIG;
+                goto error;
+            }
+
+            rc = afp_read(volume, fp->forkid, (uint32_t)read_offset,
+                          (uint32_t)chunksize, &buffer);
+        } else {
+            rc = afp_readext(volume, fp->forkid, read_offset,
+                             (uint64_t)chunksize, &buffer);
+        }
+
+        switch (rc) {
+        case kFPAccessDenied:
+            ret = EACCES;
+            goto error;
+
+        case kFPLockErr:
+            ret = EBUSY;
+            goto error;
+
+        case kFPMiscErr:
+        case kFPParamErr:
+            ret = EIO;
+            goto error;
+
+        case kFPEOFErr:
+            *eof = 1;
+            totalsize += buffer.size;
+            goto done;
+
+        case kFPNoErr:
+            break;
+        }
+
+        if (buffer.size == 0) {
+            break;
+        }
+
+        totalsize += buffer.size;
+
+        if ((size_t)buffer.size < chunksize) {
+            *eof = 1;
+            break;
+        }
     }
+
+done:
 
     if (ll_handle_unlocking(volume, fp->forkid, offset, size)) {
         /* Somehow, we couldn't unlock the range. */
@@ -438,34 +511,13 @@ int ll_read(struct afp_volume * volume,
         goto error;
     }
 
-    switch (rc) {
-    case kFPAccessDenied:
-        ret = EACCES;
-        goto error;
+    return (int)totalsize;
+error:
 
-    case kFPLockErr:
-        ret = EBUSY;
-        goto error;
-
-    case kFPMiscErr:
-    case kFPParamErr:
-        ret = EIO;
-        goto error;
-
-    case kFPEOFErr:
-        *eof = 1;
-        break;
-
-    case kFPNoErr:
-        break;
+    if (locked) {
+        ll_handle_unlocking(volume, fp->forkid, offset, size);
     }
 
-#if 0
-    bytesleft -= buffer.size;
-#endif
-    totalsize += buffer.size;
-    return totalsize;
-error:
     return -ret;
 }
 
@@ -523,6 +575,9 @@ int ll_readdir(struct afp_volume * volume, const char *path,
     }
 
     while (!exit) {
+        unsigned int entries_returned = 0;
+        base = NULL;
+
         /* Select appropriate enumerate command based on AFP version:
          * AFP < 3.0: afp_enumerate (16-bit fields, 4GB volume limit)
          * AFP 3.0: afp_enumerateext (16-bit indexes, handles >4GB volumes)
@@ -556,7 +611,14 @@ int ll_readdir(struct afp_volume * volume, const char *path,
 
             for (p = base; p; p = p->next) {
                 startindex++;
+                entries_returned++;
                 last = p;
+            }
+
+            /* Some Apple AFP servers report end-of-directory as a successful
+             * enumeration with zero entries instead of kFPObjectNotFound. */
+            if (entries_returned == 0) {
+                exit = 1;
             }
 
             if (rc == kFPObjectNotFound) {
@@ -688,6 +750,7 @@ int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
         set_nonunix_perms((unsigned int *)&stbuf->st_mode, &fp);
     }
 
+    stbuf->st_ino = fp.fileid;
     stbuf->st_uid = fp.unixprivs.uid;
     stbuf->st_gid = fp.unixprivs.gid;
 
@@ -698,13 +761,15 @@ int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
 
     if (stbuf->st_mode & S_IFDIR) {
         stbuf->st_nlink = fp.offspring + 2;
-        stbuf->st_size = (fp.offspring * 34) + 24;
+        stbuf->st_size = resource ? 0 : (fp.offspring * 34) + 24;
+        stbuf->st_blksize = 4096;
+        stbuf->st_blocks = (stbuf->st_size + 511) / 512;
         /* This slight voodoo was taken from Mac OS X 10.2 */
     } else {
         stbuf->st_nlink = 1;
         stbuf->st_size = (resource ? fp.resourcesize : fp.size);
         stbuf->st_blksize = 4096;
-        stbuf->st_blocks = (stbuf->st_size) / 4096;
+        stbuf->st_blocks = (stbuf->st_size + 511) / 512;
     }
 
     if ((volume->server->using_version->av_number < 30) &&
@@ -742,10 +807,10 @@ int ll_write(struct afp_volume * volume,
              struct afp_file_info * fp, size_t *totalwritten)
 {
     int ret, err = 0;
-    uint64_t sizetowrite, ignored;
-    uint32_t ignored32;
+    uint64_t sizetowrite;
     unsigned int max_packet_size = volume->server->tx_quantum;
     off_t o = 0;
+    int locked = 0;
     *totalwritten = 0;
 
     if (!fp) {
@@ -762,13 +827,17 @@ int ll_write(struct afp_volume * volume,
     /* Get a lock */
     if (ll_handle_locking(volume, fp->forkid, offset, size)) {
         /* There was an irrecoverable error when locking */
-        ret = EBUSY;
+        err = EBUSY;
         goto error;
     }
 
+    locked = 1;
     ret = 0;
 
     while (*totalwritten < size) {
+        uint64_t reply_offset = 0;
+        uint64_t write_offset;
+        uint64_t written;
         sizetowrite = max_packet_size;
 
         if ((size - *totalwritten) < max_packet_size) {
@@ -784,16 +853,21 @@ int ll_write(struct afp_volume * volume,
         }
 
         if (volume->server->using_version->av_number < 30) {
+            uint32_t written32 = 0;
             ret = afp_write(volume, fp->forkid,
                             offset + o, sizetowrite,
-                            (char *) data + o, &ignored32);
+                            (char *) data + o, &written32);
+            reply_offset = written32;
         } else {
             ret = afp_writeext(volume, fp->forkid,
                                offset + o, sizetowrite,
-                               (char *) data + o, &ignored);
+                               (char *) data + o, &reply_offset);
         }
 
         switch (ret) {
+        case kFPNoErr:
+            break;
+
         case kFPAccessDenied:
             err = EACCES;
             goto error;
@@ -807,19 +881,49 @@ int ll_write(struct afp_volume * volume,
         case kFPParamErr:
             err = EINVAL;
             goto error;
+
+        default:
+            err = EIO;
+            goto error;
         }
 
-        *totalwritten += sizetowrite;
-        o += sizetowrite;
+        /* FPWrite/FPWriteExt replies carry the resulting fork offset, not a
+         * byte count.  At offset 0 those are the same; later chunks must be
+         * converted back into bytes written. */
+        write_offset = (uint64_t)offset + (uint64_t)o;
+
+        if (reply_offset < write_offset) {
+            err = EIO;
+            goto error;
+        }
+
+        written = reply_offset - write_offset;
+
+        if (written == 0 || written > sizetowrite) {
+            err = EIO;
+            goto error;
+        }
+
+        *totalwritten += written;
+        o += written;
+    }
+
+    if (*totalwritten > 0) {
+        fp->dirty = 1;
     }
 
     if (ll_handle_unlocking(volume, fp->forkid, offset, size)) {
         /* Somehow, we couldn't unlock the range. */
-        ret = EIO;
+        err = EIO;
         goto error;
     }
 
     return 0;
 error:
+
+    if (locked) {
+        ll_handle_unlocking(volume, fp->forkid, offset, size);
+    }
+
     return -err;
 }

@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <sys/shm.h>
 #include <time.h>
+#include <stddef.h>
 
 #ifdef HAVE_LIBBSD
 #include <bsd/string.h>
@@ -610,6 +611,186 @@ int afp_sl_write(volumeid_t * volid, unsigned int fileid, unsigned int resource,
 
     *written = response.written;
     return response.header.result;
+}
+
+static int metadata_call(unsigned int command, volumeid_t *volid,
+                         const char *path, const char *name,
+                         void *value, size_t size,
+                         unsigned long long offset, int flags,
+                         int send_value)
+{
+    struct afp_server_metadata_request *request;
+    struct afp_server_metadata_response response;
+    size_t base = offsetof(struct afp_server_metadata_request, data);
+    size_t request_len = base + (send_value ? size : 0);
+    int ret;
+    size_t payload_size;
+
+    if (!volid || !path
+            || strnlen(path, sizeof(request->path)) >= sizeof(request->path)
+            || size > AFP_SL_METADATA_CHUNK
+            || (name
+                && strnlen(name, sizeof(request->name)) >= sizeof(request->name))
+            || ((command == AFP_SERVER_COMMAND_GETXATTR
+                 || command == AFP_SERVER_COMMAND_SETXATTR
+                 || command == AFP_SERVER_COMMAND_REMOVEXATTR)
+                && (!name || name[0] == '\0'))
+            || (command == AFP_SERVER_COMMAND_SETFINDERINFO && size != 32)
+            || (!value && size > 0 && send_value)) {
+        return -EINVAL;
+    }
+
+    if (afp_sl_setup()) {
+        return -ECONNREFUSED;
+    }
+
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.command = (char)command;
+    request->header.len = (unsigned int)request_len;
+    memcpy(&request->volumeid, volid, sizeof(volumeid_t));
+    strlcpy(request->path, path, sizeof(request->path));
+
+    if (name) {
+        strlcpy(request->name, name, sizeof(request->name));
+    }
+
+    request->offset = offset;
+    request->size = (unsigned int)size;
+    request->flags = flags;
+
+    if (send_value && size > 0) {
+        memcpy(request->data, value, size);
+    }
+
+    ret = send_command((unsigned int)request_len, (char *)request, command);
+    free(request);
+
+    if (ret < 0) {
+        return -ECONNRESET;
+    }
+
+    ret = read_bytes_with_timeout(connection.fd, (char *)&response,
+                                  sizeof(response));
+
+    if (ret < 0) {
+        close(connection.fd);
+        connection.fd = 0;
+        return -ECONNRESET;
+    }
+
+    if (response.header.len < sizeof(response)
+            || response.header.len > sizeof(response) + AFP_SL_METADATA_CHUNK) {
+        close(connection.fd);
+        connection.fd = 0;
+        return -EPROTO;
+    }
+
+    payload_size = response.header.len - sizeof(response);
+
+    if (payload_size > 0 && response.size != payload_size) {
+        close(connection.fd);
+        connection.fd = 0;
+        return -EPROTO;
+    }
+
+    if (payload_size > 0) {
+        if (!value || payload_size > size) {
+            char discard[AFP_SL_METADATA_CHUNK];
+
+            if (read_bytes_with_timeout(connection.fd, discard, payload_size) < 0) {
+                close(connection.fd);
+                connection.fd = 0;
+                return -ECONNRESET;
+            }
+
+            return -ERANGE;
+        }
+
+        if (read_bytes_with_timeout(connection.fd, value, payload_size) < 0) {
+            close(connection.fd);
+            connection.fd = 0;
+            return -ECONNRESET;
+        }
+    }
+
+    if (response.error < 0) {
+        return response.error;
+    }
+
+    return response.size;
+}
+
+int afp_sl_getxattr(volumeid_t *volid, const char *path, const char *name,
+                    void *value, size_t size)
+{
+    return metadata_call(AFP_SERVER_COMMAND_GETXATTR, volid, path, name,
+                         value, size, 0, 0, 0);
+}
+
+int afp_sl_setxattr(volumeid_t *volid, const char *path, const char *name,
+                    const void *value, size_t size, int flags)
+{
+    return metadata_call(AFP_SERVER_COMMAND_SETXATTR, volid, path, name,
+                         (void *)value, size, 0, flags, 1);
+}
+
+int afp_sl_listxattr(volumeid_t *volid, const char *path, char *list,
+                     size_t size)
+{
+    return metadata_call(AFP_SERVER_COMMAND_LISTXATTR, volid, path, NULL,
+                         list, size, 0, 0, 0);
+}
+
+int afp_sl_removexattr(volumeid_t *volid, const char *path, const char *name)
+{
+    return metadata_call(AFP_SERVER_COMMAND_REMOVEXATTR, volid, path, name,
+                         NULL, 0, 0, 0, 0);
+}
+
+int afp_sl_getfinderinfo(volumeid_t *volid, const char *path,
+                         void *value, size_t size)
+{
+    return metadata_call(AFP_SERVER_COMMAND_GETFINDERINFO, volid, path, NULL,
+                         value, size, 0, 0, 0);
+}
+
+int afp_sl_setfinderinfo(volumeid_t *volid, const char *path,
+                         const void *value, size_t size)
+{
+    return metadata_call(AFP_SERVER_COMMAND_SETFINDERINFO, volid, path, NULL,
+                         (void *)value, size, 0, 0, 1);
+}
+
+int afp_sl_removefinderinfo(volumeid_t *volid, const char *path)
+{
+    return metadata_call(AFP_SERVER_COMMAND_REMOVEFINDERINFO, volid, path, NULL,
+                         NULL, 0, 0, 0, 0);
+}
+
+int afp_sl_getresourcefork(volumeid_t *volid, const char *path,
+                           void *value, size_t size, unsigned long long offset)
+{
+    return metadata_call(AFP_SERVER_COMMAND_GETRESOURCEFORK, volid, path, NULL,
+                         value, size, offset, 0, 0);
+}
+
+int afp_sl_setresourcefork(volumeid_t *volid, const char *path,
+                           const void *value, size_t size,
+                           unsigned long long offset)
+{
+    return metadata_call(AFP_SERVER_COMMAND_SETRESOURCEFORK, volid, path, NULL,
+                         (void *)value, size, offset, 0, 1);
+}
+
+int afp_sl_removeresourcefork(volumeid_t *volid, const char *path)
+{
+    return metadata_call(AFP_SERVER_COMMAND_REMOVERESOURCEFORK, volid, path,
+                         NULL, NULL, 0, 0, 0, 0);
 }
 
 int afp_sl_creat(volumeid_t * volid, const char * path,

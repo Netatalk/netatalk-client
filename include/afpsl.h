@@ -9,6 +9,10 @@
 /* Socket path for stateless daemon */
 #define SERVER_SL_SOCKET_PATH "/tmp/afp_sl"
 
+/* Maximum payload per stateless metadata request. Resource forks larger than
+ * this value are transferred with repeated calls at increasing offsets. */
+#define AFP_SL_METADATA_CHUNK 4096
+
 /* Basic file information structure for stateless API
  * This is the wire protocol format sent between afpsld and clients.
  * Contains essential file metadata without the full afp_file_info details.
@@ -92,6 +96,33 @@ int afp_sl_serverinfo(struct afp_url * url, struct afp_server_basic * basic);
 int afp_sl_changepw(struct afp_url * url,
                     const char *old_password,
                     const char *new_password);
+
+/* Metadata operations use errno-style results rather than
+ * AFP_SERVER_RESULT_* values. Read and list calls return the byte count on
+ * success and a negative errno on failure. Write and remove calls return zero
+ * on success and a negative errno on failure. A size of zero queries the
+ * required size for get/list operations. Generic xattr values are limited to
+ * AFP_SL_METADATA_CHUNK bytes; resource forks support arbitrary sizes through
+ * chunked offset-based access. */
+int afp_sl_getxattr(volumeid_t *volid, const char *path, const char *name,
+                    void *value, size_t size);
+int afp_sl_setxattr(volumeid_t *volid, const char *path, const char *name,
+                    const void *value, size_t size, int flags);
+int afp_sl_listxattr(volumeid_t *volid, const char *path,
+                     char *list, size_t size);
+int afp_sl_removexattr(volumeid_t *volid, const char *path, const char *name);
+int afp_sl_getfinderinfo(volumeid_t *volid, const char *path,
+                         void *value, size_t size);
+int afp_sl_setfinderinfo(volumeid_t *volid, const char *path,
+                         const void *value, size_t size);
+int afp_sl_removefinderinfo(volumeid_t *volid, const char *path);
+int afp_sl_getresourcefork(volumeid_t *volid, const char *path,
+                           void *value, size_t size,
+                           unsigned long long offset);
+int afp_sl_setresourcefork(volumeid_t *volid, const char *path,
+                           const void *value, size_t size,
+                           unsigned long long offset);
+int afp_sl_removeresourcefork(volumeid_t *volid, const char *path);
 int afp_sl_setup(void);
 
 #endif
