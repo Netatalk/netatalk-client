@@ -59,22 +59,25 @@ sub afpcmd_pipe {
 }
 
 # -----------------------------------------------------------------------
-# test_builtin: built-in 'test' command validates AFP URL parsing
+# test_mode: -t validates AFP URL parsing without connecting to a server
 # -----------------------------------------------------------------------
 {
-    my $out = afpcmd_pipe($AFP_URL, 'test', 'quit');
+    my $out = `afpcmd -t 2>&1`;
+    is($?, 0, 'test_mode: exits 0');
     like($out, qr/Testing AFP URL parsing/,
-        'test_builtin: header');
+        'test_mode: header');
     like($out, qr{afp://user::name;AUTH=DHCAST128:pa\@\@sword\@.* correctly},
-        'test_builtin: auth-user URL');
+        'test_mode: auth-user URL');
     like($out, qr{afp://username:password\@.* correctly},
-        'test_builtin: basic URL');
+        'test_mode: basic URL');
     like($out, qr{afp://username\@.* correctly},
-        'test_builtin: no-password URL');
+        'test_mode: no-password URL');
     like($out, qr{afp://server/.* correctly},
-        'test_builtin: bare-host URL');
+        'test_mode: bare-host URL');
     like($out, qr{afp://server:22.* correctly},
-        'test_builtin: URL with port');
+        'test_mode: URL with port');
+    like($out, qr/self-tests: PASSED/,
+        'test_mode: summary');
 }
 
 # -----------------------------------------------------------------------

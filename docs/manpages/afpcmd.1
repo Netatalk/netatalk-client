@@ -1,4 +1,4 @@
-.Dd January 26, 2026
+.Dd June 14, 2026
 .Dt AFPCMD 1
 .Os Netatalk Client
 .Sh NAME
@@ -21,6 +21,8 @@
 .Ar afp_url
 .Nm
 .Fl h
+.Nm
+.Fl t
 .Sh DESCRIPTION
 .Nm
 is a command-line tool to help transfer files to and from a
@@ -43,6 +45,8 @@ and commands. If not already running, afpcmd will attempt to start it.
 .Bl -tag -width Ds
 .It Fl h , Fl -help
 Shows the help message.
+.It Fl t , Fl -test
+Runs the client self-tests and exits.
 .It Fl r , Fl -recursive
 Sets the recursive flag.
 .It Fl V , Fl -verbose

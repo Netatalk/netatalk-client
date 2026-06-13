@@ -1,7 +1,7 @@
 /*
-	Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
-
-*/
+ *  Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ */
 
 #include "afp.h"
 #include "midlevel.h"
@@ -36,6 +36,7 @@ static int test_one_url(char * url_string,
 
     if (afp_url_validate(url_string, &valid_url)) {
         printf("* Could not parse %s\n", url_string);
+        return 1;
     } else {
         printf("* Parsed %s correctly\n", url_string);
     }
@@ -43,28 +44,33 @@ static int test_one_url(char * url_string,
     return 0;
 }
 
-int test_urls(__attribute__((unused)) char *arg)
+int test_urls(void)
 {
+    int failures = 0;
     printf("Testing AFP URL parsing\n");
-    test_one_url("afp://user::name;AUTH=DHCAST128:pa@@sword@server/volume/path",
-                 TCPIP, "user:name", "DHCAST128", "pa@sword", "server", 548, "volume", "path");
-    test_one_url("afp://username;AUTH=DHCAST128:password@server/volume/path",
-                 TCPIP, "username", "DHCAST128", "password", "server", 548, "volume", "path");
-    test_one_url("afp://username;AUTH=DHCAST128:password@server:548/volume/path",
-                 TCPIP, "username", "DHCAST128", "password", "server", 548, "volume", "path");
-    test_one_url("afp://username:password@server/volume/path",
-                 TCPIP, "username", "", "password", "server", 548, "volume", "path");
-    test_one_url("afp://username@server/volume/path",
-                 TCPIP, "username", "", "", "server", 548, "volume", "path");
-    test_one_url("afp://server/volume/path",
-                 TCPIP, "", "", "", "server", 548, "volume", "path");
-    test_one_url("afp://server/",
-                 TCPIP, "", "", "", "server", 548, "", "");
-    test_one_url("afp://server:22/",
-                 TCPIP, "", "", "", "server", 22, "", "");
-    test_one_url("afp://server:22",
-                 TCPIP, "", "", "", "server", 22, "", "");
-    test_one_url("afp://server:22/volume/",
-                 TCPIP, "", "", "", "server", 22, "volume", "");
-    return 0;
+    failures +=
+        test_one_url("afp://user::name;AUTH=DHCAST128:pa@@sword@server/volume/path",
+                     TCPIP, "user:name", "DHCAST128", "pa@sword", "server", 548, "volume", "path");
+    failures +=
+        test_one_url("afp://username;AUTH=DHCAST128:password@server/volume/path",
+                     TCPIP, "username", "DHCAST128", "password", "server", 548, "volume", "path");
+    failures +=
+        test_one_url("afp://username;AUTH=DHCAST128:password@server:548/volume/path",
+                     TCPIP, "username", "DHCAST128", "password", "server", 548, "volume", "path");
+    failures += test_one_url("afp://username:password@server/volume/path",
+                             TCPIP, "username", "", "password", "server", 548, "volume", "path");
+    failures += test_one_url("afp://username@server/volume/path",
+                             TCPIP, "username", "", "", "server", 548, "volume", "path");
+    failures += test_one_url("afp://server/volume/path",
+                             TCPIP, "", "", "", "server", 548, "volume", "path");
+    failures += test_one_url("afp://server/",
+                             TCPIP, "", "", "", "server", 548, "", "");
+    failures += test_one_url("afp://server:22/",
+                             TCPIP, "", "", "", "server", 22, "", "");
+    failures += test_one_url("afp://server:22",
+                             TCPIP, "", "", "", "server", 22, "", "");
+    failures += test_one_url("afp://server:22/volume/",
+                             TCPIP, "", "", "", "server", 22, "volume", "");
+    printf("AFP URL parsing self-tests: %s\n", failures ? "FAILED" : "PASSED");
+    return failures ? 1 : 0;
 }

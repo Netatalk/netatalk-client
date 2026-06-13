@@ -244,9 +244,6 @@ COMMAND commands[] = {
     { "status", com_status, "Get some server status", 1 },
     { "touch", com_touch, "Touch FILE", 1 },
     { "?", com_help, "Same as `help'", 0 },
-#ifdef DEBUG
-    { "test", test_urls, "Run client tests", 1},
-#endif
     { (char *)NULL, NULL, (char *)NULL, 0 }
 };
 
@@ -451,9 +448,10 @@ static void usage(void)
 {
     printf(
         "Netatalk Client %s - Apple Filing Protocol CLI client application\n"
-        "afpcmd [-h] [-r] [-V] [-v loglevel] <afp url>\n"
+        "afpcmd [-h] [-r] [-t] [-V] [-v loglevel] <afp url>\n"
         "Options:\n"
-        "\t-h:          show this help message\n"
+        "\t-h:          show this help message and exit\n"
+        "\t-t:          run client self-tests and exit\n"
         "\t-r:          set the recursive flag\n"
         "\t-V:          verbose mode (show detailed transfer messages)\n"
         "\t-v loglevel: set log verbosity (debug, info, notice, warning, error)\n"
@@ -476,9 +474,11 @@ int main(int argc, char *argv[])
     int recursive = 0;
     int verbose = 0;
     int show_usage = 0;
+    int test_mode = 0;
     int log_level = LOG_NOTICE;
     struct option long_options[] = {
         {"help", 0, 0, 'h'},
+        {"test", 0, 0, 't'},
         {"recursive", 0, 0, 'r'},
         {"verbose", 0, 0, 'V'},
         {"loglevel", 1, 0, 'v'},
@@ -490,7 +490,7 @@ int main(int argc, char *argv[])
     int direction = 0; /* 0 = GET (remote->local), 1 = PUT (local->remote) */
 
     while (1) {
-        c = getopt_long(argc, argv, "hrVv:",
+        c = getopt_long(argc, argv, "hrtVv:",
                         long_options, &option_index);
 
         if (c == -1) {
@@ -504,6 +504,10 @@ int main(int argc, char *argv[])
 
         case 'r':
             recursive = 1;
+            break;
+
+        case 't':
+            test_mode = 1;
             break;
 
         case 'V':
@@ -538,6 +542,12 @@ int main(int argc, char *argv[])
     cmdline_afp_setup_client();
     cmdline_set_log_level(log_level);
     cmdline_set_verbose(verbose);
+
+    if (test_mode) {
+        int result = test_urls();
+        cmdline_afp_exit();
+        return result;
+    }
 
     /* Check arguments for batch mode */
     if (argc - optind == 2) {

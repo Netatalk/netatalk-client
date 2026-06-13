@@ -29,10 +29,6 @@ cflags = [
     '-D_GNU_SOURCE',
 ]
 
-if build_type == 'debug'
-    cflags += '-DDEBUG'
-endif
-
 if host_os in ['dragonfly', 'freebsd', 'openbsd']
     libsearch_dirs += '/usr/local/lib'
     include_dirs += ['/usr/local/include']
