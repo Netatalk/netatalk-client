@@ -234,20 +234,26 @@ int afp_read(struct afp_volume * volume, unsigned short forkid,
     return rc;
 }
 
-int afp_read_reply(struct afp_server *server, char * buf, unsigned int size,
+int afp_read_reply(__attribute__((unused)) struct afp_server *server,
+                   char *buf, unsigned int size,
                    void *other)
 {
     struct afp_rx_buffer * rx = other;
     struct dsi_header * header = (void *) buf;
     char *ptr = buf + sizeof(struct dsi_header);
-    unsigned int rx_quantum = server->rx_quantum;
+
+    if (size < sizeof(struct dsi_header)) {
+        rx->size = 0;
+        return -1;
+    }
+
     size -= sizeof(struct dsi_header);
 
-    if (size > rx_quantum) {
+    if (size > rx->maxsize) {
         log_for_client(NULL, AFPFSD, LOG_ERR,
-                       "This is definitely weird, I guess I'll just drop %d bytes",
-                       size - rx_quantum);
-        size = rx_quantum;
+                       "AFP read reply is larger than the receive buffer, dropping %d bytes",
+                       size - rx->maxsize);
+        size = rx->maxsize;
     }
 
     memcpy(rx->data, ptr, size);
@@ -284,20 +290,26 @@ int afp_readext(struct afp_volume * volume, unsigned short forkid,
     return rc;
 }
 
-int afp_readext_reply(struct afp_server *server, char * buf, unsigned int size,
+int afp_readext_reply(__attribute__((unused)) struct afp_server *server,
+                      char *buf, unsigned int size,
                       void *other)
 {
     struct afp_rx_buffer * rx = other;
     struct dsi_header * header = (void *) buf;
     char *ptr = buf + sizeof(struct dsi_header);
-    unsigned int rx_quantum = server->rx_quantum;
+
+    if (size < sizeof(struct dsi_header)) {
+        rx->size = 0;
+        return -1;
+    }
+
     size -= sizeof(struct dsi_header);
 
-    if (size > rx_quantum) {
+    if (size > rx->maxsize) {
         log_for_client(NULL, AFPFSD, LOG_ERR,
-                       "This is definitely weird, I guess I'll just drop %d bytes",
-                       size - rx_quantum);
-        size = rx_quantum;
+                       "AFP read reply is larger than the receive buffer, dropping %d bytes",
+                       size - rx->maxsize);
+        size = rx->maxsize;
     }
 
     memcpy(rx->data, ptr, size);
@@ -475,15 +487,21 @@ int afp_write_reply(__attribute__((unused)) struct afp_server *server,
                     void *other)
 {
     uint32_t *written = other;
-    struct {
-        struct dsi_header header __attribute__((__packed__));
-        uint64_t written;
-    }  __attribute__((__packed__)) * reply_packet = (void *) buf;
+    const struct dsi_header *header = (const void *) buf;
+    uint32_t wire_written = 0;
 
-    if (size < sizeof(*reply_packet)) {
+    if (!written) {
+        return 0;
+    }
+
+    if (size < sizeof(struct dsi_header)
+            || header->return_code.error_code != 0
+            || size < sizeof(struct dsi_header) + sizeof(wire_written)) {
         *written = 0;
     } else {
-        *written = ntohl(reply_packet->written);
+        memcpy(&wire_written, buf + size - sizeof(wire_written),
+               sizeof(wire_written));
+        *written = ntohl(wire_written);
     }
 
     return 0;
@@ -537,15 +555,21 @@ int afp_writeext_reply(__attribute__((unused)) struct afp_server *server,
                        void *other)
 {
     uint64_t *written = other;
-    struct {
-        struct dsi_header header __attribute__((__packed__));
-        uint64_t written;
-    }  __attribute__((__packed__)) * reply_packet = (void *) buf;
+    const struct dsi_header *header = (const void *) buf;
+    uint64_t wire_written = 0;
 
-    if (size < sizeof(*reply_packet)) {
+    if (!written) {
+        return 0;
+    }
+
+    if (size < sizeof(struct dsi_header)
+            || header->return_code.error_code != 0
+            || size < sizeof(struct dsi_header) + sizeof(wire_written)) {
         *written = 0;
     } else {
-        *written = ntoh64(reply_packet->written);
+        memcpy(&wire_written, buf + size - sizeof(wire_written),
+               sizeof(wire_written));
+        *written = ntoh64(wire_written);
     }
 
     return 0;

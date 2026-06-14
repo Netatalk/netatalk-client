@@ -2,7 +2,7 @@
  *  dsi.c
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
- *  Copyright (C) 2025 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
  *
  */
 
@@ -31,10 +31,7 @@
 #include "afp_replies.h"
 #include "codepage.h"
 
-/* define this in order to get reams of DSI debugging information */
-#ifdef DEBUG
-#define DEBUG_DSI
-#endif
+/* Define DEBUG_DSI explicitly to get reams of DSI debugging information. */
 
 static int dsi_remove_from_request_queue(struct afp_server *server,
         struct dsi_request *toremove);
@@ -233,6 +230,10 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
         return -1;
     }
 
+    if (wait == DSI_DEFAULT_TIMEOUT) {
+        wait = server->dsi_default_timeout;
+    }
+
     afp_wait_for_started_loop();
 
     /* Add request to the queue */
@@ -384,7 +385,10 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
         pthread_mutex_unlock(&new_request->waiting_mutex);
 
         if (rc == ETIMEDOUT) {
-            /* FIXME: should handle this case properly */
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "Timed out waiting %d second(s) for request %d, %s",
+                           new_request->wait, new_request->requestid,
+                           afp_get_command_name(new_request->subcommand));
 #ifdef DEBUG_DSI
             log_for_client(NULL, AFPFSD, LOG_DEBUG, "=== Timedout for %d",
                            new_request->requestid);
@@ -805,14 +809,18 @@ int dsi_recv(struct afp_server * server)
 #ifdef DEBUG_DSI
     int rc;
 #endif
-    int amount_to_read = 0;
-    int ret;
+    size_t amount_to_read = 0;
+    ssize_t ret;
     unsigned char runt_packet = 0;
+    size_t payload_length;
+    size_t payload_read;
+    size_t payload_remaining;
 
     /* Make sure we have at least one  header */
-    if ((amount_to_read = sizeof(struct dsi_header) - server->data_read) > 0) {
+    if ((size_t)server->data_read < sizeof(struct dsi_header)) {
+        amount_to_read = sizeof(struct dsi_header) - server->data_read;
 #ifdef DEBUG_DSI
-        log_for_client(NULL, AFPFSD, LOG_DEBUG, "<<< read() for dsi, %d bytes",
+        log_for_client(NULL, AFPFSD, LOG_DEBUG, "<<< read() for dsi, %zu bytes",
                        amount_to_read);
 #endif
 
@@ -964,9 +972,32 @@ gotenough:
             goto process_packet;
         }
 
-        amount_to_read = min(ntohl(header->length), (unsigned long) server->bufsize);
+        payload_length = ntohl(header->length);
+        payload_read = server->data_read - sizeof(struct dsi_header);
+
+        if (payload_length > (size_t)server->bufsize - sizeof(
+                    struct dsi_header)) {
+            log_for_client(NULL, AFPFSD, LOG_ERR,
+                           "dsi_recv: DSI payload %zu exceeds receive buffer capacity %zu",
+                           payload_length,
+                           (size_t)server->bufsize - sizeof(struct dsi_header));
+            return -1;
+        }
+
+        if (payload_read > payload_length) {
+            goto error;
+        }
+
+        payload_remaining = payload_length - payload_read;
+
+        if (payload_remaining == 0) {
+            goto process_packet;
+        }
+
+        amount_to_read = min(payload_remaining,
+                             (size_t)server->bufsize - server->data_read);
 #ifdef DEBUG_DSI
-        log_for_client(NULL, AFPFSD, LOG_DEBUG, "<<< read() of rest of AFP, %d bytes",
+        log_for_client(NULL, AFPFSD, LOG_DEBUG, "<<< read() of rest of AFP, %zu bytes",
                        amount_to_read);
 #endif
 
@@ -1062,33 +1093,18 @@ after_processing:
         /* The most common case */
         server->data_read = 0;
     } else {
-        unsigned int size_to_copy =
-            server->data_read -
-            (ntohl(header->length) + sizeof(*header));
-        char *tmpbuf;
+        unsigned int packet_size = ntohl(header->length) + sizeof(*header);
+        unsigned int size_to_copy;
 
-        if (size_to_copy < ntohl(header->length)) {
-            /* This could be replaced with memmove, as it handles
-             * overlaps */
-            memcpy(server->incoming_buffer,
-                   server->incoming_buffer + ntohl(header->length),
-                   size_to_copy);
-        } else {
-            /* This is more complicated, we need an tmp buf */
-            if ((tmpbuf = malloc(size_to_copy)) == NULL) {
-                log_for_client(NULL, AFPFSD, LOG_ERR,
-                               "Problem allocating memory for dsi_recv of size %d", size_to_copy);
-                goto error;
-            }
-
-            memcpy(tmpbuf,
-                   server->incoming_buffer + ntohl(header->length),
-                   size_to_copy);
-            memcpy(server->incoming_buffer, tmpbuf, size_to_copy);
-            free(tmpbuf);
+        if ((unsigned int)server->data_read < packet_size) {
+            goto error;
         }
 
-        server->data_read -= size_to_copy;
+        size_to_copy = server->data_read - packet_size;
+        memmove(server->incoming_buffer,
+                server->incoming_buffer + packet_size,
+                size_to_copy);
+        server->data_read = size_to_copy;
     }
 
 out:

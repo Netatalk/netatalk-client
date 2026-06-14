@@ -2,6 +2,7 @@
  *  utils.c
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
  *
  */
 
@@ -189,39 +190,38 @@ void copy_path(
     struct afp_server * server,
     char *dest,
     const char *pathname,
-    __attribute__((unused)) unsigned char len
+    size_t len
 )
 {
-    char tmppathname[255];
     unsigned char encoding = server->path_encoding;
     struct afp_path_header_unicode * header_unicode = (void *) dest;
     struct afp_path_header_long * header_long = (void *) dest;
-    unsigned char offset;
-#if 0
-    unsigned char header_len;
-#endif
-    unsigned char namelen;
+
+    if (!pathname) {
+        pathname = "";
+        len = 0;
+    }
 
     switch (encoding) {
     case kFPUTF8Name:
+        if (len > UINT16_MAX) {
+            len = UINT16_MAX;
+        }
+
         header_unicode->type = encoding;
         header_unicode->hint = htonl(0x08000103);
-        offset = 5;
-#if 0
-        header_len = sizeof(struct afp_path_header_unicode);
-#endif
-        namelen = copy_to_pascal_two(tmppathname, pathname);
-        memcpy(dest + offset, tmppathname, namelen + 2);
+        header_unicode->unicode = htons((uint16_t)len);
+        memcpy(dest + sizeof(struct afp_path_header_unicode), pathname, len);
         break;
 
     case kFPLongName:
+        if (len > UINT8_MAX) {
+            len = UINT8_MAX;
+        }
+
         header_long->type = encoding;
-        offset = 1;
-#if 0
-        header_len = sizeof(struct afp_path_header_long);
-#endif
-        namelen = copy_to_pascal(tmppathname, pathname) ;
-        memcpy(dest + offset, tmppathname, namelen + 1);
+        header_long->len = (uint8_t)len;
+        memcpy(dest + sizeof(struct afp_path_header_long), pathname, len);
     }
 }
 
@@ -339,4 +339,3 @@ int loglevel_to_rank(int loglevel)
         return 4; /* Treat unknown as error-level to avoid dropping */
     }
 }
-

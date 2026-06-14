@@ -27,6 +27,7 @@ my $AFP_URL      = "afp://${AFP_USER}:${AFP_PASS}\@${AFP_HOST}/${AFP_VOL}";
 sub afpcmd_pipe {
     my ($url, @cmds) = @_;
     my $input = join("\n", @cmds) . "\n";
+    my $timeout = $ENV{AFPCMD_TEST_TIMEOUT} // 15;
 
     pipe(my $out_r, my $out_w) or die "pipe: $!";
     pipe(my $in_r,  my $in_w)  or die "pipe: $!";
@@ -51,8 +52,24 @@ sub afpcmd_pipe {
     print $in_w $input;
     close $in_w;
 
-    local $/;
-    my $output = <$out_r>;
+    my $output;
+    my $read_error;
+    {
+        local $SIG{ALRM} = sub { die "timeout\n" };
+        local $/;
+        alarm $timeout;
+        eval { $output = <$out_r>; };
+        $read_error = $@;
+        alarm 0;
+    }
+
+    if ($read_error) {
+        kill 'TERM', $pid;
+        waitpid($pid, 0);
+        BAIL_OUT("afpcmd timed out after ${timeout}s running: "
+            . join('; ', @cmds));
+    }
+
     close $out_r;
     waitpid($pid, 0);
     return $output // '';
@@ -191,6 +208,72 @@ sub afpcmd_pipe {
             'test_get_put: downloaded file content matches');
         unlink $tmpfile;
     }
+}
+
+# -----------------------------------------------------------------------
+# test_metadata_commands: round-trip FinderInfo, resource fork, and xattr
+# -----------------------------------------------------------------------
+{
+    my $base = "/tmp/afpcmd_metadata_$$";
+    my $finder_in = "$base.finder.in";
+    my $finder_out = "$base.finder.out";
+    my $resource_in = "$base.resource.in";
+    my $resource_out = "$base.resource.out";
+    my $xattr_in = "$base.xattr.in";
+    my $xattr_out = "$base.xattr.out";
+
+    open(my $fh, '>:raw', $finder_in) or BAIL_OUT("finder input: $!");
+    print $fh pack('C*', 1 .. 32);
+    close $fh;
+    open($fh, '>:raw', $resource_in) or BAIL_OUT("resource input: $!");
+    print $fh join('', map { chr(($_ * 29) & 0xff) } 0 .. 9999);
+    close $fh;
+    open($fh, '>:raw', $xattr_in) or BAIL_OUT("xattr input: $!");
+    print $fh "binary\0xattr\xffvalue";
+    close $fh;
+
+    my $old_umask = umask 0000;
+    my $out = afpcmd_pipe($AFP_URL,
+        'touch metadata-test',
+        "finderinfo set metadata-test $finder_in",
+        "finderinfo get metadata-test $finder_out",
+        "resourcefork set metadata-test $resource_in",
+        "resourcefork get metadata-test $resource_out",
+        "xattr set metadata-test org.netatalk.afpcmd-test $xattr_in",
+        'xattr list metadata-test',
+        "xattr get metadata-test org.netatalk.afpcmd-test $xattr_out",
+        'xattr remove metadata-test org.netatalk.afpcmd-test',
+        'finderinfo remove metadata-test',
+        'resourcefork remove metadata-test',
+        'rm metadata-test',
+        'quit');
+    umask $old_umask;
+
+    unlike($out, qr/failed:/, 'test_metadata_commands: commands succeed');
+    like($out, qr/org\.netatalk\.afpcmd-test/,
+        'test_metadata_commands: xattr appears in list');
+
+    for my $pair ([$finder_in, $finder_out, 'FinderInfo'],
+                  [$resource_in, $resource_out, 'resource fork'],
+                  [$xattr_in, $xattr_out, 'xattr']) {
+        if (!-e $pair->[1]) {
+            fail('test_metadata_commands: ' . $pair->[2] . ' output exists');
+            next;
+        }
+        open(my $left, '<:raw', $pair->[0]) or BAIL_OUT("read $pair->[0]: $!");
+        open(my $right, '<:raw', $pair->[1]) or BAIL_OUT("read $pair->[1]: $!");
+        my $left_data = do { local $/; <$left> };
+        my $right_data = do { local $/; <$right> };
+        close $left;
+        close $right;
+        is($right_data, $left_data,
+            'test_metadata_commands: ' . $pair->[2] . ' round trip');
+        is((stat($pair->[1]))[2] & 07777, 0600,
+            'test_metadata_commands: ' . $pair->[2] . ' output is private');
+    }
+
+    unlink $finder_in, $finder_out, $resource_in, $resource_out,
+           $xattr_in, $xattr_out;
 }
 
 # -----------------------------------------------------------------------

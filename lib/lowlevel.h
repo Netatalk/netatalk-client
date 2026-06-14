@@ -14,6 +14,9 @@ int ll_readdir(struct afp_volume * volume, const char *path,
                struct afp_file_info **fb, int resource);
 int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
                int resourcefork);
+int ll_getattr_with_metadata(struct afp_volume * volume, const char *path,
+                             struct stat *stbuf, int resourcefork,
+                             struct afp_file_info *metadata);
 
 int ll_zero_file(struct afp_volume * volume, unsigned short forkid,
                  unsigned int resource);

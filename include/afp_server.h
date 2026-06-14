@@ -292,4 +292,22 @@ struct afp_server_changepw_response {
     int afp_error;
 };
 
+struct afp_server_metadata_request {
+    struct afp_server_request_header header;
+    volumeid_t volumeid;
+    char path[AFP_MAX_PATH];
+    char name[256];
+    unsigned long long offset;
+    unsigned int size;
+    int flags;
+    char data[];
+};
+
+struct afp_server_metadata_response {
+    struct afp_server_response_header header;
+    int error;
+    unsigned int size;
+    char data[];
+};
+
 #endif

@@ -163,13 +163,16 @@ static char **filename_completion(const char *text,
                     strcmp(cmd, "cd") == 0 ||
                     strcmp(cmd, "chmod") == 0 ||
                     strcmp(cmd, "cp") == 0 ||
+                    strcmp(cmd, "finderinfo") == 0 ||
                     strcmp(cmd, "get") == 0 ||
                     strcmp(cmd, "ls") == 0 ||
                     strcmp(cmd, "mkdir") == 0 ||
                     strcmp(cmd, "mv") == 0 ||
                     strcmp(cmd, "rm") == 0 ||
                     strcmp(cmd, "rmdir") == 0 ||
-                    strcmp(cmd, "touch") == 0)) {
+                    strcmp(cmd, "resourcefork") == 0 ||
+                    strcmp(cmd, "touch") == 0 ||
+                    strcmp(cmd, "xattr") == 0)) {
             remote = 1;
         }
 
@@ -227,6 +230,7 @@ COMMAND commands[] = {
     { "disconnect", com_close, "Close server connection and shut down afpcmd", 0 },
     { "df", com_statvfs, "Get volume space information", 1 },
     { "exit", com_exit, "Detach from the current volume", 0 },
+    { "finderinfo", com_finderinfo, "Get, set, or remove FinderInfo", 1 },
     { "get", com_get, "Retrieve the file FILE and store them locally", 1 },
     { "help", com_help, "Display this text", 0 },
     { "lcd", com_lcd, "Change local directory to DIR", 1 },
@@ -240,8 +244,10 @@ COMMAND commands[] = {
     { "quit", com_quit, "Shut down afpcmd (leaves server connections intact)", 0 },
     { "rm", com_delete, "Delete FILE", 1 },
     { "rmdir", com_rmdir, "Remove directory DIRECTORY", 1 },
+    { "resourcefork", com_resourcefork, "Get, set, or remove a resource fork", 1 },
     { "status", com_status, "Get some server status", 1 },
     { "touch", com_touch, "Touch FILE", 1 },
+    { "xattr", com_xattr, "List, get, set, or remove extended attributes", 1 },
     { "?", com_help, "Same as `help'", 0 },
     { (char *)NULL, NULL, (char *)NULL, 0 }
 };
@@ -447,19 +453,20 @@ static void usage(void)
 {
     printf(
         "Netatalk Client %s - Apple Filing Protocol CLI client application\n"
-        "afpcmd [-h] [-r] [-V] [-v loglevel] <afp url>\n"
+        "afpcmd [-h] [-r] [-V] [-v loglevel] [-M mode] <afp url>\n"
         "Options:\n"
-        "\t-h:          show this help message\n"
+        "\t-h:          show this help message and exit\n"
+        "\t-M mode:     preserve metadata using auto, sys, macos, netatalk, or none\n"
         "\t-r:          set the recursive flag\n"
         "\t-V:          verbose mode (show detailed transfer messages)\n"
         "\t-v loglevel: set log verbosity (debug, info, notice, warning, error)\n"
         "\turl:         an AFP url, in the form of:\n"
         "\t\t         afp://username;AUTH=uamname:password@server:548/volume/path\n"
         "\t             uamname can be a full UAM name or shorthand:\n"
-        "\t             guest, clrtxt, randnum, randnum2, dhx, dhx2\n\n"
+        "\t             guest, clrtxt, randnum, randnum2, dhx, dhx2, srp\n\n"
         "Batch transfer mode:\n"
-        "\tafpcmd [-r] [-V] <afp url> <local path>   (Download from server)\n"
-        "\tafpcmd [-r] [-V] <local path> <afp url>   (Upload to server)\n\n"
+        "\tafpcmd [-r] [-V] [-M mode] <afp url> <local path>   (Download from server)\n"
+        "\tafpcmd [-r] [-V] [-M mode] <local path> <afp url>   (Upload to server)\n\n"
         "See the afpcmd(1) man page for more information.\n", AFPFS_VERSION
     );
 }
@@ -473,8 +480,10 @@ int main(int argc, char *argv[])
     int verbose = 0;
     int show_usage = 0;
     int log_level = LOG_NOTICE;
+    const char *metadata_mode = "auto";
     struct option long_options[] = {
         {"help", 0, 0, 'h'},
+        {"metadata", 1, 0, 'M'},
         {"recursive", 0, 0, 'r'},
         {"verbose", 0, 0, 'V'},
         {"loglevel", 1, 0, 'v'},
@@ -486,7 +495,7 @@ int main(int argc, char *argv[])
     int direction = 0; /* 0 = GET (remote->local), 1 = PUT (local->remote) */
 
     while (1) {
-        c = getopt_long(argc, argv, "hrVv:",
+        c = getopt_long(argc, argv, "hM:rVv:",
                         long_options, &option_index);
 
         if (c == -1) {
@@ -496,6 +505,10 @@ int main(int argc, char *argv[])
         switch (c) {
         case 'h':
             show_usage = 1;
+            break;
+
+        case 'M':
+            metadata_mode = optarg;
             break;
 
         case 'r':
@@ -534,6 +547,12 @@ int main(int argc, char *argv[])
     cmdline_afp_setup_client();
     cmdline_set_log_level(log_level);
     cmdline_set_verbose(verbose);
+
+    if (cmdline_set_metadata_mode(metadata_mode) != 0) {
+        printf("Unknown metadata mode %s\n", metadata_mode);
+        usage();
+        return 1;
+    }
 
     /* Check arguments for batch mode */
     if (argc - optind == 2) {

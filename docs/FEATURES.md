@@ -71,23 +71,9 @@ A readonly copy of the server icon can be found in /.servericon.
 
 ### Resource forks
 
-Depending on the AFP server type and version, resource forks may be stored in
-extended attributes or in AppleDouble files.
-
-#### When using AppleDouble files
-
-Every directory has a hidden directory called .AppleDouble, and if a resource
-fork exists, you'll find it there.  As an example, the resource fork for
-/foo/bar/testfile can be found in /foo/bar/.AppleDouble/testfile.
-
-The permissions of the resource fork are the same as the data fork.
-
-#### When using extended attributes
-
-Resource forks are stored in the extended attribute named "com.apple.ResourceFork".
-The Netatalk Client FUSE client does *NOT* reading and writing this extended attribute yet,
-so resource forks will not be visible when using extended attributes,
-and if you write files with resource forks, they will be lost.
+Depending on the AFP server type and version, Classic Mac OS resource forks
+may be stored as filesystem extended attributes or in AppleDouble sidecar files.
+The exact manner of storage is determined by the client and operating system.
 
 ### Desktop functions
 
@@ -250,12 +236,11 @@ This speaks AFP 2.1, so this presents certain restrictions, such as:
 
 There is no proper charset conversions for filenames.  Patches accepted.
 
-This has been lightly tested.
-
 ### Mac OS X
 
-Various versions have been tested, including 10.2, 10.3, 10.4 and 10.5.x. This has been most
-heavily tested.  Note the restrictions on UAMs above.
+Various versions of the Mac OS X personal file sharing have been tested,
+including 10.2, 10.3, 10.4, 10.5, and 10.7.
+Note the restrictions on UAMs above.
 
 ### Airport Extreme
 
@@ -275,6 +260,14 @@ AFP.
 
 The Time Capsule is a network backup device meant to handle Time Machine
 backups over AFP.  It supports the SRP, DHX2, and DHCAST128 UAMs.
+
+It can also be used as a general purpose AFP server,
+and has been tested with Netatalk Client.
+It has one notable quirk: it can take up to 20 seconds for the server to respond when the hard drive is spun down.
+For this purpose, Netatalk Client has been modified with
+a 30 second timeout for AFP connections.
+
+Tested with AirPort Time Capsule with firmware 7.9.1.
 
 ### Netatalk
 
@@ -302,6 +295,7 @@ Deliberately left blank.
 
 Not all references are easy to find. The useful ones are:
 
-- Apple Filing Protocol Programming Guide, Version 3.2, 2005-06-04
-- AppleTalk Filing Protocol, Versions 2.1 and version 2.2., Apple Computer Inc, 1999
+- Apple Filing Protocol Reference, Version 3.4, 2012-12-13
+- Apple Filing Protocol Programming Guide, Version 3.4, 2012-12-13
+- AppleTalk Filing Protocol, Versions 2.1 and version 2.2, Apple Computer Inc, 1999
 - Inside Macintosh, Macintosh Toolbox Essentials, 1992

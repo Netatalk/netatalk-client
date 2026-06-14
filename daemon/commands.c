@@ -20,6 +20,7 @@
 #include <stdarg.h>
 #include <getopt.h>
 #include <signal.h>
+#include <stddef.h>
 
 #include "afp.h"
 #include "dsi.h"
@@ -1536,6 +1537,216 @@ done:
     return 0;
 }
 
+static void send_metadata_response(struct daemon_client *c, int error,
+                                   const void *data, unsigned int data_size,
+                                   unsigned int reported_size)
+{
+    struct afp_server_metadata_response *response;
+    size_t len = sizeof(*response) + data_size;
+    response = calloc(1, len);
+
+    if (!response) {
+        close_client_connection(c);
+        return;
+    }
+
+    response->header.result = AFP_SERVER_RESULT_OKAY;
+    response->header.len = (unsigned int)len;
+    response->error = error;
+    response->size = reported_size;
+
+    if (data && data_size > 0) {
+        memcpy(response->data, data, data_size);
+    }
+
+    send_command(c, response->header.len, (char *)response);
+    free(response);
+    continue_client_connection(c);
+}
+
+static unsigned char process_metadata(struct daemon_client *c)
+{
+    struct afp_server_metadata_request *request = (void *)c->complete_packet;
+    struct afp_volume *volume = NULL;
+    size_t base = offsetof(struct afp_server_metadata_request, data);
+    char data[AFP_SL_METADATA_CHUNK];
+    unsigned int response_size = 0;
+    unsigned int response_data_size = 0;
+    int sends_data;
+    size_t expected_len;
+    int ret = -EINVAL;
+
+    if ((size_t)c->completed_packet_size < base) {
+        send_metadata_response(c, -EINVAL, NULL, 0, 0);
+        return 0;
+    }
+
+    sends_data = request->header.command == AFP_SERVER_COMMAND_SETXATTR
+                 || request->header.command == AFP_SERVER_COMMAND_SETFINDERINFO
+                 || request->header.command == AFP_SERVER_COMMAND_SETRESOURCEFORK;
+    expected_len = base;
+
+    if (sends_data) {
+        expected_len += request->size;
+    }
+
+    if (request->size > AFP_SL_METADATA_CHUNK
+            || request->header.len != expected_len
+            || (size_t)c->completed_packet_size != request->header.len) {
+        send_metadata_response(c, -EINVAL, NULL, 0, 0);
+        return 0;
+    }
+
+    if (!memchr(request->path, '\0', sizeof(request->path))
+            || !memchr(request->name, '\0', sizeof(request->name))) {
+        send_metadata_response(c, -EINVAL, NULL, 0, 0);
+        return 0;
+    }
+
+    if ((request->header.command == AFP_SERVER_COMMAND_GETXATTR
+            || request->header.command == AFP_SERVER_COMMAND_SETXATTR
+            || request->header.command == AFP_SERVER_COMMAND_REMOVEXATTR)
+            && request->name[0] == '\0') {
+        send_metadata_response(c, -EINVAL, NULL, 0, 0);
+        return 0;
+    }
+
+    if (request->header.command == AFP_SERVER_COMMAND_SETFINDERINFO
+            && request->size != 32) {
+        send_metadata_response(c, -EINVAL, NULL, 0, 0);
+        return 0;
+    }
+
+    volume = afp_volume_find_by_pointer_hold(request->volumeid);
+
+    if (!volume) {
+        send_metadata_response(c, -ENODEV, NULL, 0, 0);
+        return 0;
+    }
+
+    switch (request->header.command) {
+    case AFP_SERVER_COMMAND_GETXATTR:
+        if (!(volume->attributes & kSupportsExtAttrs)) {
+            ret = -ENOTSUP;
+        } else {
+            char *xattr_data = NULL;
+
+            if (request->size) {
+                xattr_data = data;
+            }
+
+            ret = ml_getxattr(volume, request->path, request->name,
+                              xattr_data, request->size);
+        }
+
+        break;
+
+    case AFP_SERVER_COMMAND_LISTXATTR:
+        if (!(volume->attributes & kSupportsExtAttrs)) {
+            ret = -ENOTSUP;
+        } else {
+            char *listxattr_data = NULL;
+
+            if (request->size) {
+                listxattr_data = data;
+            }
+
+            ret = ml_listxattr(volume, request->path,
+                               listxattr_data, request->size);
+        }
+
+        break;
+
+    case AFP_SERVER_COMMAND_GETFINDERINFO: {
+        char *finderinfo_data = NULL;
+
+        if (request->size) {
+            finderinfo_data = data;
+        }
+
+        ret = ml_getfinderinfo(volume, request->path,
+                               finderinfo_data, request->size);
+    }
+    break;
+
+    case AFP_SERVER_COMMAND_GETRESOURCEFORK:
+        if (request->offset > (unsigned long long)INT64_MAX) {
+            ret = -EOVERFLOW;
+        } else {
+            ret = ml_getresourcefork(volume, request->path,
+                                     request->size ? data : NULL,
+                                     request->size, (off_t)request->offset);
+        }
+
+        break;
+
+    case AFP_SERVER_COMMAND_SETXATTR:
+        ret = !(volume->attributes & kSupportsExtAttrs) ? -ENOTSUP
+              : ml_setxattr(volume, request->path, request->name,
+                            request->data, request->size, request->flags);
+        break;
+
+    case AFP_SERVER_COMMAND_SETFINDERINFO:
+        ret = ml_setfinderinfo(volume, request->path,
+                               request->data, request->size);
+        break;
+
+    case AFP_SERVER_COMMAND_SETRESOURCEFORK:
+        if (request->offset > (unsigned long long)INT64_MAX) {
+            ret = -EOVERFLOW;
+        } else {
+            ret = ml_setresourcefork(volume, request->path, request->data,
+                                     request->size, (off_t)request->offset);
+        }
+
+        break;
+
+    case AFP_SERVER_COMMAND_REMOVEXATTR:
+        ret = !(volume->attributes & kSupportsExtAttrs) ? -ENOTSUP
+              : ml_removexattr(volume, request->path, request->name);
+        break;
+
+    case AFP_SERVER_COMMAND_REMOVEFINDERINFO:
+        ret = ml_removefinderinfo(volume, request->path);
+        break;
+
+    case AFP_SERVER_COMMAND_REMOVERESOURCEFORK:
+        ret = ml_removeresourcefork(volume, request->path);
+        break;
+
+    default:
+        ret = -EINVAL;
+        break;
+    }
+
+    if (ret > 0) {
+        response_size = (unsigned int)ret;
+
+        if (request->size > 0) {
+            if (response_size > request->size) {
+                send_metadata_response(c, -ERANGE, NULL, 0, response_size);
+                afp_server_release(volume->server);
+                return 0;
+            }
+
+            response_data_size = response_size;
+        }
+
+        ret = 0;
+    }
+
+    if (response_data_size > 0) {
+        send_metadata_response(c, ret, data, response_data_size,
+                               response_size);
+    } else {
+        send_metadata_response(c, ret, NULL, response_data_size,
+                               response_size);
+    }
+
+    afp_server_release(volume->server);
+    return 0;
+}
+
 static int compare_afp_file_info(const void *a, const void *b)
 {
     const struct afp_file_info *fa = *(struct afp_file_info * const *)a;
@@ -2167,6 +2378,19 @@ static void *process_command_thread(void * other)
 
     case AFP_SERVER_COMMAND_CHANGEPW:
         ret = process_changepw(c);
+        break;
+
+    case AFP_SERVER_COMMAND_GETXATTR:
+    case AFP_SERVER_COMMAND_SETXATTR:
+    case AFP_SERVER_COMMAND_LISTXATTR:
+    case AFP_SERVER_COMMAND_REMOVEXATTR:
+    case AFP_SERVER_COMMAND_GETFINDERINFO:
+    case AFP_SERVER_COMMAND_SETFINDERINFO:
+    case AFP_SERVER_COMMAND_REMOVEFINDERINFO:
+    case AFP_SERVER_COMMAND_GETRESOURCEFORK:
+    case AFP_SERVER_COMMAND_SETRESOURCEFORK:
+    case AFP_SERVER_COMMAND_REMOVERESOURCEFORK:
+        ret = process_metadata(c);
         break;
 
     case AFP_SERVER_COMMAND_MOUNT:
