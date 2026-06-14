@@ -50,7 +50,6 @@
 #include "libafpclient.h"
 #include "utils.h"
 #include "cmdline_afp.h"
-#include "cmdline_testafp.h"
 
 static int running = 1;
 static int loop_started = 0;
@@ -244,9 +243,6 @@ COMMAND commands[] = {
     { "status", com_status, "Get some server status", 1 },
     { "touch", com_touch, "Touch FILE", 1 },
     { "?", com_help, "Same as `help'", 0 },
-#ifdef DEBUG
-    { "test", test_urls, "Run client tests", 1},
-#endif
     { (char *)NULL, NULL, (char *)NULL, 0 }
 };
 
