@@ -343,8 +343,6 @@ struct afp_connection_request {
 void afp_default_url(struct afp_url *url);
 int afp_parse_url(struct afp_url * url, const char * toparse);
 void afp_print_url(struct afp_url * url);
-int afp_url_validate(char * url_string, struct afp_url * valid_url);
-
 int afp_list_volnames(struct afp_server * server, char * names, int max);
 
 /* User mapping */
