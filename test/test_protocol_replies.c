@@ -33,6 +33,13 @@ int main(void)
     uint64_t wire64;
     uint32_t written32 = 99;
     uint64_t written64 = 99;
+    struct afp_extattr_info xattr_info;
+    struct {
+        struct dsi_header header __attribute__((__packed__));
+        uint16_t bitmap;
+        uint32_t datalength;
+        char data[4];
+    } __attribute__((__packed__)) xattr_reply;
     memset(reply, 0, sizeof(reply));
     wire32 = htonl(1234);
     memcpy(reply + sizeof(reply) - sizeof(wire32), &wire32, sizeof(wire32));
@@ -55,5 +62,15 @@ int main(void)
     CHECK(written32 == 0);
     CHECK(afp_write_reply(NULL, (char *)reply, sizeof(reply), NULL) == 0);
     CHECK(afp_writeext_reply(NULL, (char *)reply, sizeof(reply), NULL) == 0);
+    memset(&xattr_reply, 0, sizeof(xattr_reply));
+    memset(&xattr_info, 0, sizeof(xattr_info));
+    xattr_info.maxsize = 2;
+    xattr_reply.datalength = htonl(sizeof(xattr_reply.data));
+    memcpy(xattr_reply.data, "abcd", sizeof(xattr_reply.data));
+    CHECK(afp_getextattr_reply(NULL, (char *)&xattr_reply,
+                               sizeof(xattr_reply), &xattr_info) == 0);
+    CHECK(xattr_info.size == sizeof(xattr_reply.data));
+    CHECK(xattr_info.copied == xattr_info.maxsize);
+    CHECK(memcmp(xattr_info.data, "ab", xattr_info.copied) == 0);
     return 0;
 }

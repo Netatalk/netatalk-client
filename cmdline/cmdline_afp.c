@@ -444,6 +444,18 @@ static int metadata_error_unsupported(int ret)
     return ret == -ENOTSUP || ret == -EOPNOTSUPP || ret == -ENOSYS;
 }
 
+static int metadata_name_special(const char *name)
+{
+    const char *stripped = afp_xattr_strip_user_prefix(name);
+
+    if (!stripped) {
+        return 0;
+    }
+
+    return strcmp(stripped, AFP_XATTR_FINDERINFO) == 0
+           || strcmp(stripped, AFP_XATTR_RESOURCEFORK) == 0;
+}
+
 static void metadata_warn_unsupported(void)
 {
     if (!metadata_warning_emitted) {
@@ -655,8 +667,7 @@ static int clear_remote_metadata(const char *path)
     }
 
     while ((next = metadata_list_next(list, list_size, &pos, &name)) > 0) {
-        if (strcmp(name, "com.apple.FinderInfo") == 0
-                || strcmp(name, "com.apple.ResourceFork") == 0
+        if (metadata_name_special(name)
                 || metadata_name_filtered(name)) {
             continue;
         }
@@ -835,8 +846,7 @@ static int copy_local_metadata_to_remote(const char *local_path,
             void *value = NULL;
             size_t value_size = 0;
 
-            if (strcmp(name, "com.apple.FinderInfo") == 0
-                    || strcmp(name, "com.apple.ResourceFork") == 0
+            if (metadata_name_special(name)
                     || metadata_name_filtered(name)) {
                 continue;
             }
@@ -982,8 +992,7 @@ static int copy_remote_metadata_to_local(const char *remote_path,
             void *value = NULL;
             size_t value_size = 0;
 
-            if (strcmp(name, "com.apple.FinderInfo") == 0
-                    || strcmp(name, "com.apple.ResourceFork") == 0
+            if (metadata_name_special(name)
                     || metadata_name_filtered(name)) {
                 continue;
             }
@@ -1129,8 +1138,7 @@ static int copy_remote_metadata(const char *source, const char *target,
         void *value = NULL;
         size_t value_size = 0;
 
-        if (strcmp(name, "com.apple.FinderInfo") == 0
-                || strcmp(name, "com.apple.ResourceFork") == 0
+        if (metadata_name_special(name)
                 || metadata_name_filtered(name)) {
             continue;
         }
@@ -1352,7 +1360,7 @@ int com_pass(__attribute__((unused)) char *unused)
             break;
 
         default:
-            printf("Password change failed (error code: %d).\n", ret);
+            printf("Password change failed with unknown error.\n");
             break;
         }
 
@@ -2704,6 +2712,13 @@ int com_resourcefork(char *arg)
             return metadata_command_error("open input", -errno);
         }
 
+        ret = afp_sl_setresourcefork(&vol_id, path, NULL, 0, 0);
+
+        if (ret < 0) {
+            close(fd);
+            return metadata_command_error("resourcefork set", ret);
+        }
+
         while (1) {
             ssize_t amount = read(fd, buffer, sizeof(buffer));
 
@@ -2713,8 +2728,7 @@ int com_resourcefork(char *arg)
             }
 
             if (amount == 0) {
-                ret = offset == 0
-                      ? afp_sl_setresourcefork(&vol_id, path, NULL, 0, 0) : 0;
+                ret = 0;
                 break;
             }
 
@@ -3128,7 +3142,7 @@ int com_status(__attribute__((unused)) char *unused)
     ret = afp_sl_status(NULL, NULL, text, &len);
 
     if (ret != AFP_SERVER_RESULT_OKAY) {
-        printf("Could not get status (result=%d)\n", ret);
+        printf("Could not get status\n");
         return -1;
     }
 
@@ -3159,7 +3173,7 @@ int com_statvfs(__attribute__((unused)) char *unused)
         } else if (ret == AFP_SERVER_RESULT_ACCESS) {
             printf("Permission denied\n");
         } else {
-            printf("Failed to get filesystem statistics (error: %d)\n", ret);
+            printf("Failed to get filesystem statistics\n");
         }
 
         return -1;
@@ -3270,8 +3284,7 @@ int com_cd(char *arg)
             } else if (ret == AFP_SERVER_RESULT_NOVOLUME) {
                 printf("Volume %s does not exist on this server\n", path);
             } else {
-                printf("Could not attach to volume %s (error code: %d)\n",
-                       url.volumename, ret);
+                printf("Could not attach to volume %s\n", url.volumename);
             }
 
             url.volumename[0] = '\0';
@@ -3503,8 +3516,7 @@ static int cmdline_server_startup(int batch_mode)
             } else if (ret == AFP_SERVER_RESULT_NOVOLUME) {
                 printf("Volume %s does not exist on this server\n", url.volumename);
             } else {
-                printf("Could not attach to volume %s (error code: %d)\n",
-                       url.volumename, ret);
+                printf("Could not attach to volume %s\n", url.volumename);
             }
 
             return -1;

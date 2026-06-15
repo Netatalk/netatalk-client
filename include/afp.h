@@ -13,6 +13,7 @@
 #include <netinet/in.h>
 
 #include "afp_protocol.h"
+#include "afp_xattr.h"
 #include "libafpclient.h"
 
 /* This is the maximum AFP version this library supports */
@@ -290,21 +291,6 @@ struct afp_server {
     char *attention_buffer;
 
 };
-
-struct afp_extattr_info {
-    unsigned int maxsize;
-    unsigned int size;
-    char data[1024];
-};
-
-/* Extended Attribute filtering for server internal metadata */
-/* Netatalk's internal metadata EA - should not be exposed to clients */
-#define NETATALK_EA_META "org.netatalk.Metadata"
-#define NETATALK_EA_META_LEN 22
-
-/* Check if this is an internal server EA that should be filtered */
-#define IS_INTERNAL_SERVER_EA(name) \
-    (strncmp((name), NETATALK_EA_META, NETATALK_EA_META_LEN) == 0)
 
 struct afp_comment {
     unsigned int maxsize;

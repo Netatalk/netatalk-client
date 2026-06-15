@@ -60,8 +60,6 @@
 #endif
 
 #ifdef __APPLE__
-#define AFP_XATTR_RESOURCEFORK "com.apple.ResourceFork"
-#define AFP_XATTR_FINDERINFO "com.apple.FinderInfo"
 #define AFP_FINDERINFO_FLAG_INVISIBLE 0x4000
 #define AFP_ACCESS_UNKNOWN_BITS 0x000fc001
 #define AFP_ACCESS_READ_BITS    ((1U << 1) | (1U << 7) | (1U << 9) | (1U << 11))
@@ -87,57 +85,12 @@
 
 #include "dsi.h"
 #include "afp_protocol.h"
+#include "afp_xattr.h"
 #include "codepage.h"
 #include "midlevel.h"
 #include "fuse_error.h"
 
 #ifdef __APPLE__
-static int xattr_list_contains(const char *list, size_t used,
-                               const char *name)
-{
-    size_t namelen = strlen(name);
-    size_t offset = 0;
-
-    while (offset < used) {
-        size_t remaining = used - offset;
-        size_t entrylen = strnlen(list + offset, remaining);
-
-        if (entrylen == remaining) {
-            return 0;
-        }
-
-        if (entrylen == namelen &&
-                memcmp(list + offset, name, namelen) == 0) {
-            return 1;
-        }
-
-        offset += entrylen + 1;
-    }
-
-    return 0;
-}
-
-static int append_xattr_name(char *list, size_t size, size_t *used,
-                             const char *name)
-{
-    size_t namelen = strlen(name) + 1;
-
-    if (list && size > 0) {
-        if (xattr_list_contains(list, *used, name)) {
-            return 0;
-        }
-
-        if (*used + namelen > size) {
-            return -ERANGE;
-        }
-
-        memcpy(list + *used, name, namelen);
-    }
-
-    *used += namelen;
-    return 0;
-}
-
 static uint16_t finderinfo_get_flags(const char finderinfo[32])
 {
     return ((uint16_t)(unsigned char)finderinfo[8] << 8)
@@ -295,7 +248,8 @@ static int fuse_setxattr(const char *path, const char *name,
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "*** setxattr resource fork %s (size=%zu position=%u)",
                        path, size, position);
-        ret = ml_setresourcefork(volume, path, value, size, position);
+        ret = ml_setresourcefork_flags(volume, path, value, size, position,
+                                       ml_flags);
         return ret;
     }
 
@@ -306,7 +260,7 @@ static int fuse_setxattr(const char *path, const char *name,
 
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "*** setxattr FinderInfo %s (size=%zu)", path, size);
-        ret = ml_setfinderinfo(volume, path, value, size);
+        ret = ml_setfinderinfo_flags(volume, path, value, size, ml_flags);
         return ret;
     }
 
@@ -327,64 +281,9 @@ static int fuse_listxattr(const char *path, char *list, size_t size)
     struct afp_volume * volume =
         (struct afp_volume *)
         ((struct fuse_context *)(fuse_get_context()))->private_data;
-#ifdef __APPLE__
-    char scratch[4096];
-    char *target = list;
-    size_t target_size = size;
-#endif
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** listxattr %s (size=%zu)", path, size);
-#ifdef __APPLE__
-
-    if (!list || size == 0) {
-        target = scratch;
-        target_size = sizeof(scratch);
-    }
-
-    ret = ml_listxattr(volume, path, target, target_size);
-#else
     ret = ml_listxattr(volume, path, list, size);
-#endif
-#ifdef __APPLE__
-
-    if (ret >= 0) {
-        size_t used = ret;
-        char finderinfo[32];
-
-        if (ml_getresourcefork(volume, path, NULL, 0, 0) > 0) {
-            ret = append_xattr_name(target, target_size, &used,
-                                    AFP_XATTR_RESOURCEFORK);
-
-            if (ret < 0) {
-                return ret;
-            }
-        }
-
-        if (ml_getfinderinfo(volume, path, finderinfo, sizeof(finderinfo)) == 32
-                && memcmp(finderinfo, "\0\0\0\0\0\0\0\0"
-                          "\0\0\0\0\0\0\0\0"
-                          "\0\0\0\0\0\0\0\0"
-                          "\0\0\0\0\0\0\0\0", 32) != 0) {
-            ret = append_xattr_name(target, target_size, &used,
-                                    AFP_XATTR_FINDERINFO);
-
-            if (ret < 0) {
-                return ret;
-            }
-        }
-
-        if (target != list && list && size > 0) {
-            if (used > size) {
-                return -ERANGE;
-            }
-
-            memcpy(list, target, used);
-        }
-
-        ret = used;
-    }
-
-#endif
     return ret;
 }
 
