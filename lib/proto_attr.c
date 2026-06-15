@@ -92,6 +92,7 @@ int afp_listextattrs_reply(__attribute__((unused)) struct afp_server * server,
     }
 
     i->size = 0;
+    i->copied = 0;
 
     if (size < sizeof(struct dsi_header)) {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
@@ -120,7 +121,8 @@ int afp_listextattrs_reply(__attribute__((unused)) struct afp_server * server,
                        datalength, available);
     }
 
-    i->size = len;
+    i->size = datalength;
+    i->copied = len;
 
     if (len > 0) {
         memcpy(i->data, reply->data, len);
@@ -146,6 +148,7 @@ int afp_getextattr_reply(__attribute__((unused)) struct afp_server * server,
 
     if (i) {
         i->size = 0;
+        i->copied = 0;
     }
 
     if (size < sizeof(struct dsi_header)) {
@@ -176,7 +179,8 @@ int afp_getextattr_reply(__attribute__((unused)) struct afp_server * server,
                            datalength, available);
         }
 
-        i->size = len;
+        i->size = datalength;
+        i->copied = len;
 
         if (len > 0) {
             memcpy(i->data, reply->data, len);

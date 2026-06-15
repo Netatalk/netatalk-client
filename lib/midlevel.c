@@ -15,6 +15,7 @@
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
@@ -37,13 +38,13 @@
 #include "codepage.h"
 #include "midlevel.h"
 #include "afp_internal.h"
+#include "afp_xattr.h"
 #include "forklist.h"
 #include "uams.h"
 #include "lowlevel.h"
 
 
 #define min(a,b) (((a)<(b)) ? (a) : (b))
-#define AFP_XATTR_NAME_MAX 255U
 
 static int normalize_xattr_name(const char *name, const char **afp_name,
                                 unsigned short *afp_namelen)
@@ -54,16 +55,32 @@ static int normalize_xattr_name(const char *name, const char **afp_name,
         return -ENAMETOOLONG;
     }
 
-    *afp_name = name;
+    const char *stripped = afp_xattr_strip_user_prefix(name);
 
-    if (length >= sizeof("user.") - 1U
-            && memcmp(name, "user.", sizeof("user.") - 1U) == 0) {
-        *afp_name += sizeof("user.") - 1U;
-        length -= sizeof("user.") - 1U;
+    if (stripped != name) {
+        length -= AFP_XATTR_USER_PREFIX_LEN;
     }
 
+    *afp_name = stripped;
     *afp_namelen = (unsigned short)length;
     return 0;
+}
+
+static const char *normalized_xattr_name_for_compare(const char *name)
+{
+    return afp_xattr_strip_user_prefix(name);
+}
+
+static int is_resourcefork_xattr(const char *name)
+{
+    return strcmp(normalized_xattr_name_for_compare(name),
+                  AFP_XATTR_RESOURCEFORK) == 0;
+}
+
+static int is_finderinfo_xattr(const char *name)
+{
+    return strcmp(normalized_xattr_name_for_compare(name),
+                  AFP_XATTR_FINDERINFO) == 0;
 }
 
 static int get_unixprivs(struct afp_volume * volume,
@@ -1735,6 +1752,67 @@ static int open_appledouble_meta(struct afp_volume *volume, const char *path,
     return appledouble_open_meta(volume, converted_path, resource, flags, fp);
 }
 
+static int validate_special_xattr_flags(int flags, int exists_ret)
+{
+    int exists;
+
+    if ((flags & kXAttrCreate) && (flags & kXAttrREplace)) {
+        return -EINVAL;
+    }
+
+    if (exists_ret < 0 && exists_ret != -ENOATTR && exists_ret != -EFBIG) {
+        return exists_ret;
+    }
+
+    exists = exists_ret >= 0 || exists_ret == -EFBIG;
+
+    if ((flags & kXAttrCreate) && exists) {
+        return -EEXIST;
+    }
+
+    if ((flags & kXAttrREplace) && !exists) {
+        return -ENOATTR;
+    }
+
+    return 0;
+}
+
+static int append_listed_xattr_name(char *list, size_t size, size_t *used,
+                                    const char *name)
+{
+    size_t namelen = strnlen(name, AFP_XATTR_NAME_MAX + 1U);
+#ifdef __APPLE__
+    size_t output_namelen = namelen;
+#else
+    size_t output_namelen = namelen + sizeof("user.") - 1U;
+#endif
+
+    if (namelen > AFP_XATTR_NAME_MAX) {
+        return -ENAMETOOLONG;
+    }
+
+    if (output_namelen > SIZE_MAX - 1U
+            || *used > SIZE_MAX - output_namelen - 1U) {
+        return -EOVERFLOW;
+    }
+
+    if (list && size > 0) {
+        if (*used + output_namelen + 1U > size) {
+            return -ERANGE;
+        }
+
+#ifdef __APPLE__
+        memcpy(list + *used, name, namelen + 1U);
+#else
+        memcpy(list + *used, "user.", sizeof("user.") - 1U);
+        memcpy(list + *used + sizeof("user.") - 1U, name, namelen + 1U);
+#endif
+    }
+
+    *used += output_namelen + 1U;
+    return 0;
+}
+
 int ml_getresourcefork(struct afp_volume * volume, const char *path,
                        void *value, size_t size, off_t position)
 {
@@ -1745,7 +1823,7 @@ int ml_getresourcefork(struct afp_volume * volume, const char *path,
     uint64_t remaining;
     int ret;
 
-    if (!volume || !path) {
+    if (!volume || !path || (!value && size > 0)) {
         return -EINVAL;
     }
 
@@ -1756,7 +1834,7 @@ int ml_getresourcefork(struct afp_volume * volume, const char *path,
 
     ret = ll_getattr(volume, converted_path, &stbuf, 1);
 
-    if (ret < 0) {
+    if (ret < 0 && ret != -EFBIG) {
         return ret;
     }
 
@@ -1843,7 +1921,7 @@ int ml_setresourcefork(struct afp_volume * volume, const char *path,
         return ret;
     }
 
-    if (position == 0) {
+    if (position == 0 && size == 0) {
         ret = ll_zero_file(volume, fp.forkid, 1);
 
         if (ret != 0) {
@@ -1877,8 +1955,33 @@ int ml_setresourcefork(struct afp_volume * volume, const char *path,
     return 0;
 }
 
+int ml_setresourcefork_flags(struct afp_volume * volume, const char *path,
+                             const void *value, size_t size, off_t position,
+                             int flags)
+{
+    int ret;
+
+    if (flags & (kXAttrCreate | kXAttrREplace)) {
+        ret = validate_special_xattr_flags(flags,
+                                           ml_getresourcefork(volume, path,
+                                               NULL, 0, 0));
+
+        if (ret < 0) {
+            return ret;
+        }
+    }
+
+    return ml_setresourcefork(volume, path, value, size, position);
+}
+
 int ml_removeresourcefork(struct afp_volume * volume, const char *path)
 {
+    int ret = ml_getresourcefork(volume, path, NULL, 0, 0);
+
+    if (ret < 0 && ret != -EFBIG) {
+        return ret;
+    }
+
     return ml_setresourcefork(volume, path, NULL, 0, 0);
 }
 
@@ -1965,6 +2068,24 @@ int ml_setfinderinfo(struct afp_volume * volume, const char *path,
     return 0;
 }
 
+int ml_setfinderinfo_flags(struct afp_volume * volume, const char *path,
+                           const void *value, size_t size, int flags)
+{
+    int ret;
+
+    if (flags & (kXAttrCreate | kXAttrREplace)) {
+        ret = validate_special_xattr_flags(flags,
+                                           ml_getfinderinfo(volume, path,
+                                               NULL, 0));
+
+        if (ret < 0) {
+            return ret;
+        }
+    }
+
+    return ml_setfinderinfo(volume, path, value, size);
+}
+
 int ml_removefinderinfo(struct afp_volume * volume, const char *path)
 {
     char finderinfo[32];
@@ -1986,13 +2107,21 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
         return -EINVAL;
     }
 
+    if (is_resourcefork_xattr(name)) {
+        return ml_getresourcefork(volume, path, value, size, 0);
+    }
+
+    if (is_finderinfo_xattr(name)) {
+        return ml_getfinderinfo(volume, path, value, size);
+    }
+
     /* Ignore EAs if server doesn't support them */
     if (!(volume->attributes & kSupportsExtAttrs)) {
         return -ENOATTR;
     }
 
     /* Filter internal server EAs - pretend they don't exist */
-    if (IS_INTERNAL_SERVER_EA(name)) {
+    if (IS_INTERNAL_SERVER_XATTR(name)) {
         return -ENOATTR;
     }
 
@@ -2022,6 +2151,7 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
      * fixed-size, so cap the request at the storage we actually have. */
     info.maxsize = sizeof(info.data);
     info.size = 0;
+    info.copied = 0;
     /* Get the extended attribute */
     ret = afp_getextattr(volume, dirid, 0, info.maxsize,
                          basename, afp_namelen, afp_name, &info);
@@ -2058,6 +2188,10 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
         return -ERANGE;
     }
 
+    if (info.copied < info.size) {
+        return -ERANGE;
+    }
+
     /* Copy data to user buffer */
     if (value && info.size > 0) {
         memcpy(value, info.data, info.size);
@@ -2080,13 +2214,21 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
         return -EINVAL;
     }
 
+    if (is_resourcefork_xattr(name)) {
+        return ml_setresourcefork_flags(volume, path, value, size, 0, flags);
+    }
+
+    if (is_finderinfo_xattr(name)) {
+        return ml_setfinderinfo_flags(volume, path, value, size, flags);
+    }
+
     /* Silently succeed when server doesn't support EAs to allow file copies */
     if (!(volume->attributes & kSupportsExtAttrs)) {
         return 0;
     }
 
     /* Filter internal server EAs - silently succeed to allow file copies */
-    if (IS_INTERNAL_SERVER_EA(name)) {
+    if (IS_INTERNAL_SERVER_XATTR(name)) {
         return 0;
     }
 
@@ -2152,64 +2294,64 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
     struct afp_extattr_info info;
     unsigned int dirid;
     char basename[AFP_MAX_PATH];
-    int ret;
+    size_t filtered_size = 0;
+    int ret = 0;
 
     if (!volume || !path) {
         return -EINVAL;
     }
 
-    /* Return empty list when server doesn't support EAs */
-    if (!(volume->attributes & kSupportsExtAttrs)) {
-        return 0;
+    if ((volume->attributes & kSupportsExtAttrs) && strcmp(path, "/") != 0) {
+        /* Parse path into directory ID and basename */
+        ret = get_dirid(volume, path, basename, &dirid);
+
+        if (ret != 0) {
+            return ret;
+        }
+
+        /* Note: We don't call ll_get_directory_entry here to avoid file locking
+         * conflicts. The FUSE layer already verified the file exists via getattr.
+         * If the file doesn't exist, the AFP command will return kFPObjectNotFound. */
+        /* Same minimum-1024 rule as ml_getxattr, capped to the fixed reply buffer. */
+        info.maxsize = sizeof(info.data);
+        info.size = 0;
+        info.copied = 0;
+        /* List extended attributes */
+        ret = afp_listextattr(volume, dirid, 0, basename, &info);
+
+        switch (ret) {
+        case kFPNoErr:
+            break;
+
+        case kFPAccessDenied:
+            return -EACCES;
+
+        case kFPObjectNotFound:
+            return -ENOENT;
+
+        case kFPParamErr:
+            /* TC returns kFPParamErr when MaxReplySize is too small; treat as
+             * empty list so callers see no attributes rather than a hard error. */
+            info.size = 0;
+            break;
+
+        default:
+            return -EIO;
+        }
+    } else {
+        info.size = 0;
+        info.copied = 0;
     }
 
-    /* Special case: root directory - return empty list */
-    if (strcmp(path, "/") == 0) {
-        return 0;
-    }
-
-    /* Parse path into directory ID and basename */
-    ret = get_dirid(volume, path, basename, &dirid);
-
-    if (ret != 0) {
-        return ret;
-    }
-
-    /* Note: We don't call ll_get_directory_entry here to avoid file locking
-     * conflicts. The FUSE layer already verified the file exists via getattr.
-     * If the file doesn't exist, the AFP command will return kFPObjectNotFound. */
-    /* Same minimum-1024 rule as ml_getxattr, capped to the fixed reply buffer. */
-    info.maxsize = sizeof(info.data);
-    info.size = 0;
-    /* List extended attributes */
-    ret = afp_listextattr(volume, dirid, 0, basename, &info);
-
-    switch (ret) {
-    case kFPNoErr:
-        break;
-
-    case kFPAccessDenied:
-        return -EACCES;
-
-    case kFPObjectNotFound:
-        return -ENOENT;
-
-    case kFPParamErr:
-        /* TC returns kFPParamErr when MaxReplySize is too small; treat as
-         * empty list so callers see no attributes rather than a hard error. */
-        return 0;
-
-    default:
-        return -EIO;
+    if (info.copied < info.size) {
+        return -ERANGE;
     }
 
     /* Filter out internal server EAs from the list.
      * On Linux, prepend "user." namespace prefix (required by the kernel EA
      * interface).  On macOS, AFP xattr names are passed as-is; no prefix. */
     const char *src = info.data;
-    char *dst = list;
-    size_t remaining = info.size;
-    size_t filtered_size = 0;
+    size_t remaining = info.copied;
 
     while (remaining > 0) {
         size_t namelen = strnlen(src, remaining);
@@ -2225,36 +2367,12 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
         }
 
         /* Only include this EA if it's not filtered */
-        if (!IS_INTERNAL_SERVER_EA(src)) {
-#ifdef __APPLE__
-            /* macOS: return the raw AFP name (e.g. "com.apple.FinderInfo") */
-            size_t output_namelen = namelen;
+        if (!IS_INTERNAL_SERVER_XATTR(src)) {
+            ret = append_listed_xattr_name(list, size, &filtered_size, src);
 
-            if (list && size > 0) {
-                if (filtered_size + output_namelen + 1 <= size) {
-                    memcpy(dst, src, namelen + 1);
-                    dst += output_namelen + 1;
-                } else {
-                    return -ERANGE;
-                }
+            if (ret < 0) {
+                return ret;
             }
-
-#else
-            /* Linux: prepend "user." namespace prefix */
-            size_t output_namelen = namelen + 5;  /* "user." + name */
-
-            if (list && size > 0) {
-                if (filtered_size + output_namelen + 1 <= size) {
-                    memcpy(dst, "user.", 5);
-                    memcpy(dst + 5, src, namelen + 1);
-                    dst += output_namelen + 1;
-                } else {
-                    return -ERANGE;
-                }
-            }
-
-#endif
-            filtered_size += output_namelen + 1;
         }
 
         src += namelen + 1;
@@ -2277,13 +2395,21 @@ int ml_removexattr(struct afp_volume * volume, const char *path,
         return -EINVAL;
     }
 
+    if (is_resourcefork_xattr(name)) {
+        return ml_removeresourcefork(volume, path);
+    }
+
+    if (is_finderinfo_xattr(name)) {
+        return ml_removefinderinfo(volume, path);
+    }
+
     /* Ignore EAs if server doesn't support them to allow file deletions */
     if (!(volume->attributes & kSupportsExtAttrs)) {
         return -ENOATTR;
     }
 
     /* Filter internal server EAs - deny removal */
-    if (IS_INTERNAL_SERVER_EA(name)) {
+    if (IS_INTERNAL_SERVER_XATTR(name)) {
         return -EACCES;
     }
 

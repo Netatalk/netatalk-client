@@ -1625,37 +1625,29 @@ static unsigned char process_metadata(struct daemon_client *c)
     }
 
     switch (request->header.command) {
-    case AFP_SERVER_COMMAND_GETXATTR:
-        if (!(volume->attributes & kSupportsExtAttrs)) {
-            ret = -ENOTSUP;
-        } else {
-            char *xattr_data = NULL;
+    case AFP_SERVER_COMMAND_GETXATTR: {
+        char *xattr_data = NULL;
 
-            if (request->size) {
-                xattr_data = data;
-            }
-
-            ret = ml_getxattr(volume, request->path, request->name,
-                              xattr_data, request->size);
+        if (request->size) {
+            xattr_data = data;
         }
 
-        break;
+        ret = ml_getxattr(volume, request->path, request->name,
+                          xattr_data, request->size);
+    }
+    break;
 
-    case AFP_SERVER_COMMAND_LISTXATTR:
-        if (!(volume->attributes & kSupportsExtAttrs)) {
-            ret = -ENOTSUP;
-        } else {
-            char *listxattr_data = NULL;
+    case AFP_SERVER_COMMAND_LISTXATTR: {
+        char *listxattr_data = NULL;
 
-            if (request->size) {
-                listxattr_data = data;
-            }
-
-            ret = ml_listxattr(volume, request->path,
-                               listxattr_data, request->size);
+        if (request->size) {
+            listxattr_data = data;
         }
 
-        break;
+        ret = ml_listxattr(volume, request->path,
+                           listxattr_data, request->size);
+    }
+    break;
 
     case AFP_SERVER_COMMAND_GETFINDERINFO: {
         char *finderinfo_data = NULL;
@@ -1681,9 +1673,8 @@ static unsigned char process_metadata(struct daemon_client *c)
         break;
 
     case AFP_SERVER_COMMAND_SETXATTR:
-        ret = !(volume->attributes & kSupportsExtAttrs) ? -ENOTSUP
-              : ml_setxattr(volume, request->path, request->name,
-                            request->data, request->size, request->flags);
+        ret = ml_setxattr(volume, request->path, request->name,
+                          request->data, request->size, request->flags);
         break;
 
     case AFP_SERVER_COMMAND_SETFINDERINFO:
@@ -1702,8 +1693,7 @@ static unsigned char process_metadata(struct daemon_client *c)
         break;
 
     case AFP_SERVER_COMMAND_REMOVEXATTR:
-        ret = !(volume->attributes & kSupportsExtAttrs) ? -ENOTSUP
-              : ml_removexattr(volume, request->path, request->name);
+        ret = ml_removexattr(volume, request->path, request->name);
         break;
 
     case AFP_SERVER_COMMAND_REMOVEFINDERINFO:

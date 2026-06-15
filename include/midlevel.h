@@ -88,6 +88,10 @@ int ml_getresourcefork(struct afp_volume * volume, const char *path,
 int ml_setresourcefork(struct afp_volume * volume, const char *path,
                        const void *value, size_t size, off_t position);
 
+int ml_setresourcefork_flags(struct afp_volume * volume, const char *path,
+                             const void *value, size_t size, off_t position,
+                             int flags);
+
 int ml_removeresourcefork(struct afp_volume * volume, const char *path);
 
 int ml_getfinderinfo(struct afp_volume * volume, const char *path,
@@ -95,6 +99,9 @@ int ml_getfinderinfo(struct afp_volume * volume, const char *path,
 
 int ml_setfinderinfo(struct afp_volume * volume, const char *path,
                      const void *value, size_t size);
+
+int ml_setfinderinfo_flags(struct afp_volume * volume, const char *path,
+                           const void *value, size_t size, int flags);
 
 int ml_removefinderinfo(struct afp_volume * volume, const char *path);
 
