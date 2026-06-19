@@ -259,6 +259,7 @@ static struct manager_child *find_child_by_mountpoint(const char *mountpoint,
         char text[1024];
         int len = sizeof(text);
         int pos = 0;
+        text[0] = '\0';
 
         if (afp_status_header(text, &len) >= 0) {
             pos = strlen(text);
@@ -267,8 +268,9 @@ static struct manager_child *find_child_by_mountpoint(const char *mountpoint,
         char safe_mountpoint[PATH_MAX * 4];
         sanitize_text(mountpoint, safe_mountpoint,
                       sizeof(safe_mountpoint));
-        snprintf(text + pos, sizeof(text) - pos, "No mount found at %s\n",
-                 safe_mountpoint);
+        append_text(text, sizeof(text), &pos, "No mount found at ");
+        append_text(text, sizeof(text), &pos, safe_mountpoint);
+        append_text(text, sizeof(text), &pos, "\n");
         response.result = AFP_SERVER_RESULT_ERROR;
         response.len = strlen(text);
         (void)write(client_fd, &response, sizeof(response));
@@ -307,10 +309,14 @@ static int connect_to_child_socket(const char *socket_path,
             struct afp_server_response response;
             char text[1024];
             char safe_mountpoint[PATH_MAX * 4];
+            int pos = 0;
+            text[0] = '\0';
             sanitize_text(mountpoint, safe_mountpoint,
                           sizeof(safe_mountpoint));
-            snprintf(text, sizeof(text), "Socket path too long for %s\n",
-                     safe_mountpoint);
+            append_text(text, sizeof(text), &pos,
+                        "Socket path too long for ");
+            append_text(text, sizeof(text), &pos, safe_mountpoint);
+            append_text(text, sizeof(text), &pos, "\n");
             response.result = AFP_SERVER_RESULT_ERROR;
             response.len = strlen(text);
             (void)write(client_fd, &response, sizeof(response));
