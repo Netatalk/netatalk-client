@@ -568,49 +568,49 @@ int appledouble_open(struct afp_volume * volume, const char * path, int flags,
                      struct afp_file_info *fp)
 {
     char *newpath;
-    int ret;
+    int ret = 0;
 
     switch ((fp->resource = extra_translate(volume, path, &newpath))) {
     case AFP_META_RESOURCE:
         if (get_dirid(volume, newpath, fp->basename, &fp->did) < 0) {
             ret = -ENOENT;
-            goto error;
+            goto out;
         }
 
         ret = ll_open(volume, newpath, flags, fp);
-        free(newpath);
 
         if (ret < 0) {
-            return ret;
+            goto out;
         }
 
-        return 1;
+        ret = 1;
+        goto out;
 
     case AFP_META_APPLEDOUBLE:
-        free(newpath);
-        return -EISDIR;
+        ret = -EISDIR;
+        goto out;
 
     case AFP_META_FINDERINFO:
         if (get_dirid(volume, newpath, fp->basename, &fp->did) < 0) {
-            free(newpath);
-            return -ENOENT;
+            ret = -ENOENT;
+            goto out;
         }
 
-        free(newpath);
-        return 1;
+        ret = 1;
+        goto out;
 
     case AFP_META_COMMENT:
         if (get_dirid(volume, newpath, fp->basename, &fp->did) < 0) {
             ret = -ENOENT;
-            goto error;
+            goto out;
         }
 
         if (volume->dtrefnum == 0) {
             switch (afp_opendt(volume, &volume->dtrefnum)) {
             case kFPParamErr:
             case kFPMiscErr:
-                free(newpath);
-                return -EIO;
+                ret = -EIO;
+                goto out;
 
             case kFPNoErr:
             default:
@@ -618,16 +618,15 @@ int appledouble_open(struct afp_volume * volume, const char * path, int flags,
             }
         }
 
-        free(newpath);
-        return 1;
+        ret = 1;
+        goto out;
 
     case AFP_META_SERVER_ICON:
-        free(newpath);
-        return 1;
+        ret = 1;
+        goto out;
     }
 
-    return 0;
-error:
+out:
     free(newpath);
     return ret;
 }
