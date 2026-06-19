@@ -268,6 +268,57 @@ int invalid_filename(struct afp_server * server, const char * filename)
     return 0;
 }
 
+void sanitize_text(const char *text, char *sanitized, size_t size)
+{
+    size_t pos = 0;
+
+    if (size == 0) {
+        return;
+    }
+
+    if (!text) {
+        sanitized[0] = '\0';
+        return;
+    }
+
+    while (*text && pos + 1 < size) {
+        unsigned char ch = (unsigned char) * text++;
+
+        if (ch == '\r' || ch == '\n' || ch == '\t') {
+            char escaped;
+
+            if (ch == '\r') {
+                escaped = 'r';
+            } else if (ch == '\n') {
+                escaped = 'n';
+            } else {
+                escaped = 't';
+            }
+
+            if (pos + 2 >= size) {
+                break;
+            }
+
+            sanitized[pos++] = '\\';
+            sanitized[pos++] = escaped;
+        } else if (ch < 0x20 || ch == 0x7f) {
+            if (pos + 4 >= size) {
+                break;
+            }
+
+            static const char hex[] = "0123456789abcdef";
+            sanitized[pos++] = '\\';
+            sanitized[pos++] = 'x';
+            sanitized[pos++] = hex[ch >> 4];
+            sanitized[pos++] = hex[ch & 0x0f];
+        } else {
+            sanitized[pos++] = (char)ch;
+        }
+    }
+
+    sanitized[pos] = '\0';
+}
+
 const char *log_level_to_string(int level)
 {
     switch (level) {

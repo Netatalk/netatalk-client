@@ -21,7 +21,6 @@
 #include <getopt.h>
 #include <limits.h>
 #include <signal.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,9 +73,14 @@ void fuse_forced_ending_hook(void)
             for (int i = 0; i < s->num_volumes; i++) {
                 volume = &s->volumes[i];
 
-                if (volume->mounted == AFP_VOLUME_MOUNTED)
+                if (volume->mounted == AFP_VOLUME_MOUNTED) {
+                    char safe_mountpoint[PATH_MAX * 4];
+                    sanitize_text(volume->mountpoint,
+                                  safe_mountpoint,
+                                  sizeof(safe_mountpoint));
                     log_for_client(NULL, AFPFSD, LOG_NOTICE,
-                                   "Unmounting %s", volume->mountpoint);
+                                   "Unmounting %s", safe_mountpoint);
+                }
 
                 afp_unmount_volume(volume);
             }
@@ -93,9 +97,12 @@ int fuse_unmount_volume(struct afp_volume * volume)
     }
 
     if (!volume->priv) {
+        char safe_mountpoint[PATH_MAX * 4];
+        sanitize_text(volume->mountpoint, safe_mountpoint,
+                      sizeof(safe_mountpoint));
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "FUSE handle already cleared for %s - skipping unmount",
-                       volume->mountpoint);
+                       safe_mountpoint);
         return 0;
     }
 
@@ -103,8 +110,11 @@ int fuse_unmount_volume(struct afp_volume * volume)
     pthread_t self = pthread_self();
     pthread_t vol_thread = volume->thread;
     int is_same_thread = pthread_equal(self, vol_thread);
+    char safe_mountpoint[PATH_MAX * 4];
+    sanitize_text(volume->mountpoint, safe_mountpoint,
+                  sizeof(safe_mountpoint));
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "Unmounting FUSE filesystem at %s", volume->mountpoint);
+                   "Unmounting FUSE filesystem at %s", safe_mountpoint);
     fuse_unmount((struct fuse *)volume->priv);
 
     /* Wait for FUSE thread to complete (if called from external thread) */
@@ -113,7 +123,7 @@ int fuse_unmount_volume(struct afp_volume * volume)
                        "Waiting for FUSE thread to complete");
         pthread_join(volume->thread, NULL);
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                       "FUSE thread completed for %s", volume->mountpoint);
+                       "FUSE thread completed for %s", safe_mountpoint);
     }
 
     return 0;
@@ -172,6 +182,35 @@ struct manager_child {
 
 static struct manager_child *child_list = NULL;
 
+static int append_text(char *text, size_t size, int *pos, const char *src)
+{
+    size_t available;
+    size_t len;
+
+    if (*pos < 0 || (size_t) * pos >= size) {
+        if (size > 0) {
+            text[size - 1] = '\0';
+            *pos = (int)size - 1;
+        }
+
+        return -1;
+    }
+
+    available = size - (size_t) * pos;
+    len = strnlen(src, available);
+    memcpy(text + *pos, src, len);
+
+    if (len >= available) {
+        *pos = (int)size - 1;
+        text[*pos] = '\0';
+        return -1;
+    }
+
+    *pos += (int)len;
+    text[*pos] = '\0';
+    return 0;
+}
+
 /* Send exit command to a socket path */
 static void send_exit_to_socket(const char *socket_path)
 {
@@ -225,7 +264,11 @@ static struct manager_child *find_child_by_mountpoint(const char *mountpoint,
             pos = strlen(text);
         }
 
-        snprintf(text + pos, sizeof(text) - pos, "No mount found at %s\n", mountpoint);
+        char safe_mountpoint[PATH_MAX * 4];
+        sanitize_text(mountpoint, safe_mountpoint,
+                      sizeof(safe_mountpoint));
+        snprintf(text + pos, sizeof(text) - pos, "No mount found at %s\n",
+                 safe_mountpoint);
         response.result = AFP_SERVER_RESULT_ERROR;
         response.len = strlen(text);
         (void)write(client_fd, &response, sizeof(response));
@@ -263,7 +306,11 @@ static int connect_to_child_socket(const char *socket_path,
         if (client_fd >= 0) {
             struct afp_server_response response;
             char text[1024];
-            snprintf(text, sizeof(text), "Socket path too long for %s\n", mountpoint);
+            char safe_mountpoint[PATH_MAX * 4];
+            sanitize_text(mountpoint, safe_mountpoint,
+                          sizeof(safe_mountpoint));
+            snprintf(text, sizeof(text), "Socket path too long for %s\n",
+                     safe_mountpoint);
             response.result = AFP_SERVER_RESULT_ERROR;
             response.len = strlen(text);
             (void)write(client_fd, &response, sizeof(response));
@@ -286,8 +333,11 @@ static int connect_to_child_socket(const char *socket_path,
                 pos = strlen(text);
             }
 
+            char safe_mountpoint[PATH_MAX * 4];
+            sanitize_text(mountpoint, safe_mountpoint,
+                          sizeof(safe_mountpoint));
             snprintf(text + pos, sizeof(text) - pos,
-                     "Could not connect to daemon for %s\n", mountpoint);
+                     "Could not connect to daemon for %s\n", safe_mountpoint);
             response.result = AFP_SERVER_RESULT_ERROR;
             response.len = strlen(text);
             (void)write(client_fd, &response, sizeof(response));
@@ -359,10 +409,10 @@ static void add_child(pid_t pid, const char *socket_id, const char *mountpoint,
     }
 
     child->pid = pid;
-    snprintf(child->socket_id, sizeof(child->socket_id), "%s", socket_id);
-    snprintf(child->mountpoint, sizeof(child->mountpoint), "%s", mountpoint);
-    snprintf(child->volumename, sizeof(child->volumename), "%s",
-             volumename ? volumename : "");
+    strlcpy(child->socket_id, socket_id, sizeof(child->socket_id));
+    strlcpy(child->mountpoint, mountpoint, sizeof(child->mountpoint));
+    strlcpy(child->volumename, volumename ? volumename : "",
+            sizeof(child->volumename));
     child->next = child_list;
     child_list = child;
 }
@@ -626,9 +676,15 @@ static int handle_manager_command(int client_fd)
                     }
                 }
 
+                char safe_mountpoint[PATH_MAX * 4];
+                char safe_socket_id[PATH_MAX * 4];
+                sanitize_text(child->mountpoint, safe_mountpoint,
+                              sizeof(safe_mountpoint));
+                sanitize_text(child->socket_id, safe_socket_id,
+                              sizeof(safe_socket_id));
                 log_for_client(NULL, AFPFSD, LOG_DEBUG,
                                "Child check: pid=%d mount=%s socket=%s access=%d sock=%d conn=%d errno=%d alive=%d",
-                               child->pid, child->mountpoint, child->socket_id,
+                               child->pid, safe_mountpoint, safe_socket_id,
                                access_result, socket_result, connect_result, connect_errno, is_alive);
 
                 if (!is_alive) {
@@ -645,46 +701,62 @@ static int handle_manager_command(int client_fd)
             }
 
             if (count == 0) {
-                pos += snprintf(text + pos, len,
-                                "Manager daemon: no active mounts");
+                append_text(text, sizeof(text), &pos,
+                            "Manager daemon: no active mounts");
 
                 if (initial_count > 0) {
-                    pos += snprintf(text + pos, sizeof(text) - pos,
-                                    " (removed %d stale)", removed_count);
+                    char removed_text[64];
+                    snprintf(removed_text, sizeof(removed_text),
+                             " (removed %d stale)", removed_count);
+                    append_text(text, sizeof(text), &pos, removed_text);
                 }
             } else {
-                pos += snprintf(text + pos, len,
-                                "Manager daemon: %d active mount%s",
-                                count, count == 1 ? "" : "s");
+                char count_text[64];
+                snprintf(count_text, sizeof(count_text),
+                         "Manager daemon: %d active mount%s",
+                         count, count == 1 ? "" : "s");
+                append_text(text, sizeof(text), &pos, count_text);
 
                 if (removed_count > 0) {
-                    pos += snprintf(text + pos, sizeof(text) - pos,
-                                    " (removed %d stale)", removed_count);
+                    char removed_text[64];
+                    snprintf(removed_text, sizeof(removed_text),
+                             " (removed %d stale)", removed_count);
+                    append_text(text, sizeof(text), &pos, removed_text);
                 }
 
-                pos += snprintf(text + pos, sizeof(text) - pos, "\n");
+                append_text(text, sizeof(text), &pos, "\n");
 
                 /* List mountpoints with volume names */
                 for (child = child_list; child; child = child->next) {
+                    char safe_volumename[AFP_VOLUME_NAME_UTF8_LEN * 4];
+                    char safe_mountpoint[PATH_MAX * 4];
+                    sanitize_text(child->volumename, safe_volumename,
+                                  sizeof(safe_volumename));
+                    sanitize_text(child->mountpoint, safe_mountpoint,
+                                  sizeof(safe_mountpoint));
+
                     if (child->volumename[0] != '\0') {
-                        pos += snprintf(text + pos, sizeof(text) - pos,
-                                        "  %s: %s\n", child->volumename,
-                                        child->mountpoint);
+                        append_text(text, sizeof(text), &pos, "  ");
+                        append_text(text, sizeof(text), &pos, safe_volumename);
+                        append_text(text, sizeof(text), &pos, ": ");
+                        append_text(text, sizeof(text), &pos, safe_mountpoint);
+                        append_text(text, sizeof(text), &pos, "\n");
                     } else {
-                        pos += snprintf(text + pos, sizeof(text) - pos,
-                                        "  %s\n", child->mountpoint);
+                        append_text(text, sizeof(text), &pos, "  ");
+                        append_text(text, sizeof(text), &pos, safe_mountpoint);
+                        append_text(text, sizeof(text), &pos, "\n");
                     }
 
-                    if (pos >= (int)sizeof(text)) {
+                    if (pos >= (int)sizeof(text) - 1) {
                         break;
                     }
                 }
 
-                pos += snprintf(text + pos, sizeof(text) - pos,
-                                "\nRun 'afp_client status [mountpoint]' for details");
+                append_text(text, sizeof(text), &pos,
+                            "\nRun 'afp_client status [mountpoint]' for details");
             }
 
-            snprintf(text + pos, sizeof(text) - pos, "\n");
+            append_text(text, sizeof(text), &pos, "\n");
             response.result = AFP_SERVER_RESULT_OKAY;
             response.len = strlen(text);
 
@@ -762,8 +834,11 @@ static int run_manager_daemon(void)
 
     /* Install SIGCHLD handler to immediately reap child processes */
     daemon_install_sigchld_handler();
+    char safe_commandfilename[PATH_MAX * 4];
+    sanitize_text(commandfilename, safe_commandfilename,
+                  sizeof(safe_commandfilename));
     log_for_client(NULL, AFPFSD, LOG_NOTICE,
-                   "Starting manager daemon on %s", commandfilename);
+                   "Starting manager daemon on %s", safe_commandfilename);
 
     while (1) {
         fd_set rds;

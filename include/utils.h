@@ -39,6 +39,8 @@ void trigger_exit(void);
 void afp_set_auto_shutdown_on_unmount(int enabled);
 int afp_get_auto_shutdown_on_unmount(void);
 
+void sanitize_text(const char *text, char *sanitized, size_t size);
+
 /* Log level conversion functions */
 const char *log_level_to_string(int level);
 int string_to_log_level(const char *str, int *level_out);
