@@ -33,6 +33,7 @@
 #endif
 
 #include "afp.h"
+#include "compat.h"
 #include "fuse_ipc.h"
 #include "uams_def.h"
 #include "map_def.h"
@@ -368,11 +369,29 @@ static void usage(void)
 
 static char *get_password(const char *prompt)
 {
+    static char pwd[AFP_MAX_PASSWORD_LEN + 1];
+    explicit_bzero(pwd, sizeof(pwd));
+
     if (isatty(fileno(stdin))) {
-        return getpass(prompt);
+        char *pass = getpass(prompt);
+        size_t len;
+
+        if (pass == NULL) {
+            return NULL;
+        }
+
+        len = strnlen(pass, sizeof(pwd));
+
+        if (len >= sizeof(pwd)) {
+            explicit_bzero(pass, len);
+            return NULL;
+        }
+
+        memcpy(pwd, pass, len);
+        pwd[len] = '\0';
+        explicit_bzero(pass, len);
     } else {
         char *askpass = NULL;
-        static char pwd[AFP_MAX_PASSWORD_LEN + 1];
         FILE *fp;
 
         if (asprintf(&askpass, "ssh-askpass %s", prompt) < 0) {
@@ -390,12 +409,41 @@ static char *get_password(const char *prompt)
             }
         } else {
             perror(askpass);
-            memset(pwd, (int) sizeof(pwd), (0));
+            free(askpass);
+            return NULL;
         }
 
         free(askpass);
-        return pwd;
     }
+
+    return pwd;
+}
+
+static int copy_secret(char *dst, size_t dstlen, const char *src,
+                       size_t max_chars, const char *name)
+{
+    size_t len;
+
+    if (dstlen <= max_chars) {
+        fprintf(stderr, "%s destination buffer too small\n", name);
+        return -1;
+    }
+
+    if (src == NULL) {
+        return -1;
+    }
+
+    len = strnlen(src, max_chars + 1);
+
+    if (len > max_chars) {
+        fprintf(stderr, "%s too long, maximum is %zu characters\n",
+                name, max_chars);
+        return -1;
+    }
+
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+    return 0;
 }
 
 static int send_command(int sock, char * msg, int len)
@@ -669,17 +717,36 @@ static int do_mount(int argc, char ** argv)
              && request.url.password[0] == '\0')) {
         char *p = get_password("Password: ");
 
-        if (p) {
-            snprintf(request.url.password, AFP_MAX_PASSWORD_LEN, "%s", p);
+        if (p == NULL ||
+                copy_secret(request.url.password,
+                            sizeof(request.url.password), p,
+                            sizeof(request.url.password) - 1,
+                            "Password") < 0) {
+            if (p) {
+                explicit_bzero(p, AFP_MAX_PASSWORD_LEN + 1);
+            }
+
+            return -1;
         }
+
+        explicit_bzero(p, AFP_MAX_PASSWORD_LEN + 1);
     }
 
     if (strcmp(request.url.volpassword, "-") == 0) {
         char *p = get_password("Volume password:");
 
-        if (p) {
-            snprintf(request.url.volpassword, 9, "%s", p);
+        if (p == NULL ||
+                copy_secret(request.url.volpassword,
+                            sizeof(request.url.volpassword), p,
+                            AFP_VOLPASS_LEN, "Volume password") < 0) {
+            if (p) {
+                explicit_bzero(p, AFP_MAX_PASSWORD_LEN + 1);
+            }
+
+            return -1;
         }
+
+        explicit_bzero(p, AFP_MAX_PASSWORD_LEN + 1);
     }
 
     optnum = optind + 1;
@@ -730,8 +797,10 @@ static int handle_mount_afpfs(int argc, char * argv[])
                                             &outgoing_buffer[1];
     unsigned int uam_mask = default_uams_mask();
     char *urlstring, *mountpoint;
-    char *volpass = NULL;
+    char volpass[AFP_VOLPASS_LEN + 1] = {0};
+    int have_volpass = 0;
     int readonly = 0;
+    int ret = -1;
     char *temp_url = NULL;
 
     if (argc < 2) {
@@ -745,8 +814,8 @@ static int handle_mount_afpfs(int argc, char * argv[])
         struct passwd * passwd;
         struct group * group;
 
-        if (argc < 3) {
-            printf("Option -o requires an argument\n");
+        if (argc < 5) {
+            printf("Option -o requires an argument, URL, and mount point\n");
             return -1;
         }
 
@@ -762,13 +831,20 @@ static int handle_mount_afpfs(int argc, char * argv[])
             }
 
             if (strncmp(command, "volpass=", 8) == 0) {
-                volpass = p + 8;
+                if (copy_secret(volpass, sizeof(volpass), command + 8,
+                                AFP_VOLPASS_LEN, "Volume password") < 0) {
+                    explicit_bzero(command, sizeof(command));
+                    goto cleanup;
+                }
+
+                have_volpass = 1;
+                explicit_bzero(command, sizeof(command));
             } else if (strncmp(command, "user=", 5) == 0) {
                 p = command + 5;
 
                 if ((passwd = getpwnam(p)) == NULL) {
                     printf("Unknown user %s\n", p);
-                    return -1;
+                    goto cleanup;
                 }
 
                 uid = passwd->pw_uid;
@@ -781,7 +857,7 @@ static int handle_mount_afpfs(int argc, char * argv[])
 
                 if ((group = getgrnam(p)) == NULL) {
                     printf("Unknown group %s\n", p);
-                    return -1;
+                    goto cleanup;
                 }
 
                 gid = group->gr_gid;
@@ -799,11 +875,18 @@ static int handle_mount_afpfs(int argc, char * argv[])
             } else {
                 p = NULL;
             }
+
+            explicit_bzero(command, sizeof(command));
         } while (p);
 
         urlstring = argv[3];
         mountpoint = argv[4];
     } else {
+        if (argc < 3) {
+            printf("URL and mount point required\n");
+            return -1;
+        }
+
         urlstring = argv[1];
         mountpoint = argv[2];
     }
@@ -824,18 +907,18 @@ static int handle_mount_afpfs(int argc, char * argv[])
 
     if (mountpoint == NULL) {
         printf("No mount point specified\n");
-        return -1;
+        goto cleanup;
     }
 
     if (resolve_mountpoint(mountpoint, req->mountpoint, 255) < 0) {
         printf("Failed to resolve mount point\n");
-        return -1;
+        goto cleanup;
     }
 
     if (strncmp(urlstring, "afp://", 6) != 0) {
         if (asprintf(&temp_url, "afp://%s", urlstring) < 0) {
             printf("Out of memory constructing URL\n");
-            return -1;
+            goto cleanup;
         }
 
         urlstring = temp_url;
@@ -843,16 +926,7 @@ static int handle_mount_afpfs(int argc, char * argv[])
 
     if (afp_parse_url(&req->url, urlstring) != 0) {
         printf("Could not parse URL\n");
-
-        if (temp_url) {
-            free(temp_url);
-        }
-
-        return -1;
-    }
-
-    if (temp_url) {
-        free(temp_url);
+        goto cleanup;
     }
 
     if (strcmp(req->url.password, "-") == 0 ||
@@ -860,20 +934,54 @@ static int handle_mount_afpfs(int argc, char * argv[])
              && req->url.password[0] == '\0')) {
         char *p = get_password("Password:");
 
-        if (p) {
-            snprintf(req->url.password, AFP_MAX_PASSWORD_LEN, "%s", p);
+        if (p == NULL) {
+            goto cleanup;
         }
+
+        if (copy_secret(req->url.password, sizeof(req->url.password),
+                        p, sizeof(req->url.password) - 1,
+                        "Password") < 0) {
+            explicit_bzero(p, AFP_MAX_PASSWORD_LEN + 1);
+            goto cleanup;
+        }
+
+        explicit_bzero(p, AFP_MAX_PASSWORD_LEN + 1);
     }
 
-    if (volpass && (strcmp(volpass, "-") == 0)) {
-        volpass  = get_password("Volume password:");
+    if (have_volpass && (strcmp(volpass, "-") == 0)) {
+        char *p = get_password("Volume password:");
+
+        if (p == NULL) {
+            goto cleanup;
+        }
+
+        if (copy_secret(volpass, sizeof(volpass), p,
+                        AFP_VOLPASS_LEN, "Volume password") < 0) {
+            explicit_bzero(p, AFP_MAX_PASSWORD_LEN + 1);
+            goto cleanup;
+        }
+
+        explicit_bzero(p, AFP_MAX_PASSWORD_LEN + 1);
     }
 
-    if (volpass) {
-        snprintf(req->url.volpassword, 9, "%s", volpass);
+    if (have_volpass
+            && copy_secret(req->url.volpassword, sizeof(req->url.volpassword),
+                           volpass, AFP_VOLPASS_LEN, "Volume password") < 0) {
+        goto cleanup;
     }
 
-    return 0;
+    ret = 0;
+cleanup:
+
+    if (temp_url) {
+        free(temp_url);
+    }
+
+    if (have_volpass) {
+        explicit_bzero(volpass, sizeof(volpass));
+    }
+
+    return ret;
 }
 
 static int prepare_buffer(int argc, char * argv[])
