@@ -178,6 +178,41 @@ sub afpcmd_pipe {
 }
 
 # -----------------------------------------------------------------------
+# test_command_recursive_flag: -r is accepted after interactive commands
+# -----------------------------------------------------------------------
+{
+    my $out = afpcmd_pipe($AFP_URL,
+        'mkdir rflag-src',
+        'mkdir rflag-src/subdir',
+        'touch rflag-src/subdir/file.txt',
+        'chmod -r 755 rflag-src',
+        'cp -r rflag-src/ rflag-src/subdir/copy',
+        'mkdir rflag-collision',
+        'mkdir rflag-collision/rflag-src',
+        'touch rflag-collision/rflag-src/subdir',
+        'cp -r rflag-src rflag-collision',
+        'cp -r rflag-src rflag-copy',
+        'ls rflag-copy/subdir',
+        'mv rflag-copy rflag-moved',
+        'rm -r rflag-src',
+        'rm -r rflag-collision',
+        'rm -r rflag-moved',
+        'quit');
+    unlike($out, qr/expecting format:/,
+        'test_command_recursive_flag: command-local -r parses');
+    like($out, qr/Cannot copy a directory into itself/,
+        'test_command_recursive_flag: trailing slash self-copy is rejected');
+    like($out, qr/Copy target exists and is not a directory:/,
+        'test_command_recursive_flag: directory-to-file collision is rejected');
+    like($out, qr/file\.txt/,
+        'test_command_recursive_flag: cp recursively copied nested file');
+    like($out, qr/Deleted directory: rflag-src/,
+        'test_command_recursive_flag: rm recursively removed source');
+    like($out, qr/Deleted directory: rflag-moved/,
+        'test_command_recursive_flag: moved destination removed recursively');
+}
+
+# -----------------------------------------------------------------------
 # test_get_put: put a local file, verify with cat, get it back, check content
 # -----------------------------------------------------------------------
 {

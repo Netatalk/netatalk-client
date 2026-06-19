@@ -225,13 +225,13 @@ static int com_help(char *arg);
 COMMAND commands[] = {
     { "cat", com_view, "View the contents of FILE", 1 },
     { "cd", com_cd, "Change to directory DIR", 1 },
-    { "chmod", com_chmod, "Change mode to MODE on FILE", 1 },
-    { "cp", com_copy, "Copy FILE to NEWFILE", 1 },
+    { "chmod", com_chmod, "Change mode to MODE on FILE (-r for directories)", 1 },
+    { "cp", com_copy, "Copy FILE to NEWFILE (-r for directories)", 1 },
     { "disconnect", com_close, "Close server connection and shut down afpcmd", 0 },
     { "df", com_statvfs, "Get volume space information", 1 },
     { "exit", com_exit, "Detach from the current volume", 0 },
     { "finderinfo", com_finderinfo, "Get, set, or remove FinderInfo", 1 },
-    { "get", com_get, "Retrieve the file FILE and store them locally", 1 },
+    { "get", com_get, "Retrieve FILE (-r for directories)", 1 },
     { "help", com_help, "Display this text", 0 },
     { "lcd", com_lcd, "Change local directory to DIR", 1 },
     { "lpwd", com_lpwd, "Print the current local working directory", 0 },
@@ -239,10 +239,10 @@ COMMAND commands[] = {
     { "mkdir", com_mkdir, "Make directory DIRECTORY", 1 },
     { "mv", com_rename, "Rename FILE to NEWNAME", 1 },
     { "passwd", com_pass, "Change the password of the current user", 1 },
-    { "put", com_put, "Send FILE to the server", 1 },
+    { "put", com_put, "Send FILE to the server (-r for directories)", 1 },
     { "pwd", com_pwd, "Print the current working directory on the server", 0 },
     { "quit", com_quit, "Shut down afpcmd (leaves server connections intact)", 0 },
-    { "rm", com_delete, "Delete FILE", 1 },
+    { "rm", com_delete, "Delete FILE (-r for directories)", 1 },
     { "rmdir", com_rmdir, "Remove directory DIRECTORY", 1 },
     { "resourcefork", com_resourcefork, "Get, set, or remove a resource fork", 1 },
     { "status", com_status, "Get some server status", 1 },
@@ -453,11 +453,11 @@ static void usage(void)
 {
     printf(
         "Netatalk Client %s - Apple Filing Protocol CLI client application\n"
-        "afpcmd [-h] [-r] [-V] [-v loglevel] [-M mode] <afp url>\n"
+        "afpcmd [-h] [-V] [-v loglevel] [-M mode] <afp url>\n"
         "Options:\n"
         "\t-h:          show this help message and exit\n"
         "\t-M mode:     preserve metadata using auto, sys, macos, netatalk, or none\n"
-        "\t-r:          set the recursive flag\n"
+        "\t-r:          recursively transfer directories in batch mode\n"
         "\t-V:          verbose mode (show detailed transfer messages)\n"
         "\t-v loglevel: set log verbosity (debug, info, notice, warning, error)\n"
         "\turl:         an AFP url, in the form of:\n"
@@ -587,10 +587,17 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
+    if (recursive && !batch_mode) {
+        printf("The invocation-level -r option is only valid for batch transfers; "
+               "use -r after an interactive command instead.\n");
+        usage();
+        exit(1);
+    }
+
     tcgetattr(STDIN_FILENO, &save_termios);
     initialize_readline();
 
-    if (cmdline_afp_setup(recursive, batch_mode, url) != 0) {
+    if (cmdline_afp_setup(batch_mode, url) != 0) {
         cmdline_afp_exit();
         tty_reset(STDIN_FILENO);
         exit(1);

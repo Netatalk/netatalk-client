@@ -76,6 +76,9 @@ Examples of available commands:
 
 - get _filename_: retrieves the filename
 - put _filename_: send the file
+- get -r _directory_ / put -r _directory_: recursively transfer a directory
+- cp -r _source_ _target_: recursively copy a remote directory
+- chmod -r _mode_ _directory_ / rm -r _directory_: recursively change or remove a tree
 - ls: show directory listings
 - xattr / finderinfo / resourcefork: inspect and modify AFP metadata
 
