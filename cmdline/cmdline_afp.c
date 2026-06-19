@@ -76,11 +76,36 @@ int full_url = 0;
 static volumeid_t vol_id = NULL;
 static serverid_t server_id = NULL;
 static int connected = 0;
-static int recursive_mode = 0;
 static enum metadata_mode transfer_metadata_mode = METADATA_AUTO;
 static int metadata_warning_emitted = 0;
 
 static int write_all_fd(int fd, const void *data, size_t size);
+
+/* Consume the command-local recursive option.  Command handlers receive the
+ * text following the command name, so this deliberately only recognizes -r
+ * as the first argument (for example, "get -r directory"). */
+static int command_recursive_option(char **arg)
+{
+    char *p = *arg;
+
+    while (isspace((unsigned char) * p)) {
+        p++;
+    }
+
+    if (p[0] != '-' || p[1] != 'r'
+            || (p[2] != '\0' && !isspace((unsigned char)p[2]))) {
+        return 0;
+    }
+
+    p += 2;
+
+    while (isspace((unsigned char) * p)) {
+        p++;
+    }
+
+    *arg = p;
+    return 1;
+}
 
 #ifndef ENOATTR
 #ifdef ENODATA
@@ -1508,6 +1533,59 @@ int com_touch(char * arg)
     return -1;
 }
 
+static int chmod_remote_tree(const char *server_path, mode_t mode)
+{
+    struct afp_file_info_basic *entries = NULL;
+    unsigned int count = 0;
+    int ret = 0;
+
+    if (remote_readdir_all(server_path, &entries, &count) != 0) {
+        printf("Could not read directory %s\n", server_path);
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < count; i++) {
+        struct afp_file_info_basic *entry = &entries[i];
+        char child[AFP_MAX_PATH];
+
+        if (strcmp(entry->name, ".") == 0 || strcmp(entry->name, "..") == 0) {
+            continue;
+        }
+
+        int length = snprintf(child, sizeof(child), "%s/%s",
+                              server_path, entry->name);
+
+        if (length < 0 || (size_t)length >= sizeof(child)) {
+            printf("Path too long: %s/%s\n", server_path, entry->name);
+            ret = -1;
+            continue;
+        }
+
+        if (S_ISLNK(entry->unixprivs.permissions)) {
+            printf("Symlinks are not supported: %s\n", child);
+            ret = -1;
+        } else if (S_ISDIR(entry->unixprivs.permissions)
+                   && chmod_remote_tree(child, mode) < 0) {
+            ret = -1;
+        } else if (!S_ISDIR(entry->unixprivs.permissions)
+                   && afp_sl_chmod(&vol_id, child, NULL, mode)
+                   != AFP_SERVER_RESULT_OKAY) {
+            printf("Could not chmod %s\n", child);
+            ret = -1;
+        }
+    }
+
+    free(entries);
+
+    if (afp_sl_chmod(&vol_id, server_path, NULL, mode)
+            != AFP_SERVER_RESULT_OKAY) {
+        printf("Could not chmod %s\n", server_path);
+        ret = -1;
+    }
+
+    return ret;
+}
+
 int com_chmod(char * arg)
 {
     char mode_str[AFP_MAX_PATH];
@@ -1516,6 +1594,7 @@ int com_chmod(char * arg)
     mode_t mode;
     char *endptr;
     int ret;
+    int recursive = command_recursive_option(&arg);
 
     if (!vol_id) {
         printf("You're not attached to a volume\n");
@@ -1523,7 +1602,7 @@ int com_chmod(char * arg)
     }
 
     if (escape_paths(mode_str, filename, arg)) {
-        printf("expecting format: chmod <mode> <filename>\n");
+        printf("expecting format: chmod [-r] <mode> <filename>\n");
         return -1;
     }
 
@@ -1537,6 +1616,20 @@ int com_chmod(char * arg)
     if (get_server_path(filename, server_fullname) < 0) {
         printf("Invalid path\n");
         return -1;
+    }
+
+    if (recursive) {
+        struct stat st;
+
+        if (afp_sl_stat(&vol_id, server_fullname, NULL, &st)
+                != AFP_SERVER_RESULT_OKAY) {
+            printf("File not found: %s\n", filename);
+            return -1;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            return chmod_remote_tree(server_fullname, mode);
+        }
     }
 
     ret = afp_sl_chmod(&vol_id, server_fullname, NULL, mode);
@@ -1834,7 +1927,7 @@ int com_put(char *arg)
     char server_fullname[AFP_MAX_PATH];
     char *basename_ptr;
     struct stat st;
-    int recursive = recursive_mode;
+    int recursive = command_recursive_option(&arg);
     unsigned long long bytes_transferred = 0;
     int ret = -1;
     metadata_warning_emitted = 0;
@@ -1842,15 +1935,6 @@ int com_put(char *arg)
     if (!vol_id) {
         printf("You're not attached to a volume\n");
         goto error;
-    }
-
-    if ((arg[0] == '-') && (arg[1] == 'r') && (arg[2] == ' ')) {
-        recursive = 1;
-        arg += 3;
-
-        while (arg && isspace((unsigned char)arg[0])) {
-            arg++;
-        }
     }
 
     if (escape_paths(local_filename, NULL, arg)) {
@@ -1876,7 +1960,7 @@ int com_put(char *arg)
             ret = upload_directory(local_filename, server_fullname, &bytes_transferred);
             goto out;
         } else {
-            printf("%s is a directory (start afpcmd with -r to upload recursively)\n",
+            printf("%s is a directory (use put -r to upload recursively)\n",
                    local_filename);
             goto error;
         }
@@ -2165,22 +2249,13 @@ int com_get(char *arg)
     char filename[AFP_MAX_PATH];
     char server_path[AFP_MAX_PATH];
     struct stat st;
-    int recursive = recursive_mode;
+    int recursive = command_recursive_option(&arg);
     int ret = -1;
     metadata_warning_emitted = 0;
 
     if (!vol_id) {
         printf("You're not attached to a volume\n");
         goto error;
-    }
-
-    if ((arg[0] == '-') && (arg[1] == 'r') && (arg[2] == ' ')) {
-        recursive = 1;
-        arg += 3;
-
-        while (arg && isspace((unsigned char)arg[0])) {
-            arg++;
-        }
     }
 
     if (escape_paths(filename, NULL, arg)) {
@@ -2201,7 +2276,7 @@ int com_get(char *arg)
             ret = download_directory(server_path, local_name, &amount_written);
             goto out;
         } else {
-            printf("%s is a directory (start afpcmd with -r to download recursively)\n",
+            printf("%s is a directory (use get -r to download recursively)\n",
                    filename);
             goto error;
         }
@@ -2756,6 +2831,170 @@ usage:
     return -1;
 }
 
+static int quote_copy_argument(char *output, size_t output_size,
+                               const char *path)
+{
+    size_t used = 0;
+
+    if (output_size < 3) {
+        return -1;
+    }
+
+    output[used++] = '"';
+
+    for (const char *p = path; *p; p++) {
+        if ((*p == '"' || *p == '\\') && used + 1 >= output_size) {
+            return -1;
+        }
+
+        if (*p == '"' || *p == '\\') {
+            output[used++] = '\\';
+        }
+
+        if (used + 1 >= output_size) {
+            return -1;
+        }
+
+        output[used++] = *p;
+    }
+
+    if (used + 2 > output_size) {
+        return -1;
+    }
+
+    output[used++] = '"';
+    output[used] = '\0';
+    return 0;
+}
+
+static int copy_remote_tree(const char *source, const char *target,
+                            const struct stat *source_stat)
+{
+    struct afp_file_info_basic *entries = NULL;
+    unsigned int count = 0;
+    int ret = 0;
+    int mkdir_ret = afp_sl_mkdir(&vol_id, target, NULL,
+                                 source_stat->st_mode & 0777);
+
+    if (mkdir_ret != AFP_SERVER_RESULT_OKAY
+            && mkdir_ret != AFP_SERVER_RESULT_EXIST) {
+        printf("Could not create directory %s (error: %d)\n", target, mkdir_ret);
+        return -1;
+    }
+
+    if (mkdir_ret == AFP_SERVER_RESULT_EXIST) {
+        struct stat target_stat;
+        int stat_ret = afp_sl_stat(&vol_id, target, NULL, &target_stat);
+
+        if (stat_ret != AFP_SERVER_RESULT_OKAY) {
+            printf("Could not stat existing copy target %s (error: %d)\n",
+                   target, stat_ret);
+            return -1;
+        }
+
+        if (!S_ISDIR(target_stat.st_mode)) {
+            printf("Copy target exists and is not a directory: %s\n", target);
+            return -1;
+        }
+    }
+
+    if (remote_readdir_all(source, &entries, &count) != 0) {
+        printf("Could not read directory %s\n", source);
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < count; i++) {
+        struct afp_file_info_basic *entry = &entries[i];
+        char child_source[AFP_MAX_PATH];
+        char child_target[AFP_MAX_PATH];
+
+        if (strcmp(entry->name, ".") == 0 || strcmp(entry->name, "..") == 0) {
+            continue;
+        }
+
+        int source_len = snprintf(child_source, sizeof(child_source), "%s/%s",
+                                  source, entry->name);
+        int target_len = snprintf(child_target, sizeof(child_target), "%s/%s",
+                                  target, entry->name);
+
+        if (source_len < 0 || (size_t)source_len >= sizeof(child_source)
+                || target_len < 0 || (size_t)target_len >= sizeof(child_target)) {
+            printf("Path too long while copying %s\n", entry->name);
+            ret = -1;
+            continue;
+        }
+
+        if (S_ISLNK(entry->unixprivs.permissions)) {
+            printf("Symlinks are not supported: %s\n", child_source);
+            ret = -1;
+        } else if (S_ISDIR(entry->unixprivs.permissions)) {
+            struct stat child_stat;
+
+            if (afp_sl_stat(&vol_id, child_source, NULL, &child_stat) != 0
+                    || copy_remote_tree(child_source, child_target,
+                                        &child_stat) < 0) {
+                ret = -1;
+            }
+        } else {
+            char quoted_source[2 * AFP_MAX_PATH + 3];
+            char quoted_target[2 * AFP_MAX_PATH + 3];
+            char arguments[4 * AFP_MAX_PATH + 7];
+
+            if (quote_copy_argument(quoted_source, sizeof(quoted_source),
+                                    child_source) < 0
+                    || quote_copy_argument(quoted_target, sizeof(quoted_target),
+                                           child_target) < 0) {
+                ret = -1;
+                continue;
+            }
+
+            int argument_len = snprintf(arguments, sizeof(arguments), "%s %s",
+                                        quoted_source, quoted_target);
+
+            if (argument_len < 0
+                    || (size_t)argument_len >= sizeof(arguments)) {
+                printf("Could not format copy arguments for %s\n", child_source);
+                ret = -1;
+                continue;
+            }
+
+            if (com_copy(arguments) < 0) {
+                ret = -1;
+            }
+        }
+    }
+
+    free(entries);
+
+    if (copy_remote_metadata(source, target, source_stat) < 0) {
+        printf("Could not preserve copied metadata for %s\n", source);
+        ret = -1;
+    }
+
+    return ret;
+}
+
+static int path_is_same_or_descendant(const char *parent, const char *candidate)
+{
+    size_t parent_len = strnlen(parent, AFP_MAX_PATH);
+
+    if (parent_len == AFP_MAX_PATH) {
+        return 0;
+    }
+
+    /* Ignore trailing separators when finding the component boundary. */
+    while (parent_len > 1 && parent[parent_len - 1] == '/') {
+        parent_len--;
+    }
+
+    if (parent_len == 1 && parent[0] == '/') {
+        return candidate[0] == '/';
+    }
+
+    return strncmp(parent, candidate, parent_len) == 0
+           && (candidate[parent_len] == '\0' || candidate[parent_len] == '/');
+}
+
 int com_copy(char * arg)
 {
     char source_path[AFP_MAX_PATH];
@@ -2769,6 +3008,7 @@ int com_copy(char * arg)
     unsigned long long offset = 0;
     unsigned int received, written;
     unsigned int eof = 0;
+    int recursive = command_recursive_option(&arg);
 #define COPY_BUFSIZE 102400
     char buf[COPY_BUFSIZE];
     metadata_warning_emitted = 0;
@@ -2779,7 +3019,7 @@ int com_copy(char * arg)
     }
 
     if (escape_paths(source_path, target_path, arg)) {
-        printf("expecting format: cp <source> <target>\n");
+        printf("expecting format: cp [-r] <source> <target>\n");
         goto out;
     }
 
@@ -2799,7 +3039,34 @@ int com_copy(char * arg)
     }
 
     if (S_ISDIR(source_stat.st_mode)) {
-        printf("Source is a directory (recursive copy not supported)\n");
+        if (!recursive) {
+            printf("Source is a directory (use cp -r to copy recursively)\n");
+            goto out;
+        }
+
+        int target_stat_ret = afp_sl_stat(&vol_id, server_target, NULL,
+                                          &target_stat);
+
+        if (target_stat_ret == AFP_SERVER_RESULT_OKAY) {
+            if (!S_ISDIR(target_stat.st_mode)) {
+                printf("Target exists and is not a directory: %s\n", target_path);
+                goto out;
+            }
+
+            const char *base = basename(source_path);
+
+            if (append_basename_to_path(server_target, base, AFP_MAX_PATH) < 0) {
+                printf("Target path too long\n");
+                goto out;
+            }
+        }
+
+        if (path_is_same_or_descendant(server_source, server_target)) {
+            printf("Cannot copy a directory into itself\n");
+            goto out;
+        }
+
+        ret = copy_remote_tree(server_source, server_target, &source_stat);
         goto out;
     }
 
@@ -2969,20 +3236,11 @@ int com_delete(char *arg)
     char server_fullname[AFP_MAX_PATH];
     struct stat st;
     int ret;
-    int recursive = recursive_mode;
+    int recursive = command_recursive_option(&arg);
 
     if (!vol_id) {
         printf("You're not attached to a volume\n");
         return -1;
-    }
-
-    if ((arg[0] == '-') && (arg[1] == 'r') && (arg[2] == ' ')) {
-        recursive = 1;
-        arg += 3;
-
-        while (arg && isspace((unsigned char)arg[0])) {
-            arg++;
-        }
     }
 
     if (escape_paths(filename, NULL, arg)) {
@@ -3010,7 +3268,7 @@ int com_delete(char *arg)
 
             return ret;
         } else {
-            printf("%s is a directory (start afpcmd with -r to delete recursively)\n",
+            printf("%s is a directory (use rm -r to delete recursively)\n",
                    filename);
             return -1;
         }
@@ -3774,9 +4032,8 @@ void cmdline_afp_setup_client(void)
 }
 
 
-int cmdline_afp_setup(int recursive, int batch_mode, char * url_string)
+int cmdline_afp_setup(int batch_mode, char * url_string)
 {
-    recursive_mode = recursive;
     snprintf(curdir, AFP_MAX_PATH, "%s", DEFAULT_DIRECTORY);
     memset(connect_servername, 0, sizeof(connect_servername));
 

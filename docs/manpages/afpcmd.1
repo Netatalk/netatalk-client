@@ -6,7 +6,7 @@
 .Nd Transfer files over the network using the Apple Filing Protocol (AFP)
 .Sh SYNOPSIS
 .Nm
-.Op Fl rV
+.Op Fl V
 .Op Fl v Ar loglevel
 .Op Fl M Ar mode
 .Ar afp_url
@@ -47,7 +47,10 @@ and commands. If not already running, afpcmd will attempt to start it.
 .It Fl h , Fl -help
 Shows the help message.
 .It Fl r , Fl -recursive
-Sets the recursive flag.
+Recursively transfers directories in batch mode.
+This invocation-level option is not accepted in interactive mode; use
+.Fl r
+after an interactive command name instead.
 .It Fl V , Fl -verbose
 Enables verbose mode for file transfers.
 When enabled, displays detailed messages during upload and download operations,
@@ -131,12 +134,16 @@ completion is enabled.
 Show files in current directory
 .It Cm cd
 Change directories on the server
-.It Cm get Ar filename
-Retrieve file (or directory, if afpcmd is launched with the
--r flag)
-.It Cm put Ar filename
-Upload file (or directory, if afpcmd is launched with the
--r flag)
+.It Cm get Oo Fl r Oc Ar filename
+Retrieve a file.
+With
+.Fl r ,
+recursively retrieve a directory.
+.It Cm put Oo Fl r Oc Ar filename
+Upload a file.
+With
+.Fl r ,
+recursively upload a directory.
 .It Cm exit
 Detach from current volume
 .It Cm quit
@@ -160,20 +167,29 @@ Remove directory
 Rename
 .Ar old_file
 to
-.Ar new_file
-.It Cm cp Ar source_file Ar dest_file
-Copy
-.Ar source_file
+.Ar new_file .
+.It Cm cp Oo Fl r Oc Ar source Ar destination
+Copy a file from
+.Ar source
 to
-.Ar dest_file
+.Ar destination .
+With
+.Fl r ,
+recursively copy a directory.
 .It Cm touch Ar filename
 Create a blank file or update time stamp on existing file
 .It Cm cat Ar filename
 Show the contents of file
-.It Cm chmod Ar mode Ar file
-Change the mode of a file on the server
-.It Cm rm Ar file
-Remove file from the server
+.It Cm chmod Oo Fl r Oc Ar mode Ar file
+Change the mode of a file on the server.
+With
+.Fl r ,
+recursively change the mode of a directory tree.
+.It Cm rm Oo Fl r Oc Ar file
+Remove a file from the server.
+With
+.Fl r ,
+recursively remove a directory tree.
 .El
 .Ss Metadata commands
 .Bl -tag -width Ds
