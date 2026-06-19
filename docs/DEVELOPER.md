@@ -305,6 +305,19 @@ the stateless library delegates connection management to a daemon process.
 - **Daemon-managed state**: Server and volume connections persist in the daemon, not the client process
 - **One-shot operations**: Each API call sends a request to the daemon via Unix socket and receives a response
 - **Process isolation**: Client process crashes don't affect active AFP connections managed by the daemon
+- **Consumer-owned logging**: Applications can route library and daemon messages into their own logging framework
+
+Register a logger before making stateless calls:
+
+    static void app_log(void *context, int level, const char *message)
+    {
+        /* level is one of the syslog LOG_* values. */
+    }
+
+    afp_sl_set_log_callback(app_log, application_context);
+
+The callback runs synchronously on the calling thread. Passing a null callback disables log delivery. Registration is
+process-global, matching the stateless library's process-global connection state.
 
 **Use cases:**
 
@@ -316,6 +329,10 @@ the stateless library delegates connection management to a daemon process.
 ### Stateless Protocol Communication
 
 The stateless library communicates with afpsld using a request/response protocol over Unix sockets:
+
+Every daemon response ends with a structured log trailer. Each record preserves its syslog severity, and libafpsl
+delivers the records through the registered callback after validating the complete response. This applies to fixed and
+streaming operations, including reads, writes, metadata calls, and directory listings.
 
 **Connection model:**
 

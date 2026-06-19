@@ -1,6 +1,22 @@
 #ifndef _AFP_IPC_H_
 #define _AFP_IPC_H_
 
+#include <stdint.h>
+
+/* Structured logging trailer appended to stateless daemon responses. */
+#define AFP_SERVER_LOG_MAGIC UINT32_C(0x4146504c)
+#define AFP_SERVER_LOG_BUFFER_SIZE 4096
+
+struct afp_server_log_record {
+    int32_t level;
+    uint32_t message_len;
+};
+
+struct afp_server_log_footer {
+    uint32_t magic;
+    uint32_t log_len;
+};
+
 /* IPC command codes shared between daemon, FUSE, and client components */
 
 #define AFP_SERVER_COMMAND_MOUNT 1

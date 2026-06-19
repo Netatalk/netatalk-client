@@ -3717,8 +3717,14 @@ static void cmdline_log_for_client(__attribute__((unused)) void * priv,
         return; /* Filter out less-verbose messages */
     }
 
-    /* Log to syslog - priv is always NULL for cmdline */
+    fprintf(stderr, "%s\n", message);
     syslog(loglevel, "%s", message);
+}
+
+static void cmdline_stateless_log(__attribute__((unused)) void *user_data,
+                                  int loglevel, const char *message)
+{
+    cmdline_log_for_client(NULL, AFPFSD, loglevel, message);
 }
 
 static struct libafpclient afpclient = {
@@ -4029,6 +4035,7 @@ void cmdline_afp_setup_client(void)
 {
     openlog("afpcmd", LOG_PID | LOG_CONS, LOG_USER);
     libafpclient_register(&afpclient);
+    afp_sl_set_log_callback(cmdline_stateless_log, NULL);
 }
 
 

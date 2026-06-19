@@ -92,6 +92,8 @@ struct afp_server *afp_server_full_connect(void * priv,
     }
 
     if ((ret = afp_server_connect(tmpserver, 1)) < 0) {
+        int connect_error = -ret;
+
         if (ret == -ETIMEDOUT) {
             log_for_client(priv, AFPFSD, LOG_ERR,
                            "Could not connect, never got a response to getstatus, %s", strerror(-ret));
@@ -101,6 +103,7 @@ struct afp_server *afp_server_full_connect(void * priv,
         }
 
         afp_server_remove(tmpserver);
+        errno = connect_error;
         goto error;
     }
 
@@ -122,11 +125,13 @@ struct afp_server *afp_server_full_connect(void * priv,
     if (!s) {
         s = afp_server_init(address);
 
-        if (afp_server_connect(s, 0) != 0) {
+        if ((ret = afp_server_connect(s, 0)) != 0) {
+            int connect_error = -ret;
             log_for_client(priv, AFPFSD, LOG_ERR,
                            "Connection to server failed with error: %s",
-                           strerror(errno));
+                           strerror(connect_error));
             afp_server_remove(s);
+            errno = connect_error;
             s = NULL;
             goto error;
         }

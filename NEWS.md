@@ -12,6 +12,11 @@ The names of tools and libraries will not be changed to signal continuity and co
 - Harden and bugfix libafpclient UAM handling code
 - We now detect 2000s era Mac OS X servers, Time Capsules, and Windows (SFM, PCMacLan) servers
 
+### Stateless Client Improvements
+
+- Allow library consumers to register a persistent logging callback with context and syslog severity. Local libafpsl
+  diagnostics and structured logs returned by every afpsld command use the same callback.
+
 ## afpfs-ng 0.9.4 (February 28, 2026)
 
 ### New Test Suite

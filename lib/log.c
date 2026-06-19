@@ -17,11 +17,24 @@ void log_for_client(void * priv,
                     enum logtypes logtype, int loglevel, char *format, ...)
 {
     va_list ap;
+    size_t message_len;
     char new_message[MAX_ERROR_LEN];
     char escaped[MAX_ERROR_LEN * 4];
     va_start(ap, format);
     vsnprintf(new_message, MAX_ERROR_LEN, format, ap);
     va_end(ap);
+    message_len = strlen(new_message);
+
+    while (message_len > 0
+            && (new_message[message_len - 1] == '\r'
+                || new_message[message_len - 1] == '\n')) {
+        new_message[--message_len] = '\0';
+    }
+
+    if (message_len == 0) {
+        return;
+    }
+
     sanitize_text(new_message, escaped, sizeof(escaped));
     libafpclient->log_for_client(priv, logtype, loglevel, escaped);
 }

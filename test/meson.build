@@ -29,3 +29,14 @@ log_test = executable(
 )
 
 test('log message escaping', log_test)
+
+stateless_log_test = executable(
+    'test_stateless_log',
+    sources: ['test_stateless_log.c'],
+    include_directories: [incdir, include_directories('../daemon')],
+    link_with: libafpsl,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test('stateless log callback and framing', stateless_log_test)

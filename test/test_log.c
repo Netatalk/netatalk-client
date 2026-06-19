@@ -17,7 +17,7 @@ static void capture_log_message(
 
 int main(void)
 {
-    char sanitized[sizeof("line 1\\r\\nline\\t2\\x01\\x7f")];
+    char sanitized[sizeof("line 1\\r\\nline\\t2\\x01\\x7f\\r\\n")];
     struct libafpclient test_client = {
         .unmount_volume = NULL,
         .log_for_client = capture_log_message,
@@ -25,13 +25,15 @@ int main(void)
         .scan_extra_fds = NULL,
         .loop_started = NULL,
     };
-    const char input[] = "line 1\r\nline\t2\x01\x7f";
-    const char expected[] = "line 1\\r\\nline\\t2\\x01\\x7f";
+    const char input[] = "line 1\r\nline\t2\x01\x7f\r\n";
+    const char expected_sanitized[] =
+        "line 1\\r\\nline\\t2\\x01\\x7f\\r\\n";
+    const char expected_log[] = "line 1\\r\\nline\\t2\\x01\\x7f";
     sanitize_text(input, sanitized, sizeof(sanitized));
 
-    if (strcmp(sanitized, expected) != 0) {
+    if (strcmp(sanitized, expected_sanitized) != 0) {
         fprintf(stderr, "sanitize expected: %s\nactual:            %s\n",
-                expected, sanitized);
+                expected_sanitized, sanitized);
         return 1;
     }
 
@@ -39,9 +41,9 @@ int main(void)
     log_for_client(NULL, AFPFSD, LOG_INFO, "%s", input);
     libafpclient_register(NULL);
 
-    if (strcmp(captured_message, expected) != 0) {
+    if (strcmp(captured_message, expected_log) != 0) {
         fprintf(stderr, "expected: %s\nactual:   %s\n",
-                expected, captured_message);
+                expected_log, captured_message);
         return 1;
     }
 

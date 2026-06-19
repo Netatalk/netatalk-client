@@ -1,9 +1,11 @@
 #ifndef __AFPSL_H_
 #define __AFPSL_H_
 
+#include <syslog.h>
 #include <utime.h>
 
 #include "afp.h"
+#include "afp_ipc.h"
 #include "errno.h"
 
 /* Socket path for stateless daemon */
@@ -28,7 +30,7 @@ struct afp_file_info_basic {
 struct afpfsd_connect {
     int fd;
     unsigned int len;
-    char data[MAX_CLIENT_RESPONSE + 200];
+    char data[MAX_CLIENT_RESPONSE + AFP_SERVER_LOG_BUFFER_SIZE + 200];
     void (*print)(const char * text);
     char *shmem;
 };
@@ -41,7 +43,13 @@ struct afp_volume_summary {
 typedef void   *serverid_t;
 typedef void   *volumeid_t;
 
+/* loglevel uses the LOG_* values from syslog.h. The callback runs
+ * synchronously on the thread making the afp_sl_* call. */
+typedef void (*afp_sl_log_callback)(void *user_data, int loglevel,
+                                    const char *message);
+
 void afp_sl_conn_setup(void);
+void afp_sl_set_log_callback(afp_sl_log_callback callback, void *user_data);
 
 int afp_sl_exit(void);
 int afp_sl_status(const char * volumename, const char * servername,
@@ -108,17 +116,16 @@ int afp_sl_getxattr(volumeid_t *volid, const char *path, const char *name,
                     void *value, size_t size);
 int afp_sl_setxattr(volumeid_t *volid, const char *path, const char *name,
                     const void *value, size_t size, int flags);
-int afp_sl_listxattr(volumeid_t *volid, const char *path,
-                     char *list, size_t size);
+int afp_sl_listxattr(volumeid_t *volid, const char *path, char *list,
+                     size_t size);
 int afp_sl_removexattr(volumeid_t *volid, const char *path, const char *name);
-int afp_sl_getfinderinfo(volumeid_t *volid, const char *path,
-                         void *value, size_t size);
-int afp_sl_setfinderinfo(volumeid_t *volid, const char *path,
-                         const void *value, size_t size);
+int afp_sl_getfinderinfo(volumeid_t *volid, const char *path, void *value,
+                         size_t size);
+int afp_sl_setfinderinfo(volumeid_t *volid, const char *path, const void *value,
+                         size_t size);
 int afp_sl_removefinderinfo(volumeid_t *volid, const char *path);
-int afp_sl_getresourcefork(volumeid_t *volid, const char *path,
-                           void *value, size_t size,
-                           unsigned long long offset);
+int afp_sl_getresourcefork(volumeid_t *volid, const char *path, void *value,
+                           size_t size, unsigned long long offset);
 int afp_sl_setresourcefork(volumeid_t *volid, const char *path,
                            const void *value, size_t size,
                            unsigned long long offset);
