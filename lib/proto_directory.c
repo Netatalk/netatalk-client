@@ -366,8 +366,10 @@ int afp_enumerateext2_reply(struct afp_server *server, char * buf,
     const char *p = buf + sizeof(*reply);
     const char *max = buf + size;
     int i;
-    struct afp_file_info * filebase = NULL, *filecur = NULL, *new_file = NULL,
-                           **x = (struct afp_file_info **) other;
+    struct afp_file_info *filebase = NULL;
+    struct afp_file_info *filecur = NULL;
+    struct afp_file_info *new_file = NULL;
+    struct afp_file_info **x = (struct afp_file_info **) other;
 
     if (size < sizeof(reply->dsi_header)) {
         return -1;
