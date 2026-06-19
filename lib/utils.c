@@ -25,15 +25,6 @@ struct afp_path_header_unicode {
     uint16_t unicode;
 }  __attribute__((__packed__)) ;
 
-#if 0
-int translate_path(struct afp_volume * volume,
-                   char *incoming, char *outgoing)
-{
-    return 0;
-}
-
-#endif
-
 unsigned short utf8_to_string(char * dest, char * buf, unsigned short maxlen)
 {
     return copy_from_pascal_two(dest, buf + 4, maxlen);
