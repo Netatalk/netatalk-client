@@ -5,6 +5,7 @@
  *
  */
 
+#include <errno.h>
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
@@ -32,6 +33,7 @@ struct afp_server *afp_server_complete_connection(
 {
     char loginmsg[AFP_LOGINMESG_LEN];
     int using_uam;
+    int connection_error;
     char mesg[MAX_ERROR_LEN];
     unsigned int len = 0;
     memset(loginmsg, 0, AFP_LOGINMESG_LEN);
@@ -50,6 +52,7 @@ struct afp_server *afp_server_complete_connection(
         log_for_client(priv, AFPFSD, LOG_ERR,
                        "Server cannot handle AFP version %d",
                        requested_version);
+        errno = EPROTONOSUPPORT;
         goto error;
     }
 
@@ -58,6 +61,7 @@ struct afp_server *afp_server_complete_connection(
     if (using_uam == -1) {
         log_for_client(priv, AFPFSD, LOG_ERR,
                        "Could not pick a matching UAM");
+        errno = EPROTONOSUPPORT;
         goto error;
     }
 
@@ -66,12 +70,14 @@ struct afp_server *afp_server_complete_connection(
     if (afp_server_login(server, mesg, &len, MAX_ERROR_LEN)) {
         log_for_client(priv, AFPFSD, LOG_ERR,
                        "Login error: %s", mesg);
+        errno = EACCES;
         goto error;
     }
 
     if (afp_getsrvrparms(server)) {
         log_for_client(priv, AFPFSD, LOG_ERR,
                        "Could not get server parameters");
+        errno = EPROTO;
         goto error;
     }
 
@@ -94,6 +100,8 @@ struct afp_server *afp_server_complete_connection(
     server->connect_state = SERVER_STATE_CONNECTED;
     return server;
 error:
+    connection_error = errno;
     afp_server_remove(server);
+    errno = connection_error;
     return NULL;
 }

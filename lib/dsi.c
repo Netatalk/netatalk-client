@@ -778,9 +778,9 @@ void *dsi_incoming_attention(void * other)
                        ntohs(packet->header.requestid), mins);
         loop_disconnect(server);
         server->connect_state = SERVER_STATE_DISCONNECTED;
-        return NULL;
     }
 
+    afp_server_release(server);
     return NULL;
 }
 
@@ -1075,8 +1075,13 @@ process_packet:
                server->incoming_buffer,
                server->data_read);
         server->attention_len = server->data_read;
-        pthread_create(&thread, NULL,
-                       dsi_incoming_attention, server);
+        afp_server_hold(server);
+
+        if (pthread_create(&thread, NULL, dsi_incoming_attention, server) == 0) {
+            pthread_detach(thread);
+        } else {
+            afp_server_release(server);
+        }
     }
     break;
 

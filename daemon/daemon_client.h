@@ -17,7 +17,7 @@ struct daemon_client {
     int completed_packet_size;
     pthread_mutex_t command_string_mutex;
 
-    char outgoing_string[1000 + MAX_CLIENT_RESPONSE];
+    char outgoing_string[AFP_SERVER_LOG_BUFFER_SIZE];
     size_t outgoing_string_len;
     int fd;
     int lock;
@@ -29,13 +29,11 @@ struct daemon_client {
     int used;
 };
 
-unsigned int send_command(struct daemon_client * c,
-                          unsigned int len, const char *data);
+int send_command(struct daemon_client *c, unsigned int len, const char *data);
 
 int continue_client_connection(struct daemon_client * c);
 int close_client_connection(struct daemon_client * c);
 int remove_client(struct daemon_client ** toremove);
-void remove_command(struct daemon_client *c);
 int count_active_clients(void);
 void remove_all_clients(void);
 int daemon_scan_extra_fds(int command_fd, fd_set *set, int *max_fd);

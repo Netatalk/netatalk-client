@@ -7,30 +7,29 @@
  *  This is the main loop for afpsld (stateless daemon).
  */
 
-#include <sys/types.h>
-#include <sys/param.h>
-#include <stdio.h>
-#include <string.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <utime.h>
-#include <stdlib.h>
-#include <getopt.h>
-#include <sys/un.h>
-#include <unistd.h>
-#include <time.h>
-#include <stdarg.h>
 #include <getopt.h>
 #include <signal.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/param.h>
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/un.h>
+#include <time.h>
+#include <unistd.h>
+#include <utime.h>
 
 #include "afp.h"
-#include "dsi.h"
 #include "afp_server.h"
-#include "utils.h"
-#include "daemon.h"
 #include "commands.h"
+#include "daemon.h"
 #include "daemon_socket.h"
+#include "dsi.h"
+#include "utils.h"
 
 #define MAX_ERROR_LEN 1024
 #define STATUS_LEN 1024
@@ -65,11 +64,13 @@ static void daemon_log_for_client(void * priv,
     struct daemon_client * c = priv;
     int type_rank = loglevel_to_rank(loglevel);
 
-    if (type_rank < daemon_log_min_rank) {
+    if (!c && type_rank < daemon_log_min_rank) {
         return; /* Filter out less-verbose messages */
     }
 
     if (c) {
+        struct afp_server_log_record record;
+        size_t message_len = strlen(message);
         /* Thread-safe access to outgoing_string */
         pthread_mutex_lock(&c->command_string_mutex);
 
@@ -81,30 +82,22 @@ static void daemon_log_for_client(void * priv,
 
         size_t available = sizeof(c->outgoing_string) - c->outgoing_string_len;
 
-        if (available > 1) {
-            int written = snprintf(c->outgoing_string + c->outgoing_string_len,
-                                   available,
-                                   "%s\n", message);
-
-            if (written > 0) {
-                /* snprintf returns the number it tried to write, not what actually fit.
-                 * We need to cap it to the available space (minus null terminator). */
-                size_t actual_written;
-
-                if ((size_t)written >= available) {
-                    /* Truncation occurred - only (available-1) bytes were written */
-                    actual_written = available - 1;
-                } else {
-                    actual_written = (size_t)written;
-                }
-
-                c->outgoing_string_len += actual_written;
-            }
+        if (message_len > UINT32_MAX) {
+            message_len = UINT32_MAX;
         }
 
-        /* Always ensure null termination at the tracked position */
-        if (c->outgoing_string_len < sizeof(c->outgoing_string)) {
-            c->outgoing_string[c->outgoing_string_len] = '\0';
+        if (available > sizeof(record)) {
+            if (message_len > available - sizeof(record)) {
+                message_len = available - sizeof(record);
+            }
+
+            record.level = loglevel;
+            record.message_len = (uint32_t) message_len;
+            memcpy(c->outgoing_string + c->outgoing_string_len, &record,
+                   sizeof(record));
+            c->outgoing_string_len += sizeof(record);
+            memcpy(c->outgoing_string + c->outgoing_string_len, message, message_len);
+            c->outgoing_string_len += message_len;
         }
 
         pthread_mutex_unlock(&c->command_string_mutex);
@@ -129,8 +122,7 @@ void daemon_forced_ending_hook(void)
 
                 if (volume->attached == AFP_VOLUME_ATTACHED) {
                     log_for_client(NULL, AFPFSD, LOG_NOTICE,
-                                   "Disconnecting from volume %s",
-                                   volume->volume_name);
+                                   "Disconnecting from volume %s", volume->volume_name);
                     afp_unmount_volume(volume);
                 }
             }
@@ -150,7 +142,6 @@ int daemon_unmount_volume(struct afp_volume * volume)
      * The actual AFP disconnect will be handled elsewhere. */
     return 0;
 }
-
 
 static int startup_listener(void)
 {
@@ -217,8 +208,7 @@ int main(int argc, char *argv[])
     signal(SIGPIPE, SIG_IGN);
 
     while (1) {
-        c = getopt_long(argc, argv, "dfhl:v:",
-                        long_options, &option_index);
+        c = getopt_long(argc, argv, "dfhl:v:", long_options, &option_index);
 
         if (c == -1) {
             break;
@@ -311,8 +301,8 @@ int main(int argc, char *argv[])
             goto error;
         }
 
-        log_for_client(NULL, AFPFSD, LOG_NOTICE,
-                       "Starting up AFPFS version %s", AFPFS_VERSION);
+        log_for_client(NULL, AFPFSD, LOG_NOTICE, "Starting up AFPFS version %s",
+                       AFPFS_VERSION);
         afp_main_loop(command_fd);
         close_commands(command_fd);
     }
