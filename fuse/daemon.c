@@ -333,11 +333,8 @@ static int connect_to_child_socket(const char *socket_path,
                 pos = strlen(text);
             }
 
-            char safe_mountpoint[PATH_MAX * 4];
-            sanitize_text(mountpoint, safe_mountpoint,
-                          sizeof(safe_mountpoint));
             snprintf(text + pos, sizeof(text) - pos,
-                     "Could not connect to daemon for %s\n", safe_mountpoint);
+                     "Could not connect to daemon\n");
             response.result = AFP_SERVER_RESULT_ERROR;
             response.len = strlen(text);
             (void)write(client_fd, &response, sizeof(response));
@@ -357,6 +354,20 @@ static int forward_child_response(int child_sock, int client_fd)
     struct afp_server_response response;
 
     if (read(child_sock, &response, sizeof(response)) != sizeof(response)) {
+        response.result = AFP_SERVER_RESULT_ERROR;
+        response.len = 0;
+
+        if (write(client_fd, &response, sizeof(response)) != sizeof(response)) {
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "Failed to send error response to client");
+        }
+
+        return -1;
+    }
+
+    if (response.len > MAX_CLIENT_RESPONSE) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Child response exceeds maximum allowed size");
         response.result = AFP_SERVER_RESULT_ERROR;
         response.len = 0;
 
@@ -543,6 +554,14 @@ static int handle_manager_command(int client_fd)
             return -1;
         }
 
+        if (memchr(req.mountpoint, '\0', sizeof(req.mountpoint)) == NULL ||
+                memchr(req.socket_id, '\0', sizeof(req.socket_id)) == NULL ||
+                memchr(req.volumename, '\0', sizeof(req.volumename)) == NULL) {
+            unsigned char result = AFP_SERVER_RESULT_ERROR;
+            (void)write(client_fd, &result, 1);
+            break;
+        }
+
         if (start_mount_daemon(req.socket_id, req.mountpoint, req.volumename) < 0) {
             unsigned char result = AFP_SERVER_RESULT_ERROR;
             (void)write(client_fd, &result, 1);
@@ -576,6 +595,16 @@ static int handle_manager_command(int client_fd)
 
         if (n != sizeof(req)) {
             /* Read error */
+            struct afp_server_response response;
+            response.result = AFP_SERVER_RESULT_ERROR;
+            response.len = 0;
+            (void)write(client_fd, &response, sizeof(response));
+            break;
+        }
+
+        if (memchr(req.volumename, '\0', sizeof(req.volumename)) == NULL ||
+                memchr(req.servername, '\0', sizeof(req.servername)) == NULL ||
+                memchr(req.mountpoint, '\0', sizeof(req.mountpoint)) == NULL) {
             struct afp_server_response response;
             response.result = AFP_SERVER_RESULT_ERROR;
             response.len = 0;
@@ -777,6 +806,14 @@ static int handle_manager_command(int client_fd)
         n = read(client_fd, &req, sizeof(req));
 
         if (n != sizeof(req)) {
+            struct afp_server_response response;
+            response.result = AFP_SERVER_RESULT_ERROR;
+            response.len = 0;
+            (void)write(client_fd, &response, sizeof(response));
+            break;
+        }
+
+        if (memchr(req.mountpoint, '\0', sizeof(req.mountpoint)) == NULL) {
             struct afp_server_response response;
             response.result = AFP_SERVER_RESULT_ERROR;
             response.len = 0;
