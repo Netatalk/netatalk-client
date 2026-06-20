@@ -1,19 +1,12 @@
 #include "afp.h"
 #include "lib/afp_replies.h"
 #include "lib/dsi_protocol.h"
+#include "tap.h"
 
 #include <arpa/inet.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
-#define CHECK(condition) do { \
-    if (!(condition)) { \
-        fprintf(stderr, "check failed at %s:%d: %s\n", \
-                __FILE__, __LINE__, #condition); \
-        return 1; \
-    } \
-} while (0)
 
 static uint64_t host_to_network64(uint64_t value)
 {
@@ -25,7 +18,7 @@ static uint64_t host_to_network64(uint64_t value)
 #endif
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     unsigned char reply[sizeof(struct dsi_header) + 16];
     struct dsi_header *header = (struct dsi_header *)reply;
@@ -40,6 +33,7 @@ int main(void)
         uint32_t datalength;
         char data[4];
     } __attribute__((__packed__)) xattr_reply;
+    test_tap_init(argc, argv);
     memset(reply, 0, sizeof(reply));
     wire32 = htonl(1234);
     memcpy(reply + sizeof(reply) - sizeof(wire32), &wire32, sizeof(wire32));
@@ -72,5 +66,5 @@ int main(void)
     CHECK(xattr_info.size == sizeof(xattr_reply.data));
     CHECK(xattr_info.copied == xattr_info.maxsize);
     CHECK(memcmp(xattr_info.data, "ab", xattr_info.copied) == 0);
-    return 0;
+    return test_tap_finish();
 }

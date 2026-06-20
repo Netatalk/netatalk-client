@@ -173,9 +173,10 @@ jobs:
             libgcrypt-dev \
             libfuse-dev \
             libreadline-dev \
-            meson \
             ninja-build \
-            pkg-config
+            pkg-config \
+            python3-pip
+          sudo python3 -m pip install --upgrade meson
       - name: Setup
         run: meson setup build --prefix=/usr
       - name: Compile

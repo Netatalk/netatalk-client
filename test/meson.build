@@ -7,7 +7,13 @@ metadata_test = executable(
     c_args: cflags,
 )
 
-test('local metadata storage', metadata_test)
+test(
+    'local metadata storage',
+    metadata_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
 
 protocol_replies_test = executable(
     'test_protocol_replies',
@@ -18,7 +24,13 @@ protocol_replies_test = executable(
     c_args: cflags,
 )
 
-test('AFP protocol reply parsing', protocol_replies_test)
+test(
+    'AFP protocol reply parsing',
+    protocol_replies_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
 
 log_test = executable(
     'test_log',
@@ -29,7 +41,13 @@ log_test = executable(
     c_args: cflags,
 )
 
-test('log message escaping', log_test)
+test(
+    'log message escaping',
+    log_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
 
 stateless_log_test = executable(
     'test_stateless_log',
@@ -40,4 +58,10 @@ stateless_log_test = executable(
     c_args: cflags,
 )
 
-test('stateless log callback and framing', stateless_log_test)
+test(
+    'stateless log callback and framing',
+    stateless_log_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
