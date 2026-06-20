@@ -22,15 +22,6 @@
 
 #include <fcntl.h>
 
-/* Cross-platform extended attribute error code */
-#ifndef ENOATTR
-#ifdef ENODATA
-#define ENOATTR ENODATA
-#else
-#define ENOATTR ENOENT  /* Fallback for systems without ENODATA or ENOATTR */
-#endif
-#endif
-
 #include "users.h"
 #include "did.h"
 #include "resource.h"

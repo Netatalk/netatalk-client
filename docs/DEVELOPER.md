@@ -319,6 +319,16 @@ Register a logger before making stateless calls:
 The callback runs synchronously on the calling thread. Passing a null callback disables log delivery. Registration is
 process-global, matching the stateless library's process-global connection state.
 
+The library also provides metadata-only replacement helpers for local-to-AFP, AFP-to-local, and AFP-to-AFP copies.
+Callers select the local representation on each operation with `enum afp_metadata_mode`; supported modes are filesystem
+xattrs, macOS AppleDouble, Netatalk AppleDouble, automatic detection, and none. The destination must already exist.
+These helpers clear represented destination metadata before copying Finder Info, the resource fork, and eligible generic
+xattrs. They deliberately do not copy the data fork, POSIX mode, or timestamps.
+
+Metadata replacement is not atomic. A failure can leave partially copied destination metadata. Unsupported metadata and
+values or lists above current protocol limits are reported through the optional `enum afp_metadata_warning` bitmask so
+non-interactive consumers can apply their own policy without parsing library output.
+
 **Use cases:**
 
 - Command-line utilities (afpcmd)

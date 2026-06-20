@@ -27,7 +27,7 @@ executable(
 
 libafpsl = shared_library(
     'afpsl',
-    sources: ['stateless.c'],
+    sources: ['stateless.c', 'metadata.c'],
     dependencies: root_dependencies,
     include_directories: incdir,
     link_with: libafpclient,
