@@ -13,15 +13,7 @@
 #include "afp_server.h"
 #include "afpsl.h"
 #include "stateless_internal.h"
-
-#define CHECK(condition)                                                       \
-    do {                                                                       \
-        if (!(condition)) {                                                    \
-            fprintf(stderr, "check failed at %s:%d: %s\n", __FILE__, __LINE__, \
-                #condition);                                                   \
-            return 1;                                                          \
-        }                                                                      \
-    } while (0)
+#include "tap.h"
 
 struct capture {
     int calls;
@@ -115,7 +107,10 @@ static int check_interrupted_framed_read(void)
     CHECK(expected_len > 0);
     CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
     child = fork();
-    CHECK(child >= 0);
+
+    if (child < 0) {
+        CHECK(child >= 0);
+    }
 
     if (child == 0) {
         close(sockets[0]);
@@ -130,6 +125,7 @@ static int check_interrupted_framed_read(void)
         _exit(0);
     }
 
+    CHECK(child > 0);
     close(sockets[1]);
     action.sa_handler = handle_alarm;
     sigemptyset(&action.sa_mask);
@@ -150,7 +146,7 @@ static int check_interrupted_framed_read(void)
     return 0;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     const char payload[] = "DATA";
     const char message[] = "daemon\nwarning";
@@ -168,6 +164,7 @@ int main(void)
     struct capture capture = { 0 };
     size_t pos = 0;
     size_t content_len = 0;
+    test_tap_init(argc, argv);
     memcpy(response + pos, payload, sizeof(payload) - 1);
     pos += sizeof(payload) - 1;
     memcpy(response + pos, &record, sizeof(record));
@@ -192,5 +189,5 @@ int main(void)
           == -1);
     CHECK(check_framed_read_errors() == 0);
     CHECK(check_interrupted_framed_read() == 0);
-    return 0;
+    return test_tap_finish();
 }

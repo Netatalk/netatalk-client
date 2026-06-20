@@ -1,4 +1,5 @@
 #include "metadata.h"
+#include "tap.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -14,14 +15,6 @@
 #ifdef HAVE_LIBBSD
 #include <bsd/string.h>
 #endif
-
-#define CHECK(condition) do { \
-    if (!(condition)) { \
-        fprintf(stderr, "check failed at %s:%d: %s\n", \
-                __FILE__, __LINE__, #condition); \
-        return 1; \
-    } \
-} while (0)
 
 static int create_file(const char *path)
 {
@@ -91,7 +84,7 @@ static int join_suffix(char *dst, size_t dst_size, const char *base,
     return 0;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     char temporary[] = "afpcmd-metadata-XXXXXX";
     char file[1024], missing[1024], macos_sidecar[1024], netatalk_dir[1024];
@@ -106,6 +99,7 @@ int main(void)
     mode_t old_umask;
     enum afp_metadata_mode parsed_mode;
     unsigned int warnings = UINT_MAX;
+    test_tap_init(argc, argv);
     CHECK(mkdtemp(temporary) != NULL);
     CHECK(join_suffix(file, sizeof(file), temporary, "/file") == 0);
     CHECK(join_suffix(missing, sizeof(missing), temporary, "/missing") == 0);
@@ -210,7 +204,7 @@ int main(void)
     CHECK(afp_metadata_clear_local(file, AFP_METADATA_MACOS, &warnings) == 0);
     CHECK(warnings == AFP_METADATA_WARNING_NONE);
     CHECK(local_finderinfo_get(file, AFP_METADATA_MACOS,
-                               actual_finder) == -ENODATA);
+                               actual_finder) == -ENOATTR);
     CHECK(local_resourcefork_size(file, AFP_METADATA_MACOS) <= 0);
     CHECK(chmod(temporary, 0750) == 0);
     old_umask = umask(0000);
@@ -313,5 +307,5 @@ int main(void)
     unlink(file);
     rmdir(netatalk_dir);
     rmdir(temporary);
-    return 0;
+    return test_tap_finish();
 }

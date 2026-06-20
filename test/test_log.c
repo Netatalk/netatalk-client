@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "libafpclient.h"
+#include "tap.h"
 #include "utils.h"
 
 static char captured_message[MAX_ERROR_LEN * 4];
@@ -15,7 +16,7 @@ static void capture_log_message(
     snprintf(captured_message, sizeof(captured_message), "%s", message);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     char sanitized[sizeof("line 1\\r\\nline\\t2\\x01\\x7f\\r\\n")];
     struct libafpclient test_client = {
@@ -29,23 +30,12 @@ int main(void)
     const char expected_sanitized[] =
         "line 1\\r\\nline\\t2\\x01\\x7f\\r\\n";
     const char expected_log[] = "line 1\\r\\nline\\t2\\x01\\x7f";
+    test_tap_init(argc, argv);
     sanitize_text(input, sanitized, sizeof(sanitized));
-
-    if (strcmp(sanitized, expected_sanitized) != 0) {
-        fprintf(stderr, "sanitize expected: %s\nactual:            %s\n",
-                expected_sanitized, sanitized);
-        return 1;
-    }
-
+    CHECK(strcmp(sanitized, expected_sanitized) == 0);
     libafpclient_register(&test_client);
     log_for_client(NULL, AFPFSD, LOG_INFO, "%s", input);
     libafpclient_register(NULL);
-
-    if (strcmp(captured_message, expected_log) != 0) {
-        fprintf(stderr, "expected: %s\nactual:   %s\n",
-                expected_log, captured_message);
-        return 1;
-    }
-
-    return 0;
+    CHECK(strcmp(captured_message, expected_log) == 0);
+    return test_tap_finish();
 }
