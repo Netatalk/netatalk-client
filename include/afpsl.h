@@ -15,6 +15,23 @@
  * this value are transferred with repeated calls at increasing offsets. */
 #define AFP_SL_METADATA_CHUNK 4096
 
+/* Local filesystem representation used by metadata transfer helpers.  AUTO
+ * probes filesystem xattrs, macOS AppleDouble, then Netatalk AppleDouble. */
+enum afp_metadata_mode {
+    AFP_METADATA_AUTO,
+    AFP_METADATA_XATTR,
+    AFP_METADATA_MACOS,
+    AFP_METADATA_NETATALK,
+    AFP_METADATA_NONE,
+};
+
+enum afp_metadata_warning {
+    AFP_METADATA_WARNING_NONE = 0,
+    AFP_METADATA_WARNING_UNSUPPORTED = 1U << 0,
+    AFP_METADATA_WARNING_VALUE_TOO_LARGE = 1U << 1,
+    AFP_METADATA_WARNING_LIST_TOO_LARGE = 1U << 2,
+};
+
 /* Basic file information structure for stateless API
  * This is the wire protocol format sent between afpsld and clients.
  * Contains essential file metadata without the full afp_file_info details.
@@ -130,6 +147,33 @@ int afp_sl_setresourcefork(volumeid_t *volid, const char *path,
                            const void *value, size_t size,
                            unsigned long long offset);
 int afp_sl_removeresourcefork(volumeid_t *volid, const char *path);
+
+/* Metadata transfer helpers provide replacement semantics: metadata is
+ * cleared at the existing destination before the copy starts.  They do not
+ * copy the data fork, POSIX mode, or timestamps, and replacement is not
+ * atomic.  Unsupported or unrepresentable metadata is reported through the
+ * optional warnings bitmask; other failures are returned as negative errno.
+ * Missing metadata is not an error, but a missing source or destination path
+ * is returned as -ENOENT. */
+int afp_metadata_mode_parse(const char *name, enum afp_metadata_mode *mode);
+const char *afp_metadata_mode_name(enum afp_metadata_mode mode);
+int afp_metadata_clear_local(const char *path,
+                             enum afp_metadata_mode mode,
+                             unsigned int *warnings);
+int afp_sl_metadata_clear(volumeid_t *volume, const char *path,
+                          unsigned int *warnings);
+int afp_sl_metadata_copy_local_to_remote(
+    const char *local_path, enum afp_metadata_mode local_mode,
+    volumeid_t *destination_volume, const char *destination_path,
+    unsigned int *warnings);
+int afp_sl_metadata_copy_remote_to_local(
+    volumeid_t *source_volume, const char *source_path,
+    const char *local_path, enum afp_metadata_mode local_mode,
+    unsigned int *warnings);
+int afp_sl_metadata_copy_remote_to_remote(
+    volumeid_t *source_volume, const char *source_path,
+    volumeid_t *destination_volume, const char *destination_path,
+    unsigned int *warnings);
 int afp_sl_setup(void);
 
 #endif

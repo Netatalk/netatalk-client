@@ -1,12 +1,13 @@
 /*
- * Local metadata storage for afpcmd.
+ * Local metadata storage and transfer helpers for libafpsl.
+ * The "netatalk" metadata storage uses the .AppleDouble sidecar file format
+ * invented by the authors of Netatalk, while "xattr" and "macos" emulate
+ * the macOS extended attribute storage format.
  *
- * Portions of the AppleDouble and extended attribute implementation are
- * adapted from Netatalk's libatalk/adouble and libatalk/vfs/ea_ad modules.
+ * Rules, layouts, and algorithms are informed by Netatalk's AppleDouble
+ * implementation, notably libatalk/adouble/ad_open.c and
+ * libatatalk/vfs/ea_ad.c
  *
- * Copyright (C) 1990,1991 Regents of The University of Michigan.
- * Copyright (C) 1999 Adrian Sun (asun@u.washington.edu)
- * Copyright (C) 2009-2010 Frank Lahm <franklahm@gmail.com>
  * Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -17,6 +18,8 @@
  */
 
 #include "metadata.h"
+#include "afpsl.h"
+#include "afp_xattr.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -41,27 +44,11 @@
 #include <sys/extattr.h>
 #endif
 
-#ifndef ENOATTR
-#ifdef ENODATA
-#define ENOATTR ENODATA
-#else
-#define ENOATTR ENOENT
-#endif
-#endif
-
-#ifndef ENODATA
-#define ENODATA ENOATTR
-#endif
-
-#define FI_NAME "com.apple.FinderInfo"
-#define RF_NAME "com.apple.ResourceFork"
-#define NETATALK_META "org.netatalk.Metadata"
 #define COPY_SOURCE "com.apple.finder.copy.source"
 #define COPY_CHECKPOINT "com.apple.finder.copy.checkpoint#"
 #define RESUMABLE_COPY "com.apple.metadata:kMDItemResumableCopy"
 
-#define METADATA_NAME_MAX 255U
-#define SYS_NAME_MAX ((sizeof("user.") - 1U) + METADATA_NAME_MAX)
+#define SYS_NAME_MAX (AFP_XATTR_USER_PREFIX_LEN + AFP_XATTR_NAME_MAX)
 #define SYS_NAME_SIZE (SYS_NAME_MAX + 1U)
 
 #define AD_MAGIC 0x00051607U
@@ -96,7 +83,7 @@ struct ea_item {
 
 static int metadata_absent(int error)
 {
-    return error == ENOATTR || error == ENODATA || error == ENOENT;
+    return error == ENOATTR || error == ENODATA;
 }
 
 static int metadata_unsupported(int error)
@@ -104,45 +91,61 @@ static int metadata_unsupported(int error)
     return error == ENOTSUP || error == EOPNOTSUPP || error == ENOSYS;
 }
 
-int metadata_mode_parse(const char *name, enum metadata_mode *mode)
+static int local_path_check(const char *path)
+{
+    struct stat st;
+
+    if (!path) {
+        return -EINVAL;
+    }
+
+    return stat(path, &st) == 0 ? 0 : -errno;
+}
+
+int afp_metadata_mode_parse(const char *name, enum afp_metadata_mode *mode)
 {
     if (!name || !mode) {
-        return -1;
+        return -EINVAL;
     }
 
     if (strcmp(name, "auto") == 0) {
-        *mode = METADATA_AUTO;
-    } else if (strcmp(name, "sys") == 0) {
-        *mode = METADATA_SYS;
+        *mode = AFP_METADATA_AUTO;
+    } else if (strcmp(name, "xattr") == 0) {
+        *mode = AFP_METADATA_XATTR;
     } else if (strcmp(name, "macos") == 0) {
-        *mode = METADATA_MACOS;
+        *mode = AFP_METADATA_MACOS;
     } else if (strcmp(name, "netatalk") == 0) {
-        *mode = METADATA_NETATALK;
+        *mode = AFP_METADATA_NETATALK;
     } else if (strcmp(name, "none") == 0) {
-        *mode = METADATA_NONE;
+        *mode = AFP_METADATA_NONE;
     } else {
-        return -1;
+        return -EINVAL;
     }
 
     return 0;
 }
 
-const char *metadata_mode_name(enum metadata_mode mode)
+static int metadata_mode_valid(enum afp_metadata_mode mode)
+{
+    return mode >= AFP_METADATA_AUTO && mode <= AFP_METADATA_NONE;
+}
+
+const char *afp_metadata_mode_name(enum afp_metadata_mode mode)
 {
     switch (mode) {
-    case METADATA_AUTO:
+    case AFP_METADATA_AUTO:
         return "auto";
 
-    case METADATA_SYS:
-        return "sys";
+    case AFP_METADATA_XATTR:
+        return "xattr";
 
-    case METADATA_MACOS:
+    case AFP_METADATA_MACOS:
         return "macos";
 
-    case METADATA_NETATALK:
+    case AFP_METADATA_NETATALK:
         return "netatalk";
 
-    case METADATA_NONE:
+    case AFP_METADATA_NONE:
         return "none";
     }
 
@@ -155,12 +158,10 @@ int metadata_name_filtered(const char *name)
         return 1;
     }
 
-    if (strncmp(name, "user.", 5) == 0) {
-        name += 5;
-    }
+    name = afp_xattr_strip_user_prefix(name);
 
     /* Filter out metadata of internal macOS or Netatalk use */
-    return strncmp(name, NETATALK_META, sizeof(NETATALK_META) - 1U) == 0
+    return strncmp(name, NETATALK_XATTR_META, NETATALK_XATTR_META_LEN) == 0
            || strcmp(name, COPY_SOURCE) == 0
            || strcmp(name, RESUMABLE_COPY) == 0
            || strncmp(name, COPY_CHECKPOINT,
@@ -175,8 +176,8 @@ static int metadata_name_valid(const char *name)
         return 0;
     }
 
-    length = strnlen(name, METADATA_NAME_MAX + 1U);
-    return length > 0 && length <= METADATA_NAME_MAX
+    length = strnlen(name, AFP_XATTR_NAME_MAX + 1U);
+    return length > 0 && length <= AFP_XATTR_NAME_MAX
            && memchr(name, '/', length) == NULL;
 }
 
@@ -187,11 +188,12 @@ static const char *sys_name(const char *name, char mapped[SYS_NAME_SIZE])
     return name;
 #else
 
-    if (strncmp(name, "user.", 5) == 0) {
+    if (strncmp(name, AFP_XATTR_USER_PREFIX,
+                AFP_XATTR_USER_PREFIX_LEN) == 0) {
         return name;
     }
 
-    snprintf(mapped, SYS_NAME_SIZE, "user.%s", name);
+    snprintf(mapped, SYS_NAME_SIZE, AFP_XATTR_USER_PREFIX "%s", name);
     return mapped;
 #endif
 }
@@ -206,7 +208,7 @@ static ssize_t sys_get(const char *path, const char *name, void *value,
 #elif defined(HAVE_SYS_XATTR_H) || defined(HAVE_ATTR_XATTR_H)
     return getxattr(path, actual, value, size);
 #elif defined(HAVE_SYS_EXTATTR_H)
-    const char *bare = strncmp(actual, "user.", 5) == 0 ? actual + 5 : actual;
+    const char *bare = afp_xattr_strip_user_prefix(actual);
     return extattr_get_file(path, EXTATTR_NAMESPACE_USER, bare, value, size);
 #else
     (void)path;
@@ -228,7 +230,7 @@ static int sys_set(const char *path, const char *name,
 #elif defined(HAVE_SYS_XATTR_H) || defined(HAVE_ATTR_XATTR_H)
     return setxattr(path, actual, value, size, 0);
 #elif defined(HAVE_SYS_EXTATTR_H)
-    const char *bare = strncmp(actual, "user.", 5) == 0 ? actual + 5 : actual;
+    const char *bare = afp_xattr_strip_user_prefix(actual);
     return extattr_set_file(path, EXTATTR_NAMESPACE_USER, bare, value,
                             size) < 0 ? -1 : 0;
 #else
@@ -250,7 +252,7 @@ static int sys_remove(const char *path, const char *name)
 #elif defined(HAVE_SYS_XATTR_H) || defined(HAVE_ATTR_XATTR_H)
     return removexattr(path, actual);
 #elif defined(HAVE_SYS_EXTATTR_H)
-    const char *bare = strncmp(actual, "user.", 5) == 0 ? actual + 5 : actual;
+    const char *bare = afp_xattr_strip_user_prefix(actual);
     return extattr_delete_file(path, EXTATTR_NAMESPACE_USER, bare);
 #else
     (void)path;
@@ -358,7 +360,8 @@ static int sys_list(const char *path, char **list, size_t *size)
             return -EIO;
         }
 
-        snprintf(name, sizeof(name), "user.%.*s", length, raw + pos);
+        snprintf(name, sizeof(name), AFP_XATTR_USER_PREFIX "%.*s", length,
+                 raw + pos);
 
         if (!metadata_name_filtered(name)) {
             int ret = append_name(list, &used, name);
@@ -641,6 +644,21 @@ static int initialize_ad(int fd, int netatalk)
     return 0;
 }
 
+static int sidecar_open_error(const char *path, int error)
+{
+    struct stat st;
+
+    if (error != ENOENT) {
+        return -error;
+    }
+
+    if (stat(path, &st) == 0) {
+        return -ENOATTR;
+    }
+
+    return -errno;
+}
+
 static int open_ad(const char *path, int netatalk, int write,
                    int *fd, struct ad_info *info)
 {
@@ -661,7 +679,7 @@ static int open_ad(const char *path, int netatalk, int write,
           : open(sidecar, O_RDONLY);
 
     if (*fd < 0) {
-        return -errno;
+        return write ? -errno : sidecar_open_error(path, errno);
     }
 
     ret = read_ad_info(*fd, info);
@@ -863,7 +881,7 @@ static int load_ea_items(const char *path, struct ea_item **items,
     fd = open(header, O_RDONLY);
 
     if (fd < 0) {
-        return -errno;
+        return sidecar_open_error(path, errno);
     }
 
     if (fstat(fd, &st) < 0 || st.st_size < EA_HEADER_SIZE
@@ -984,9 +1002,9 @@ static int save_ea_items(const char *path, struct ea_item *items, size_t count)
     }
 
     for (size_t i = 0; i < count; i++) {
-        size_t name_len = strnlen(items[i].name, METADATA_NAME_MAX + 1U);
+        size_t name_len = strnlen(items[i].name, AFP_XATTR_NAME_MAX + 1U);
 
-        if (name_len > METADATA_NAME_MAX) {
+        if (name_len > AFP_XATTR_NAME_MAX) {
             return -EINVAL;
         }
 
@@ -1004,7 +1022,7 @@ static int save_ea_items(const char *path, struct ea_item *items, size_t count)
     put_u16(buf + 6, (uint16_t)count);
 
     for (size_t i = 0; i < count; i++) {
-        size_t name_len = strnlen(items[i].name, METADATA_NAME_MAX + 1U);
+        size_t name_len = strnlen(items[i].name, AFP_XATTR_NAME_MAX + 1U);
         put_u32(buf + pos, items[i].size);
         pos += 4;
         memcpy(buf + pos, items[i].name, name_len + 1U);
@@ -1238,7 +1256,8 @@ static int netatalk_remove(const char *path, const char *name)
     return ret;
 }
 
-int local_metadata_list(const char *path, enum metadata_mode mode, char **list,
+int local_metadata_list(const char *path, enum afp_metadata_mode mode,
+                        char **list,
                         size_t *size)
 {
     char *extra = NULL;
@@ -1246,16 +1265,21 @@ int local_metadata_list(const char *path, enum metadata_mode mode, char **list,
     int ret;
     *list = NULL;
     *size = 0;
+    ret = local_path_check(path);
 
-    if (mode == METADATA_NONE || mode == METADATA_MACOS) {
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (mode == AFP_METADATA_NONE || mode == AFP_METADATA_MACOS) {
         return 0;
     }
 
-    if (mode == METADATA_SYS) {
+    if (mode == AFP_METADATA_XATTR) {
         return sys_list(path, list, size);
     }
 
-    if (mode == METADATA_NETATALK) {
+    if (mode == AFP_METADATA_NETATALK) {
         return netatalk_list(path, list, size);
     }
 
@@ -1303,21 +1327,26 @@ int local_metadata_list(const char *path, enum metadata_mode mode, char **list,
     return 0;
 }
 
-int local_metadata_get(const char *path, enum metadata_mode mode,
+int local_metadata_get(const char *path, enum afp_metadata_mode mode,
                        const char *name, void **value, size_t *size)
 {
     ssize_t needed;
+    int ret = local_path_check(path);
+
+    if (ret < 0) {
+        return ret;
+    }
 
     if (!metadata_name_valid(name)) {
         return -EINVAL;
     }
 
-    if (mode == METADATA_NONE || mode == METADATA_MACOS
+    if (mode == AFP_METADATA_NONE || mode == AFP_METADATA_MACOS
             || metadata_name_filtered(name)) {
         return -ENOTSUP;
     }
 
-    if (mode != METADATA_NETATALK) {
+    if (mode != AFP_METADATA_NETATALK) {
         needed = sys_get(path, name, NULL, 0);
 
         if (needed >= 0) {
@@ -1342,8 +1371,8 @@ int local_metadata_get(const char *path, enum metadata_mode mode,
             return 0;
         }
 
-        if (mode == METADATA_SYS || (!metadata_absent(errno)
-                                     && !metadata_unsupported(errno))) {
+        if (mode == AFP_METADATA_XATTR || (!metadata_absent(errno)
+                                            && !metadata_unsupported(errno))) {
             return -errno;
         }
     }
@@ -1351,24 +1380,30 @@ int local_metadata_get(const char *path, enum metadata_mode mode,
     return netatalk_get(path, name, value, size);
 }
 
-int local_metadata_set(const char *path, enum metadata_mode mode,
+int local_metadata_set(const char *path, enum afp_metadata_mode mode,
                        const char *name, const void *value, size_t size)
 {
+    int ret = local_path_check(path);
+
+    if (ret < 0) {
+        return ret;
+    }
+
     if (!metadata_name_valid(name) || (!value && size > 0)) {
         return -EINVAL;
     }
 
-    if (mode == METADATA_NONE || mode == METADATA_MACOS
+    if (mode == AFP_METADATA_NONE || mode == AFP_METADATA_MACOS
             || metadata_name_filtered(name)) {
         return -ENOTSUP;
     }
 
-    if (mode != METADATA_NETATALK) {
+    if (mode != AFP_METADATA_NETATALK) {
         if (sys_set(path, name, value, size) == 0) {
             return 0;
         }
 
-        if (mode == METADATA_SYS || !metadata_unsupported(errno)) {
+        if (mode == AFP_METADATA_XATTR || !metadata_unsupported(errno)) {
             return -errno;
         }
     }
@@ -1376,18 +1411,24 @@ int local_metadata_set(const char *path, enum metadata_mode mode,
     return netatalk_set(path, name, value, size);
 }
 
-int local_metadata_remove(const char *path, enum metadata_mode mode,
+int local_metadata_remove(const char *path, enum afp_metadata_mode mode,
                           const char *name)
 {
+    int ret = local_path_check(path);
+
+    if (ret < 0) {
+        return ret;
+    }
+
     if (!metadata_name_valid(name)) {
         return -EINVAL;
     }
 
-    if (mode == METADATA_NONE || mode == METADATA_MACOS) {
+    if (mode == AFP_METADATA_NONE || mode == AFP_METADATA_MACOS) {
         return -ENOTSUP;
     }
 
-    if (mode == METADATA_AUTO) {
+    if (mode == AFP_METADATA_AUTO) {
         int sys_ret = sys_remove(path, name) == 0 ? 0 : -errno;
         int ad_ret = netatalk_remove(path, name);
 
@@ -1403,13 +1444,13 @@ int local_metadata_remove(const char *path, enum metadata_mode mode,
         return (sys_ret == 0 || ad_ret == 0) ? 0 : -ENOATTR;
     }
 
-    if (mode != METADATA_NETATALK) {
+    if (mode != AFP_METADATA_NETATALK) {
         if (sys_remove(path, name) == 0) {
             return 0;
         }
 
-        if (mode == METADATA_SYS || (!metadata_absent(errno)
-                                     && !metadata_unsupported(errno))) {
+        if (mode == AFP_METADATA_XATTR || (!metadata_absent(errno)
+                                            && !metadata_unsupported(errno))) {
             return -errno;
         }
     }
@@ -1417,32 +1458,37 @@ int local_metadata_remove(const char *path, enum metadata_mode mode,
     return netatalk_remove(path, name);
 }
 
-int local_finderinfo_get(const char *path, enum metadata_mode mode,
+int local_finderinfo_get(const char *path, enum afp_metadata_mode mode,
                          unsigned char value[32])
 {
     ssize_t ret;
+    int path_ret = local_path_check(path);
 
-    if (mode == METADATA_NONE) {
+    if (path_ret < 0) {
+        return path_ret;
+    }
+
+    if (mode == AFP_METADATA_NONE) {
         return -ENOTSUP;
     }
 
-    if (mode == METADATA_SYS || mode == METADATA_AUTO) {
-        ret = sys_get(path, FI_NAME, value, 32);
+    if (mode == AFP_METADATA_XATTR || mode == AFP_METADATA_AUTO) {
+        ret = sys_get(path, AFP_XATTR_FINDERINFO, value, 32);
 
         if (ret == 32) {
             return 0;
         }
 
-        if (mode == METADATA_SYS || (ret < 0 && !metadata_absent(errno)
-                                     && !metadata_unsupported(errno))) {
+        if (mode == AFP_METADATA_XATTR || (ret < 0 && !metadata_absent(errno)
+                                            && !metadata_unsupported(errno))) {
             return ret < 0 ? -errno : -EIO;
         }
     }
 
-    if (mode == METADATA_MACOS || mode == METADATA_AUTO) {
+    if (mode == AFP_METADATA_MACOS || mode == AFP_METADATA_AUTO) {
         int r = ad_finder_get(path, 0, value);
 
-        if (r == 0 || mode == METADATA_MACOS) {
+        if (r == 0 || mode == AFP_METADATA_MACOS) {
             return r;
         }
     }
@@ -1450,36 +1496,47 @@ int local_finderinfo_get(const char *path, enum metadata_mode mode,
     return ad_finder_get(path, 1, value);
 }
 
-int local_finderinfo_set(const char *path, enum metadata_mode mode,
+int local_finderinfo_set(const char *path, enum afp_metadata_mode mode,
                          const unsigned char value[32])
 {
-    if (mode == METADATA_NONE) {
+    int ret = local_path_check(path);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (mode == AFP_METADATA_NONE) {
         return -ENOTSUP;
     }
 
-    if (mode == METADATA_SYS || mode == METADATA_AUTO) {
-        if (sys_set(path, FI_NAME, value, 32) == 0) {
+    if (mode == AFP_METADATA_XATTR || mode == AFP_METADATA_AUTO) {
+        if (sys_set(path, AFP_XATTR_FINDERINFO, value, 32) == 0) {
             return 0;
         }
 
-        if (mode == METADATA_SYS || !metadata_unsupported(errno)) {
+        if (mode == AFP_METADATA_XATTR || !metadata_unsupported(errno)) {
             return -errno;
         }
     }
 
-    return ad_finder_set(path, mode == METADATA_NETATALK, value);
+    return ad_finder_set(path, mode == AFP_METADATA_NETATALK, value);
 }
 
-int local_finderinfo_remove(const char *path, enum metadata_mode mode)
+int local_finderinfo_remove(const char *path, enum afp_metadata_mode mode)
 {
     unsigned char empty[32] = {0};
+    int ret = local_path_check(path);
 
-    if (mode == METADATA_NONE) {
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (mode == AFP_METADATA_NONE) {
         return -ENOTSUP;
     }
 
-    if (mode == METADATA_AUTO) {
-        int sys_ret = sys_remove(path, FI_NAME) == 0 ? 0 : -errno;
+    if (mode == AFP_METADATA_AUTO) {
+        int sys_ret = sys_remove(path, AFP_XATTR_FINDERINFO) == 0 ? 0 : -errno;
         int macos_exists = sidecar_exists(path, 0);
         int netatalk_exists = sidecar_exists(path, 1);
         int macos_ret;
@@ -1517,45 +1574,50 @@ int local_finderinfo_remove(const char *path, enum metadata_mode mode)
         return 0;
     }
 
-    if (mode == METADATA_SYS || mode == METADATA_AUTO) {
-        if (sys_remove(path, FI_NAME) == 0) {
+    if (mode == AFP_METADATA_XATTR || mode == AFP_METADATA_AUTO) {
+        if (sys_remove(path, AFP_XATTR_FINDERINFO) == 0) {
             return 0;
         }
 
-        if (mode == METADATA_SYS || (!metadata_absent(errno)
-                                     && !metadata_unsupported(errno))) {
+        if (mode == AFP_METADATA_XATTR || (!metadata_absent(errno)
+                                            && !metadata_unsupported(errno))) {
             return -errno;
         }
     }
 
-    return ad_finder_set(path, mode == METADATA_NETATALK, empty);
+    return ad_finder_set(path, mode == AFP_METADATA_NETATALK, empty);
 }
 
-off_t local_resourcefork_size(const char *path, enum metadata_mode mode)
+off_t local_resourcefork_size(const char *path, enum afp_metadata_mode mode)
 {
     ssize_t ret;
+    int path_ret = local_path_check(path);
 
-    if (mode == METADATA_NONE) {
+    if (path_ret < 0) {
+        return path_ret;
+    }
+
+    if (mode == AFP_METADATA_NONE) {
         return -ENOTSUP;
     }
 
-    if (mode == METADATA_SYS || mode == METADATA_AUTO) {
-        ret = sys_get(path, RF_NAME, NULL, 0);
+    if (mode == AFP_METADATA_XATTR || mode == AFP_METADATA_AUTO) {
+        ret = sys_get(path, AFP_XATTR_RESOURCEFORK, NULL, 0);
 
         if (ret >= 0) {
             return ret;
         }
 
-        if (mode == METADATA_SYS || (!metadata_absent(errno)
-                                     && !metadata_unsupported(errno))) {
+        if (mode == AFP_METADATA_XATTR || (!metadata_absent(errno)
+                                            && !metadata_unsupported(errno))) {
             return -errno;
         }
     }
 
-    if (mode == METADATA_MACOS || mode == METADATA_AUTO) {
+    if (mode == AFP_METADATA_MACOS || mode == AFP_METADATA_AUTO) {
         off_t r = ad_resource_size(path, 0);
 
-        if (r >= 0 || mode == METADATA_MACOS) {
+        if (r >= 0 || mode == AFP_METADATA_MACOS) {
             return r;
         }
     }
@@ -1563,20 +1625,39 @@ off_t local_resourcefork_size(const char *path, enum metadata_mode mode)
     return ad_resource_size(path, 1);
 }
 
-ssize_t local_resourcefork_read(const char *path, enum metadata_mode mode,
+ssize_t local_resourcefork_read(const char *path, enum afp_metadata_mode mode,
                                 void *buf, size_t size, off_t offset)
 {
-    if (mode == METADATA_SYS || mode == METADATA_AUTO) {
-        off_t total = local_resourcefork_size(path, METADATA_SYS);
+    if (offset < 0 || (!buf && size > 0)) {
+        return -EINVAL;
+    }
+
+    if (size > SSIZE_MAX) {
+        return -EOVERFLOW;
+    }
+
+    int path_ret = local_path_check(path);
+
+    if (path_ret < 0) {
+        return path_ret;
+    }
+
+    if (mode == AFP_METADATA_XATTR || mode == AFP_METADATA_AUTO) {
+        off_t total = local_resourcefork_size(path, AFP_METADATA_XATTR);
 
         if (total >= 0) {
-            void *all = malloc(total ? (size_t)total : 1);
+            if ((uintmax_t)total > SIZE_MAX) {
+                return -EOVERFLOW;
+            }
+
+            size_t total_size = (size_t)total;
+            void *all = malloc(total_size ? total_size : 1);
 
             if (!all) {
                 return -ENOMEM;
             }
 
-            ssize_t got = sys_get(path, RF_NAME, all, total);
+            ssize_t got = sys_get(path, AFP_XATTR_RESOURCEFORK, all, total_size);
 
             if (got < 0) {
                 int e = errno;
@@ -1584,29 +1665,40 @@ ssize_t local_resourcefork_read(const char *path, enum metadata_mode mode,
                 return -e;
             }
 
+            if ((size_t)got > total_size) {
+                free(all);
+                return -EIO;
+            }
+
             if (offset >= got) {
                 free(all);
                 return 0;
             }
 
-            if (size > (size_t)(got - offset)) {
-                size = got - offset;
+            size_t position = (size_t)offset;
+            size_t available = (size_t)got - position;
+
+            if (size > available) {
+                size = available;
             }
 
-            memcpy(buf, (char *)all + offset, size);
+            if (size > 0) {
+                memcpy(buf, (char *)all + position, size);
+            }
+
             free(all);
             return size;
         }
 
-        if (mode == METADATA_SYS) {
+        if (mode == AFP_METADATA_XATTR) {
             return total;
         }
     }
 
-    if (mode == METADATA_MACOS || mode == METADATA_AUTO) {
+    if (mode == AFP_METADATA_MACOS || mode == AFP_METADATA_AUTO) {
         ssize_t r = ad_resource_read(path, 0, buf, size, offset);
 
-        if (r >= 0 || mode == METADATA_MACOS) {
+        if (r >= 0 || mode == AFP_METADATA_MACOS) {
             return r;
         }
     }
@@ -1614,20 +1706,43 @@ ssize_t local_resourcefork_read(const char *path, enum metadata_mode mode,
     return ad_resource_read(path, 1, buf, size, offset);
 }
 
-int local_resourcefork_write(const char *path, enum metadata_mode mode,
+int local_resourcefork_write(const char *path, enum afp_metadata_mode mode,
                              const void *buf, size_t size, off_t offset)
 {
-    if (mode == METADATA_NONE) {
+    if (offset < 0 || (!buf && size > 0)) {
+        return -EINVAL;
+    }
+
+    if ((uintmax_t)offset > (uintmax_t)SSIZE_MAX
+            || size > (size_t)SSIZE_MAX - (size_t)offset) {
+        return -EFBIG;
+    }
+
+    int path_ret = local_path_check(path);
+
+    if (path_ret < 0) {
+        return path_ret;
+    }
+
+    if (mode == AFP_METADATA_NONE) {
         return -ENOTSUP;
     }
 
-    if (mode == METADATA_SYS || mode == METADATA_AUTO) {
-        off_t old_size = offset == 0 ? 0 : local_resourcefork_size(path, METADATA_SYS);
-        size_t total = offset + size;
+    if (mode == AFP_METADATA_XATTR || mode == AFP_METADATA_AUTO) {
+        off_t old_size = offset == 0 ? 0 : local_resourcefork_size(path,
+                         AFP_METADATA_XATTR);
+        size_t position = (size_t)offset;
+        size_t total = position + size;
         unsigned char *all;
 
-        if (old_size > (off_t)total) {
-            total = old_size;
+        if (old_size > 0) {
+            if ((uintmax_t)old_size > SIZE_MAX) {
+                return -EOVERFLOW;
+            }
+
+            if ((size_t)old_size > total) {
+                total = (size_t)old_size;
+            }
         }
 
         all = calloc(1, total ? total : 1);
@@ -1636,17 +1751,27 @@ int local_resourcefork_write(const char *path, enum metadata_mode mode,
             return -ENOMEM;
         }
 
-        if (offset > 0 && old_size > 0 && sys_get(path, RF_NAME, all, old_size) < 0) {
-            int e = errno;
-            free(all);
-            return -e;
+        if (position > 0 && old_size > 0) {
+            ssize_t got = sys_get(path, AFP_XATTR_RESOURCEFORK, all,
+                                  (size_t)old_size);
+
+            if (got < 0) {
+                int e = errno;
+                free(all);
+                return -e;
+            }
+
+            if (got != old_size) {
+                free(all);
+                return -EIO;
+            }
         }
 
         if (size) {
-            memcpy(all + offset, buf, size);
+            memcpy(all + position, buf, size);
         }
 
-        if (sys_set(path, RF_NAME, all, total) == 0) {
+        if (sys_set(path, AFP_XATTR_RESOURCEFORK, all, total) == 0) {
             free(all);
             return 0;
         }
@@ -1654,22 +1779,29 @@ int local_resourcefork_write(const char *path, enum metadata_mode mode,
         int error = errno;
         free(all);
 
-        if (mode == METADATA_SYS || !metadata_unsupported(error)) {
+        if (mode == AFP_METADATA_XATTR || !metadata_unsupported(error)) {
             return -error;
         }
     }
 
-    return ad_resource_write(path, mode == METADATA_NETATALK, buf, size, offset);
+    return ad_resource_write(path, mode == AFP_METADATA_NETATALK, buf, size,
+                             offset);
 }
 
-int local_resourcefork_remove(const char *path, enum metadata_mode mode)
+int local_resourcefork_remove(const char *path, enum afp_metadata_mode mode)
 {
-    if (mode == METADATA_NONE) {
+    int ret = local_path_check(path);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (mode == AFP_METADATA_NONE) {
         return -ENOTSUP;
     }
 
-    if (mode == METADATA_AUTO) {
-        int sys_ret = sys_remove(path, RF_NAME) == 0 ? 0 : -errno;
+    if (mode == AFP_METADATA_AUTO) {
+        int sys_ret = sys_remove(path, AFP_XATTR_RESOURCEFORK) == 0 ? 0 : -errno;
         int macos_exists = sidecar_exists(path, 0);
         int netatalk_exists = sidecar_exists(path, 1);
         int macos_ret;
@@ -1707,16 +1839,712 @@ int local_resourcefork_remove(const char *path, enum metadata_mode mode)
         return 0;
     }
 
-    if (mode == METADATA_SYS || mode == METADATA_AUTO) {
-        if (sys_remove(path, RF_NAME) == 0) {
+    if (mode == AFP_METADATA_XATTR || mode == AFP_METADATA_AUTO) {
+        if (sys_remove(path, AFP_XATTR_RESOURCEFORK) == 0) {
             return 0;
         }
 
-        if (mode == METADATA_SYS || (!metadata_absent(errno)
-                                     && !metadata_unsupported(errno))) {
+        if (mode == AFP_METADATA_XATTR || (!metadata_absent(errno)
+                                            && !metadata_unsupported(errno))) {
             return -errno;
         }
     }
 
-    return ad_resource_write(path, mode == METADATA_NETATALK, NULL, 0, 0);
+    return ad_resource_write(path, mode == AFP_METADATA_NETATALK, NULL, 0, 0);
+}
+
+static int transfer_error_absent(int ret)
+{
+    return ret == -ENOATTR || ret == -ENODATA;
+}
+
+static int transfer_error_unsupported(int ret)
+{
+    return ret == -ENOTSUP || ret == -EOPNOTSUPP || ret == -ENOSYS;
+}
+
+static void transfer_warning(unsigned int *warnings, unsigned int warning)
+{
+    if (warnings) {
+        *warnings |= warning;
+    }
+}
+
+static int transfer_name_special(const char *name)
+{
+    const char *stripped = afp_xattr_strip_user_prefix(name);
+    return stripped && (strcmp(stripped, AFP_XATTR_FINDERINFO) == 0
+                        || strcmp(stripped, AFP_XATTR_RESOURCEFORK) == 0);
+}
+
+static int transfer_list_next(const char *list, size_t size, size_t *position,
+                              const char **name)
+{
+    size_t length;
+
+    if (*position >= size) {
+        return 0;
+    }
+
+    length = strnlen(list + *position, size - *position);
+
+    if (length == size - *position) {
+        return -EIO;
+    }
+
+    *name = list + *position;
+    *position += length + 1U;
+    return 1;
+}
+
+static int transfer_remote_list(volumeid_t *volume, const char *path,
+                                char **list, size_t *size)
+{
+    int ret = afp_sl_listxattr(volume, path, NULL, 0);
+    *list = NULL;
+    *size = 0;
+
+    if (ret <= 0) {
+        return ret;
+    }
+
+    if (ret > AFP_SL_METADATA_CHUNK) {
+        return -E2BIG;
+    }
+
+    *list = malloc((size_t)ret);
+
+    if (!*list) {
+        return -ENOMEM;
+    }
+
+    int got = afp_sl_listxattr(volume, path, *list, (size_t)ret);
+
+    if (got < 0 || got > ret) {
+        free(*list);
+        *list = NULL;
+        return got < 0 ? got : -EIO;
+    }
+
+    *size = (size_t)got;
+    return 0;
+}
+
+static int transfer_remote_get(volumeid_t *volume, const char *path,
+                               const char *name, void **value, size_t *size)
+{
+    int ret = afp_sl_getxattr(volume, path, name, NULL, 0);
+    *value = NULL;
+    *size = 0;
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (ret > AFP_SL_METADATA_CHUNK) {
+        return -E2BIG;
+    }
+
+    *value = malloc(ret ? (size_t)ret : 1U);
+
+    if (!*value) {
+        return -ENOMEM;
+    }
+
+    if (ret > 0) {
+        int got = afp_sl_getxattr(volume, path, name, *value, (size_t)ret);
+
+        if (got < 0 || got > ret) {
+            free(*value);
+            *value = NULL;
+            return got < 0 ? got : -EIO;
+        }
+
+        ret = got;
+    }
+
+    *size = (size_t)ret;
+    return 0;
+}
+
+static int transfer_metadata_result(int ret, unsigned int *warnings)
+{
+    if (ret >= 0 || transfer_error_absent(ret)) {
+        return 0;
+    }
+
+    if (transfer_error_unsupported(ret)) {
+        transfer_warning(warnings, AFP_METADATA_WARNING_UNSUPPORTED);
+        return 0;
+    }
+
+    return ret;
+}
+
+int afp_metadata_clear_local(const char *path, enum afp_metadata_mode mode,
+                             unsigned int *warnings)
+{
+    char *list = NULL;
+    size_t list_size = 0;
+    size_t position = 0;
+    const char *name;
+    int next;
+    int ret;
+
+    if (warnings) {
+        *warnings = AFP_METADATA_WARNING_NONE;
+    }
+
+    if (!path || !metadata_mode_valid(mode)) {
+        return -EINVAL;
+    }
+
+    if (mode == AFP_METADATA_NONE) {
+        return 0;
+    }
+
+    ret = transfer_metadata_result(local_finderinfo_remove(path, mode), warnings);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = transfer_metadata_result(local_resourcefork_remove(path, mode), warnings);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = local_metadata_list(path, mode, &list, &list_size);
+
+    if (ret < 0) {
+        return transfer_metadata_result(ret, warnings);
+    }
+
+    while ((next = transfer_list_next(list, list_size, &position, &name)) > 0) {
+        if (transfer_name_special(name) || metadata_name_filtered(name)) {
+            continue;
+        }
+
+        ret = transfer_metadata_result(local_metadata_remove(path, mode, name),
+                                       warnings);
+
+        if (ret < 0) {
+            free(list);
+            return ret;
+        }
+    }
+
+    free(list);
+    return next < 0 ? next : 0;
+}
+
+int afp_sl_metadata_clear(volumeid_t *volume, const char *path,
+                          unsigned int *warnings)
+{
+    char *list = NULL;
+    size_t list_size = 0;
+    size_t position = 0;
+    const char *name;
+    int next;
+    int ret;
+
+    if (warnings) {
+        *warnings = AFP_METADATA_WARNING_NONE;
+    }
+
+    if (!volume || !*volume || !path) {
+        return -EINVAL;
+    }
+
+    ret = transfer_metadata_result(afp_sl_removefinderinfo(volume, path), warnings);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = transfer_metadata_result(afp_sl_removeresourcefork(volume, path),
+                                   warnings);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = transfer_remote_list(volume, path, &list, &list_size);
+
+    if (ret == -E2BIG) {
+        transfer_warning(warnings, AFP_METADATA_WARNING_LIST_TOO_LARGE);
+        return 0;
+    }
+
+    if (ret < 0) {
+        return transfer_metadata_result(ret, warnings);
+    }
+
+    while ((next = transfer_list_next(list, list_size, &position, &name)) > 0) {
+        if (transfer_name_special(name) || metadata_name_filtered(name)) {
+            continue;
+        }
+
+        ret = transfer_metadata_result(afp_sl_removexattr(volume, path, name),
+                                       warnings);
+
+        if (ret < 0) {
+            free(list);
+            return ret;
+        }
+    }
+
+    free(list);
+    return next < 0 ? next : 0;
+}
+
+static int transfer_local_xattrs_to_remote(const char *local_path,
+        enum afp_metadata_mode mode, volumeid_t *volume, const char *remote_path,
+        unsigned int *warnings)
+{
+    char *list = NULL;
+    size_t list_size = 0;
+    size_t position = 0;
+    const char *name;
+    int next;
+    int ret = local_metadata_list(local_path, mode, &list, &list_size);
+
+    if (ret < 0) {
+        return transfer_metadata_result(ret, warnings);
+    }
+
+    while ((next = transfer_list_next(list, list_size, &position, &name)) > 0) {
+        void *value = NULL;
+        size_t value_size = 0;
+
+        if (transfer_name_special(name) || metadata_name_filtered(name)) {
+            continue;
+        }
+
+        ret = local_metadata_get(local_path, mode, name, &value, &value_size);
+
+        if (ret == 0 && value_size > AFP_SL_METADATA_CHUNK) {
+            transfer_warning(warnings, AFP_METADATA_WARNING_VALUE_TOO_LARGE);
+            free(value);
+            continue;
+        }
+
+        if (ret == 0) {
+            ret = afp_sl_setxattr(volume, remote_path, name, value, value_size, 0);
+        }
+
+        free(value);
+        ret = transfer_metadata_result(ret, warnings);
+
+        if (ret < 0) {
+            free(list);
+            return ret;
+        }
+    }
+
+    free(list);
+    return next < 0 ? next : 0;
+}
+
+int afp_sl_metadata_copy_local_to_remote(
+    const char *local_path, enum afp_metadata_mode mode,
+    volumeid_t *destination_volume, const char *destination_path,
+    unsigned int *warnings)
+{
+    unsigned char finderinfo[32];
+    unsigned char buffer[AFP_SL_METADATA_CHUNK];
+    off_t resource_size;
+    off_t offset = 0;
+    int finder_ret;
+    int ret;
+
+    if (warnings) {
+        *warnings = AFP_METADATA_WARNING_NONE;
+    }
+
+    if (!local_path || !destination_volume || !*destination_volume
+            || !destination_path || !metadata_mode_valid(mode)) {
+        return -EINVAL;
+    }
+
+    if (mode == AFP_METADATA_NONE) {
+        return 0;
+    }
+
+    finder_ret = local_finderinfo_get(local_path, mode, finderinfo);
+
+    if (finder_ret > 0) {
+        return -EIO;
+    }
+
+    if (finder_ret < 0 && !transfer_error_absent(finder_ret)
+            && !transfer_error_unsupported(finder_ret)) {
+        return finder_ret;
+    }
+
+    ret = afp_sl_metadata_clear(destination_volume, destination_path, warnings);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (finder_ret == 0) {
+        ret = afp_sl_setfinderinfo(destination_volume, destination_path,
+                                   finderinfo, sizeof(finderinfo));
+    } else {
+        ret = finder_ret;
+    }
+
+    ret = transfer_metadata_result(ret, warnings);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    resource_size = local_resourcefork_size(local_path, mode);
+
+    while (resource_size > 0 && offset < resource_size) {
+        size_t chunk = (size_t)(resource_size - offset);
+
+        if (chunk > sizeof(buffer)) {
+            chunk = sizeof(buffer);
+        }
+
+        ssize_t amount = local_resourcefork_read(local_path, mode, buffer,
+                         chunk, offset);
+
+        if (amount <= 0 || (size_t)amount > chunk) {
+            return amount < 0 ? (int)amount : -EIO;
+        }
+
+        ret = afp_sl_setresourcefork(destination_volume, destination_path,
+                                     buffer, (size_t)amount,
+                                     (unsigned long long)offset);
+
+        if (transfer_error_unsupported(ret)) {
+            transfer_warning(warnings, AFP_METADATA_WARNING_UNSUPPORTED);
+            break;
+        }
+
+        if (ret < 0) {
+            return ret;
+        }
+
+        offset += amount;
+    }
+
+    if (resource_size < 0) {
+        ret = transfer_metadata_result((int)resource_size, warnings);
+
+        if (ret < 0) {
+            return ret;
+        }
+    }
+
+    return transfer_local_xattrs_to_remote(local_path, mode,
+                                           destination_volume,
+                                           destination_path, warnings);
+}
+
+static int transfer_remote_xattrs_to_local(volumeid_t *volume,
+        const char *remote_path, const char *local_path,
+        enum afp_metadata_mode mode, unsigned int *warnings)
+{
+    char *list = NULL;
+    size_t list_size = 0;
+    size_t position = 0;
+    const char *name;
+    int next;
+    int ret = transfer_remote_list(volume, remote_path, &list, &list_size);
+
+    if (ret == -E2BIG) {
+        transfer_warning(warnings, AFP_METADATA_WARNING_LIST_TOO_LARGE);
+        return 0;
+    }
+
+    if (ret < 0) {
+        return transfer_metadata_result(ret, warnings);
+    }
+
+    while ((next = transfer_list_next(list, list_size, &position, &name)) > 0) {
+        void *value = NULL;
+        size_t value_size = 0;
+
+        if (transfer_name_special(name) || metadata_name_filtered(name)) {
+            continue;
+        }
+
+        ret = transfer_remote_get(volume, remote_path, name, &value, &value_size);
+
+        if (ret == -E2BIG) {
+            transfer_warning(warnings, AFP_METADATA_WARNING_VALUE_TOO_LARGE);
+            continue;
+        }
+
+        if (ret == 0) {
+            ret = local_metadata_set(local_path, mode, name, value, value_size);
+        }
+
+        free(value);
+        ret = transfer_metadata_result(ret, warnings);
+
+        if (ret < 0) {
+            free(list);
+            return ret;
+        }
+    }
+
+    free(list);
+    return next < 0 ? next : 0;
+}
+
+int afp_sl_metadata_copy_remote_to_local(
+    volumeid_t *source_volume, const char *source_path,
+    const char *local_path, enum afp_metadata_mode mode,
+    unsigned int *warnings)
+{
+    unsigned char finderinfo[32];
+    unsigned char buffer[AFP_SL_METADATA_CHUNK];
+    unsigned long long offset = 0;
+    int finder_ret;
+    int ret;
+
+    if (warnings) {
+        *warnings = AFP_METADATA_WARNING_NONE;
+    }
+
+    if (!source_volume || !*source_volume || !source_path || !local_path
+            || !metadata_mode_valid(mode)) {
+        return -EINVAL;
+    }
+
+    if (mode == AFP_METADATA_NONE) {
+        return 0;
+    }
+
+    finder_ret = afp_sl_getfinderinfo(source_volume, source_path, finderinfo,
+                                      sizeof(finderinfo));
+
+    if (finder_ret >= 0 && finder_ret != (int)sizeof(finderinfo)) {
+        return -EIO;
+    }
+
+    if (finder_ret < 0 && !transfer_error_absent(finder_ret)
+            && !transfer_error_unsupported(finder_ret)) {
+        return finder_ret;
+    }
+
+    ret = afp_metadata_clear_local(local_path, mode, warnings);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (finder_ret == (int)sizeof(finderinfo)) {
+        ret = local_finderinfo_set(local_path, mode, finderinfo);
+    } else {
+        ret = finder_ret;
+    }
+
+    ret = transfer_metadata_result(ret, warnings);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = afp_sl_getresourcefork(source_volume, source_path, NULL, 0, 0);
+
+    if (ret > 0) {
+        unsigned long long total = (unsigned int)ret;
+
+        while (offset < total) {
+            size_t chunk = (size_t)(total - offset);
+
+            if (chunk > sizeof(buffer)) {
+                chunk = sizeof(buffer);
+            }
+
+            ret = afp_sl_getresourcefork(source_volume, source_path, buffer,
+                                         chunk, offset);
+
+            if (ret <= 0 || (size_t)ret > chunk) {
+                return ret < 0 ? ret : -EIO;
+            }
+
+            int write_ret = local_resourcefork_write(local_path, mode, buffer,
+                            (size_t)ret, (off_t)offset);
+
+            if (transfer_error_unsupported(write_ret)) {
+                transfer_warning(warnings, AFP_METADATA_WARNING_UNSUPPORTED);
+                break;
+            }
+
+            if (write_ret < 0) {
+                return write_ret;
+            }
+
+            offset += (unsigned int)ret;
+        }
+    } else if (ret < 0) {
+        ret = transfer_metadata_result(ret, warnings);
+
+        if (ret < 0) {
+            return ret;
+        }
+    }
+
+    return transfer_remote_xattrs_to_local(source_volume, source_path,
+                                           local_path, mode, warnings);
+}
+
+static int transfer_remote_xattrs_to_remote(volumeid_t *source_volume,
+        const char *source_path, volumeid_t *destination_volume,
+        const char *destination_path, unsigned int *warnings)
+{
+    char *list = NULL;
+    size_t list_size = 0;
+    size_t position = 0;
+    const char *name;
+    int next;
+    int ret = transfer_remote_list(source_volume, source_path, &list, &list_size);
+
+    if (ret == -E2BIG) {
+        transfer_warning(warnings, AFP_METADATA_WARNING_LIST_TOO_LARGE);
+        return 0;
+    }
+
+    if (ret < 0) {
+        return transfer_metadata_result(ret, warnings);
+    }
+
+    while ((next = transfer_list_next(list, list_size, &position, &name)) > 0) {
+        void *value = NULL;
+        size_t value_size = 0;
+
+        if (transfer_name_special(name) || metadata_name_filtered(name)) {
+            continue;
+        }
+
+        ret = transfer_remote_get(source_volume, source_path, name, &value,
+                                  &value_size);
+
+        if (ret == -E2BIG) {
+            transfer_warning(warnings, AFP_METADATA_WARNING_VALUE_TOO_LARGE);
+            continue;
+        }
+
+        if (ret == 0) {
+            ret = afp_sl_setxattr(destination_volume, destination_path, name,
+                                  value, value_size, 0);
+        }
+
+        free(value);
+        ret = transfer_metadata_result(ret, warnings);
+
+        if (ret < 0) {
+            free(list);
+            return ret;
+        }
+    }
+
+    free(list);
+    return next < 0 ? next : 0;
+}
+
+int afp_sl_metadata_copy_remote_to_remote(
+    volumeid_t *source_volume, const char *source_path,
+    volumeid_t *destination_volume, const char *destination_path,
+    unsigned int *warnings)
+{
+    unsigned char finderinfo[32];
+    unsigned char buffer[AFP_SL_METADATA_CHUNK];
+    unsigned long long offset = 0;
+    int finder_ret;
+    int ret;
+
+    if (warnings) {
+        *warnings = AFP_METADATA_WARNING_NONE;
+    }
+
+    if (!source_volume || !*source_volume || !source_path
+            || !destination_volume || !*destination_volume
+            || !destination_path) {
+        return -EINVAL;
+    }
+
+    finder_ret = afp_sl_getfinderinfo(source_volume, source_path, finderinfo,
+                                      sizeof(finderinfo));
+
+    if (finder_ret >= 0 && finder_ret != (int)sizeof(finderinfo)) {
+        return -EIO;
+    }
+
+    if (finder_ret < 0 && !transfer_error_absent(finder_ret)
+            && !transfer_error_unsupported(finder_ret)) {
+        return finder_ret;
+    }
+
+    ret = afp_sl_metadata_clear(destination_volume, destination_path, warnings);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (finder_ret == (int)sizeof(finderinfo)) {
+        ret = afp_sl_setfinderinfo(destination_volume, destination_path,
+                                   finderinfo, sizeof(finderinfo));
+    } else {
+        ret = finder_ret;
+    }
+
+    ret = transfer_metadata_result(ret, warnings);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = afp_sl_getresourcefork(source_volume, source_path, NULL, 0, 0);
+
+    if (ret > 0) {
+        unsigned long long total = (unsigned int)ret;
+
+        while (offset < total) {
+            size_t chunk = (size_t)(total - offset);
+
+            if (chunk > sizeof(buffer)) {
+                chunk = sizeof(buffer);
+            }
+
+            ret = afp_sl_getresourcefork(source_volume, source_path, buffer,
+                                         chunk, offset);
+
+            if (ret <= 0 || (size_t)ret > chunk) {
+                return ret < 0 ? ret : -EIO;
+            }
+
+            int write_ret = afp_sl_setresourcefork(destination_volume,
+                                                   destination_path, buffer, (size_t)ret, offset);
+
+            if (transfer_error_unsupported(write_ret)) {
+                transfer_warning(warnings, AFP_METADATA_WARNING_UNSUPPORTED);
+                break;
+            }
+
+            if (write_ret < 0) {
+                return write_ret;
+            }
+
+            offset += (unsigned int)ret;
+        }
+    } else if (ret < 0) {
+        ret = transfer_metadata_result(ret, warnings);
+
+        if (ret < 0) {
+            return ret;
+        }
+    }
+
+    return transfer_remote_xattrs_to_remote(source_volume, source_path,
+                                            destination_volume, destination_path, warnings);
 }

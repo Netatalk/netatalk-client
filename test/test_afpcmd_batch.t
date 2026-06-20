@@ -12,6 +12,7 @@ use strict;
 use warnings;
 
 use Test::More;
+use File::Path qw(remove_tree);
 use File::Temp qw(tempdir);
 
 my $AFP_URL  = 'afp://test_usr:test_pwd@localhost/afpfs_test';
@@ -88,5 +89,35 @@ if (-e $test_path) {
     fail('batch_download: mode preserved');
     fail('batch_download: modification time preserved');
 }
+
+# -----------------------------------------------------------------------
+# recursive_macos_round_trip
+# -----------------------------------------------------------------------
+
+my $tree_name = "afpcmd_tree_$$";
+my $tree_path = "$work_dir/$tree_name";
+my $tree_file = "$tree_path/payload";
+my $tree_sidecar = "$tree_path/._payload";
+
+mkdir $tree_path or BAIL_OUT("Cannot create recursive test directory: $!");
+open(my $tree_fh, '>', $tree_file)
+    or BAIL_OUT("Cannot create recursive test file: $!");
+print $tree_fh "recursive metadata round trip\n";
+close $tree_fh;
+open(my $tree_adh, '>:raw', $tree_sidecar)
+    or BAIL_OUT("Cannot create recursive AppleDouble file: $!");
+print $tree_adh $appledouble;
+close $tree_adh;
+
+is(system('afpcmd', '-r', '--metadata=macos', $tree_path, $AFP_URL), 0,
+    'recursive_macos: initial directory upload succeeds');
+
+remove_tree($tree_path);
+is(system('afpcmd', '-r', '--metadata=macos',
+          "$AFP_URL/$tree_name", $tree_path), 0,
+    'recursive_macos: directory download succeeds');
+ok(-s $tree_sidecar, 'recursive_macos: downloaded sidecar is non-empty');
+is(system('afpcmd', '-r', '--metadata=macos', $tree_path, $AFP_URL), 0,
+    'recursive_macos: downloaded directory uploads without treating sidecar as a file');
 
 done_testing;

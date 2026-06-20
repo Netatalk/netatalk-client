@@ -34,14 +34,6 @@
 #include <sys/types.h>
 #include <pwd.h>
 
-#ifndef ENOATTR
-#ifdef ENODATA
-#define ENOATTR ENODATA
-#else
-#define ENOATTR ENOENT
-#endif
-#endif
-
 /* Extended attribute headers - platform dependent */
 #if defined(HAVE_ATTR_XATTR_H)
 #include <attr/xattr.h>

@@ -1,7 +1,8 @@
 metadata_test = executable(
     'test_metadata',
-    sources: ['test_metadata.c', '../cmdline/metadata.c'],
-    include_directories: [incdir, include_directories('../cmdline')],
+    sources: ['test_metadata.c'],
+    include_directories: [incdir, include_directories('../daemon')],
+    link_with: libafpsl,
     dependencies: root_dependencies,
     c_args: cflags,
 )

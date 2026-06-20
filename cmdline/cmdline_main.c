@@ -456,7 +456,7 @@ static void usage(void)
         "afpcmd [-h] [-V] [-v loglevel] [-M mode] <afp url>\n"
         "Options:\n"
         "\t-h:          show this help message and exit\n"
-        "\t-M mode:     preserve metadata using auto, sys, macos, netatalk, or none\n"
+        "\t-M mode:     preserve metadata using auto, xattr, macos, netatalk, or none\n"
         "\t-r:          recursively transfer directories in batch mode\n"
         "\t-V:          verbose mode (show detailed transfer messages)\n"
         "\t-v loglevel: set log verbosity (debug, info, notice, warning, error)\n"

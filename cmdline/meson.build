@@ -13,7 +13,6 @@ if with_afpcmd
         sources: [
             'cmdline_afp.c',
             'cmdline_main.c',
-            'metadata.c',
         ],
         include_directories: incdir,
         link_with: [libafpclient, libafpsl],

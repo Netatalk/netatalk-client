@@ -73,7 +73,7 @@ Preserves FinderInfo, resource forks, generic extended attributes, modes,
 and modification times during transfers.
 The storage mode may be
 .Cm auto ,
-.Cm sys ,
+.Cm xattr ,
 .Cm macos ,
 .Cm netatalk ,
 or
@@ -82,7 +82,7 @@ The default
 .Cm auto
 mode uses local filesystem extended attributes first and falls back to
 AppleDouble sidecars.
-.Cm sys
+.Cm xattr
 uses only local filesystem extended attributes.
 .Cm macos
 uses macOS-compatible

@@ -1,6 +1,6 @@
 # NEWS
 
-## Netatalk Client v0.9.5, June 4, 2026
+## Netatalk Client v0.9.5 (unreleased)
 
 Note: As of this release version, this fork of _afpfs-ng_ is now known as _Netatalk Client_.
 The names of tools and libraries will not be changed to signal continuity and compatibility.
@@ -12,10 +12,17 @@ The names of tools and libraries will not be changed to signal continuity and co
 - Harden and bugfix libafpclient UAM handling code
 - We now detect 2000s era Mac OS X servers, Time Capsules, and Windows (SFM, PCMacLan) servers
 
-### Stateless Client Improvements
+### Stateless Client Library Improvements
 
 - Allow library consumers to register a persistent logging callback with context and syslog severity. Local libafpsl
   diagnostics and structured logs returned by every afpsld command use the same callback.
+- Add reusable metadata replacement and transfer helpers to `libafpsl`, with explicit filesystem-xattr, macOS AppleDouble,
+  and Netatalk AppleDouble storage modes and non-fatal warning flags for non-interactive consumers.
+
+### afpcmd Client Improvements
+
+- Preserve Finder Info, resource forks, and generic extended attributes when transferring files, with selectable local
+  metadata storage modes.
 
 ## afpfs-ng 0.9.4 (February 28, 2026)
 
