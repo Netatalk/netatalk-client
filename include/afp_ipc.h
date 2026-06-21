@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 
+/* Unix socket shared by afpsld and libafpsl. */
+#define SERVER_SL_SOCKET_PATH "/tmp/afp_sl"
+
 /* Structured logging trailer appended to stateless daemon responses. */
 #define AFP_SERVER_LOG_MAGIC UINT32_C(0x4146504c)
 #define AFP_SERVER_LOG_BUFFER_SIZE 4096
@@ -87,8 +90,5 @@ struct afp_server_log_footer {
 #define AFP_SERVER_RESULT_ACCESS 23
 #define AFP_SERVER_RESULT_EXIST 24
 #define AFP_SERVER_RESULT_ENOTEMPTY 25
-
-/* Backward compatibility */
-#define AFP_SERVER_RESULT_AFPFSD_ERROR AFP_SERVER_RESULT_DAEMON_ERROR
 
 #endif

@@ -140,29 +140,12 @@ static unsigned int get_uam_mask_for_url(void)
 
 static int is_recoverable_session_error(int ret)
 {
-    if (ret < 0) {
-        return 1;
-    }
-
-    switch (ret) {
-    case AFP_SERVER_RESULT_ERROR:
-    case AFP_SERVER_RESULT_ERROR_UNKNOWN:
-    case AFP_SERVER_RESULT_NOTCONNECTED:
-    case AFP_SERVER_RESULT_NOTATTACHED:
-    case AFP_SERVER_RESULT_DAEMON_ERROR:
-    case AFP_SERVER_RESULT_NOSERVER:
-    case AFP_SERVER_RESULT_TIMEDOUT:
-        return 1;
-
-    default:
-        return 0;
-    }
+    return afp_sl_recovery_for_error(ret) != AFP_SL_RECOVERY_NONE;
 }
 
 static int reconnect_session(int restore_volume, int restore_dir)
 {
     char mesg[MAX_ERROR_LEN];
-    int error = 0;
     unsigned int uam_mask;
     int ret;
     serverid_t new_server_id = NULL;
@@ -202,8 +185,7 @@ static int reconnect_session(int restore_volume, int restore_dir)
                 sizeof(reconnect_url.servername));
     }
 
-    if (afp_sl_connect(&reconnect_url, uam_mask, &new_server_id, mesg,
-                       &error) != 0) {
+    if (afp_sl_connect(&reconnect_url, uam_mask, &new_server_id, mesg) != 0) {
         return -1;
     }
 
@@ -367,24 +349,25 @@ static int cmdline_get_volpass(void)
 static int attach_volume_with_password_prompt(volumeid_t *vol_id_ptr,
         unsigned int volume_options)
 {
+    enum afp_sl_attach_status status;
     int ret;
     /* Clear any previous password to force a fresh prompt if needed */
     explicit_bzero(url.volpassword, sizeof(url.volpassword));
     /* First attempt */
-    ret = afp_sl_attach(&url, volume_options, vol_id_ptr);
+    ret = afp_sl_attach(&url, volume_options, vol_id_ptr, &status);
 
     if (ret == 0) {
         return 0;
     }
 
-    if (ret == AFP_SERVER_RESULT_VOLPASS_NEEDED) {
+    if (status == AFP_SL_ATTACH_STATUS_PASSWORD_REQUIRED) {
         if (cmdline_get_volpass() != 0) {
             printf("Password prompt cancelled.\n");
-            return AFP_SERVER_RESULT_VOLPASS_NEEDED;
+            return -EACCES;
         }
 
         /* Second attempt with password */
-        ret = afp_sl_attach(&url, volume_options, vol_id_ptr);
+        ret = afp_sl_attach(&url, volume_options, vol_id_ptr, &status);
     }
 
     return ret;
@@ -580,7 +563,7 @@ static int remote_readdir_all(const char *path,
         int ret = afp_sl_readdir(&vol_id, path, NULL, (int)total, 256,
                                  &page_count, &page, &eod);
 
-        if (ret != AFP_SERVER_RESULT_OKAY) {
+        if (ret != 0) {
             free(page);
             free(all);
             return ret;
@@ -627,18 +610,15 @@ static int apply_remote_posix_metadata(const char *path, const struct stat *st)
 {
     int ret = afp_sl_chmod(&vol_id, path, NULL, st->st_mode & 07777);
 
-    if (ret != AFP_SERVER_RESULT_OKAY && ret != AFP_SERVER_RESULT_NOTSUPPORTED
-            && ret != AFP_SERVER_RESULT_ACCESS) {
-        return -EIO;
+    if (ret != 0 && ret != -ENOTSUP && ret != -EACCES) {
+        return ret;
     }
 
     struct utimbuf times = { .actime = st->st_mtime, .modtime = st->st_mtime };
 
     ret = afp_sl_utime(&vol_id, path, NULL, &times);
 
-    return ret == AFP_SERVER_RESULT_OKAY
-           || ret == AFP_SERVER_RESULT_NOTSUPPORTED
-           || ret == AFP_SERVER_RESULT_ACCESS ? 0 : -EIO;
+    return ret == 0 || ret == -ENOTSUP || ret == -EACCES ? 0 : ret;
 }
 
 static int copy_local_metadata_to_remote(const char *local_path,
@@ -782,13 +762,13 @@ static void list_volumes(void)
 
     ret = afp_sl_getvols(&url, 0, count, &numvols, vols);
 
-    if (ret != AFP_SERVER_RESULT_OKAY && is_recoverable_session_error(ret)
+    if (ret != 0 && is_recoverable_session_error(ret)
             && reconnect_session(0, 0) == 0) {
         numvols = 0;
         ret = afp_sl_getvols(&url, 0, count, &numvols, vols);
     }
 
-    if (ret == AFP_SERVER_RESULT_OKAY) {
+    if (ret == 0) {
         printf("Available volumes on %s:\n", url.servername);
 
         for (unsigned int i = 0; i < numvols; i++) {
@@ -806,6 +786,7 @@ int com_pass(__attribute__((unused)) char *unused)
     const char *old_password;
     const char *new_password;
     const char *new_password_confirm;
+    enum afp_sl_password_change_status status;
     int ret;
 
     if (!connected) {
@@ -850,49 +831,44 @@ int com_pass(__attribute__((unused)) char *unused)
         return -1;
     }
 
-    ret = afp_sl_changepw(&url, old_pw_buf, new_pw_buf);
+    ret = afp_sl_changepw(&url, old_pw_buf, new_pw_buf, &status);
     explicit_bzero(old_pw_buf, sizeof(old_pw_buf));
     explicit_bzero(new_pw_buf, sizeof(new_pw_buf));
 
     if (ret != 0) {
-        switch (ret) {
-        case kFPAccessDenied:
+        switch (status) {
+        case AFP_SL_PASSWORD_CHANGE_STATUS_ACCESS_DENIED:
             printf("Password change failed: access denied.\n");
             break;
 
-        case kFPUserNotAuth:
+        case AFP_SL_PASSWORD_CHANGE_STATUS_INCORRECT_OLD_PASSWORD:
             printf("Password change failed: incorrect old password.\n");
             break;
 
-        case kFPBadUAM:
-            printf("Password change failed: the server's authentication method "
-                   "does not support password changing.\n");
-            break;
-
-        case kFPCallNotSupported:
+        case AFP_SL_PASSWORD_CHANGE_STATUS_UNSUPPORTED_AUTHENTICATION:
             printf("Password change failed: not supported by the current "
                    "authentication method.\n");
             break;
 
-        case kFPPwdSameErr:
+        case AFP_SL_PASSWORD_CHANGE_STATUS_UNCHANGED:
             printf("Password change failed: new password must be different "
                    "from old password.\n");
             break;
 
-        case kFPPwdTooShortErr:
+        case AFP_SL_PASSWORD_CHANGE_STATUS_TOO_SHORT:
             printf("Password change failed: new password is too short.\n");
             break;
 
-        case kFPPwdExpiredErr:
+        case AFP_SL_PASSWORD_CHANGE_STATUS_EXPIRED:
             printf("Password change failed: password has expired.\n");
             break;
 
-        case kFPPwdPolicyErr:
+        case AFP_SL_PASSWORD_CHANGE_STATUS_POLICY_VIOLATION:
             printf("Password change failed: new password does not meet "
                    "the server's password policy.\n");
             break;
 
-        case kFPParamErr:
+        case AFP_SL_PASSWORD_CHANGE_STATUS_INVALID_PARAMETER:
             printf("Password change failed: invalid parameter.\n");
             break;
 
@@ -952,7 +928,7 @@ int com_dir(char * arg)
     ret = afp_sl_readdir(&vol_id, dir_path, NULL, 0, 100, &numfiles, &filebase,
                          &eod);
 
-    if (ret != AFP_SERVER_RESULT_OKAY && is_recoverable_session_error(ret)
+    if (ret != 0 && is_recoverable_session_error(ret)
             && reconnect_session(1, 1) == 0) {
         if (filebase) {
             free(filebase);
@@ -965,7 +941,7 @@ int com_dir(char * arg)
                              &filebase, &eod);
     }
 
-    if (ret != AFP_SERVER_RESULT_OKAY) {
+    if (ret != 0) {
         printf("Could not read directory\n");
         goto out;
     }
@@ -1025,15 +1001,15 @@ int com_touch(char * arg)
 
     ret = afp_sl_creat(&vol_id, server_fullname, NULL, 0644);
 
-    if (ret == AFP_SERVER_RESULT_OKAY) {
+    if (ret == 0) {
         return 0;
-    } else if (ret == AFP_SERVER_RESULT_EXIST) {
+    } else if (ret == -EEXIST) {
         time_t now = time(NULL);
         times.actime = now;
         times.modtime = now;
         ret = afp_sl_utime(&vol_id, server_fullname, NULL, &times);
 
-        if (ret != AFP_SERVER_RESULT_OKAY) {
+        if (ret != 0) {
             printf("Could not update timestamp for %s (result=%d)\n", filename, ret);
             return -1;
         }
@@ -1081,7 +1057,7 @@ static int chmod_remote_tree(const char *server_path, mode_t mode)
             ret = -1;
         } else if (!S_ISDIR(entry->unixprivs.permissions)
                    && afp_sl_chmod(&vol_id, child, NULL, mode)
-                   != AFP_SERVER_RESULT_OKAY) {
+                   != 0) {
             printf("Could not chmod %s\n", child);
             ret = -1;
         }
@@ -1090,7 +1066,7 @@ static int chmod_remote_tree(const char *server_path, mode_t mode)
     free(entries);
 
     if (afp_sl_chmod(&vol_id, server_path, NULL, mode)
-            != AFP_SERVER_RESULT_OKAY) {
+            != 0) {
         printf("Could not chmod %s\n", server_path);
         ret = -1;
     }
@@ -1134,7 +1110,7 @@ int com_chmod(char * arg)
         struct stat st;
 
         if (afp_sl_stat(&vol_id, server_fullname, NULL, &st)
-                != AFP_SERVER_RESULT_OKAY) {
+                != 0) {
             printf("File not found: %s\n", filename);
             return -1;
         }
@@ -1146,10 +1122,10 @@ int com_chmod(char * arg)
 
     ret = afp_sl_chmod(&vol_id, server_fullname, NULL, mode);
 
-    if (ret != AFP_SERVER_RESULT_OKAY) {
-        if (ret == AFP_SERVER_RESULT_ACCESS) {
+    if (ret != 0) {
+        if (ret == -EACCES) {
             printf("Permission denied changing mode for %s\n", filename);
-        } else if (ret == AFP_SERVER_RESULT_ENOENT) {
+        } else if (ret == -ENOENT) {
             printf("File not found: %s\n", filename);
         } else {
             printf("Could not chmod %s (result=%d)\n", filename, ret);
@@ -1205,25 +1181,25 @@ static int upload_file(char *local_filename, char *server_fullname,
      * which could confuse the server or midlevel API */
     ret = afp_sl_creat(&vol_id, server_fullname, NULL, localstat.st_mode & 0777);
 
-    if (ret != AFP_SERVER_RESULT_OKAY) {
-        if (ret == AFP_SERVER_RESULT_EXIST) {
+    if (ret != 0) {
+        if (ret == -EEXIST) {
             if (verbose_mode) {
                 printf("    File exists, truncating before overwriting...\n");
             }
 
             ret = afp_sl_truncate(&vol_id, server_fullname, NULL, 0);
 
-            if (ret != AFP_SERVER_RESULT_OKAY) {
+            if (ret != 0) {
                 printf("Could not truncate existing file \"%s\" (result=%d)\n", server_fullname,
                        ret);
                 goto out;
             }
-        } else if (ret == AFP_SERVER_RESULT_ACCESS) {
+        } else if (ret == -EACCES) {
             /* Sometimes ACCESS is returned if file exists but is read-only.
                Try to truncate/overwrite anyway. */
             ret = afp_sl_truncate(&vol_id, server_fullname, NULL, 0);
 
-            if (ret != AFP_SERVER_RESULT_OKAY) {
+            if (ret != 0) {
                 printf("Permission denied creating file \"%s\"\n", server_fullname);
                 goto out;
             }
@@ -1237,9 +1213,9 @@ static int upload_file(char *local_filename, char *server_fullname,
     ret = afp_sl_open(&vol_id, server_fullname, NULL, &fileid, O_RDWR);
 
     if (ret) {
-        if (ret == AFP_SERVER_RESULT_ACCESS) {
+        if (ret == -EACCES) {
             printf("Permission denied opening file \"%s\"\n", server_fullname);
-        } else if (ret == AFP_SERVER_RESULT_ENOENT) {
+        } else if (ret == -ENOENT) {
             printf("Permission denied creating file \"%s\"\n", server_fullname);
         } else {
             printf("Could not open remote file for writing (result=%d)\n", ret);
@@ -1279,7 +1255,7 @@ static int upload_file(char *local_filename, char *server_fullname,
     file_opened = 0;
     fileid = 0;
 
-    if (ret != AFP_SERVER_RESULT_OKAY) {
+    if (ret != 0) {
         printf("Could not close remote file \"%s\" (result=%d)\n",
                server_fullname, ret);
         goto out;
@@ -1355,7 +1331,7 @@ static int upload_directory(char *local_dirname, char *server_parent_path,
     ret = afp_sl_mkdir(&vol_id, server_parent_path, NULL,
                        dir_stat.st_mode & 0777);
 
-    if (ret != AFP_SERVER_RESULT_OKAY && ret != AFP_SERVER_RESULT_EXIST) {
+    if (ret != 0 && ret != -EEXIST) {
         printf("Failed to create remote directory %s (error: %d)\n", server_parent_path,
                ret);
 
@@ -1870,7 +1846,7 @@ int com_rename(char * arg)
 
     ret = afp_sl_rename(&vol_id, server_oldpath, server_newpath, NULL);
 
-    if (ret != AFP_SERVER_RESULT_OKAY) {
+    if (ret != 0) {
         printf("Failed to move %s to %s (error: %d)\n",
                server_oldpath, server_newpath, ret);
         return -1;
@@ -2391,17 +2367,16 @@ static int copy_remote_tree(const char *source, const char *target,
     int mkdir_ret = afp_sl_mkdir(&vol_id, target, NULL,
                                  source_stat->st_mode & 0777);
 
-    if (mkdir_ret != AFP_SERVER_RESULT_OKAY
-            && mkdir_ret != AFP_SERVER_RESULT_EXIST) {
+    if (mkdir_ret != 0 && mkdir_ret != -EEXIST) {
         printf("Could not create directory %s (error: %d)\n", target, mkdir_ret);
         return -1;
     }
 
-    if (mkdir_ret == AFP_SERVER_RESULT_EXIST) {
+    if (mkdir_ret == -EEXIST) {
         struct stat target_stat;
         int stat_ret = afp_sl_stat(&vol_id, target, NULL, &target_stat);
 
-        if (stat_ret != AFP_SERVER_RESULT_OKAY) {
+        if (stat_ret != 0) {
             printf("Could not stat existing copy target %s (error: %d)\n",
                    target, stat_ret);
             return -1;
@@ -2562,7 +2537,7 @@ int com_copy(char * arg)
         int target_stat_ret = afp_sl_stat(&vol_id, server_target, NULL,
                                           &target_stat);
 
-        if (target_stat_ret == AFP_SERVER_RESULT_OKAY) {
+        if (target_stat_ret == 0) {
             if (!S_ISDIR(target_stat.st_mode)) {
                 printf("Target exists and is not a directory: %s\n", target_path);
                 goto out;
@@ -2591,7 +2566,7 @@ int com_copy(char * arg)
     }
 
     if (afp_sl_stat(&vol_id, server_target, NULL,
-                    &target_stat) == AFP_SERVER_RESULT_OKAY && S_ISDIR(target_stat.st_mode)) {
+                    &target_stat) == 0 && S_ISDIR(target_stat.st_mode)) {
         const char *base = basename(source_path);
 
         if (append_basename_to_path(server_target, base, AFP_MAX_PATH) < 0) {
@@ -2607,13 +2582,13 @@ int com_copy(char * arg)
 
     ret = afp_sl_creat(&vol_id, server_target, NULL, source_stat.st_mode & 0777);
 
-    if (ret != AFP_SERVER_RESULT_OKAY) {
-        if (ret == AFP_SERVER_RESULT_EXIST) {
+    if (ret != 0) {
+        if (ret == -EEXIST) {
             if (afp_sl_truncate(&vol_id, server_target, NULL, 0)) {
                 printf("Could not truncate target file\n");
                 goto out;
             }
-        } else if (ret == AFP_SERVER_RESULT_ACCESS) {
+        } else if (ret == -EACCES) {
             printf("Permission denied creating target file\n");
             goto out;
         } else {
@@ -2631,7 +2606,7 @@ int com_copy(char * arg)
         int api_ret = afp_sl_read(&vol_id, source_fid, 0, offset, COPY_BUFSIZE,
                                   &received, &eof, buf);
 
-        if (api_ret != AFP_SERVER_RESULT_OKAY) {
+        if (api_ret != 0) {
             printf("Error reading from source\n");
             ret = -1;
             goto out;
@@ -2640,7 +2615,7 @@ int com_copy(char * arg)
         if (received > 0) {
             api_ret = afp_sl_write(&vol_id, target_fid, 0, offset, received, &written, buf);
 
-            if (api_ret != AFP_SERVER_RESULT_OKAY || written != received) {
+            if (api_ret != 0 || written != received) {
                 printf("Error writing to target\n");
                 ret = -1;
                 goto out;
@@ -2653,8 +2628,7 @@ int com_copy(char * arg)
     int source_close = afp_sl_close(&vol_id, source_fid);
     int target_close = afp_sl_close(&vol_id, target_fid);
 
-    if (source_close != AFP_SERVER_RESULT_OKAY
-            || target_close != AFP_SERVER_RESULT_OKAY) {
+    if (source_close != 0 || target_close != 0) {
         source_fid = 0;
         target_fid = 0;
         printf("Could not close files after copy\n");
@@ -2722,7 +2696,7 @@ static int delete_directory(char *server_path)
         } else {
             int del_ret = afp_sl_unlink(&vol_id, new_server_path, NULL);
 
-            if (del_ret != AFP_SERVER_RESULT_OKAY) {
+            if (del_ret != 0) {
                 printf("Failed to delete file %s (error: %d)\n", new_server_path, del_ret);
                 ret = -1;
             }
@@ -2736,7 +2710,7 @@ static int delete_directory(char *server_path)
     if (ret == 0) {
         int rmdir_ret = afp_sl_rmdir(&vol_id, server_path, NULL);
 
-        if (rmdir_ret != AFP_SERVER_RESULT_OKAY) {
+        if (rmdir_ret != 0) {
             printf("Failed to remove directory %s (error: %d)\n", server_path, rmdir_ret);
             return -1;
         }
@@ -2791,10 +2765,10 @@ int com_delete(char *arg)
 
     ret = afp_sl_unlink(&vol_id, server_fullname, NULL);
 
-    if (ret != AFP_SERVER_RESULT_OKAY) {
-        if (ret == AFP_SERVER_RESULT_ENOENT) {
+    if (ret != 0) {
+        if (ret == -ENOENT) {
             printf("File not found: %s\n", filename);
-        } else if (ret == AFP_SERVER_RESULT_ACCESS) {
+        } else if (ret == -EACCES) {
             printf("Permission denied: %s\n", filename);
         } else {
             printf("Failed to delete %s (error: %d)\n", filename, ret);
@@ -2830,12 +2804,12 @@ int com_mkdir(char *arg)
     /* Call the stateless library mkdir function with default directory permissions */
     ret = afp_sl_mkdir(&vol_id, server_fullname, NULL, 0755);
 
-    if (ret != AFP_SERVER_RESULT_OKAY) {
-        if (ret == AFP_SERVER_RESULT_EXIST) {
+    if (ret != 0) {
+        if (ret == -EEXIST) {
             printf("Directory already exists: %s\n", dirname);
-        } else if (ret == AFP_SERVER_RESULT_ACCESS) {
+        } else if (ret == -EACCES) {
             printf("Permission denied: %s\n", dirname);
-        } else if (ret == AFP_SERVER_RESULT_ENOENT) {
+        } else if (ret == -ENOENT) {
             printf("Parent directory not found: %s\n", dirname);
         } else {
             printf("Failed to create directory %s (error: %d)\n", dirname, ret);
@@ -2871,10 +2845,10 @@ int com_rmdir(char *arg)
 
     ret = afp_sl_stat(&vol_id, server_fullname, NULL, &st);
 
-    if (ret != AFP_SERVER_RESULT_OKAY) {
-        if (ret == AFP_SERVER_RESULT_ENOENT) {
+    if (ret != 0) {
+        if (ret == -ENOENT) {
             printf("Directory not found: %s\n", dirname);
-        } else if (ret == AFP_SERVER_RESULT_ACCESS) {
+        } else if (ret == -EACCES) {
             printf("Permission denied: %s\n", dirname);
         } else {
             printf("Failed to stat %s (error: %d)\n", dirname, ret);
@@ -2890,12 +2864,12 @@ int com_rmdir(char *arg)
 
     ret = afp_sl_rmdir(&vol_id, server_fullname, NULL);
 
-    if (ret != AFP_SERVER_RESULT_OKAY) {
-        if (ret == AFP_SERVER_RESULT_ENOENT) {
+    if (ret != 0) {
+        if (ret == -ENOENT) {
             printf("Directory not found: %s\n", dirname);
-        } else if (ret == AFP_SERVER_RESULT_ACCESS) {
+        } else if (ret == -EACCES) {
             printf("Permission denied: %s\n", dirname);
-        } else if (ret == AFP_SERVER_RESULT_ENOTEMPTY) {
+        } else if (ret == -ENOTEMPTY) {
             printf("Directory not empty: %s\n", dirname);
         } else {
             printf("Failed to remove directory %s (error: %d)\n", dirname, ret);
@@ -2914,7 +2888,7 @@ int com_status(__attribute__((unused)) char *unused)
     int ret;
     ret = afp_sl_status(NULL, NULL, text, &len);
 
-    if (ret != AFP_SERVER_RESULT_OKAY) {
+    if (ret != 0) {
         printf("Could not get status\n");
         return -1;
     }
@@ -2940,10 +2914,10 @@ int com_statvfs(__attribute__((unused)) char *unused)
     get_server_path(".", server_path);
     ret = afp_sl_statfs(&vol_id, server_path, NULL, &stat);
 
-    if (ret != AFP_SERVER_RESULT_OKAY) {
-        if (ret == AFP_SERVER_RESULT_ENOENT) {
+    if (ret != 0) {
+        if (ret == -ENOENT) {
             printf("Path not found\n");
-        } else if (ret == AFP_SERVER_RESULT_ACCESS) {
+        } else if (ret == -EACCES) {
             printf("Permission denied\n");
         } else {
             printf("Failed to get filesystem statistics\n");
@@ -3045,16 +3019,16 @@ int com_cd(char *arg)
         unsigned int volume_options = VOLUME_EXTRA_FLAGS_NO_LOCKING;
         ret = attach_volume_with_password_prompt(&vol_id, volume_options);
 
-        if (ret != AFP_SERVER_RESULT_OKAY
+        if (ret != 0
                 && is_recoverable_session_error(ret) && reconnect_session(0, 0) == 0) {
             ret = attach_volume_with_password_prompt(&vol_id, volume_options);
         }
 
         if (ret != 0) {
-            if (ret == AFP_SERVER_RESULT_VOLPASS_NEEDED) {
+            if (ret == -EACCES) {
                 printf("Could not attach to volume %s: authentication failed\n",
                        url.volumename);
-            } else if (ret == AFP_SERVER_RESULT_NOVOLUME) {
+            } else if (ret == -ENODEV) {
                 printf("Volume %s does not exist on this server\n", path);
             } else {
                 printf("Could not attach to volume %s\n", url.volumename);
@@ -3108,12 +3082,12 @@ int com_cd(char *arg)
 
     ret = afp_sl_stat(&vol_id, dir_path, NULL, &statbuf);
 
-    if (ret != AFP_SERVER_RESULT_OKAY && is_recoverable_session_error(ret)
+    if (ret != 0 && is_recoverable_session_error(ret)
             && reconnect_session(1, 1) == 0) {
         ret = afp_sl_stat(&vol_id, dir_path, NULL, &statbuf);
     }
 
-    if (ret != AFP_SERVER_RESULT_OKAY) {
+    if (ret != 0) {
         printf("Directory not found: %s\n", dir_path);
         goto error;
     }
@@ -3254,7 +3228,6 @@ static int cmdline_server_startup(int batch_mode)
 {
     char mesg[MAX_ERROR_LEN];
     memset(mesg, 0, sizeof(mesg));
-    int error = 0;
     unsigned int uam_mask;
     struct afp_server_basic basic;
     uam_mask = get_uam_mask_for_url();
@@ -3268,7 +3241,7 @@ static int cmdline_server_startup(int batch_mode)
         strlcpy(connect_servername, url.servername, sizeof(connect_servername));
     }
 
-    if (afp_sl_connect(&url, uam_mask, &server_id, mesg, &error)) {
+    if (afp_sl_connect(&url, uam_mask, &server_id, mesg)) {
         printf("Could not connect to server\n");
         return -1;
     }
@@ -3289,10 +3262,10 @@ static int cmdline_server_startup(int batch_mode)
         ret = attach_volume_with_password_prompt(&vol_id, volume_options);
 
         if (ret != 0) {
-            if (ret == AFP_SERVER_RESULT_VOLPASS_NEEDED) {
+            if (ret == -EACCES) {
                 printf("Could not attach to volume %s: authentication failed\n",
                        url.volumename);
-            } else if (ret == AFP_SERVER_RESULT_NOVOLUME) {
+            } else if (ret == -ENODEV) {
                 printf("Volume %s does not exist on this server\n", url.volumename);
             } else {
                 printf("Could not attach to volume %s\n", url.volumename);

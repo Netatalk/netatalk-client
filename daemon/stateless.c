@@ -45,7 +45,13 @@
 #define default_uam "Cleartxt Passwrd"
 #define AFPSLD_FILENAME "afpsld"
 
-static struct afpfsd_connect connection = { .fd = -1 };
+struct stateless_connection {
+    int fd;
+    unsigned int len;
+    char data[MAX_CLIENT_RESPONSE + AFP_SERVER_LOG_BUFFER_SIZE + 200];
+};
+
+static struct stateless_connection connection = { .fd = -1 };
 
 static void close_connection(void)
 {
@@ -66,6 +72,8 @@ static void default_log_callback(void *user_data, int loglevel,
 static afp_sl_log_callback log_callback = default_log_callback;
 static void *log_callback_data;
 static int read_bytes_with_timeout(int fd, char *buf, size_t len);
+static int server_result_to_errno(int result);
+static int ensure_daemon_connection(void);
 
 static void stateless_log_message(int loglevel, const char *message)
 {
@@ -549,8 +557,8 @@ static int send_to_daemon(char * request, int req_len, char * reply,
     int ret;
     unsigned int command = 0;
 
-    if (afp_sl_setup()) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+    if (ensure_daemon_connection()) {
+        return -ECONNREFUSED;
     }
 
     if (req_len >= (int)sizeof(struct afp_server_request_header)) {
@@ -558,7 +566,7 @@ static int send_to_daemon(char * request, int req_len, char * reply,
     }
 
     if (send_command(req_len, request, command) < 0) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+        return -ECONNRESET;
     }
 
     ret = read_answer();
@@ -566,25 +574,19 @@ static int send_to_daemon(char * request, int req_len, char * reply,
     if (ret < 0 || connection.len < (unsigned int) reply_len) {
         stateless_log_message(LOG_ERR, "Error reading response from afpsld");
         close_connection();
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+        return -ECONNRESET;
     }
 
     memcpy(reply, connection.data, reply_len);
     return 0;
 }
 
-void afp_sl_conn_setup(void)
-{
-    /* Retained for source compatibility. Static state is initialized above,
-     * and callback registration must survive every afp_sl_* call. */
-}
-
 int afp_sl_exit(void)
 {
     struct afp_server_exit_request req;
 
-    if (afp_sl_setup()) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+    if (ensure_daemon_connection()) {
+        return -ECONNREFUSED;
     }
 
     req.header.command = AFP_SERVER_COMMAND_EXIT;
@@ -592,10 +594,11 @@ int afp_sl_exit(void)
     req.header.len = sizeof(req);
 
     if (send_command(sizeof(req), (char *) &req, AFP_SERVER_COMMAND_EXIT) < 0) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+        return -ECONNRESET;
     }
 
-    return read_answer();
+    int ret = read_answer();
+    return ret < 0 ? -ECONNRESET : server_result_to_errno(ret);
 }
 
 /* afp_sl_status()
@@ -610,8 +613,8 @@ int afp_sl_status(const char *volumename, const char *servername, char *text,
     struct afp_server_status_request req;
     int ret;
 
-    if (afp_sl_setup()) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+    if (ensure_daemon_connection()) {
+        return -ECONNREFUSED;
     }
 
     memset(&req, 0, sizeof(req));
@@ -628,10 +631,16 @@ int afp_sl_status(const char *volumename, const char *servername, char *text,
     }
 
     if (send_command(sizeof(req), (char *)&req, AFP_SERVER_COMMAND_STATUS) < 0) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+        return -ECONNRESET;
     }
 
     ret = read_answer();
+
+    if (ret < 0) {
+        return -ECONNRESET;
+    }
+
+    ret = server_result_to_errno(ret);
 
     if (ret < 0) {
         return ret;
@@ -639,7 +648,7 @@ int afp_sl_status(const char *volumename, const char *servername, char *text,
 
     strlcpy(text, connection.data + sizeof(struct afp_server_status_response),
             *remaining);
-    return ret;
+    return 0;
 }
 
 /* afp_sl_getvolid()
@@ -686,7 +695,7 @@ int afp_sl_getvolid(struct afp_url * url, volumeid_t *volid)
         memcpy(volid, &response.volumeid, sizeof(volumeid_t));
     }
 
-    return response.header.result;
+    return server_result_to_errno(response.header.result);
 }
 
 int afp_sl_stat(volumeid_t *volid, const char *path, struct afp_url *url,
@@ -723,8 +732,13 @@ int afp_sl_stat(volumeid_t *volid, const char *path, struct afp_url *url,
         return ret;
     }
 
-    memcpy(stat, &response.stat, sizeof(struct stat));
-    return response.header.result;
+    ret = server_result_to_errno(response.header.result);
+
+    if (ret == 0) {
+        memcpy(stat, &response.stat, sizeof(struct stat));
+    }
+
+    return ret;
 }
 
 int afp_sl_open(volumeid_t *volid, const char *path, struct afp_url *url,
@@ -762,8 +776,13 @@ int afp_sl_open(volumeid_t *volid, const char *path, struct afp_url *url,
         return ret;
     }
 
-    *fileid = response.fileid;
-    return response.header.result;
+    ret = server_result_to_errno(response.header.result);
+
+    if (ret == 0) {
+        *fileid = response.fileid;
+    }
+
+    return ret;
 }
 
 
@@ -778,8 +797,8 @@ int afp_sl_read(volumeid_t * volid, unsigned int fileid, unsigned int resource,
     size_t payload_size = 0;
     int ret;
 
-    if (afp_sl_setup()) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+    if (ensure_daemon_connection()) {
+        return -ECONNREFUSED;
     }
 
     request.header.close = 0;
@@ -793,7 +812,7 @@ int afp_sl_read(volumeid_t * volid, unsigned int fileid, unsigned int resource,
 
     if (send_command(sizeof(request), (char *)&request,
                      AFP_SERVER_COMMAND_READ) < 0) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+        return -ECONNRESET;
     }
 
     /* Read just the response header first */
@@ -804,7 +823,7 @@ int afp_sl_read(volumeid_t * volid, unsigned int fileid, unsigned int resource,
         stateless_log_message(LOG_ERR,
                               "Error reading read response header");
         close_connection();
-        return AFP_SERVER_RESULT_ERROR;
+        return -ECONNRESET;
     }
 
     if (read_response_tail(response.header.len, sizeof(response), &tail,
@@ -813,26 +832,26 @@ int afp_sl_read(volumeid_t * volid, unsigned int fileid, unsigned int resource,
         stateless_log_message(LOG_ERR,
                               "Error reading read response payload");
         close_connection();
-        return AFP_SERVER_RESULT_ERROR;
+        return -EPROTO;
     }
 
     if (response.header.result != AFP_SERVER_RESULT_OKAY) {
         free(tail);
         *received = 0;
         *eof = 0;
-        return response.header.result;
+        return server_result_to_errno(response.header.result);
     }
 
     if (payload_size != response.received || payload_size > length) {
         free(tail);
-        return AFP_SERVER_RESULT_ERROR;
+        return -EPROTO;
     }
 
     *received = response.received;
     *eof = response.eof;
     memcpy(data, tail, payload_size);
     free(tail);
-    return response.header.result;
+    return 0;
 }
 
 int afp_sl_write(volumeid_t * volid, unsigned int fileid, unsigned int resource,
@@ -845,8 +864,8 @@ int afp_sl_write(volumeid_t * volid, unsigned int fileid, unsigned int resource,
     size_t payload_size = 0;
     int ret;
 
-    if (afp_sl_setup()) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+    if (ensure_daemon_connection()) {
+        return -ECONNREFUSED;
     }
 
     request.header.close = 0;
@@ -861,7 +880,7 @@ int afp_sl_write(volumeid_t * volid, unsigned int fileid, unsigned int resource,
     /* Send request header */
     if (send_command(sizeof(request), (char *)&request,
                      AFP_SERVER_COMMAND_WRITE) < 0) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+        return -ECONNRESET;
     }
 
     /* Send data payload */
@@ -871,7 +890,7 @@ int afp_sl_write(volumeid_t * volid, unsigned int fileid, unsigned int resource,
         stateless_log_message(LOG_ERR,
                               "Error writing data payload to afpsld");
         close_connection();
-        return AFP_SERVER_RESULT_ERROR;
+        return -ECONNRESET;
     }
 
     /* Read response */
@@ -881,7 +900,7 @@ int afp_sl_write(volumeid_t * volid, unsigned int fileid, unsigned int resource,
     if (ret < 0) {
         stateless_log_message(LOG_ERR, "Error reading write response");
         close_connection();
-        return AFP_SERVER_RESULT_ERROR;
+        return -ECONNRESET;
     }
 
     if (read_response_tail(response.header.len, sizeof(response), &tail,
@@ -890,18 +909,18 @@ int afp_sl_write(volumeid_t * volid, unsigned int fileid, unsigned int resource,
             || payload_size != 0) {
         free(tail);
         close_connection();
-        return AFP_SERVER_RESULT_ERROR;
+        return -EPROTO;
     }
 
     free(tail);
 
     if (response.header.result != AFP_SERVER_RESULT_OKAY) {
         *written = 0;
-        return response.header.result;
+        return server_result_to_errno(response.header.result);
     }
 
     *written = response.written;
-    return response.header.result;
+    return 0;
 }
 
 static int metadata_call(unsigned int command, volumeid_t *volid,
@@ -934,7 +953,7 @@ static int metadata_call(unsigned int command, volumeid_t *volid,
         return -EINVAL;
     }
 
-    if (afp_sl_setup()) {
+    if (ensure_daemon_connection()) {
         return -ECONNREFUSED;
     }
 
@@ -1122,22 +1141,20 @@ int afp_sl_removeresourcefork(volumeid_t *volid, const char *path)
 
 enum afp_sl_recovery_action afp_sl_recovery_for_error(int result)
 {
-    if (result == -ENODEV || result == AFP_SERVER_RESULT_NOTATTACHED) {
+    if (result == -ESTALE) {
         return AFP_SL_RECOVERY_REATTACH;
     }
 
     if (result == -ECONNRESET || result == -ECONNREFUSED
-            || result == AFP_SERVER_RESULT_NOTCONNECTED
-            || result == AFP_SERVER_RESULT_DAEMON_ERROR
-            || result == AFP_SERVER_RESULT_NOSERVER
-            || result == AFP_SERVER_RESULT_TIMEDOUT) {
+            || result == -ENOTCONN || result == -ETIMEDOUT
+            || result == -EHOSTUNREACH) {
         return AFP_SL_RECOVERY_RECONNECT;
     }
 
     return AFP_SL_RECOVERY_NONE;
 }
 
-int afp_sl_legacy_result_to_errno(int result)
+static int server_result_to_errno(int result)
 {
     switch (result) {
     case AFP_SERVER_RESULT_OKAY:
@@ -1151,13 +1168,15 @@ int afp_sl_legacy_result_to_errno(int result)
         return -ENOTCONN;
 
     case AFP_SERVER_RESULT_NOTATTACHED:
+        return -ESTALE;
+
     case AFP_SERVER_RESULT_NOVOLUME:
         return -ENODEV;
 
     case AFP_SERVER_RESULT_ALREADY_CONNECTED:
     case AFP_SERVER_RESULT_ALREADY_ATTACHED:
     case AFP_SERVER_RESULT_ALREADY_MOUNTED:
-        return -EISCONN;
+        return 0;
 
     case AFP_SERVER_RESULT_NOAUTHENT:
     case AFP_SERVER_RESULT_VOLPASS_NEEDED:
@@ -1220,10 +1239,10 @@ int afp_sl_creat(volumeid_t *volid, const char *path, struct afp_url *url,
                          sizeof(response));
 
     if (ret != 0) {
-        return AFP_SERVER_RESULT_ERROR;
+        return ret;
     }
 
-    return response.header.result;
+    return server_result_to_errno(response.header.result);
 }
 
 int afp_sl_chmod(volumeid_t *volid, const char *path, struct afp_url *url,
@@ -1258,10 +1277,10 @@ int afp_sl_chmod(volumeid_t *volid, const char *path, struct afp_url *url,
                          sizeof(response));
 
     if (ret != 0) {
-        return AFP_SERVER_RESULT_ERROR;
+        return ret;
     }
 
-    return response.header.result;
+    return server_result_to_errno(response.header.result);
 }
 
 int afp_sl_rename(volumeid_t *volid, const char *path_from, const char *path_to,
@@ -1294,10 +1313,10 @@ int afp_sl_rename(volumeid_t *volid, const char *path_from, const char *path_to,
                          sizeof(response));
 
     if (ret != 0) {
-        return AFP_SERVER_RESULT_ERROR;
+        return ret;
     }
 
-    return response.header.result;
+    return server_result_to_errno(response.header.result);
 }
 
 int afp_sl_unlink(volumeid_t *volid, const char *path, struct afp_url *url)
@@ -1330,10 +1349,10 @@ int afp_sl_unlink(volumeid_t *volid, const char *path, struct afp_url *url)
                          sizeof(response));
 
     if (ret != 0) {
-        return AFP_SERVER_RESULT_ERROR;
+        return ret;
     }
 
-    return response.header.result;
+    return server_result_to_errno(response.header.result);
 }
 
 int afp_sl_truncate(volumeid_t *volid, const char *path, struct afp_url *url,
@@ -1368,10 +1387,10 @@ int afp_sl_truncate(volumeid_t *volid, const char *path, struct afp_url *url,
                          sizeof(response));
 
     if (ret != 0) {
-        return AFP_SERVER_RESULT_ERROR;
+        return ret;
     }
 
-    return response.header.result;
+    return server_result_to_errno(response.header.result);
 }
 
 int afp_sl_utime(volumeid_t *volid, const char *path, struct afp_url *url,
@@ -1406,10 +1425,10 @@ int afp_sl_utime(volumeid_t *volid, const char *path, struct afp_url *url,
                          sizeof(response));
 
     if (ret != 0) {
-        return AFP_SERVER_RESULT_ERROR;
+        return ret;
     }
 
-    return response.header.result;
+    return server_result_to_errno(response.header.result);
 }
 
 int afp_sl_mkdir(volumeid_t *volid, const char *path, struct afp_url *url,
@@ -1444,10 +1463,10 @@ int afp_sl_mkdir(volumeid_t *volid, const char *path, struct afp_url *url,
                          sizeof(response));
 
     if (ret != 0) {
-        return AFP_SERVER_RESULT_ERROR;
+        return ret;
     }
 
-    return response.header.result;
+    return server_result_to_errno(response.header.result);
 }
 
 int afp_sl_rmdir(volumeid_t *volid, const char *path, struct afp_url *url)
@@ -1480,10 +1499,10 @@ int afp_sl_rmdir(volumeid_t *volid, const char *path, struct afp_url *url)
                          sizeof(response));
 
     if (ret != 0) {
-        return AFP_SERVER_RESULT_ERROR;
+        return ret;
     }
 
-    return response.header.result;
+    return server_result_to_errno(response.header.result);
 }
 
 int afp_sl_statfs(volumeid_t *volid, const char *path, struct afp_url *url,
@@ -1522,14 +1541,14 @@ int afp_sl_statfs(volumeid_t *volid, const char *path, struct afp_url *url,
                          sizeof(response));
 
     if (ret != 0) {
-        return AFP_SERVER_RESULT_ERROR;
+        return ret;
     }
 
     if (response.header.result == AFP_SERVER_RESULT_OKAY) {
         memcpy(stat, &response.stat, sizeof(struct statvfs));
     }
 
-    return response.header.result;
+    return server_result_to_errno(response.header.result);
 }
 
 int afp_sl_close(volumeid_t *volid, unsigned int fileid)
@@ -1549,7 +1568,7 @@ int afp_sl_close(volumeid_t *volid, unsigned int fileid)
         return ret;
     }
 
-    return response.header.result;
+    return server_result_to_errno(response.header.result);
 }
 
 int afp_sl_readdir(volumeid_t * volid, const char * path, struct afp_url * url,
@@ -1569,8 +1588,8 @@ int afp_sl_readdir(volumeid_t * volid, const char * path, struct afp_url * url,
     int current_start = start;
     int eod_flag = 0;
 
-    if (afp_sl_setup()) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+    if (ensure_daemon_connection()) {
+        return -ECONNREFUSED;
     }
 
     if (volid == NULL) {
@@ -1609,7 +1628,7 @@ int afp_sl_readdir(volumeid_t * volid, const char * path, struct afp_url * url,
                 free(buffer);
             }
 
-            return AFP_SERVER_RESULT_DAEMON_ERROR;
+            return -ECONNRESET;
         }
 
         ret = read_answer();
@@ -1619,7 +1638,7 @@ int afp_sl_readdir(volumeid_t * volid, const char * path, struct afp_url * url,
                 free(buffer);
             }
 
-            return ret;
+            return -ECONNRESET;
         }
 
         mainrep = (void *) connection.data;
@@ -1629,7 +1648,7 @@ int afp_sl_readdir(volumeid_t * volid, const char * path, struct afp_url * url,
                 free(buffer);
             }
 
-            return mainrep->header.result;
+            return server_result_to_errno(mainrep->header.result);
         }
 
         unsigned int batch_received = mainrep->numfiles;
@@ -1644,7 +1663,7 @@ int afp_sl_readdir(volumeid_t * volid, const char * path, struct afp_url * url,
                     free(buffer);
                 }
 
-                return -1;
+                return -ENOMEM;
             }
 
             buffer = new_buffer;
@@ -1707,8 +1726,8 @@ int afp_sl_getvols(struct afp_url *url, unsigned int start, unsigned int count,
     int ret;
     struct afp_server_getvols_response * response;
 
-    if (afp_sl_setup()) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+    if (ensure_daemon_connection()) {
+        return -ECONNREFUSED;
     }
 
     req.header.close = 0;
@@ -1719,60 +1738,36 @@ int afp_sl_getvols(struct afp_url *url, unsigned int start, unsigned int count,
     memcpy(&req.url, url, sizeof(*url));
 
     if (send_command(sizeof(req), (char *) &req, AFP_SERVER_COMMAND_GETVOLS) < 0) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+        return -ECONNRESET;
     }
 
     ret = read_answer();
 
     if (ret < 0) {
-        return ret;
+        return -ECONNRESET;
     }
 
     response = (void *) connection.data;
-    memcpy(vols, ((char *) response) + sizeof(struct afp_server_getvols_response),
-           response->num * sizeof(struct afp_volume_summary));
-    *numvols = response->num;
-    return response->header.result;
+    ret = server_result_to_errno(response->header.result);
+
+    if (ret == 0) {
+        memcpy(vols, ((char *) response) + sizeof(struct afp_server_getvols_response),
+               response->num * sizeof(struct afp_volume_summary));
+        *numvols = response->num;
+    }
+
+    return ret;
 }
 
-/*
- *
- * afp_sl_connect(,&error)
- *
- * Sets error to:
- * 0:
- *      No error
- * ENONET:
- *      could not get the address of the server
- * ENOMEM:
- *      could not allocate memory
- * ETIMEDOUT:
- *      timed out waiting for connection
- * ENETUNREACH:
- *      Server unreachable
- * EISCONN:
- *      Connection already established
- * ECONNREFUSED:
- *     Remote server has refused the connection
- * EACCES, EPERM, EADDRINUSE, EAFNOSUPPORT, EAGAIN, EALREADY, EBADF,
- * EFAULT, EINPROGRESS, EINTR, ENOTSOCK, EINVAL, EMFILE, ENFILE,
- * ENOBUFS, EPROTONOSUPPORT:
- *     Internal error
- *
- * Returns:
- * 0: No error
- * -1: An error occurred
- */
-
 int afp_sl_connect(struct afp_url *url, unsigned int uam_mask, serverid_t *id,
-                   char *loginmesg, int *error)
+                   char *loginmesg)
 {
     struct afp_server_connect_request req;
     const struct afp_server_connect_response *resp;
     int ret;
 
-    if (afp_sl_setup()) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+    if (ensure_daemon_connection()) {
+        return -ECONNREFUSED;
     }
 
     req.header.close = 0;
@@ -1782,50 +1777,52 @@ int afp_sl_connect(struct afp_url *url, unsigned int uam_mask, serverid_t *id,
     req.uam_mask = uam_mask;
 
     if (send_command(sizeof(req), (char *)&req, AFP_SERVER_COMMAND_CONNECT) < 0) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+        return -ECONNRESET;
     }
 
     ret = read_answer();
 
     if (ret < 0) {
-        return ret;
+        return -ECONNRESET;
     }
 
     resp = (void *) connection.data;
 
-    /* Extract response fields before checking for additional data.
-     * These fields are part of the response struct and always present. */
-    if (id) {
-        memcpy(id, &resp->serverid, sizeof(serverid_t));
-    }
-
-    if (loginmesg) {
-        memcpy(loginmesg, resp->loginmesg, AFP_LOGINMESG_LEN);
-    }
-
-    if (error) {
-        *error = resp->connect_error;
-    }
-
-    /* Treat "already connected" as success. For failures, return the
-     * protocol result while preserving the errno-style detail in *error. */
+    /* Treat "already connected" as idempotent success. */
     if (resp->header.result == AFP_SERVER_RESULT_OKAY
             || resp->header.result == AFP_SERVER_RESULT_ALREADY_CONNECTED) {
+        if (id) {
+            memcpy(id, &resp->serverid, sizeof(serverid_t));
+        }
+
+        if (loginmesg) {
+            memcpy(loginmesg, resp->loginmesg, AFP_LOGINMESG_LEN);
+        }
+
         return 0;
-    } else {
-        return resp->header.result;
     }
+
+    if (resp->connect_error != 0) {
+        return resp->connect_error > 0 ? -resp->connect_error
+               : resp->connect_error;
+    }
+
+    return server_result_to_errno(resp->header.result);
 }
 
 int afp_sl_attach(struct afp_url * url, unsigned int volume_options,
-                  volumeid_t *volumeid)
+                  volumeid_t *volumeid, enum afp_sl_attach_status *status)
 {
     struct afp_server_attach_request req;
     struct afp_server_attach_response * response;
     int ret;
 
-    if (afp_sl_setup()) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+    if (status) {
+        *status = AFP_SL_ATTACH_STATUS_NONE;
+    }
+
+    if (ensure_daemon_connection()) {
+        return -ECONNREFUSED;
     }
 
     response = (void *) connection.data;
@@ -1836,30 +1833,34 @@ int afp_sl_attach(struct afp_url * url, unsigned int volume_options,
     req.volume_options = volume_options;
 
     if (send_command(sizeof(req), (char *)&req, AFP_SERVER_COMMAND_ATTACH) < 0) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+        return -ECONNRESET;
     }
 
     ret = read_answer();
 
     if (ret < 0) {
-        return ret;
+        return -ECONNRESET;
     }
 
     if (connection.len < sizeof(struct afp_server_attach_response)) {
-        return 0;
-    }
-
-    if (volumeid) {
-        memcpy(volumeid, &response->volumeid, sizeof(volumeid_t));
+        return -EPROTO;
     }
 
     /* Treat "already attached" as success since we have a valid volumeid */
     if (ret == AFP_SERVER_RESULT_OKAY
             || ret == AFP_SERVER_RESULT_ALREADY_ATTACHED) {
+        if (volumeid) {
+            memcpy(volumeid, &response->volumeid, sizeof(volumeid_t));
+        }
+
         return 0;
     }
 
-    return ret;
+    if (ret == AFP_SERVER_RESULT_VOLPASS_NEEDED && status) {
+        *status = AFP_SL_ATTACH_STATUS_PASSWORD_REQUIRED;
+    }
+
+    return server_result_to_errno(ret);
 }
 
 int afp_sl_detach(volumeid_t *volumeid, struct afp_url * url)
@@ -1869,8 +1870,8 @@ int afp_sl_detach(volumeid_t *volumeid, struct afp_url * url)
     volumeid_t tmpvolid;
     volumeid_t *volid_p = volumeid;
 
-    if (afp_sl_setup()) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+    if (ensure_daemon_connection()) {
+        return -ECONNREFUSED;
     }
 
     if (volumeid == NULL) {
@@ -1889,23 +1890,24 @@ int afp_sl_detach(volumeid_t *volumeid, struct afp_url * url)
     memcpy(&req.volumeid, volid_p, sizeof(volumeid_t));
 
     if (send_command(sizeof(req), (char *)&req, AFP_SERVER_COMMAND_DETACH) < 0) {
-        return AFP_SERVER_RESULT_DAEMON_ERROR;
+        return -ECONNRESET;
     }
 
     ret = read_answer();
 
     if (ret < 0) {
-        return ret;
+        return -ECONNRESET;
     }
 
     /* DETACH uses header.close=1, so daemon closed its side.
      * Close our side too to avoid reusing a stale connection. */
     close_connection();
-    return ret;
+    return server_result_to_errno(ret);
 }
 
 int afp_sl_changepw(struct afp_url *url, const char *old_password,
-                    const char *new_password)
+                    const char *new_password,
+                    enum afp_sl_password_change_status *status)
 {
     struct afp_server_changepw_request req;
     struct afp_server_changepw_response response;
@@ -1913,6 +1915,10 @@ int afp_sl_changepw(struct afp_url *url, const char *old_password,
 
     if (!url || !old_password || !new_password) {
         return -EINVAL;
+    }
+
+    if (status) {
+        *status = AFP_SL_PASSWORD_CHANGE_STATUS_NONE;
     }
 
     memset(&req, 0, sizeof(req));
@@ -1926,20 +1932,83 @@ int afp_sl_changepw(struct afp_url *url, const char *old_password,
                          sizeof(response));
 
     if (ret != 0) {
-        return AFP_SERVER_RESULT_ERROR;
+        return ret;
     }
 
-    if (response.header.result != AFP_SERVER_RESULT_OKAY) {
-        return response.afp_error;
+    if (response.header.result == AFP_SERVER_RESULT_OKAY) {
+        return 0;
     }
 
-    return 0;
+    if (response.header.result != AFP_SERVER_RESULT_ERROR) {
+        return server_result_to_errno(response.header.result);
+    }
+
+    switch (response.afp_error) {
+    case kFPAccessDenied:
+        if (status) {
+            *status = AFP_SL_PASSWORD_CHANGE_STATUS_ACCESS_DENIED;
+        }
+
+        return -EACCES;
+
+    case kFPUserNotAuth:
+        if (status) {
+            *status = AFP_SL_PASSWORD_CHANGE_STATUS_INCORRECT_OLD_PASSWORD;
+        }
+
+        return -EACCES;
+
+    case kFPBadUAM:
+    case kFPCallNotSupported:
+        if (status) {
+            *status = AFP_SL_PASSWORD_CHANGE_STATUS_UNSUPPORTED_AUTHENTICATION;
+        }
+
+        return -ENOTSUP;
+
+    case kFPPwdSameErr:
+        if (status) {
+            *status = AFP_SL_PASSWORD_CHANGE_STATUS_UNCHANGED;
+        }
+
+        return -EINVAL;
+
+    case kFPPwdTooShortErr:
+        if (status) {
+            *status = AFP_SL_PASSWORD_CHANGE_STATUS_TOO_SHORT;
+        }
+
+        return -EINVAL;
+
+    case kFPPwdExpiredErr:
+        if (status) {
+            *status = AFP_SL_PASSWORD_CHANGE_STATUS_EXPIRED;
+        }
+
+        return -EACCES;
+
+    case kFPPwdPolicyErr:
+        if (status) {
+            *status = AFP_SL_PASSWORD_CHANGE_STATUS_POLICY_VIOLATION;
+        }
+
+        return -EINVAL;
+
+    case kFPParamErr:
+        if (status) {
+            *status = AFP_SL_PASSWORD_CHANGE_STATUS_INVALID_PARAMETER;
+        }
+
+        return -EINVAL;
+
+    default:
+        return -EIO;
+    }
 }
 
-int afp_sl_setup(void)
+static int ensure_daemon_connection(void)
 {
-    afp_sl_conn_setup();
-    return daemon_connect(geteuid());
+    return daemon_connect(geteuid()) == 0 ? 0 : -ECONNREFUSED;
 }
 
 int afp_sl_serverinfo(struct afp_url * url, struct afp_server_basic * basic)
@@ -1958,8 +2027,13 @@ int afp_sl_serverinfo(struct afp_url * url, struct afp_server_basic * basic)
         return ret;
     }
 
-    memcpy(basic, &response.server_basic, sizeof(struct afp_server_basic));
-    return response.header.result;
+    ret = server_result_to_errno(response.header.result);
+
+    if (ret == 0) {
+        memcpy(basic, &response.server_basic, sizeof(struct afp_server_basic));
+    }
+
+    return ret;
 }
 
 int afp_sl_disconnect(serverid_t *id)
@@ -1969,7 +2043,7 @@ int afp_sl_disconnect(serverid_t *id)
     int ret;
 
     if (!id || !*id) {
-        return -1;
+        return -EINVAL;
     }
 
     memset(&req, 0, sizeof(req));
@@ -1981,11 +2055,16 @@ int afp_sl_disconnect(serverid_t *id)
     ret = send_to_daemon((char *) &req, sizeof(req), (char *) &response,
                          sizeof(response));
 
-    if (ret == 0 && response.header.result == AFP_SERVER_RESULT_OKAY) {
-        *id = NULL;
-        close_connection();
-        return 0;
+    if (ret < 0) {
+        return ret;
     }
 
-    return -1;
+    close_connection();
+    ret = server_result_to_errno(response.header.result);
+
+    if (ret == 0) {
+        *id = NULL;
+    }
+
+    return ret;
 }
