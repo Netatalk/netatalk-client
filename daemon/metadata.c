@@ -159,7 +159,6 @@ int metadata_name_filtered(const char *name)
     }
 
     name = afp_xattr_strip_user_prefix(name);
-
     /* Filter out metadata of internal macOS or Netatalk use */
     return strncmp(name, NETATALK_XATTR_META, NETATALK_XATTR_META_LEN) == 0
            || strcmp(name, COPY_SOURCE) == 0
@@ -1372,7 +1371,7 @@ int local_metadata_get(const char *path, enum afp_metadata_mode mode,
         }
 
         if (mode == AFP_METADATA_XATTR || (!metadata_absent(errno)
-                                            && !metadata_unsupported(errno))) {
+                                           && !metadata_unsupported(errno))) {
             return -errno;
         }
     }
@@ -1450,7 +1449,7 @@ int local_metadata_remove(const char *path, enum afp_metadata_mode mode,
         }
 
         if (mode == AFP_METADATA_XATTR || (!metadata_absent(errno)
-                                            && !metadata_unsupported(errno))) {
+                                           && !metadata_unsupported(errno))) {
             return -errno;
         }
     }
@@ -1480,17 +1479,13 @@ int local_finderinfo_get(const char *path, enum afp_metadata_mode mode,
         }
 
         if (mode == AFP_METADATA_XATTR || (ret < 0 && !metadata_absent(errno)
-                                            && !metadata_unsupported(errno))) {
+                                           && !metadata_unsupported(errno))) {
             return ret < 0 ? -errno : -EIO;
         }
     }
 
-    if (mode == AFP_METADATA_MACOS || mode == AFP_METADATA_AUTO) {
-        int r = ad_finder_get(path, 0, value);
-
-        if (r == 0 || mode == AFP_METADATA_MACOS) {
-            return r;
-        }
+    if (mode == AFP_METADATA_MACOS) {
+        return ad_finder_get(path, 0, value);
     }
 
     return ad_finder_get(path, 1, value);
@@ -1519,7 +1514,7 @@ int local_finderinfo_set(const char *path, enum afp_metadata_mode mode,
         }
     }
 
-    return ad_finder_set(path, mode == AFP_METADATA_NETATALK, value);
+    return ad_finder_set(path, mode != AFP_METADATA_MACOS, value);
 }
 
 int local_finderinfo_remove(const char *path, enum afp_metadata_mode mode)
@@ -1537,18 +1532,8 @@ int local_finderinfo_remove(const char *path, enum afp_metadata_mode mode)
 
     if (mode == AFP_METADATA_AUTO) {
         int sys_ret = sys_remove(path, AFP_XATTR_FINDERINFO) == 0 ? 0 : -errno;
-        int macos_exists = sidecar_exists(path, 0);
         int netatalk_exists = sidecar_exists(path, 1);
-        int macos_ret;
         int netatalk_ret;
-
-        if (macos_exists > 0) {
-            macos_ret = ad_finder_set(path, 0, empty);
-        } else if (macos_exists < 0) {
-            macos_ret = macos_exists;
-        } else {
-            macos_ret = -ENOATTR;
-        }
 
         if (netatalk_exists > 0) {
             netatalk_ret = ad_finder_set(path, 1, empty);
@@ -1563,10 +1548,6 @@ int local_finderinfo_remove(const char *path, enum afp_metadata_mode mode)
             return sys_ret;
         }
 
-        if (macos_ret < 0 && !metadata_absent(-macos_ret)) {
-            return macos_ret;
-        }
-
         if (netatalk_ret < 0 && !metadata_absent(-netatalk_ret)) {
             return netatalk_ret;
         }
@@ -1574,13 +1555,13 @@ int local_finderinfo_remove(const char *path, enum afp_metadata_mode mode)
         return 0;
     }
 
-    if (mode == AFP_METADATA_XATTR || mode == AFP_METADATA_AUTO) {
+    if (mode == AFP_METADATA_XATTR) {
         if (sys_remove(path, AFP_XATTR_FINDERINFO) == 0) {
             return 0;
         }
 
         if (mode == AFP_METADATA_XATTR || (!metadata_absent(errno)
-                                            && !metadata_unsupported(errno))) {
+                                           && !metadata_unsupported(errno))) {
             return -errno;
         }
     }
@@ -1609,17 +1590,13 @@ off_t local_resourcefork_size(const char *path, enum afp_metadata_mode mode)
         }
 
         if (mode == AFP_METADATA_XATTR || (!metadata_absent(errno)
-                                            && !metadata_unsupported(errno))) {
+                                           && !metadata_unsupported(errno))) {
             return -errno;
         }
     }
 
-    if (mode == AFP_METADATA_MACOS || mode == AFP_METADATA_AUTO) {
-        off_t r = ad_resource_size(path, 0);
-
-        if (r >= 0 || mode == AFP_METADATA_MACOS) {
-            return r;
-        }
+    if (mode == AFP_METADATA_MACOS) {
+        return ad_resource_size(path, 0);
     }
 
     return ad_resource_size(path, 1);
@@ -1690,17 +1667,15 @@ ssize_t local_resourcefork_read(const char *path, enum afp_metadata_mode mode,
             return size;
         }
 
-        if (mode == AFP_METADATA_XATTR) {
+        if (mode == AFP_METADATA_XATTR
+                || (!metadata_absent((int) - total)
+                    && !metadata_unsupported((int) - total))) {
             return total;
         }
     }
 
-    if (mode == AFP_METADATA_MACOS || mode == AFP_METADATA_AUTO) {
-        ssize_t r = ad_resource_read(path, 0, buf, size, offset);
-
-        if (r >= 0 || mode == AFP_METADATA_MACOS) {
-            return r;
-        }
+    if (mode == AFP_METADATA_MACOS) {
+        return ad_resource_read(path, 0, buf, size, offset);
     }
 
     return ad_resource_read(path, 1, buf, size, offset);
@@ -1784,7 +1759,7 @@ int local_resourcefork_write(const char *path, enum afp_metadata_mode mode,
         }
     }
 
-    return ad_resource_write(path, mode == AFP_METADATA_NETATALK, buf, size,
+    return ad_resource_write(path, mode != AFP_METADATA_MACOS, buf, size,
                              offset);
 }
 
@@ -1802,18 +1777,8 @@ int local_resourcefork_remove(const char *path, enum afp_metadata_mode mode)
 
     if (mode == AFP_METADATA_AUTO) {
         int sys_ret = sys_remove(path, AFP_XATTR_RESOURCEFORK) == 0 ? 0 : -errno;
-        int macos_exists = sidecar_exists(path, 0);
         int netatalk_exists = sidecar_exists(path, 1);
-        int macos_ret;
         int netatalk_ret;
-
-        if (macos_exists > 0) {
-            macos_ret = ad_resource_write(path, 0, NULL, 0, 0);
-        } else if (macos_exists < 0) {
-            macos_ret = macos_exists;
-        } else {
-            macos_ret = -ENOATTR;
-        }
 
         if (netatalk_exists > 0) {
             netatalk_ret = ad_resource_write(path, 1, NULL, 0, 0);
@@ -1828,10 +1793,6 @@ int local_resourcefork_remove(const char *path, enum afp_metadata_mode mode)
             return sys_ret;
         }
 
-        if (macos_ret < 0 && !metadata_absent(-macos_ret)) {
-            return macos_ret;
-        }
-
         if (netatalk_ret < 0 && !metadata_absent(-netatalk_ret)) {
             return netatalk_ret;
         }
@@ -1839,13 +1800,13 @@ int local_resourcefork_remove(const char *path, enum afp_metadata_mode mode)
         return 0;
     }
 
-    if (mode == AFP_METADATA_XATTR || mode == AFP_METADATA_AUTO) {
+    if (mode == AFP_METADATA_XATTR) {
         if (sys_remove(path, AFP_XATTR_RESOURCEFORK) == 0) {
             return 0;
         }
 
         if (mode == AFP_METADATA_XATTR || (!metadata_absent(errno)
-                                            && !metadata_unsupported(errno))) {
+                                           && !metadata_unsupported(errno))) {
             return -errno;
         }
     }

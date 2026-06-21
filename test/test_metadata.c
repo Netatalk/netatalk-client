@@ -254,6 +254,22 @@ int main(int argc, char **argv)
                              &value, &value_size) < 0);
     CHECK(local_metadata_set(file, AFP_METADATA_NETATALK, "bad/name",
                              resource, 1) == -EINVAL);
+    memset(actual_finder, 0xa5, sizeof(actual_finder));
+    CHECK(local_finderinfo_set(file, AFP_METADATA_MACOS, actual_finder) == 0);
+    CHECK(local_resourcefork_write(file, AFP_METADATA_MACOS,
+                                   "macos", 5, 0) == 0);
+    CHECK(local_finderinfo_get(file, AFP_METADATA_AUTO, actual_finder) == 0);
+    CHECK(memcmp(finder, actual_finder, sizeof(finder)) == 0);
+    CHECK(local_resourcefork_size(file, AFP_METADATA_AUTO)
+          == (off_t)sizeof(resource));
+    CHECK(local_resourcefork_read(file, AFP_METADATA_AUTO, actual_resource,
+                                  sizeof(actual_resource), 0)
+          == (ssize_t)sizeof(actual_resource));
+    CHECK(memcmp(resource, actual_resource, sizeof(resource)) == 0);
+    CHECK(local_finderinfo_remove(file, AFP_METADATA_AUTO) == 0);
+    CHECK(local_resourcefork_remove(file, AFP_METADATA_AUTO) == 0);
+    CHECK(local_finderinfo_get(file, AFP_METADATA_MACOS, actual_finder) == 0);
+    CHECK(local_resourcefork_size(file, AFP_METADATA_MACOS) == 5);
     CHECK(local_finderinfo_remove(file, AFP_METADATA_NONE) == -ENOTSUP);
     CHECK(local_resourcefork_remove(file, AFP_METADATA_NONE) == -ENOTSUP);
     {
