@@ -11,9 +11,26 @@
 /* Socket path for stateless daemon */
 #define SERVER_SL_SOCKET_PATH "/tmp/afp_sl"
 
-/* Maximum payload per stateless metadata request. Resource forks larger than
- * this value are transferred with repeated calls at increasing offsets. */
+/* Maximum value or resource-fork payload per stateless metadata request. */
 #define AFP_SL_METADATA_CHUNK 4096
+
+/* Maximum returned xattr name list.  Lists have a separate limit because
+ * namespace prefixes can make them larger than the AFP reply containing the
+ * original names. */
+#define AFP_SL_XATTR_LIST_MAX (224U * 1024U)
+
+/* Portable setxattr flags.  Their values match XATTR_CREATE and
+ * XATTR_REPLACE on platforms that provide those constants. */
+enum afp_sl_xattr_flags {
+    AFP_SL_XATTR_CREATE = 0x1,
+    AFP_SL_XATTR_REPLACE = 0x2,
+};
+
+enum afp_sl_recovery_action {
+    AFP_SL_RECOVERY_NONE,
+    AFP_SL_RECOVERY_RECONNECT,
+    AFP_SL_RECOVERY_REATTACH,
+};
 
 /* Local filesystem representation used by metadata transfer helpers.  AUTO
  * probes filesystem xattrs, macOS AppleDouble, then Netatalk AppleDouble. */
@@ -127,12 +144,19 @@ int afp_sl_changepw(struct afp_url * url,
  * success and a negative errno on failure. Write and remove calls return zero
  * on success and a negative errno on failure. A size of zero queries the
  * required size for get/list operations. Generic xattr values are limited to
- * AFP_SL_METADATA_CHUNK bytes; resource forks support arbitrary sizes through
- * chunked offset-based access. */
+ * AFP_SL_METADATA_CHUNK bytes. Xattr name lists are limited to
+ * AFP_SL_XATTR_LIST_MAX bytes. Resource forks are limited to INT_MAX bytes and
+ * are transferred with repeated calls at increasing offsets.
+ *
+ * afp_sl_setxattr accepts zero or one of AFP_SL_XATTR_CREATE and
+ * AFP_SL_XATTR_REPLACE; other flag combinations return -EINVAL.
+ * Resource-fork writes overwrite or extend the specified range but do not
+ * shorten an existing fork. The legacy zero-length write at offset zero clears
+ * the fork. Use afp_sl_truncateresourcefork to set any final length explicitly. */
 int afp_sl_getxattr(volumeid_t *volid, const char *path, const char *name,
                     void *value, size_t size);
 int afp_sl_setxattr(volumeid_t *volid, const char *path, const char *name,
-                    const void *value, size_t size, int flags);
+                    void *value, size_t size, int flags);
 int afp_sl_listxattr(volumeid_t *volid, const char *path, char *list,
                      size_t size);
 int afp_sl_removexattr(volumeid_t *volid, const char *path, const char *name);
@@ -146,7 +170,18 @@ int afp_sl_getresourcefork(volumeid_t *volid, const char *path, void *value,
 int afp_sl_setresourcefork(volumeid_t *volid, const char *path,
                            const void *value, size_t size,
                            unsigned long long offset);
+int afp_sl_truncateresourcefork(volumeid_t *volid, const char *path,
+                                unsigned long long size);
 int afp_sl_removeresourcefork(volumeid_t *volid, const char *path);
+
+/* Classify errors from either errno-style metadata calls or legacy
+ * AFP_SERVER_RESULT_* calls. ENODEV requires restoring the volume attachment;
+ * connection failures require rebuilding the daemon/session connection. */
+enum afp_sl_recovery_action afp_sl_recovery_for_error(int result);
+
+/* Convert a legacy AFP_SERVER_RESULT_* return value to zero or negative errno.
+ * Do not pass successful byte counts from metadata read/list operations. */
+int afp_sl_legacy_result_to_errno(int result);
 
 /* Metadata transfer helpers provide replacement semantics: metadata is
  * cleared at the existing destination before the copy starts.  They do not

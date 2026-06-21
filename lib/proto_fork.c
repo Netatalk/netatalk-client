@@ -33,15 +33,15 @@ int afp_setforkparms(struct afp_volume * volume,
             uint8_t pad;
             uint16_t forkid;
             uint16_t bitmap;
-            uint16_t padding;
             uint64_t newlen64;
         }  __attribute__((__packed__)) request64;
+        _Static_assert(sizeof(request64) == sizeof(struct dsi_header) + 14,
+                       "invalid 64-bit FPSetForkParms request layout");
         memcpy(&request64.dsi_header, &hdr, sizeof(struct dsi_header));
         request64.command = afpSetForkParms;
         request64.pad = 0;
         request64.forkid = htons(forkid);
         request64.bitmap = htons(bitmap);
-        request64.padding = 0;
         request64.newlen64 = hton64(len);
         return dsi_send(volume->server, (char *) &request64,
                         sizeof(request64), DSI_DEFAULT_TIMEOUT, afpSetForkParms, NULL);
@@ -55,6 +55,8 @@ int afp_setforkparms(struct afp_volume * volume,
             uint16_t bitmap;
             uint32_t newlen;
         }  __attribute__((__packed__)) request32;
+        _Static_assert(sizeof(request32) == sizeof(struct dsi_header) + 10,
+                       "invalid 32-bit FPSetForkParms request layout");
         memcpy(&request32.dsi_header, &hdr, sizeof(struct dsi_header));
         request32.command = afpSetForkParms;
         request32.pad = 0;

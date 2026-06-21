@@ -92,6 +92,9 @@ int ml_setresourcefork_flags(struct afp_volume * volume, const char *path,
                              const void *value, size_t size, off_t position,
                              int flags);
 
+int ml_truncateresourcefork(struct afp_volume * volume, const char *path,
+                            uint64_t size);
+
 int ml_removeresourcefork(struct afp_volume * volume, const char *path);
 
 int ml_getfinderinfo(struct afp_volume * volume, const char *path,

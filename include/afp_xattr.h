@@ -25,6 +25,7 @@
 #define NETATALK_XATTR_META_LEN (sizeof(NETATALK_XATTR_META) - 1U)
 
 #define AFP_EXTATTR_DATA_MAX 4096
+#define AFP_EXTATTR_LIST_MAX (64U * 1024U)
 #define AFP_XATTR_NAME_MAX 255U
 
 #define AFP_XATTR_USER_PREFIX "user."
@@ -45,7 +46,7 @@ struct afp_extattr_info {
     unsigned int maxsize;
     unsigned int size;
     unsigned int copied;
-    char data[AFP_EXTATTR_DATA_MAX];
+    char data[AFP_EXTATTR_LIST_MAX];
 };
 
 /* Check if this is an internal server xattr that should be filtered */

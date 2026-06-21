@@ -501,7 +501,7 @@ static int remote_xattr_list(const char *path, char **list, size_t *size)
         return ret;
     }
 
-    if (ret > AFP_SL_METADATA_CHUNK) {
+    if ((size_t)ret > AFP_SL_XATTR_LIST_MAX) {
         return -E2BIG;
     }
 
@@ -2305,13 +2305,6 @@ int com_resourcefork(char *arg)
             return metadata_command_error("open input", -errno);
         }
 
-        ret = afp_sl_setresourcefork(&vol_id, path, NULL, 0, 0);
-
-        if (ret < 0) {
-            close(fd);
-            return metadata_command_error("resourcefork set", ret);
-        }
-
         while (1) {
             ssize_t amount = read(fd, buffer, sizeof(buffer));
 
@@ -2333,6 +2326,10 @@ int com_resourcefork(char *arg)
             }
 
             offset += (unsigned long long)amount;
+        }
+
+        if (ret >= 0) {
+            ret = afp_sl_truncateresourcefork(&vol_id, path, offset);
         }
 
         close(fd);

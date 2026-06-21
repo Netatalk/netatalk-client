@@ -325,6 +325,14 @@ xattrs, macOS AppleDouble, Netatalk AppleDouble, automatic detection, and none. 
 These helpers clear represented destination metadata before copying Finder Info, the resource fork, and eligible generic
 xattrs. They deliberately do not copy the data fork, POSIX mode, or timestamps.
 
+The stateless metadata calls return negative errno values on failure. Generic xattr values are limited to 4096 bytes,
+xattr name lists to `AFP_SL_XATTR_LIST_MAX`, and resource forks to `INT_MAX`. Resource-fork data is read and written in
+4096-byte chunks. Positioned writes do not shorten an existing fork, except that the legacy zero-length write at offset
+zero clears it; call `afp_sl_truncateresourcefork()` to set its final length explicitly. `afp_sl_setxattr()` accepts
+`AFP_SL_XATTR_CREATE` or `AFP_SL_XATTR_REPLACE` (the portable equivalents of
+the system `XATTR_CREATE` and `XATTR_REPLACE` flags), but not both. Consumers can normalize legacy stateless results with
+`afp_sl_legacy_result_to_errno()` and classify session recovery with `afp_sl_recovery_for_error()`.
+
 Metadata replacement is not atomic. A failure can leave partially copied destination metadata. Unsupported metadata and
 values or lists above current protocol limits are reported through the optional `enum afp_metadata_warning` bitmask so
 non-interactive consumers can apply their own policy without parsing library output.

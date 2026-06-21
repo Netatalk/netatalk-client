@@ -6,7 +6,15 @@
 #include <arpa/inet.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+struct listxattr_reply {
+    struct dsi_header header __attribute__((__packed__));
+    uint16_t reserved;
+    uint32_t datalength;
+    char data[];
+} __attribute__((__packed__));
 
 static uint64_t host_to_network64(uint64_t value)
 {
@@ -66,5 +74,21 @@ int main(int argc, char **argv)
     CHECK(xattr_info.size == sizeof(xattr_reply.data));
     CHECK(xattr_info.copied == xattr_info.maxsize);
     CHECK(memcmp(xattr_info.data, "ab", xattr_info.copied) == 0);
+    size_t large_size = AFP_EXTATTR_DATA_MAX + 257U;
+    struct listxattr_reply *large_reply = calloc(1, sizeof(*large_reply)
+                                          + large_size);
+    CHECK(large_reply != NULL);
+    large_reply->datalength = htonl((uint32_t)large_size);
+    memset(large_reply->data, 'x', large_size);
+    memset(&xattr_info, 0, sizeof(xattr_info));
+    xattr_info.maxsize = (unsigned int)large_size;
+    CHECK(afp_listextattrs_reply(NULL, (char *)large_reply,
+                                 (unsigned int)(sizeof(*large_reply) + large_size),
+                                 &xattr_info) == 0);
+    CHECK(xattr_info.size == large_size);
+    CHECK(xattr_info.copied == large_size);
+    CHECK(xattr_info.data[0] == 'x'
+          && xattr_info.data[large_size - 1U] == 'x');
+    free(large_reply);
     return test_tap_finish();
 }

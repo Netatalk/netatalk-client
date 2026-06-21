@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -916,12 +917,15 @@ static int metadata_call(unsigned int command, volumeid_t *volid,
     size_t payload_size;
     size_t tail_content_size;
     size_t tail_size;
+    size_t payload_limit = command == AFP_SERVER_COMMAND_LISTXATTR
+                           ? AFP_SL_XATTR_LIST_MAX
+                           : AFP_SL_METADATA_CHUNK;
     char *tail = NULL;
 
     if (!volid || !path
             || strnlen(path, sizeof(request->path)) >= sizeof(request->path)
-            || size > AFP_SL_METADATA_CHUNK || (name
-                    && strnlen(name, sizeof(request->name)) >= sizeof(request->name))
+            || size > payload_limit || (name
+                                        && strnlen(name, sizeof(request->name)) >= sizeof(request->name))
             || ((command == AFP_SERVER_COMMAND_GETXATTR
                  || command == AFP_SERVER_COMMAND_SETXATTR
                  || command == AFP_SERVER_COMMAND_REMOVEXATTR) && (!name || name[0] == '\0'))
@@ -974,7 +978,7 @@ static int metadata_call(unsigned int command, volumeid_t *volid,
 
     if (response.header.len < sizeof(response) + sizeof(struct
             afp_server_log_footer)
-            || response.header.len > sizeof(response) + AFP_SL_METADATA_CHUNK +
+            || response.header.len > sizeof(response) + payload_limit +
             AFP_SERVER_LOG_BUFFER_SIZE + sizeof(struct afp_server_log_footer)) {
         close_connection();
         return -EPROTO;
@@ -1025,10 +1029,26 @@ int afp_sl_getxattr(volumeid_t *volid, const char *path, const char *name,
 }
 
 int afp_sl_setxattr(volumeid_t *volid, const char *path, const char *name,
-                    const void *value, size_t size, int flags)
+                    void *value, size_t size, int flags)
 {
+    int wire_flags = 0;
+
+    if ((flags & ~(AFP_SL_XATTR_CREATE | AFP_SL_XATTR_REPLACE)) != 0
+            || (flags & AFP_SL_XATTR_CREATE
+                && flags & AFP_SL_XATTR_REPLACE)) {
+        return -EINVAL;
+    }
+
+    if (flags & AFP_SL_XATTR_CREATE) {
+        wire_flags |= kXAttrCreate;
+    }
+
+    if (flags & AFP_SL_XATTR_REPLACE) {
+        wire_flags |= kXAttrREplace;
+    }
+
     return metadata_call(AFP_SERVER_COMMAND_SETXATTR, volid, path, name,
-                         (void *)value, size, 0, flags, 1);
+                         value, size, 0, wire_flags, 1);
 }
 
 int afp_sl_listxattr(volumeid_t *volid, const char *path, char *list,
@@ -1075,14 +1095,97 @@ int afp_sl_setresourcefork(volumeid_t *volid, const char *path,
                            const void *value, size_t size,
                            unsigned long long offset)
 {
+    if (offset > INT_MAX || size > (size_t)(INT_MAX - offset)) {
+        return -EFBIG;
+    }
+
     return metadata_call(AFP_SERVER_COMMAND_SETRESOURCEFORK, volid, path, NULL,
                          (void *)value, size, offset, 0, 1);
+}
+
+int afp_sl_truncateresourcefork(volumeid_t *volid, const char *path,
+                                unsigned long long size)
+{
+    if (size > INT_MAX) {
+        return -EFBIG;
+    }
+
+    return metadata_call(AFP_SERVER_COMMAND_TRUNCATERESOURCEFORK, volid, path,
+                         NULL, NULL, 0, size, 0, 0);
 }
 
 int afp_sl_removeresourcefork(volumeid_t *volid, const char *path)
 {
     return metadata_call(AFP_SERVER_COMMAND_REMOVERESOURCEFORK, volid, path, NULL,
                          NULL, 0, 0, 0, 0);
+}
+
+enum afp_sl_recovery_action afp_sl_recovery_for_error(int result)
+{
+    if (result == -ENODEV || result == AFP_SERVER_RESULT_NOTATTACHED) {
+        return AFP_SL_RECOVERY_REATTACH;
+    }
+
+    if (result == -ECONNRESET || result == -ECONNREFUSED
+            || result == AFP_SERVER_RESULT_NOTCONNECTED
+            || result == AFP_SERVER_RESULT_DAEMON_ERROR
+            || result == AFP_SERVER_RESULT_NOSERVER
+            || result == AFP_SERVER_RESULT_TIMEDOUT) {
+        return AFP_SL_RECOVERY_RECONNECT;
+    }
+
+    return AFP_SL_RECOVERY_NONE;
+}
+
+int afp_sl_legacy_result_to_errno(int result)
+{
+    switch (result) {
+    case AFP_SERVER_RESULT_OKAY:
+        return 0;
+
+    case AFP_SERVER_RESULT_ENOENT:
+    case AFP_SERVER_RESULT_MOUNTPOINT_NOEXIST:
+        return -ENOENT;
+
+    case AFP_SERVER_RESULT_NOTCONNECTED:
+        return -ENOTCONN;
+
+    case AFP_SERVER_RESULT_NOTATTACHED:
+    case AFP_SERVER_RESULT_NOVOLUME:
+        return -ENODEV;
+
+    case AFP_SERVER_RESULT_ALREADY_CONNECTED:
+    case AFP_SERVER_RESULT_ALREADY_ATTACHED:
+    case AFP_SERVER_RESULT_ALREADY_MOUNTED:
+        return -EISCONN;
+
+    case AFP_SERVER_RESULT_NOAUTHENT:
+    case AFP_SERVER_RESULT_VOLPASS_NEEDED:
+    case AFP_SERVER_RESULT_ACCESS:
+    case AFP_SERVER_RESULT_MOUNTPOINT_PERM:
+        return -EACCES;
+
+    case AFP_SERVER_RESULT_EXIST:
+        return -EEXIST;
+
+    case AFP_SERVER_RESULT_ENOTEMPTY:
+        return -ENOTEMPTY;
+
+    case AFP_SERVER_RESULT_TIMEDOUT:
+        return -ETIMEDOUT;
+
+    case AFP_SERVER_RESULT_DAEMON_ERROR:
+        return -ECONNREFUSED;
+
+    case AFP_SERVER_RESULT_NOSERVER:
+        return -EHOSTUNREACH;
+
+    case AFP_SERVER_RESULT_NOTSUPPORTED:
+        return -ENOTSUP;
+
+    default:
+        return -EIO;
+    }
 }
 
 int afp_sl_creat(volumeid_t *volid, const char *path, struct afp_url *url,
