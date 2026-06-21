@@ -1579,7 +1579,7 @@ static unsigned char process_metadata(struct daemon_client *c)
     volume = afp_volume_find_by_pointer_hold(request->volumeid);
 
     if (!volume) {
-        send_metadata_response(c, -ENODEV, NULL, 0, 0);
+        send_metadata_response(c, -ESTALE, NULL, 0, 0);
         return 0;
     }
 

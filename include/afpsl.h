@@ -5,11 +5,7 @@
 #include <utime.h>
 
 #include "afp.h"
-#include "afp_ipc.h"
 #include "errno.h"
-
-/* Socket path for stateless daemon */
-#define SERVER_SL_SOCKET_PATH "/tmp/afp_sl"
 
 /* Maximum value or resource-fork payload per stateless metadata request. */
 #define AFP_SL_METADATA_CHUNK 4096
@@ -30,6 +26,23 @@ enum afp_sl_recovery_action {
     AFP_SL_RECOVERY_NONE,
     AFP_SL_RECOVERY_RECONNECT,
     AFP_SL_RECOVERY_REATTACH,
+};
+
+enum afp_sl_attach_status {
+    AFP_SL_ATTACH_STATUS_NONE,
+    AFP_SL_ATTACH_STATUS_PASSWORD_REQUIRED,
+};
+
+enum afp_sl_password_change_status {
+    AFP_SL_PASSWORD_CHANGE_STATUS_NONE,
+    AFP_SL_PASSWORD_CHANGE_STATUS_ACCESS_DENIED,
+    AFP_SL_PASSWORD_CHANGE_STATUS_INCORRECT_OLD_PASSWORD,
+    AFP_SL_PASSWORD_CHANGE_STATUS_UNSUPPORTED_AUTHENTICATION,
+    AFP_SL_PASSWORD_CHANGE_STATUS_UNCHANGED,
+    AFP_SL_PASSWORD_CHANGE_STATUS_TOO_SHORT,
+    AFP_SL_PASSWORD_CHANGE_STATUS_EXPIRED,
+    AFP_SL_PASSWORD_CHANGE_STATUS_POLICY_VIOLATION,
+    AFP_SL_PASSWORD_CHANGE_STATUS_INVALID_PARAMETER,
 };
 
 /* Local filesystem representation used by metadata transfer helpers.  AUTO
@@ -61,14 +74,6 @@ struct afp_file_info_basic {
     unsigned long long size;
 };
 
-struct afpfsd_connect {
-    int fd;
-    unsigned int len;
-    char data[MAX_CLIENT_RESPONSE + AFP_SERVER_LOG_BUFFER_SIZE + 200];
-    void (*print)(const char * text);
-    char *shmem;
-};
-
 struct afp_volume_summary {
     char volume_name_printable[AFP_VOLUME_NAME_UTF8_LEN];
     char flags;
@@ -82,18 +87,23 @@ typedef void   *volumeid_t;
 typedef void (*afp_sl_log_callback)(void *user_data, int loglevel,
                                     const char *message);
 
-void afp_sl_conn_setup(void);
 void afp_sl_set_log_callback(afp_sl_log_callback callback, void *user_data);
 
+/* Unless documented otherwise, libafpsl operations return zero on success and
+ * negative errno on failure. Read-like metadata operations return a
+ * nonnegative byte count on success and negative errno on failure. */
 int afp_sl_exit(void);
 int afp_sl_status(const char * volumename, const char * servername,
                   char *text, unsigned int *remaining);
 int afp_sl_connect(struct afp_url * url, unsigned int uam_mask,
-                   serverid_t *id, char *loginmesg, int *error);
+                   serverid_t *id, char *loginmesg);
 int afp_sl_disconnect(serverid_t *id);
 int afp_sl_getvolid(struct afp_url * url, volumeid_t *volid);
+/* status is optional. On return it distinguishes a volume-password challenge
+ * from other -EACCES failures. */
 int afp_sl_attach(struct afp_url * url, unsigned int volume_options,
-                  volumeid_t *volumeid);
+                  volumeid_t *volumeid,
+                  enum afp_sl_attach_status *status);
 int afp_sl_detach(volumeid_t * volumeid,
                   struct afp_url * url);
 int afp_sl_readdir(volumeid_t * volid, const char * path, struct afp_url * url,
@@ -135,14 +145,15 @@ int afp_sl_statfs(volumeid_t * volid, const char * path,
                   struct afp_url * url, struct statvfs * stat);
 int afp_sl_close(volumeid_t * volid, unsigned int fileid);
 int afp_sl_serverinfo(struct afp_url * url, struct afp_server_basic * basic);
+/* status is optional. On failure it provides password-policy detail that is
+ * more specific than the returned errno. */
 int afp_sl_changepw(struct afp_url * url,
                     const char *old_password,
-                    const char *new_password);
+                    const char *new_password,
+                    enum afp_sl_password_change_status *status);
 
-/* Metadata operations use errno-style results rather than
- * AFP_SERVER_RESULT_* values. Read and list calls return the byte count on
- * success and a negative errno on failure. Write and remove calls return zero
- * on success and a negative errno on failure. A size of zero queries the
+/* Metadata read and list calls return the byte count on success. Write and
+ * remove calls return zero on success. A size of zero queries the
  * required size for get/list operations. Generic xattr values are limited to
  * AFP_SL_METADATA_CHUNK bytes. Xattr name lists are limited to
  * AFP_SL_XATTR_LIST_MAX bytes. Resource forks are limited to INT_MAX bytes and
@@ -151,7 +162,7 @@ int afp_sl_changepw(struct afp_url * url,
  * afp_sl_setxattr accepts zero or one of AFP_SL_XATTR_CREATE and
  * AFP_SL_XATTR_REPLACE; other flag combinations return -EINVAL.
  * Resource-fork writes overwrite or extend the specified range but do not
- * shorten an existing fork. The legacy zero-length write at offset zero clears
+ * shorten an existing fork. A zero-length write at offset zero clears
  * the fork. Use afp_sl_truncateresourcefork to set any final length explicitly. */
 int afp_sl_getxattr(volumeid_t *volid, const char *path, const char *name,
                     void *value, size_t size);
@@ -174,14 +185,10 @@ int afp_sl_truncateresourcefork(volumeid_t *volid, const char *path,
                                 unsigned long long size);
 int afp_sl_removeresourcefork(volumeid_t *volid, const char *path);
 
-/* Classify errors from either errno-style metadata calls or legacy
- * AFP_SERVER_RESULT_* calls. ENODEV requires restoring the volume attachment;
- * connection failures require rebuilding the daemon/session connection. */
+/* Classify errno-style failures. ESTALE requires restoring the volume
+ * attachment; connection failures require rebuilding the daemon/session
+ * connection. */
 enum afp_sl_recovery_action afp_sl_recovery_for_error(int result);
-
-/* Convert a legacy AFP_SERVER_RESULT_* return value to zero or negative errno.
- * Do not pass successful byte counts from metadata read/list operations. */
-int afp_sl_legacy_result_to_errno(int result);
 
 /* Metadata transfer helpers provide replacement semantics: metadata is
  * cleared at the existing destination before the copy starts.  They do not
@@ -209,6 +216,4 @@ int afp_sl_metadata_copy_remote_to_remote(
     volumeid_t *source_volume, const char *source_path,
     volumeid_t *destination_volume, const char *destination_path,
     unsigned int *warnings);
-int afp_sl_setup(void);
-
 #endif

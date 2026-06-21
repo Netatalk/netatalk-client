@@ -173,7 +173,6 @@ int main(int argc, char **argv)
     pos += sizeof(message) - 1;
     memcpy(response + pos, &footer, sizeof(footer));
     afp_sl_set_log_callback(capture_log, &capture);
-    afp_sl_conn_setup();
     CHECK(afp_sl_response_content_length(response, sizeof(response),
                                          &content_len)
           == 0);
