@@ -652,6 +652,27 @@ static int copy_remote_metadata_to_local(const char *remote_path,
 
     int ret = afp_sl_metadata_copy_remote_to_local(&vol_id, remote_path,
               local_path, transfer_metadata_mode, &warnings);
+
+    /* An AUTO resource fork may outgrow the filesystem's xattr limit after
+     * one or more chunks have already been written.  Remove that partial
+     * metadata and retry the complete copy using Netatalk AppleDouble. */
+    if (transfer_metadata_mode == AFP_METADATA_AUTO
+            && (ret == -E2BIG || ret == -ENOSPC)) {
+        unsigned int clear_warnings = AFP_METADATA_WARNING_NONE;
+        fprintf(stdout, "Metadata does not fit in filesystem xattrs for %s; "
+                        "retrying with a Netatalk AppleDouble sidecar\n", local_path);
+        int clear_ret = afp_metadata_clear_local(local_path, AFP_METADATA_AUTO,
+                        &clear_warnings);
+
+        if (clear_ret == 0) {
+            ret = afp_sl_metadata_copy_remote_to_local(&vol_id, remote_path,
+                  local_path, AFP_METADATA_NETATALK, &warnings);
+        } else {
+            ret = clear_ret;
+            warnings |= clear_warnings;
+        }
+    }
+
     metadata_warn(warnings);
 
     if (ret < 0) {
