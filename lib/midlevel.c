@@ -1747,7 +1747,7 @@ static int validate_special_xattr_flags(int flags, int exists_ret)
 {
     int exists;
 
-    if ((flags & kXAttrCreate) && (flags & kXAttrREplace)) {
+    if ((flags & kXAttrCreate) && (flags & kXAttrReplace)) {
         return -EINVAL;
     }
 
@@ -1761,7 +1761,7 @@ static int validate_special_xattr_flags(int flags, int exists_ret)
         return -EEXIST;
     }
 
-    if ((flags & kXAttrREplace) && !exists) {
+    if ((flags & kXAttrReplace) && !exists) {
         return -ENOATTR;
     }
 
@@ -1770,10 +1770,10 @@ static int validate_special_xattr_flags(int flags, int exists_ret)
 
 static int validate_xattr_flags(int flags)
 {
-    const int supported = kXAttrCreate | kXAttrREplace;
+    const int supported = kXAttrCreate | kXAttrReplace;
 
     if ((flags & ~supported) != 0
-            || (flags & kXAttrCreate && flags & kXAttrREplace)) {
+            || (flags & kXAttrCreate && flags & kXAttrReplace)) {
         return -EINVAL;
     }
 
@@ -1973,7 +1973,7 @@ int ml_setresourcefork_flags(struct afp_volume * volume, const char *path,
         return ret;
     }
 
-    if (flags & (kXAttrCreate | kXAttrREplace)) {
+    if (flags & (kXAttrCreate | kXAttrReplace)) {
         ret = validate_special_xattr_flags(flags,
                                            ml_getresourcefork(volume, path,
                                                NULL, 0, 0));
@@ -2124,7 +2124,7 @@ int ml_setfinderinfo_flags(struct afp_volume * volume, const char *path,
         return ret;
     }
 
-    if (flags & (kXAttrCreate | kXAttrREplace)) {
+    if (flags & (kXAttrCreate | kXAttrReplace)) {
         ret = validate_special_xattr_flags(flags,
                                            ml_getfinderinfo(volume, path,
                                                NULL, 0));
@@ -2308,8 +2308,8 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
         bitmap |= kXAttrCreate;
     }
 
-    if (flags & kXAttrREplace) {
-        bitmap |= kXAttrREplace;
+    if (flags & kXAttrReplace) {
+        bitmap |= kXAttrReplace;
     }
 
     /* Set the extended attribute */

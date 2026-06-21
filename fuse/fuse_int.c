@@ -230,7 +230,7 @@ static int fuse_setxattr(const char *path, const char *name,
 #ifdef XATTR_REPLACE
 
     if (flags & XATTR_REPLACE) {
-        ml_flags |= kXAttrREplace;
+        ml_flags |= kXAttrReplace;
     }
 
 #endif

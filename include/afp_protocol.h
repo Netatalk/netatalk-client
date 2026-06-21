@@ -7,10 +7,10 @@
 #include <unistd.h>
 #include <stdint.h>
 
-/* This file defines constants for the Apple File Protocol.
-   All page references are from "Apple Filing Protocol Programming" version 3.2.
-   except where noted.
-*/
+/* This file defines constants for the Apple Filing Protocol.
+   Section references are to the AFP Programming Guide and
+   AFP Reference, version 3.4.
+ */
 
 #define AFP_SERVER_NAME_LEN 33
 #define AFP_SERVER_NAME_UTF8_LEN 255
@@ -23,12 +23,9 @@
 #define AFP_VOLPASS_LEN 8
 #define AFP_HOSTNAME_LEN 255
 #define AFP_ZONE_LEN 32
-
 #define AFP_SERVER_ICON_LEN 256
-
 #define AFP_MAX_USERNAME_LEN 127
 #define AFP_MAX_PASSWORD_LEN 127
-
 
 /* This is the maximum length of any UAM string */
 #define AFP_UAM_LENGTH 24
@@ -40,12 +37,10 @@
 #define AFP_VOL_FIXED 2
 #define AFP_VOL_VARIABLE 3
 
-/* The root directory ID, p.26 */
-
+/* AFP Programming Guide: AFP Concepts > Directories and Files > Directory IDs */
 #define AFP_ROOT_DID 2
 
-/* Path type constants, p.249 */
-
+/* AFP Reference: Constants > AFP Protocol Constants > Path Type Constants */
 enum {
     kFPShortName = 1,
     kFPLongName = 2,
@@ -53,31 +48,26 @@ enum {
 };
 
 /* fork types */
-
 #define AFP_FORKTYPE_DATA 0x0
 #define AFP_FORKTYPE_RESOURCE 0x80
 
-/* openfork access modes, from p.196 */
-
+/* AFP Reference: FPOpenFork > Parameters > AccessMode */
 #define AFP_OPENFORK_ALLOWREAD 1
 #define AFP_OPENFORK_ALLOWWRITE 2
 #define AFP_OPENFORK_DENYREAD 0x10
 #define AFP_OPENFORK_DENYWRITE 0x20
 
-/* Message type for getsrvmesg, p. 169*/
-
+/* AFP Reference: FPGetSrvrMsg > Parameters > MessageType */
 typedef enum {
     AFPMESG_LOGIN = 0,
     AFPMESG_SERVER = 1
 } afpmessage_t;
 
-/* Message bitmap for getsrvrmsg */
-
+/* AFP Reference: Constants > AFP Protocol Constants > FPGetSrvrMsg Bitmap */
 #define AFP_GETSRVRMSG_UTF8 0x2
 #define AFP_GETSRVRMSG_GETMSG 0x1
 
-
-/* Maximum Version length, p.17 */
+/* AFP Programming Guide: AFP Concepts > File Server */
 #define AFP_MAX_VERSION_LENGTH 16
 
 /* Maximum length of a token, this is undocumented */
@@ -86,8 +76,7 @@ typedef enum {
 /* The maximum size of a file for AFP 2 */
 #define AFP_MAX_AFP2_FILESIZE (4294967296)
 
-/* Unix privs, p.240 */
-
+/* AFP Reference: Data Types > AFP Protocol Data Types > FPUnixPrivs */
 struct afp_unixprivs {
     uint32_t uid __attribute__((__packed__));
     uint32_t gid __attribute__((__packed__));
@@ -96,9 +85,7 @@ struct afp_unixprivs {
 
 };
 
-
-/* AFP Volume attributes bitmap, p.241 */
-
+/* AFP Reference: Constants > AFP Protocol Constants > Volume Attributes Bitmap */
 enum {
     kReadOnly = 0x01,
     kHasVolumePassword = 0x02,
@@ -111,17 +98,18 @@ enum {
     kDefaultPrivsFromParent = 0x100,
     kNoExchangeFiles = 0x200,
     kSupportsExtAttrs = 0x400,
-    kSupportsACLs = 0x800
+    kSupportsACLs = 0x800,
+    kCaseSensitive = 0x1000,
+    kSupportsTMLockSteal = 0x2000
 };
 
-/* AFP file creation constantes, p.250 */
+/* AFP Reference: Constants > AFP Protocol Constants > File Creation Constants */
 enum {
     kFPSoftCreate = 0,
     kFPHardCreate = 0x80
 };
 
-/* AFP Directory attributes, taken from the protocol guide p.236 */
-
+/* AFP Reference: Constants > AFP Protocol Constants > File and Directory Bitmap */
 enum {
     kFPAttributeBit = 0x1,
     kFPParentDirIDBit = 0x2,
@@ -141,9 +129,8 @@ enum {
     kFPUnixPrivsBit = 0x8000 /* AFP version 3.0 and later */
 };
 
-/* AFP File bitmap, p.238.  These are the ones not in the AFP Directory
-   attributes map. */
-
+/* AFP Reference: Constants > AFP Protocol Constants > File and Directory Bitmap.
+   These are the bits not in the directory bitmap above. */
 enum {
     kFPDataForkLenBit = 0x0200,
     kFPRsrcForkLenBit = 0x0400,
@@ -152,49 +139,46 @@ enum {
     kFPExtRsrcForkLenBit = 0x4000, /* AFP version 3.0 and later */
 };
 
-/* AFP Extended Attributes Bitmap, p.238  */
-
+/* AFP Reference: Constants > AFP Protocol Constants > Extended Attributes Bitmap */
 enum {
     kXAttrNoFollow = 0x1,
     kXAttrCreate = 0x2,
-    kXAttrREplace = 0x4
+    kXAttrReplace = 0x4
 };
 
-
-/* AFP function codes */
+/* AFP Reference: AFP Commands (CommandCode for each command) */
 enum AFPFunction {
     afpByteRangeLock = 1, afpCloseVol, afpCloseDir, afpCloseFork,
-    afpCopyFile, afpCreateDir, afpCreateFile,
-    afpDelete, afpEnumerate, afpFlush, afpFlushFork,
-    afpGetForkParms = 14, afpGetSrvrInfo, afpGetSrvrParms,
-    afpGetVolParms, afpLogin, afpLoginCont, afpLogout, afpMapID,
-    afpMapName, afpMoveAndRename, afpOpenVol, afpOpenDir, afpOpenFork,
-    afpRead, afpRename, afpSetDirParms, afpSetFileParms,
-    afpSetForkParms, afpSetVolParms, afpWrite, afpGetFileDirParms,
-    afpSetFileDirParms, afpChangePassword,
-    afpGetUserInfo = 37, afpGetSrvrMsg = 38,
-    afpExchangeFiles = 42,
-    afpOpenDT = 48,
-    afpCloseDT = 49,
-    afpGetIcon = 51, afpGetIconInfo = 52,
-    afpAddComment = 56, afpRemoveComment = 57, afpGetComment = 58,
-    afpByteRangeLockExt = 59, afpReadExt, afpWriteExt,
-    afpGetAuthMethods = 62,
-    afp_LoginExt = 63,
-    afpGetSessionToken = 64,
-    afpDisconnectOldSession = 65,
-    afpEnumerateExt = 66,
-    afpCatSearchExt = 67,
-    afpEnumerateExt2 = 68, afpGetExtAttr, afpSetExtAttr,
-    afpRemoveExtAttr, afpListExtAttrs,
-    afpGetACL, afpSetACL, afpAccess,
-    afpSpotlightRPC = 76,
+    afpCopyFile, afpCreateDir, afpCreateFile, afpDelete,
+    afpEnumerate, afpFlush, afpFlushFork,
+
+    afpGetForkParms = 14, afpGetSrvrInfo, afpGetSrvrParms, afpGetVolParms,
+    afpLogin, afpLoginCont, afpLogout, afpMapID,
+    afpMapName, afpMoveAndRename, afpOpenVol, afpOpenDir,
+    afpOpenFork, afpRead, afpRename, afpSetDirParms,
+    afpSetFileParms, afpSetForkParms, afpSetVolParms, afpWrite,
+    afpGetFileDirParms, afpSetFileDirParms, afpChangePassword, afpGetUserInfo,
+    afpGetSrvrMsg, afpCreateID, afpDeleteID, afpResolveID,
+    afpExchangeFiles, afpCatSearch,
+
+    afpOpenDT = 48, afpCloseDT,
+
+    afpGetIcon = 51, afpGetIconInfo, afpAddAPPL, afpRemoveAPPL,
+    afpGetAPPL, afpAddComment, afpRemoveComment, afpGetComment,
+    afpByteRangeLockExt, afpReadExt, afpWriteExt, afpGetAuthMethods,
+    afpLoginExt, afpGetSessionToken, afpDisconnectOldSession, afpEnumerateExt,
+    afpCatSearchExt, afpEnumerateExt2, afpGetExtAttr, afpSetExtAttr,
+    afpRemoveExtAttr, afpListExtAttrs, afpGetACL, afpSetACL,
+    afpAccess, afpSpotlightRPC,
+
     afpSyncDir = 78, afpSyncFork,
+
     afpZzzzz = 122,
+
     afpAddIcon = 192,
 };
 
-/* AFP Volume bitmap.  Take from 242 of the protocol guide. */
+/* AFP Reference: Constants > AFP Protocol Constants > Volume Bitmap */
 enum {
     kFPBadVolPre222Bitmap = 0xFe00,
     kFPBadVolBitmap = 0xF000,
@@ -227,7 +211,8 @@ enum {
 
 #define kFPNoErr 0
 
-/* AFP result codes, p252 */
+/* AFP Reference: Result Codes */
+#define kFPNoMoreSessions -1068
 #define kASPSessClosed -1072
 #define kFPAccessDenied -5000
 #define kFPAuthContinue -5001
@@ -279,21 +264,17 @@ enum {
 #define kFPDiskQuotaExceeded -5047
 
 
-
 /* These flags determine to lock or unlock in ByteRangeLock(Ext) */
-
 enum {
     ByteRangeLock_Lock = 0,
     ByteRangeLock_Unlock = 1
 };
 
-/* These flags are used in volopen and getsrvrparm replies, p.171 */
-
+/* AFP Reference: FPGetSrvrParms > Reply Block */
 #define HasConfigInfo 0x1
 #define HasPassword 0x80
 
-/* These are the subfunction for kFPMapID, as per p.248 */
-
+/* AFP Reference: Constants > AFP Protocol Constants > FPMapID Constants */
 enum {
     kUserIDToName = 1,
     kGroupIDToName = 2,
@@ -303,10 +284,7 @@ enum {
     kGroupUUIDToUTF8Name = 6
 };
 
-
-/* These are the subfunction flags described in the FPMapName command, p.286.
-   Note that this is different than what's described on p. 186. */
-
+/* AFP Reference: Constants > AFP Protocol Constants > FPMapName Constants */
 enum {
     kNameToUserID = 1,
     kNameToGroupID = 2,
@@ -316,12 +294,11 @@ enum {
     kUTF8NameToGroupUUID = 6
 };
 
-/* These are bits for FPGetUserInfo, p.173. */
+/* AFP Reference: FPGetUserInfo > Parameters > Bitmap */
 #define kFPGetUserInfo_USER_ID 1
 #define kFPGetUserInfo_PRI_GROUPID 2
 
-/* Flags for the replies of GetSrvrInfo and DSI GetStatus, p.240 */
-
+/* AFP Reference: Constants > AFP Protocol Constants > Server Flags Bitmap */
 enum {
     kSupportsCopyfile = 0x01,
     kSupportsChgPwd = 0x02,
@@ -334,12 +311,11 @@ enum {
     kSupportsDirServices = 0x100,
     kSupportsUTF8SrvrName = 0x200,
     kSupportsUUIDs = 0x400,
+    kSupportsExtSleep = 0x800,
     kSupportsSuperClient = 0x8000
 };
 
-
-/* p.247 */
-
+/* AFP Reference: Constants > AFP Protocol Constants > FPGetSessionToken Types */
 enum {
     kLoginWithoutID = 0,
     kLoginWithID = 1,
@@ -348,7 +324,8 @@ enum {
     kReconnWithTimeAndID = 4,
     kRecon1Login = 5,
     kRecon1ReconnectLogin = 6,
-    kRecon1Refresh = 7, kGetKerberosSessionKey = 8
+    kRecon1RefreshToken = 7,
+    kGetKerberosSessionKey = 8
 };
 
 #endif

@@ -215,7 +215,7 @@ int afp_loginext(struct afp_server *server, const char *ua_name,
     struct dsi_header hdr;
     dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request->header, &hdr, sizeof(struct dsi_header));
-    request->command = afp_LoginExt;
+    request->command = afpLoginExt;
     request->pad = 0;
     request->flags = 0;
     p += copy_to_pascal(p, server->using_version->av_name) + 1;
@@ -239,7 +239,7 @@ int afp_loginext(struct afp_server *server, const char *ua_name,
     /* UserAuthInfo */
     memcpy(p, userauthinfo, userauthinfo_len);
     ret = dsi_send(server, msg, len, DSI_BLOCK_TIMEOUT,
-                   afp_LoginExt, (void *)rx);
+                   afpLoginExt, (void *)rx);
     free(msg);
     return ret;
 }

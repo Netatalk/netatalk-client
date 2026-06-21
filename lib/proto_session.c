@@ -46,7 +46,7 @@ int afp_getsessiontoken(struct afp_server * server, int type,
         break;
 
     case kLoginWithoutID:
-    case kRecon1Refresh:
+    case kRecon1RefreshToken:
     case kRecon1ReconnectLogin:
         datalen = 0;
         break;
