@@ -98,8 +98,27 @@ int main(int argc, char **argv)
     struct stat st;
     mode_t old_umask;
     enum afp_metadata_mode parsed_mode;
+    volumeid_t dummy_volume = (volumeid_t)(uintptr_t)1;
     unsigned int warnings = UINT_MAX;
     test_tap_init(argc, argv);
+    CHECK(AFP_SL_XATTR_CREATE == 0x1);
+    CHECK(AFP_SL_XATTR_REPLACE == 0x2);
+    CHECK(afp_sl_setxattr(&dummy_volume, "/file", "user.test", "x", 1,
+                          AFP_SL_XATTR_CREATE | AFP_SL_XATTR_REPLACE) == -EINVAL);
+    CHECK(afp_sl_setxattr(&dummy_volume, "/file", "user.test", "x", 1,
+                          0x4) == -EINVAL);
+    CHECK(afp_sl_setresourcefork(&dummy_volume, "/file", "xx", 2,
+                                 INT_MAX) == -EFBIG);
+    CHECK(afp_sl_truncateresourcefork(&dummy_volume, "/file",
+                                      (unsigned long long)INT_MAX + 1) == -EFBIG);
+    CHECK(afp_sl_recovery_for_error(-ECONNRESET)
+          == AFP_SL_RECOVERY_RECONNECT);
+    CHECK(afp_sl_recovery_for_error(-ECONNREFUSED)
+          == AFP_SL_RECOVERY_RECONNECT);
+    CHECK(afp_sl_recovery_for_error(-ENODEV) == AFP_SL_RECOVERY_REATTACH);
+    CHECK(afp_sl_recovery_for_error(-ENOATTR) == AFP_SL_RECOVERY_NONE);
+    CHECK(afp_sl_legacy_result_to_errno(AFP_SERVER_RESULT_ACCESS) == -EACCES);
+    CHECK(afp_sl_legacy_result_to_errno(AFP_SERVER_RESULT_ENOENT) == -ENOENT);
     CHECK(mkdtemp(temporary) != NULL);
     CHECK(join_suffix(file, sizeof(file), temporary, "/file") == 0);
     CHECK(join_suffix(missing, sizeof(missing), temporary, "/missing") == 0);

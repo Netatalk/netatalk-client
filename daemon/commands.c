@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -1501,8 +1502,11 @@ static unsigned char process_metadata(struct daemon_client *c)
     struct afp_volume *volume = NULL;
     size_t base = offsetof(struct afp_server_metadata_request, data);
     char data[AFP_SL_METADATA_CHUNK];
+    const char *response_data = data;
+    char *allocated_data = NULL;
     unsigned int response_size = 0;
     unsigned int response_data_size = 0;
+    size_t request_limit;
     int sends_data;
     size_t expected_len;
     int ret = -EINVAL;
@@ -1515,13 +1519,16 @@ static unsigned char process_metadata(struct daemon_client *c)
     sends_data = request->header.command == AFP_SERVER_COMMAND_SETXATTR
                  || request->header.command == AFP_SERVER_COMMAND_SETFINDERINFO
                  || request->header.command == AFP_SERVER_COMMAND_SETRESOURCEFORK;
+    request_limit = request->header.command == AFP_SERVER_COMMAND_LISTXATTR
+                    ? AFP_SL_XATTR_LIST_MAX
+                    : AFP_SL_METADATA_CHUNK;
     expected_len = base;
 
     if (sends_data) {
         expected_len += request->size;
     }
 
-    if (request->size > AFP_SL_METADATA_CHUNK
+    if (request->size > request_limit
             || request->header.len != expected_len
             || (size_t)c->completed_packet_size != request->header.len) {
         send_metadata_response(c, -EINVAL, NULL, 0, 0);
@@ -1545,6 +1552,27 @@ static unsigned char process_metadata(struct daemon_client *c)
     if (request->header.command == AFP_SERVER_COMMAND_SETFINDERINFO
             && request->size != 32) {
         send_metadata_response(c, -EINVAL, NULL, 0, 0);
+        return 0;
+    }
+
+    if (request->header.command == AFP_SERVER_COMMAND_SETXATTR
+            && ((request->flags & ~(kXAttrCreate | kXAttrREplace)) != 0
+                || (request->flags & kXAttrCreate
+                    && request->flags & kXAttrREplace))) {
+        send_metadata_response(c, -EINVAL, NULL, 0, 0);
+        return 0;
+    }
+
+    if (request->header.command == AFP_SERVER_COMMAND_SETRESOURCEFORK
+            && (request->offset > INT_MAX
+                || request->size > (size_t)(INT_MAX - request->offset))) {
+        send_metadata_response(c, -EFBIG, NULL, 0, 0);
+        return 0;
+    }
+
+    if (request->header.command == AFP_SERVER_COMMAND_TRUNCATERESOURCEFORK
+            && request->offset > INT_MAX) {
+        send_metadata_response(c, -EFBIG, NULL, 0, 0);
         return 0;
     }
 
@@ -1572,7 +1600,15 @@ static unsigned char process_metadata(struct daemon_client *c)
         char *listxattr_data = NULL;
 
         if (request->size) {
-            listxattr_data = data;
+            allocated_data = malloc(request->size);
+
+            if (!allocated_data) {
+                ret = -ENOMEM;
+                break;
+            }
+
+            listxattr_data = allocated_data;
+            response_data = allocated_data;
         }
 
         ret = ml_listxattr(volume, request->path, listxattr_data, request->size);
@@ -1621,6 +1657,10 @@ static unsigned char process_metadata(struct daemon_client *c)
 
         break;
 
+    case AFP_SERVER_COMMAND_TRUNCATERESOURCEFORK:
+        ret = ml_truncateresourcefork(volume, request->path, request->offset);
+        break;
+
     case AFP_SERVER_COMMAND_REMOVEXATTR:
         ret = ml_removexattr(volume, request->path, request->name);
         break;
@@ -1644,6 +1684,7 @@ static unsigned char process_metadata(struct daemon_client *c)
         if (request->size > 0) {
             if (response_size > request->size) {
                 send_metadata_response(c, -ERANGE, NULL, 0, response_size);
+                free(allocated_data);
                 afp_server_release(volume->server);
                 return 0;
             }
@@ -1655,11 +1696,13 @@ static unsigned char process_metadata(struct daemon_client *c)
     }
 
     if (response_data_size > 0) {
-        send_metadata_response(c, ret, data, response_data_size, response_size);
+        send_metadata_response(c, ret, response_data, response_data_size,
+                               response_size);
     } else {
         send_metadata_response(c, ret, NULL, response_data_size, response_size);
     }
 
+    free(allocated_data);
     afp_server_release(volume->server);
     return 0;
 }
@@ -2262,6 +2305,7 @@ static void *process_command_thread(void * other)
     case AFP_SERVER_COMMAND_REMOVEFINDERINFO:
     case AFP_SERVER_COMMAND_GETRESOURCEFORK:
     case AFP_SERVER_COMMAND_SETRESOURCEFORK:
+    case AFP_SERVER_COMMAND_TRUNCATERESOURCEFORK:
     case AFP_SERVER_COMMAND_REMOVERESOURCEFORK:
         ret = process_metadata(c);
         break;

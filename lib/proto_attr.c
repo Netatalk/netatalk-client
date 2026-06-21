@@ -237,7 +237,8 @@ int afp_getextattr(struct afp_volume * volume, unsigned int dirid,
         request_packet->dirid = htonl(dirid);
         request_packet->bitmap = htons(bitmap);
         request_packet->offset = hton64(0);
-        request_packet->reqcount = hton64(replysize);
+        /* Reserved by the AFP specification; clients must send -1. */
+        request_packet->reqcount = UINT64_MAX;
         request_packet->maxreplysize = htonl(replysize);
         /* Copy path */
         copy_path(server, p, pathname, strlen(pathname));

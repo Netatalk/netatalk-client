@@ -1908,7 +1908,7 @@ static int transfer_remote_list(volumeid_t *volume, const char *path,
         return ret;
     }
 
-    if (ret > AFP_SL_METADATA_CHUNK) {
+    if ((size_t)ret > AFP_SL_XATTR_LIST_MAX) {
         return -E2BIG;
     }
 

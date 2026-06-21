@@ -453,9 +453,8 @@ static int fuse_flush(const char *path, struct fuse_file_info *fi)
         return eret;
     }
 
-    /* NOTE: We do NOT call afp_setforkparms here because it appears to
-     * clear/reset the fork data even when setting to the current size.
-     * afp_flushfork alone should be sufficient to commit the writes. */
+    /* Flushing is sufficient to commit the writes; setting the fork to its
+     * unchanged size would only add a redundant protocol request. */
     return 0;
 }
 
@@ -693,8 +692,7 @@ static int fuse_truncate(const char * path, off_t offset,
         log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** truncate using open forkid %d",
                        fp->forkid);
 
-        /* CRITICAL: Only call setforksize if we're actually changing the size.
-         * Calling setforkparms on a fork that already has data can clear it! */
+        /* Avoid a redundant SetForkParms request when the size is unchanged. */
         if (fp->size != (uint64_t)offset) {
             ret = ml_setfork_size(volume, fp->forkid, 0, offset);
 

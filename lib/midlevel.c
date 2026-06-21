@@ -1768,6 +1768,18 @@ static int validate_special_xattr_flags(int flags, int exists_ret)
     return 0;
 }
 
+static int validate_xattr_flags(int flags)
+{
+    const int supported = kXAttrCreate | kXAttrREplace;
+
+    if ((flags & ~supported) != 0
+            || (flags & kXAttrCreate && flags & kXAttrREplace)) {
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
 static int append_listed_xattr_name(char *list, size_t size, size_t *used,
                                     const char *name)
 {
@@ -1902,6 +1914,11 @@ int ml_setresourcefork(struct afp_volume * volume, const char *path,
         return -EINVAL;
     }
 
+    if ((uint64_t)position > INT_MAX
+            || size > (size_t)(INT_MAX - (uint64_t)position)) {
+        return -EFBIG;
+    }
+
     if (volume_is_readonly(volume)) {
         return -EACCES;
     }
@@ -1950,7 +1967,11 @@ int ml_setresourcefork_flags(struct afp_volume * volume, const char *path,
                              const void *value, size_t size, off_t position,
                              int flags)
 {
-    int ret;
+    int ret = validate_xattr_flags(flags);
+
+    if (ret < 0) {
+        return ret;
+    }
 
     if (flags & (kXAttrCreate | kXAttrREplace)) {
         ret = validate_special_xattr_flags(flags,
@@ -1963,6 +1984,41 @@ int ml_setresourcefork_flags(struct afp_volume * volume, const char *path,
     }
 
     return ml_setresourcefork(volume, path, value, size, position);
+}
+
+int ml_truncateresourcefork(struct afp_volume * volume, const char *path,
+                            uint64_t size)
+{
+    struct afp_file_info fp;
+    int ret;
+    int close_ret;
+
+    if (!volume || !path) {
+        return -EINVAL;
+    }
+
+    if (size > INT_MAX) {
+        return -EFBIG;
+    }
+
+    if (volume_is_readonly(volume)) {
+        return -EACCES;
+    }
+
+    ret = open_appledouble_meta(volume, path, AFP_META_RESOURCE, O_RDWR, &fp);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = ll_setfork_size(volume, fp.forkid, 1, size);
+    close_ret = appledouble_close(volume, &fp);
+
+    if (ret != 0) {
+        return -ret;
+    }
+
+    return close_ret < 0 ? close_ret : 0;
 }
 
 int ml_removeresourcefork(struct afp_volume * volume, const char *path)
@@ -2062,7 +2118,11 @@ int ml_setfinderinfo(struct afp_volume * volume, const char *path,
 int ml_setfinderinfo_flags(struct afp_volume * volume, const char *path,
                            const void *value, size_t size, int flags)
 {
-    int ret;
+    int ret = validate_xattr_flags(flags);
+
+    if (ret < 0) {
+        return ret;
+    }
 
     if (flags & (kXAttrCreate | kXAttrREplace)) {
         ret = validate_special_xattr_flags(flags,
@@ -2134,13 +2194,9 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
         return ret;
     }
 
-    /* Note: We don't call ll_get_directory_entry here to avoid file locking
-     * conflicts. The FUSE layer already verified the file exists via getattr.
-     * If the file doesn't exist, the AFP command will return kFPObjectNotFound.
-     *
-     * Time Capsule rejects small MaxReplySize values.  The reply buffer is
+    /* Time Capsule rejects small MaxReplySize values.  The reply buffer is
      * fixed-size, so cap the request at the storage we actually have. */
-    info.maxsize = sizeof(info.data);
+    info.maxsize = AFP_EXTATTR_DATA_MAX;
     info.size = 0;
     info.copied = 0;
     /* Get the extended attribute */
@@ -2205,6 +2261,12 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
         return -EINVAL;
     }
 
+    ret = validate_xattr_flags(flags);
+
+    if (ret < 0) {
+        return ret;
+    }
+
     if (is_resourcefork_xattr(name)) {
         return ml_setresourcefork_flags(volume, path, value, size, 0, flags);
     }
@@ -2241,10 +2303,6 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
         return ret;
     }
 
-    /* Note: We don't call ll_get_directory_entry here to avoid file locking
-     * conflicts. The FUSE layer already verified the file exists via getattr.
-     * If the file doesn't exist, afp_setextattr will return kFPObjectNotFound. */
-
     /* Handle flags (create/replace semantics) */
     if (flags & kXAttrCreate) {
         bitmap |= kXAttrCreate;
@@ -2270,6 +2328,9 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
 
     case kFPObjectExists:
         return -EEXIST;  /* CREATE flag set but attr already exists */
+
+    case kFPItemNotFound:
+        return -ENOATTR; /* REPLACE flag set but attr does not exist */
 
     case kFPMiscErr:
         return -EIO;
@@ -2300,11 +2361,9 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
             return ret;
         }
 
-        /* Note: We don't call ll_get_directory_entry here to avoid file locking
-         * conflicts. The FUSE layer already verified the file exists via getattr.
-         * If the file doesn't exist, the AFP command will return kFPObjectNotFound. */
-        /* Same minimum-1024 rule as ml_getxattr, capped to the fixed reply buffer. */
-        info.maxsize = sizeof(info.data);
+        /* Fetch the complete raw AFP list. Namespace prefixes added below can
+         * make the caller-visible list substantially larger. */
+        info.maxsize = AFP_EXTATTR_LIST_MAX;
         info.size = 0;
         info.copied = 0;
         /* List extended attributes */
@@ -2315,10 +2374,12 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
             break;
 
         case kFPAccessDenied:
-            return -EACCES;
+            ret = -EACCES;
+            goto out;
 
         case kFPObjectNotFound:
-            return -ENOENT;
+            ret = -ENOENT;
+            goto out;
 
         case kFPParamErr:
             /* TC returns kFPParamErr when MaxReplySize is too small; treat as
@@ -2327,7 +2388,8 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
             break;
 
         default:
-            return -EIO;
+            ret = -EIO;
+            goto out;
         }
     } else {
         info.size = 0;
@@ -2335,7 +2397,8 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
     }
 
     if (info.copied < info.size) {
-        return -ERANGE;
+        ret = -E2BIG;
+        goto out;
     }
 
     /* Filter out internal server EAs from the list.
@@ -2354,7 +2417,8 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
         /* Ensure we have a null terminator within bounds */
         if (namelen == remaining) {
             /* No null terminator found - malformed data from server */
-            return -EIO;
+            ret = -EIO;
+            goto out;
         }
 
         /* Only include this EA if it's not filtered */
@@ -2362,7 +2426,7 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
             ret = append_listed_xattr_name(list, size, &filtered_size, src);
 
             if (ret < 0) {
-                return ret;
+                goto out;
             }
         }
 
@@ -2370,7 +2434,9 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
         remaining -= namelen + 1;
     }
 
-    return filtered_size;
+    ret = filtered_size > INT_MAX ? -E2BIG : (int)filtered_size;
+out:
+    return ret;
 }
 
 int ml_removexattr(struct afp_volume * volume, const char *path,
@@ -2415,17 +2481,12 @@ int ml_removexattr(struct afp_volume * volume, const char *path,
         return ret;
     }
 
-    /* Parse path into directory ID and basename */
     ret = get_dirid(volume, path, basename, &dirid);
 
     if (ret != 0) {
         return ret;
     }
 
-    /* Note: We don't call ll_get_directory_entry here to avoid file locking
-     * conflicts. The FUSE layer already verified the file exists via getattr.
-     * If the file doesn't exist, the AFP command will return kFPObjectNotFound. */
-    /* Remove the extended attribute */
     ret = afp_removeextattr(volume, dirid, 0, basename,
                             afp_namelen, afp_name);
 
