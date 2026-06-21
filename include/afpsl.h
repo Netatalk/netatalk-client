@@ -46,7 +46,7 @@ enum afp_sl_password_change_status {
 };
 
 /* Local filesystem representation used by metadata transfer helpers.  AUTO
- * probes filesystem xattrs, macOS AppleDouble, then Netatalk AppleDouble. */
+ * probes filesystem xattrs, then falls back to Netatalk AppleDouble. */
 enum afp_metadata_mode {
     AFP_METADATA_AUTO,
     AFP_METADATA_XATTR,
