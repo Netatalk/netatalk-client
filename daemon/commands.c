@@ -1556,9 +1556,9 @@ static unsigned char process_metadata(struct daemon_client *c)
     }
 
     if (request->header.command == AFP_SERVER_COMMAND_SETXATTR
-            && ((request->flags & ~(kXAttrCreate | kXAttrREplace)) != 0
+            && ((request->flags & ~(kXAttrCreate | kXAttrReplace)) != 0
                 || (request->flags & kXAttrCreate
-                    && request->flags & kXAttrREplace))) {
+                    && request->flags & kXAttrReplace))) {
         send_metadata_response(c, -EINVAL, NULL, 0, 0);
         return 0;
     }

@@ -1063,7 +1063,7 @@ int afp_sl_setxattr(volumeid_t *volid, const char *path, const char *name,
     }
 
     if (flags & AFP_SL_XATTR_REPLACE) {
-        wire_flags |= kXAttrREplace;
+        wire_flags |= kXAttrReplace;
     }
 
     return metadata_call(AFP_SERVER_COMMAND_SETXATTR, volid, path, name,
