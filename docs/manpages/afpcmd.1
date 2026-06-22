@@ -72,28 +72,23 @@ Logs are written to standard error and syslog.
 Preserves FinderInfo, resource forks, generic extended attributes, modes,
 and modification times during transfers.
 The storage mode may be
-.Cm auto ,
+.Cm netatalk ,
 .Cm xattr ,
 .Cm macos ,
-.Cm netatalk ,
 or
 .Cm none .
-The default
-.Cm auto
-mode uses local filesystem extended attributes first and falls back to
-Netatalk AppleDouble sidecars.
+.Cm netatalk
+uses
+.Pa .AppleDouble/name
+and
+.Pa name::EA
+files and is the default.
 .Cm xattr
 uses only local filesystem extended attributes.
 .Cm macos
 uses macOS-compatible
 .Pa ._name
 AppleDouble files for FinderInfo and resource forks.
-.Cm netatalk
-uses
-.Pa .AppleDouble/name
-and
-.Pa name::EA
-files.
 .Cm none
 transfers only the data fork.
 .It Ar afp_url

@@ -99,8 +99,8 @@ E.g.
     Transferred 39172170 bytes in 2.862 seconds. (13687 kB/s)
 
 Transfers preserve FinderInfo, resource forks, generic extended attributes,
-file modes, and modification times by default. Use '-M xattr', '-M macos',
-or '-M netatalk' to select local metadata storage,
+file modes, and modification times by default.
+Use '-M netatalk', '-M xattr', or '-M macos' to select local metadata storage,
 and '-M none' to transfer only the data fork.
 
 See afpcmd(1) for more information.
