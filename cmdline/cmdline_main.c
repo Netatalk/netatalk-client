@@ -456,7 +456,7 @@ static void usage(void)
         "afpcmd [-h] [-V] [-v loglevel] [-M mode] <afp url>\n"
         "Options:\n"
         "\t-h:          show this help message and exit\n"
-        "\t-M mode:     preserve metadata using auto, xattr, macos, netatalk, or none\n"
+        "\t-M mode:     preserve metadata using netatalk, xattr, macos, or none\n"
         "\t-r:          recursively transfer directories in batch mode\n"
         "\t-V:          verbose mode (show detailed transfer messages)\n"
         "\t-v loglevel: set log verbosity (debug, info, notice, warning, error)\n"
@@ -480,7 +480,7 @@ int main(int argc, char *argv[])
     int verbose = 0;
     int show_usage = 0;
     int log_level = LOG_NOTICE;
-    const char *metadata_mode = "auto";
+    const char *metadata_mode = "netatalk";
     struct option long_options[] = {
         {"help", 0, 0, 'h'},
         {"metadata", 1, 0, 'M'},

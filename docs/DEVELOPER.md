@@ -320,9 +320,9 @@ The callback runs synchronously on the calling thread. Passing a null callback d
 process-global, matching the stateless library's process-global connection state.
 
 The library also provides metadata-only replacement helpers for local-to-AFP, AFP-to-local, and AFP-to-AFP copies.
-Callers select the local representation on each operation with `enum afp_metadata_mode`; supported modes are filesystem
-xattrs, macOS AppleDouble, Netatalk AppleDouble, automatic xattr-to-Netatalk fallback, and none. The destination must
-already exist.
+Callers select the local representation on each operation with `enum afp_metadata_mode`;
+supported modes are Netatalk AppleDouble, filesystem xattrs, macOS AppleDouble, and none.
+The destination must already exist.
 These helpers clear represented destination metadata before copying Finder Info, the resource fork, and eligible generic
 xattrs. They deliberately do not copy the data fork, POSIX mode, or timestamps.
 
