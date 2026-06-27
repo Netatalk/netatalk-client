@@ -2,7 +2,7 @@
  *  fuse_error.c
  *
  *  Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
- *  Copyright (C) 2025 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
  *
  */
 
@@ -20,14 +20,18 @@
 
 /* Simple global capture state (not thread-safe, but adequate for mount startup) */
 static int captured_fd = -1;
-static int captured_stderr_fd = -1;  /* FD for captured stderr temp file */
+/* FD for captured stderr temp file */
+static int captured_stderr_fd = -1;
 static FILE *captured_stream = NULL;
 static fpos_t pos;
 
+#define FUSE_ERROR_PREFIX "FUSE error: "
+
 void report_fuse_errors(struct fuse_client * c)
 {
-    char buf[MAX_ERROR_LEN];
-    int len;
+    char buf[MAX_ERROR_LEN - sizeof(FUSE_ERROR_PREFIX)];
+    char message[MAX_ERROR_LEN];
+    ssize_t len;
 
     if (captured_stderr_fd < 0) {
         return;  /* No capture was started */
@@ -52,14 +56,16 @@ void report_fuse_errors(struct fuse_client * c)
         return;
     }
 
-    memset(buf, 0, MAX_ERROR_LEN);
-    len = read(captured_stderr_fd, buf, MAX_ERROR_LEN);
+    memset(buf, 0, sizeof(buf));
+    len = read(captured_stderr_fd, buf, sizeof(buf) - 1);
     close(captured_stderr_fd);
     captured_stderr_fd = -1;
 
     if (len > 0) {
-        log_for_client((void *)c, AFPFSD, LOG_ERR,
-                       "FUSE reported the following error: %s", buf);
+        buf[len] = '\0';
+        snprintf(message, sizeof(message),
+                 "%s%s", FUSE_ERROR_PREFIX, buf);
+        (log_for_client)((void *)c, AFPFSD, LOG_ERR, message);
     }
 }
 

@@ -35,7 +35,11 @@ int main(int argc, char **argv)
     CHECK(strcmp(sanitized, expected_sanitized) == 0);
     libafpclient_register(&test_client);
     log_for_client(NULL, AFPFSD, LOG_INFO, "%s", input);
-    libafpclient_register(NULL);
     CHECK(strcmp(captured_message, expected_log) == 0);
+    (log_for_client)(NULL, AFPFSD, LOG_INFO, input);
+    CHECK(strcmp(captured_message, expected_log) == 0);
+    (log_for_client)(NULL, AFPFSD, LOG_INFO, NULL);
+    libafpclient_register(NULL);
+    CHECK(strcmp(captured_message, "(null)") == 0);
     return test_tap_finish();
 }

@@ -6,6 +6,11 @@
 #include <syslog.h>
 #include <sys/select.h>
 
+#ifdef AFPCLIENT_INTERNAL
+#include <stdarg.h>
+#include <stdio.h>
+#endif
+
 #define MAX_CLIENT_RESPONSE 16384
 
 
@@ -41,8 +46,40 @@ void signal_main_thread(void);
 
 void set_log_method(int m);
 
+/* Public logging API: message is complete text, not a printf format. */
 void log_for_client(void * priv,
-                    enum logtypes logtype, int loglevel, char *message, ...);
+                    enum logtypes logtype, int loglevel,
+                    const char *message);
+
+#ifdef AFPCLIENT_INTERNAL
+/* Internal convenience for literal printf-style formats. */
+static inline void log_for_clientf(void * priv,
+                                   enum logtypes logtype, int loglevel,
+                                   const char *format, ...)
+__attribute__((format(printf, 4, 5)));
+
+static inline void log_for_clientf(void * priv,
+                                   enum logtypes logtype, int loglevel,
+                                   const char *format, ...)
+{
+    va_list ap;
+    char message[MAX_ERROR_LEN];
+
+    if (format == NULL) {
+        log_for_client(priv, logtype, loglevel, "(null)");
+        return;
+    }
+
+    va_start(ap, format);
+    vsnprintf(message, sizeof(message), format, ap);
+    va_end(ap);
+    log_for_client(priv, logtype, loglevel, message);
+}
+
+#ifndef AFPCLIENT_NO_LOG_MACRO
+#define log_for_client(...) log_for_clientf(__VA_ARGS__)
+#endif
+#endif
 
 void stdout_log_for_client(void * priv,
                            enum logtypes logtype, int loglevel, const char *message);

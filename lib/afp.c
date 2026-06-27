@@ -468,7 +468,7 @@ void afp_free_server(struct afp_server ** sp)
     for (p = server->command_requests; p;) {
         log_for_client(NULL, AFPFSD, LOG_NOTICE,
                        "FSLeft in queue: %p, id: %d command: %d",
-                       p, p->requestid, p->subcommand);
+                       (void *)p, p->requestid, p->subcommand);
         next = p->next;
         free(p);
         p = next;
@@ -899,7 +899,7 @@ int afp_server_connect(struct afp_server *server, int full)
             log_msg[LOG_MSG_SIZE - 1] = '\0';
         }
 
-        log_for_client(NULL, AFPFSD, LOG_NOTICE, log_msg);
+        (log_for_client)(NULL, AFPFSD, LOG_NOTICE, log_msg);
         server->fd = socket(address->ai_family,
                             address->ai_socktype, address->ai_protocol);
 
