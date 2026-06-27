@@ -7,22 +7,25 @@
  */
 
 #include <stdio.h>
-#include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
+#define AFPCLIENT_NO_LOG_MACRO
 #include "libafpclient.h"
 #include "utils.h"
 
 void log_for_client(void * priv,
-                    enum logtypes logtype, int loglevel, char *format, ...)
+                    enum logtypes logtype, int loglevel,
+                    const char *message)
 {
-    va_list ap;
     size_t message_len;
     char new_message[MAX_ERROR_LEN];
     char escaped[MAX_ERROR_LEN * 4];
-    va_start(ap, format);
-    vsnprintf(new_message, MAX_ERROR_LEN, format, ap);
-    va_end(ap);
+
+    if (message == NULL) {
+        message = "(null)";
+    }
+
+    snprintf(new_message, MAX_ERROR_LEN, "%s", message);
     message_len = strlen(new_message);
 
     while (message_len > 0
@@ -45,5 +48,9 @@ void stdout_log_for_client(
     __attribute__((unused)) int loglevel,
     const char *message)
 {
+    if (message == NULL) {
+        message = "(null)";
+    }
+
     printf("%s\n", message);
 }

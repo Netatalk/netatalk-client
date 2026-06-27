@@ -26,6 +26,7 @@ cflags = [
     '-DAFPFS_VERSION="' + afpfsng_version + '"',
     '-DBINDIR="' + bindir + '"',
     '-D_FILE_OFFSET_BITS=64',
+    '-DAFPCLIENT_INTERNAL',
 ]
 
 if 'afp' in get_option('enable-debugging')
