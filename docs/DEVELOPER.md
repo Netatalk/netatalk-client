@@ -65,6 +65,26 @@ The major subcomponents of libafpclient are all in the lib/ directory.
 
 They are:
 
+### Logging
+
+`log_for_client()` is the shared logging entry point. Public consumers pass it a complete message string; it trims
+trailing newlines, escapes control characters, and forwards the sanitized text to the registered client logger.
+If the message pointer is null, it is logged as `(null)`.
+
+Inside the netatalk-client build, `log_for_client()` is also available as a checked printf-style convenience macro.
+Internal callers may use literal format strings:
+
+    log_for_client(priv, AFPFSD, LOG_WARNING, "Could not open %s", path);
+
+Do not pass runtime or remote-controlled text as the format string. If a message is already composed, log it through a
+literal `%s` format:
+
+    log_for_client(priv, AFPFSD, LOG_ERR, "%s", message);
+
+The underlying exported function remains the plain-message API for external users. Internal code that deliberately needs
+to call that function directly can use the parenthesized form `(log_for_client)(priv, AFPFSD, level, message)` to bypass
+the internal macro, but that should stay rare and explicit.
+
 ### Midlevel
 
 This is an API that simplifies the AFP functions that does some simplification
