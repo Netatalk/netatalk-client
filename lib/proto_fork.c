@@ -11,6 +11,7 @@
 
 #include "dsi.h"
 #include "afp.h"
+#include "compat.h"
 #include "utils.h"
 #include "dsi_protocol.h"
 #include "afp_protocol.h"
@@ -107,7 +108,7 @@ int afp_flushfork(struct afp_volume * volume,
                     sizeof(request_packet), DSI_DEFAULT_TIMEOUT, afpFlushFork, NULL);
 }
 
-int afp_openfork_reply(__attribute__((unused)) struct afp_server *server,
+int afp_openfork_reply(struct afp_server *server _U_,
                        char *buf, unsigned int size, void *x)
 {
     struct afp_file_info *fp = (struct afp_file_info *)x;
@@ -210,7 +211,7 @@ int afp_byterangelock(struct afp_volume * volume,
     return rc;
 }
 
-int afp_byterangelock_reply(__attribute__((unused)) struct afp_server *server,
+int afp_byterangelock_reply(struct afp_server *server _U_,
                             char *buf, unsigned int size, void *x)
 {
     struct {
@@ -256,7 +257,7 @@ int afp_byterangelockext(struct afp_volume * volume,
     return rc;
 }
 
-int afp_byterangelockext_reply(__attribute__((unused)) struct afp_server
+int afp_byterangelockext_reply(struct afp_server _U_
                                *server, char *buf, unsigned int size, void *x)
 {
     struct {

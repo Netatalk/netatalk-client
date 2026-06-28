@@ -10,16 +10,17 @@
 #include <stdlib.h>
 #include "dsi.h"
 #include "afp.h"
+#include "compat.h"
 #include "utils.h"
 #include "dsi_protocol.h"
 #include "afp_protocol.h"
 #include "afp_internal.h"
 #include "codepage.h"
 
-static int parse_volbitmap_reply(__attribute__((unused)) struct afp_server
-                                 *server,
+static int parse_volbitmap_reply(struct afp_server *server _U_,
                                  struct afp_volume *tmpvol,
-                                 unsigned short bitmap, char *msg, unsigned int size)
+                                 unsigned short bitmap, char *msg,
+                                 unsigned int size)
 {
     char *p = msg;
 

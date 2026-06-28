@@ -9,6 +9,7 @@
 #include <string.h>
 #include "dsi.h"
 #include "afp.h"
+#include "compat.h"
 #include "utils.h"
 #include "afp_internal.h"
 #include "afp_replies.h"
@@ -95,7 +96,7 @@ static int copy_afpname_bounded(char *dest, size_t dest_len,
     return 0;
 }
 
-int parse_reply_block(__attribute__((unused)) struct afp_server *server,
+int parse_reply_block(struct afp_server *server _U_,
                       const char *buf,
                       unsigned int size, unsigned char isdir,
                       unsigned int filebitmap,

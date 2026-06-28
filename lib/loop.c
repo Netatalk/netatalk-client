@@ -18,6 +18,7 @@
 #include <sys/time.h>
 
 #include "afp.h"
+#include "compat.h"
 #include "dsi.h"
 #include "utils.h"
 
@@ -132,7 +133,7 @@ void signal_main_thread(void)
 }
 
 static int ending = 0;
-void *just_end_it_now(__attribute__((unused)) void * ignore)
+void *just_end_it_now(void * ignore _U_)
 {
     if (ending) {
         return NULL;
@@ -201,8 +202,7 @@ void loop_disconnect(struct afp_server *s)
     s->need_resume = 1;
 }
 
-static int process_server_fds(fd_set * set, __attribute__((unused)) int max_fd,
-                              int **onfd)
+static int process_server_fds(fd_set *set, int max_fd _U_, int **onfd)
 {
     struct afp_server * s;
     int ret;
@@ -254,8 +254,7 @@ static int process_server_fds(fd_set * set, __attribute__((unused)) int max_fd,
     return 0;
 }
 
-static void deal_with_server_signals(__attribute__((unused)) fd_set *set,
-                                     __attribute__((unused)) int * max_fd)
+static void deal_with_server_signals(fd_set *set _U_, int *max_fd _U_)
 {
     if (exit_program == 1) {
         pthread_create(&ending_thread, NULL, just_end_it_now, NULL);
@@ -271,7 +270,7 @@ void afp_wait_for_started_loop(void)
     pthread_cond_wait(&loop_started_condition, &loop_started_mutex);
 }
 
-static void *afp_main_quick_startup_thread(__attribute__((unused)) void * other)
+static void *afp_main_quick_startup_thread(void * other _U_)
 {
     afp_main_loop(-1);
     return NULL;

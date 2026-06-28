@@ -14,8 +14,6 @@
 
 #define HAVE_ARCH_STRUCT_FLOCK
 
-#include "afp.h"
-
 #include <fuse.h>
 #include <stdio.h>
 #include <string.h>
@@ -42,6 +40,9 @@
 #elif defined(HAVE_SYS_EXTATTR_H)
 #include <sys/extattr.h>
 #endif
+
+#include "afp.h"
+#include "compat.h"
 
 /* Define xattr constants if not provided by system headers */
 #ifndef XATTR_CREATE
@@ -309,20 +310,18 @@ static int fuse_removexattr(const char *path, const char *name)
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30
 static int fuse_readdir_darwin(const char *path, void *buf,
                                fuse_darwin_fill_dir_t filler,
-                               __attribute__((unused)) off_t offset,
-                               __attribute__((unused)) struct fuse_file_info *fi,
-                               __attribute__((unused)) enum fuse_readdir_flags flags)
+                               off_t offset _U_,
+                               struct fuse_file_info *fi _U_,
+                               enum fuse_readdir_flags flags _U_)
 #elif FUSE_USE_VERSION >= 30 && FUSE_NEW_API
 /* Linux FUSE 3.10+ with fuse_readdir_flags */
 static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-                        __attribute__((unused)) off_t offset,
-                        __attribute__((unused)) struct fuse_file_info *fi,
-                        __attribute__((unused)) enum fuse_readdir_flags flags)
+                        off_t offset _U_, struct fuse_file_info *fi _U_,
+                        enum fuse_readdir_flags flags _U_)
 #else
 /* BSD FUSE 3.x and FUSE 2.x - older API without fuse_readdir_flags */
 static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-                        __attribute__((unused)) off_t offset,
-                        __attribute__((unused)) struct fuse_file_info *fi)
+                        off_t offset _U_, struct fuse_file_info *fi _U_)
 #endif
 {
     struct afp_file_info * filebase = NULL, *p;
@@ -358,8 +357,7 @@ error:
     return ret;
 }
 
-static int fuse_mknod(const char *path, mode_t mode,
-                      __attribute__((unused)) dev_t dev)
+static int fuse_mknod(const char *path, mode_t mode, dev_t dev _U_)
 {
     int ret = 0;
     struct fuse_context * context = fuse_get_context();
@@ -549,15 +547,15 @@ static int fuse_opendir(const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
-static int fuse_releasedir(__attribute__((unused)) const char *path,
-                           __attribute__((unused)) struct fuse_file_info *fi)
+static int fuse_releasedir(const char *path _U_,
+                           struct fuse_file_info *fi _U_)
 {
     return 0;
 }
 
-static int fuse_fsyncdir(__attribute__((unused)) const char *path,
-                         __attribute__((unused)) int datasync,
-                         __attribute__((unused)) struct fuse_file_info *fi)
+static int fuse_fsyncdir(const char *path _U_,
+                         int datasync _U_,
+                         struct fuse_file_info *fi _U_)
 {
     return 0;
 }
@@ -653,7 +651,7 @@ static int fuse_access(const char *path, int mask)
 
 #if FUSE_NEW_API
 static int fuse_chown(const char * path, uid_t uid, gid_t gid,
-                      __attribute__((unused)) struct fuse_file_info *fi)
+                      struct fuse_file_info *fi _U_)
 #else
 static int fuse_chown(const char * path, uid_t uid, gid_t gid)
 #endif
@@ -735,7 +733,7 @@ static int fuse_truncate(const char * path, off_t offset)
 
 #if FUSE_NEW_API
 static int fuse_chmod(const char * path, mode_t mode,
-                      __attribute__((unused)) struct fuse_file_info *fi)
+                      struct fuse_file_info *fi _U_)
 #else
 static int fuse_chmod(const char * path, mode_t mode)
 #endif
@@ -771,7 +769,7 @@ static int fuse_chmod(const char * path, mode_t mode)
 #if FUSE_USE_VERSION >= 30
 #if FUSE_NEW_API
 static int fuse_utimens(const char *path, const struct timespec tv[2],
-                        __attribute__((unused)) struct fuse_file_info *fi)
+                        struct fuse_file_info *fi _U_)
 #else
 static int fuse_utimens(const char *path, const struct timespec tv[2])
 #endif
@@ -842,7 +840,7 @@ static int fuse_utime(const char * path, struct utimbuf * timebuf)
 
 #endif
 
-static void afp_destroy(__attribute__((unused)) void * ignore)
+static void afp_destroy(void *ignore _U_)
 {
     struct afp_volume * volume =
         (struct afp_volume *)
@@ -1201,7 +1199,7 @@ static int fuse_setattr(const char *path, struct fuse_darwin_attr *attr,
 }
 
 static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
-                               __attribute__((unused)) struct fuse_file_info *fi)
+                               struct fuse_file_info *fi _U_)
 {
     char *c;
     struct stat stbuf;
@@ -1251,7 +1249,7 @@ static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
 #else
 #if FUSE_NEW_API
 static int fuse_getattr(const char *path, struct stat *stbuf,
-                        __attribute__((unused)) struct fuse_file_info *fi)
+                        struct fuse_file_info *fi _U_)
 #else
 static int fuse_getattr(const char *path, struct stat *stbuf)
 #endif
@@ -1336,7 +1334,7 @@ static void *afp_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 }
 
 #else
-static void *afp_init(__attribute__((unused)) struct fuse_conn_info * o)
+static void *afp_init(struct fuse_conn_info * o _U_)
 {
     struct afp_volume * vol = (struct afp_volume *)
                               ((struct fuse_context *)(fuse_get_context()))->private_data;
@@ -1355,7 +1353,7 @@ static void *afp_init(__attribute__((unused)) struct fuse_conn_info * o)
 
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30
 static int fuse_chflags(const char *path,
-                        __attribute__((unused)) struct fuse_file_info *fi,
+                        struct fuse_file_info *fi _U_,
                         unsigned int flags)
 {
     struct afp_volume *volume =

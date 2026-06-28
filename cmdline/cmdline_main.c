@@ -50,6 +50,7 @@
 #include "libafpclient.h"
 #include "utils.h"
 #include "cmdline_afp.h"
+#include "compat.h"
 
 static int running = 1;
 static int loop_started = 0;
@@ -144,7 +145,7 @@ static int char_is_quoted(char *string, int eindex)
    in case we want to do some simple parsing.  Return the array of matches,
    or NULL if there aren't any. */
 static char **filename_completion(const char *text,
-                                  int start, __attribute__((unused)) int end)
+                                  int start, int end _U_)
 {
     char **matches = NULL;
 
@@ -205,7 +206,7 @@ static void initialize_readline(void)
 }
 
 /* The user wishes to quit using this program.  Just set DONE non-zero. */
-static int com_quit(__attribute__((unused)) char *arg)
+static int com_quit(char *arg _U_)
 {
     cmdline_afp_exit();
     running = 0;
@@ -213,7 +214,7 @@ static int com_quit(__attribute__((unused)) char *arg)
 }
 
 /* Explicitly detach volume and terminate server connection, then exit. */
-static int com_close(__attribute__((unused)) char *arg)
+static int com_close(char *arg _U_)
 {
     com_disconnect(NULL);
     running = 0;
@@ -377,7 +378,7 @@ static int execute_line(char * line)
     return 0;
 }
 
-void *cmdline_ui(__attribute__((unused)) void * other)
+void *cmdline_ui(void * other _U_)
 {
     char *line;
     char *s, s2[ARG_LEN];
@@ -424,7 +425,7 @@ void cmdline_forced_ending_hook(void)
 
 static volatile int interrupt_count = 0;
 
-void earlyexit_handler(__attribute__((unused)) int signum)
+void earlyexit_handler(int signum _U_)
 {
     sigset_t mask;
 

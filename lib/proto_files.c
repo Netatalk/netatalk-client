@@ -10,6 +10,7 @@
 #include <string.h>
 #include "dsi.h"
 #include "afp.h"
+#include "compat.h"
 #include "utils.h"
 #include "dsi_protocol.h"
 #include "afp_protocol.h"
@@ -234,7 +235,7 @@ int afp_read(struct afp_volume * volume, unsigned short forkid,
     return rc;
 }
 
-int afp_read_reply(__attribute__((unused)) struct afp_server *server,
+int afp_read_reply(struct afp_server *server _U_,
                    char *buf, unsigned int size,
                    void *other)
 {
@@ -290,7 +291,7 @@ int afp_readext(struct afp_volume * volume, unsigned short forkid,
     return rc;
 }
 
-int afp_readext_reply(__attribute__((unused)) struct afp_server *server,
+int afp_readext_reply(struct afp_server *server _U_,
                       char *buf, unsigned int size,
                       void *other)
 {
@@ -482,7 +483,7 @@ int afp_write(struct afp_volume * volume, unsigned short forkid,
 }
 
 
-int afp_write_reply(__attribute__((unused)) struct afp_server *server,
+int afp_write_reply(struct afp_server *server _U_,
                     char *buf, unsigned int size,
                     void *other)
 {
@@ -550,7 +551,7 @@ int afp_writeext(struct afp_volume * volume, unsigned short forkid,
 }
 
 
-int afp_writeext_reply(__attribute__((unused)) struct afp_server *server,
+int afp_writeext_reply(struct afp_server *server _U_,
                        char *buf, unsigned int size,
                        void *other)
 {

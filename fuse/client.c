@@ -57,8 +57,8 @@ static char *thisbin;
 static int client_log_min_rank = 2; /* Default to LOG_NOTICE */
 
 /* Log handler that filters by log level */
-static void client_log_for_client(__attribute__((unused)) void *priv,
-                                  __attribute__((unused)) enum logtypes logtype,
+static void client_log_for_client(void *priv _U_,
+                                  enum logtypes logtype _U_,
                                   int loglevel, const char *message)
 {
     int type_rank = loglevel_to_rank(loglevel);
@@ -451,8 +451,7 @@ static int send_command(int sock, char * msg, int len)
     return write(sock, msg, len);
 }
 
-static int do_exit(__attribute__((unused)) int argc,
-                   __attribute__((unused)) char **argv)
+static int do_exit(int argc _U_, char **argv _U_)
 {
     outgoing_len = 1;
     outgoing_buffer[0] = AFP_SERVER_COMMAND_EXIT;

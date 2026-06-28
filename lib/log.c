@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdlib.h>
 #define AFPCLIENT_NO_LOG_MACRO
+#include "compat.h"
 #include "libafpclient.h"
 #include "utils.h"
 
@@ -43,9 +44,9 @@ void log_for_client(void * priv,
 }
 
 void stdout_log_for_client(
-    __attribute__((unused)) void * priv,
-    __attribute__((unused)) enum logtypes logtype,
-    __attribute__((unused)) int loglevel,
+    void *priv _U_,
+    enum logtypes logtype _U_,
+    int loglevel _U_,
     const char *message)
 {
     if (message == NULL) {

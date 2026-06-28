@@ -10,6 +10,7 @@
 #include <string.h>
 #include "dsi.h"
 #include "afp.h"
+#include "compat.h"
 #include "utils.h"
 #include "dsi_protocol.h"
 #include "afp_protocol.h"
@@ -34,7 +35,7 @@ int afp_getsrvrparms(struct afp_server *server)
 
 
 int afp_getsrvrparms_reply(struct afp_server *server, char * msg,
-                           unsigned int size, __attribute__((unused)) void * ignore)
+                           unsigned int size, void *ignore _U_)
 {
     const struct {
         struct dsi_header header __attribute__((__packed__));
@@ -99,7 +100,7 @@ int afp_getsrvrparms_reply(struct afp_server *server, char * msg,
 }
 
 
-int afp_getsrvrmsg_reply(__attribute__((unused)) struct afp_server *server,
+int afp_getsrvrmsg_reply(struct afp_server *server _U_,
                          char *buf, unsigned int size, void *other)
 {
     struct afp_getsrvrmsg_reply_packet {

@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include "dsi.h"
 #include "afp.h"
+#include "compat.h"
 #include "utils.h"
 #include "afp_protocol.h"
 #include "dsi_protocol.h"
@@ -72,7 +73,7 @@ int afp_listextattr(struct afp_volume * volume,
     return ret;
 }
 
-int afp_listextattrs_reply(__attribute__((unused)) struct afp_server * server,
+int afp_listextattrs_reply(struct afp_server *server _U_,
                            char *buf,
                            unsigned int size, void *x)
 {
@@ -131,7 +132,7 @@ int afp_listextattrs_reply(__attribute__((unused)) struct afp_server * server,
     return 0;
 }
 
-int afp_getextattr_reply(__attribute__((unused)) struct afp_server * server,
+int afp_getextattr_reply(struct afp_server *server _U_,
                          char *buf,
                          unsigned int size, void *x)
 {

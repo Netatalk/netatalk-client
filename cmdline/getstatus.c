@@ -21,6 +21,7 @@
 
 #include "afp.h"
 #include "afp_protocol.h"
+#include "compat.h"
 #include "uams_def.h"
 #include "utils.h"
 
@@ -29,10 +30,9 @@
 static bool show_icon = false;
 static int log_min_rank;
 
-static void getstatus_log_for_client(
-    __attribute__((unused)) void *priv,
-    __attribute__((unused)) enum logtypes logtype,
-    int loglevel, const char *message)
+static void getstatus_log_for_client(void *priv _U_,
+                                     enum logtypes logtype _U_,
+                                     int loglevel, const char *message)
 {
     if (loglevel_to_rank(loglevel) < log_min_rank) {
         return;

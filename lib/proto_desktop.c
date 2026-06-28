@@ -10,6 +10,7 @@
 
 #include "dsi.h"
 #include "afp.h"
+#include "compat.h"
 #include "utils.h"
 #include "afp_protocol.h"
 #include "dsi_protocol.h"
@@ -48,7 +49,7 @@ int afp_geticon(struct afp_volume * volume, unsigned int filecreator,
                     afpGetIcon, (void *) icon);
 }
 
-int afp_geticon_reply(__attribute__((unused)) struct afp_server *server,
+int afp_geticon_reply(struct afp_server *server _U_,
                       char *buf, unsigned int size, void *other)
 {
     struct {
@@ -146,7 +147,7 @@ int afp_getcomment(struct afp_volume *volume, unsigned int did,
     return rc;
 }
 
-int afp_getcomment_reply(__attribute__((unused)) struct afp_server *server,
+int afp_getcomment_reply(struct afp_server *server _U_,
                          char *buf, unsigned int size, void *other)
 {
     struct {
@@ -209,7 +210,7 @@ int afp_opendt(struct afp_volume *volume, unsigned short * refnum)
 }
 
 
-int afp_opendt_reply(__attribute__((unused)) struct afp_server *server,
+int afp_opendt_reply(struct afp_server *server _U_,
                      char *buf, unsigned int size, void *other)
 {
     struct {

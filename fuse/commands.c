@@ -39,6 +39,7 @@
 #include "daemon.h"
 #include "uams_def.h"
 #include "codepage.h"
+#include "compat.h"
 #include "libafpclient.h"
 #include "map_def.h"
 #include "fuse_int.h"
@@ -161,8 +162,7 @@ error:
     return -1;
 }
 
-static int fuse_process_client_fds(fd_set * set,
-                                   __attribute__((unused)) int max_fd)
+static int fuse_process_client_fds(fd_set *set, int max_fd _U_)
 {
     struct fuse_client * c;
 
@@ -226,7 +226,7 @@ out:
 }
 
 static void fuse_log_for_client(void * priv,
-                                __attribute__((unused)) enum logtypes logtype,
+                                enum logtypes logtype _U_,
                                 int loglevel, const char *message)
 {
     struct fuse_client * c = priv;

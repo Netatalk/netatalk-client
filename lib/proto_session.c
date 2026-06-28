@@ -10,6 +10,7 @@
 #include "dsi.h"
 #include "dsi_protocol.h"
 #include "afp.h"
+#include "compat.h"
 #include "utils.h"
 
 int afp_getsessiontoken(struct afp_server * server, int type,
@@ -79,9 +80,9 @@ error:
     return ret;
 }
 
-int afp_getsessiontoken_reply(__attribute__((unused)) struct afp_server *server,
+int afp_getsessiontoken_reply(struct afp_server *server _U_,
                               char *buf,
-                              __attribute__((unused)) unsigned int size, void * other)
+                              unsigned int size _U_, void *other)
 {
     struct afp_token * token = other;
     struct {

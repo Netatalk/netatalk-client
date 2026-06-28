@@ -27,6 +27,7 @@
 #include "resource.h"
 #include "utils.h"
 #include "codepage.h"
+#include "compat.h"
 #include "midlevel.h"
 #include "afp_internal.h"
 #include "afp_xattr.h"
@@ -1670,7 +1671,7 @@ int ml_exchange(struct afp_volume * vol,
     return -ret;
 }
 
-int ml_statfs(struct afp_volume * vol, __attribute__((unused)) const char *path,
+int ml_statfs(struct afp_volume * vol, const char *path _U_,
               struct statvfs *stat)
 {
     unsigned short flags;
