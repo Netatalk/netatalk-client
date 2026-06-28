@@ -202,7 +202,7 @@ void loop_disconnect(struct afp_server *s)
     s->need_resume = 1;
 }
 
-static int process_server_fds(fd_set *set, int max_fd _U_, int **onfd)
+static int process_server_fds(fd_set *set, int **onfd)
 {
     struct afp_server * s;
     int ret;
@@ -254,7 +254,7 @@ static int process_server_fds(fd_set *set, int max_fd _U_, int **onfd)
     return 0;
 }
 
-static void deal_with_server_signals(fd_set *set _U_, int *max_fd _U_)
+static void deal_with_server_signals(void)
 {
     if (exit_program == 1) {
         pthread_create(&ending_thread, NULL, just_end_it_now, NULL);
@@ -411,7 +411,7 @@ int afp_main_loop(int command_fd)
                 log_for_client(NULL, AFPFSD, LOG_DEBUG,
                                "afp_main_loop -- pselect interrupted by signal (EINTR)");
 #endif
-                deal_with_server_signals(&rds, &max_fd);
+                deal_with_server_signals();
                 continue;
             }
 
@@ -504,7 +504,7 @@ int afp_main_loop(int command_fd)
             log_for_client(NULL, AFPFSD, LOG_DEBUG,
                            "afp_main_loop -- calling process_server_fds");
 #endif
-            int server_result = process_server_fds(&ords, max_fd, &onfd);
+            int server_result = process_server_fds(&ords, &onfd);
 #ifdef DEBUG_AFP_LOOP
             log_for_client(NULL, AFPFSD, LOG_DEBUG,
                            "afp_main_loop -- process_server_fds returned %d", server_result);
