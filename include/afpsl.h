@@ -95,12 +95,15 @@ int afp_sl_status(const char * volumename, const char * servername,
                   char *text, unsigned int *remaining);
 int afp_sl_connect(struct afp_url * url, unsigned int uam_mask,
                    serverid_t *id, char *loginmesg);
+int afp_sl_resume(struct afp_url * url, unsigned int uam_mask,
+                  serverid_t *id, char *loginmesg);
 int afp_sl_disconnect(serverid_t *id);
-int afp_sl_getvolid(struct afp_url * url, volumeid_t *volid);
+int afp_sl_getvolid(serverid_t serverid, struct afp_url * url,
+                    volumeid_t *volid);
 /* status is optional. On return it distinguishes a volume-password challenge
  * from other -EACCES failures. */
-int afp_sl_attach(struct afp_url * url, unsigned int volume_options,
-                  volumeid_t *volumeid,
+int afp_sl_attach(serverid_t serverid, struct afp_url * url,
+                  unsigned int volume_options, volumeid_t *volumeid,
                   enum afp_sl_attach_status *status);
 int afp_sl_detach(volumeid_t * volumeid,
                   struct afp_url * url);
@@ -108,7 +111,8 @@ int afp_sl_readdir(volumeid_t * volid, const char * path, struct afp_url * url,
                    int start, int count, unsigned int *numfiles,
                    struct afp_file_info_basic **fpb,
                    int *eod);
-int afp_sl_getvols(struct afp_url * url, unsigned int start,
+int afp_sl_getvols(serverid_t serverid, struct afp_url * url,
+                   unsigned int start,
                    unsigned int count, unsigned int *numvols,
                    struct afp_volume_summary * vols);
 int afp_sl_stat(volumeid_t * volid, const char * path,

@@ -659,16 +659,35 @@ int afp_sl_status(const char *volumename, const char *servername, char *text,
  *
  */
 
-int afp_sl_getvolid(struct afp_url * url, volumeid_t *volid)
+int afp_sl_getvolid(serverid_t serverid, struct afp_url * url,
+                    volumeid_t *volid)
 {
     struct afp_server_getvolid_request req;
     struct afp_server_getvolid_response response;
     int ret;
     int retries = 10;
+
+    if (!serverid) {
+        if (!url || url->password[0] != '\0') {
+            return -EACCES;
+        }
+
+        ret = afp_sl_resume(url, default_uams_mask(), &serverid, NULL);
+
+        if (ret != 0) {
+            return ret;
+        }
+
+        if (!serverid) {
+            return -EIO;
+        }
+    }
+
     memset(&req, 0, sizeof(req));
     req.header.close = 0;
     req.header.len = sizeof(struct afp_server_getvolid_request);
     req.header.command = AFP_SERVER_COMMAND_GETVOLID;
+    req.serverid = serverid;
     memcpy(&req.url, url, sizeof(*url));
 
     while (1) {
@@ -713,7 +732,7 @@ int afp_sl_stat(volumeid_t *volid, const char *path, struct afp_url *url,
     request.header.command = AFP_SERVER_COMMAND_STAT;
 
     if (volid == NULL) {
-        ret = afp_sl_getvolid(url, &tmpvolid);
+        ret = afp_sl_getvolid(NULL, url, &tmpvolid);
 
         if (ret) {
             return ret;
@@ -756,7 +775,7 @@ int afp_sl_open(volumeid_t *volid, const char *path, struct afp_url *url,
     request.header.command = AFP_SERVER_COMMAND_OPEN;
 
     if (volid == NULL) {
-        ret = afp_sl_getvolid(url, &tmpvolid);
+        ret = afp_sl_getvolid(NULL, url, &tmpvolid);
 
         if (ret) {
             return ret;
@@ -1222,7 +1241,7 @@ int afp_sl_creat(volumeid_t *volid, const char *path, struct afp_url *url,
     request.header.command = AFP_SERVER_COMMAND_CREAT;
 
     if (volid == NULL) {
-        ret = afp_sl_getvolid(url, &tmpvolid);
+        ret = afp_sl_getvolid(NULL, url, &tmpvolid);
 
         if (ret) {
             return ret;
@@ -1260,7 +1279,7 @@ int afp_sl_chmod(volumeid_t *volid, const char *path, struct afp_url *url,
     request.header.command = AFP_SERVER_COMMAND_CHMOD;
 
     if (volid == NULL) {
-        ret = afp_sl_getvolid(url, &tmpvolid);
+        ret = afp_sl_getvolid(NULL, url, &tmpvolid);
 
         if (ret) {
             return ret;
@@ -1297,7 +1316,7 @@ int afp_sl_rename(volumeid_t *volid, const char *path_from, const char *path_to,
     request.header.command = AFP_SERVER_COMMAND_RENAME;
 
     if (volid == NULL) {
-        ret = afp_sl_getvolid(url, &tmpvolid);
+        ret = afp_sl_getvolid(NULL, url, &tmpvolid);
 
         if (ret) {
             return ret;
@@ -1333,7 +1352,7 @@ int afp_sl_unlink(volumeid_t *volid, const char *path, struct afp_url *url)
     request.header.command = AFP_SERVER_COMMAND_UNLINK;
 
     if (volid == NULL) {
-        ret = afp_sl_getvolid(url, &tmpvolid);
+        ret = afp_sl_getvolid(NULL, url, &tmpvolid);
 
         if (ret) {
             return ret;
@@ -1370,7 +1389,7 @@ int afp_sl_truncate(volumeid_t *volid, const char *path, struct afp_url *url,
     request.header.command = AFP_SERVER_COMMAND_TRUNCATE;
 
     if (volid == NULL) {
-        ret = afp_sl_getvolid(url, &tmpvolid);
+        ret = afp_sl_getvolid(NULL, url, &tmpvolid);
 
         if (ret) {
             return ret;
@@ -1408,7 +1427,7 @@ int afp_sl_utime(volumeid_t *volid, const char *path, struct afp_url *url,
     request.header.command = AFP_SERVER_COMMAND_UTIME;
 
     if (volid == NULL) {
-        ret = afp_sl_getvolid(url, &tmpvolid);
+        ret = afp_sl_getvolid(NULL, url, &tmpvolid);
 
         if (ret) {
             return ret;
@@ -1446,7 +1465,7 @@ int afp_sl_mkdir(volumeid_t *volid, const char *path, struct afp_url *url,
     request.header.command = AFP_SERVER_COMMAND_MKDIR;
 
     if (volid == NULL) {
-        ret = afp_sl_getvolid(url, &tmpvolid);
+        ret = afp_sl_getvolid(NULL, url, &tmpvolid);
 
         if (ret) {
             return ret;
@@ -1483,7 +1502,7 @@ int afp_sl_rmdir(volumeid_t *volid, const char *path, struct afp_url *url)
     request.header.command = AFP_SERVER_COMMAND_RMDIR;
 
     if (volid == NULL) {
-        ret = afp_sl_getvolid(url, &tmpvolid);
+        ret = afp_sl_getvolid(NULL, url, &tmpvolid);
 
         if (ret) {
             return ret;
@@ -1520,7 +1539,7 @@ int afp_sl_statfs(volumeid_t *volid, const char *path, struct afp_url *url,
     request.header.command = AFP_SERVER_COMMAND_STATFS;
 
     if (volid == NULL) {
-        ret = afp_sl_getvolid(url, &tmpvolid);
+        ret = afp_sl_getvolid(NULL, url, &tmpvolid);
 
         if (ret) {
             return ret;
@@ -1593,7 +1612,7 @@ int afp_sl_readdir(volumeid_t * volid, const char * path, struct afp_url * url,
     }
 
     if (volid == NULL) {
-        ret = afp_sl_getvolid(url, &tmpvolid);
+        ret = afp_sl_getvolid(NULL, url, &tmpvolid);
 
         if (ret) {
             return ret;
@@ -1719,12 +1738,17 @@ int afp_sl_readdir(volumeid_t * volid, const char * path, struct afp_url * url,
     return 0;
 }
 
-int afp_sl_getvols(struct afp_url *url, unsigned int start, unsigned int count,
-                   unsigned int *numvols, struct afp_volume_summary *vols)
+int afp_sl_getvols(serverid_t serverid, struct afp_url *url,
+                   unsigned int start, unsigned int count, unsigned int *numvols,
+                   struct afp_volume_summary *vols)
 {
     struct afp_server_getvols_request req;
     int ret;
     struct afp_server_getvols_response * response;
+
+    if (!serverid) {
+        return -EINVAL;
+    }
 
     if (ensure_daemon_connection()) {
         return -ECONNREFUSED;
@@ -1733,6 +1757,7 @@ int afp_sl_getvols(struct afp_url *url, unsigned int start, unsigned int count,
     req.header.close = 0;
     req.header.len = sizeof(struct afp_server_getvols_request);
     req.header.command = AFP_SERVER_COMMAND_GETVOLS;
+    req.serverid = serverid;
     req.start = start;
     req.count = count;
     memcpy(&req.url, url, sizeof(*url));
@@ -1759,8 +1784,9 @@ int afp_sl_getvols(struct afp_url *url, unsigned int start, unsigned int count,
     return ret;
 }
 
-int afp_sl_connect(struct afp_url *url, unsigned int uam_mask, serverid_t *id,
-                   char *loginmesg)
+static int afp_sl_connect_with_flags(struct afp_url *url, unsigned int uam_mask,
+                                     unsigned int flags, serverid_t *id,
+                                     char *loginmesg)
 {
     struct afp_server_connect_request req;
     const struct afp_server_connect_response *resp;
@@ -1775,6 +1801,7 @@ int afp_sl_connect(struct afp_url *url, unsigned int uam_mask, serverid_t *id,
     req.header.command = AFP_SERVER_COMMAND_CONNECT;
     memcpy(&req.url, url, sizeof(struct afp_url));
     req.uam_mask = uam_mask;
+    req.flags = flags;
 
     if (send_command(sizeof(req), (char *)&req, AFP_SERVER_COMMAND_CONNECT) < 0) {
         return -ECONNRESET;
@@ -1810,8 +1837,23 @@ int afp_sl_connect(struct afp_url *url, unsigned int uam_mask, serverid_t *id,
     return server_result_to_errno(resp->header.result);
 }
 
-int afp_sl_attach(struct afp_url * url, unsigned int volume_options,
-                  volumeid_t *volumeid, enum afp_sl_attach_status *status)
+int afp_sl_connect(struct afp_url *url, unsigned int uam_mask, serverid_t *id,
+                   char *loginmesg)
+{
+    return afp_sl_connect_with_flags(url, uam_mask, 0, id, loginmesg);
+}
+
+int afp_sl_resume(struct afp_url *url, unsigned int uam_mask, serverid_t *id,
+                  char *loginmesg)
+{
+    return afp_sl_connect_with_flags(url, uam_mask,
+                                     AFP_SERVER_CONNECT_RESUME_EXISTING, id,
+                                     loginmesg);
+}
+
+int afp_sl_attach(serverid_t serverid, struct afp_url * url,
+                  unsigned int volume_options, volumeid_t *volumeid,
+                  enum afp_sl_attach_status *status)
 {
     struct afp_server_attach_request req;
     struct afp_server_attach_response * response;
@@ -1819,6 +1861,10 @@ int afp_sl_attach(struct afp_url * url, unsigned int volume_options,
 
     if (status) {
         *status = AFP_SL_ATTACH_STATUS_NONE;
+    }
+
+    if (!serverid) {
+        return -EINVAL;
     }
 
     if (ensure_daemon_connection()) {
@@ -1829,6 +1875,7 @@ int afp_sl_attach(struct afp_url * url, unsigned int volume_options,
     req.header.close = 0;
     req.header.len = sizeof(struct afp_server_attach_request);
     req.header.command = AFP_SERVER_COMMAND_ATTACH;
+    req.serverid = serverid;
     memcpy(&req.url, url, sizeof(struct afp_url));
     req.volume_options = volume_options;
 
@@ -1875,7 +1922,7 @@ int afp_sl_detach(volumeid_t *volumeid, struct afp_url * url)
     }
 
     if (volumeid == NULL) {
-        ret = afp_sl_getvolid(url, &tmpvolid);
+        ret = afp_sl_getvolid(NULL, url, &tmpvolid);
 
         if (ret) {
             return ret;

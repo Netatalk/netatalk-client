@@ -11,7 +11,6 @@
 #include <netdb.h>
 #include <signal.h>
 #include <string.h>
-#include <time.h>
 
 #include "afp.h"
 #include "dsi.h"
@@ -67,26 +66,6 @@ struct afp_server *afp_server_full_connect(void * priv,
         goto error;
     }
 
-    if ((s = find_server_by_address(address))) {
-        if (s->connect_state == SERVER_STATE_CONNECTING) {
-            /* Connection in progress by another thread — wait for it */
-            int wait_ms = 0;
-
-            while (s->connect_state == SERVER_STATE_CONNECTING && wait_ms < 10000) {
-                struct timespec ts = {0, 100000000}; /* 100ms */
-                nanosleep(&ts, NULL);
-                wait_ms += 100;
-            }
-
-            if (s->connect_state != SERVER_STATE_CONNECTED) {
-                s = NULL;  /* Not ours to remove */
-                goto error;
-            }
-        }
-
-        goto have_server;
-    }
-
     if ((tmpserver = afp_server_init(address)) == NULL) {
         goto error;
     }
@@ -120,54 +99,57 @@ struct afp_server *afp_server_full_connect(void * priv,
            AFP_SERVER_NAME_UTF8_LEN);
     rx_quantum = tmpserver->rx_quantum;
     afp_server_remove(tmpserver);
-    s = find_server_by_signature(signature);
+    s = afp_server_init(address);
 
     if (!s) {
-        s = afp_server_init(address);
-
-        if ((ret = afp_server_connect(s, 0)) != 0) {
-            int connect_error = -ret;
-            log_for_client(priv, AFPFSD, LOG_ERR,
-                           "Connection to server failed with error: %s",
-                           strerror(connect_error));
-            afp_server_remove(s);
-            errno = connect_error;
-            s = NULL;
-            goto error;
+        if (errno == 0) {
+            errno = ENOMEM;
         }
 
-        s->supported_uams = uams;
-        memcpy(s->signature, signature, AFP_SIGNATURE_LEN);
-        memcpy(s->server_name, server_name, AFP_SERVER_NAME_LEN);
-        memcpy(s->server_name_utf8, server_name_utf8,
-               AFP_SERVER_NAME_UTF8_LEN);
-        memcpy(s->server_name_printable, server_name_printable,
-               AFP_SERVER_NAME_UTF8_LEN);
-        memcpy(s->machine_type, machine_type, AFP_MACHINETYPE_LEN);
-        memcpy(s->icon, icon, AFP_SERVER_ICON_LEN);
-        s->rx_quantum = rx_quantum;
-        afp_server_identify(s);
-
-        /* if our user and password strings are both empty, or if the username
-         * is "nobody" (AFP guest user), and the server supports guest logins,
-         * fall back to "No User Authent" (guest) UAM */
-        if (((*req->url.username == '\0' && *req->url.password == '\0') ||
-                strcmp(req->url.username, "nobody") == 0)
-                && (uams & UAM_NOUSERAUTHENT)) {
-            req->uam_mask = UAM_NOUSERAUTHENT;
-        }
-
-        if ((afp_server_complete_connection(priv,
-                                            s, (unsigned char *) &versions, uams,
-                                            req->url.username, req->url.password,
-                                            req->url.requested_version, req->uam_mask)) == NULL) {
-            /* complete_connection already called afp_server_remove() on failure */
-            s = NULL;
-            goto error;
-        }
+        goto error;
     }
 
-have_server:
+    if ((ret = afp_server_connect(s, 0)) != 0) {
+        int connect_error = -ret;
+        log_for_client(priv, AFPFSD, LOG_ERR,
+                       "Connection to server failed with error: %s",
+                       strerror(connect_error));
+        afp_server_remove(s);
+        errno = connect_error;
+        s = NULL;
+        goto error;
+    }
+
+    s->supported_uams = uams;
+    memcpy(s->signature, signature, AFP_SIGNATURE_LEN);
+    memcpy(s->server_name, server_name, AFP_SERVER_NAME_LEN);
+    memcpy(s->server_name_utf8, server_name_utf8,
+           AFP_SERVER_NAME_UTF8_LEN);
+    memcpy(s->server_name_printable, server_name_printable,
+           AFP_SERVER_NAME_UTF8_LEN);
+    memcpy(s->machine_type, machine_type, AFP_MACHINETYPE_LEN);
+    memcpy(s->icon, icon, AFP_SERVER_ICON_LEN);
+    s->rx_quantum = rx_quantum;
+    afp_server_identify(s);
+
+    /* if our user and password strings are both empty, or if the username
+     * is "nobody" (AFP guest user), and the server supports guest logins,
+     * fall back to "No User Authent" (guest) UAM */
+    if (((*req->url.username == '\0' && *req->url.password == '\0') ||
+            strcmp(req->url.username, "nobody") == 0)
+            && (uams & UAM_NOUSERAUTHENT)) {
+        req->uam_mask = UAM_NOUSERAUTHENT;
+    }
+
+    if ((afp_server_complete_connection(priv,
+                                        s, (unsigned char *) &versions, uams,
+                                        req->url.username, req->url.password,
+                                        req->url.requested_version, req->uam_mask)) == NULL) {
+        /* complete_connection already called afp_server_remove() on failure */
+        s = NULL;
+        goto error;
+    }
+
     afp_server_identify(s);
     return s;
 error:

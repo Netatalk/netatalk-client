@@ -392,8 +392,9 @@ static unsigned char process_getvolid(struct daemon_client * c)
     req->url.path[AFP_MAX_PATH - 1] = '\0';
     req->url.zone[AFP_ZONE_LEN - 1] = '\0';
     req->url.volpassword[AFP_VOLPASS_LEN] = '\0';
+    s = find_server_by_pointer((struct afp_server *)req->serverid);
 
-    if ((s = afp_server_find_by_name_hold(req->url.servername)) == NULL) {
+    if (!s || s->connect_state != SERVER_STATE_CONNECTED || s->fd <= 0) {
         ret = AFP_SERVER_RESULT_NOTCONNECTED;
         goto done;
     }
@@ -529,25 +530,10 @@ static unsigned char process_getvols(struct daemon_client * c)
     request->url.path[AFP_MAX_PATH - 1] = '\0';
     request->url.zone[AFP_ZONE_LEN - 1] = '\0';
     request->url.volpassword[AFP_VOLPASS_LEN] = '\0';
+    server = find_server_by_pointer((struct afp_server *)request->serverid);
 
-    if ((server = afp_server_find_by_name_hold(request->url.servername)) == NULL) {
-        struct addrinfo *address;
-
-        if ((address = afp_get_address((void *)c, request->url.servername,
-                                       request->url.port)) != NULL) {
-            server = afp_server_find_by_address_hold(address);
-            freeaddrinfo(address);
-        }
-
-        if (server == NULL) {
-            result = AFP_SERVER_RESULT_NOTCONNECTED;
-            goto error;
-        }
-    }
-
-    if (server->connect_state != SERVER_STATE_CONNECTED) {
-        afp_server_release(server);
-        server = NULL;
+    if (!server || server->connect_state != SERVER_STATE_CONNECTED
+            || server->fd <= 0) {
         result = AFP_SERVER_RESULT_NOTCONNECTED;
         goto error;
     }
@@ -1908,6 +1894,109 @@ done:
     return 0;
 }
 
+static int server_name_matches_url(struct afp_server *server,
+                                   const struct afp_url *url)
+{
+    return strcmp(server->server_name_utf8, url->servername) == 0
+           || strcmp(server->server_name, url->servername) == 0
+           || strcmp(server->server_name_printable, url->servername) == 0;
+}
+
+static int server_address_matches(struct afp_server *server,
+                                  struct addrinfo *address)
+{
+    if (!address || !server->used_address || !server->used_address->ai_addr) {
+        return 0;
+    }
+
+    for (struct addrinfo *p = address; p; p = p->ai_next) {
+        if (p->ai_addr && server->used_address->ai_addrlen == p->ai_addrlen
+                && memcmp(server->used_address->ai_addr, p->ai_addr,
+                          p->ai_addrlen) == 0) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int server_auth_matches_resume(struct afp_server *server,
+                                      const struct afp_url *url,
+                                      unsigned int uam_mask)
+{
+    /*
+     * Resume is not AFP reauthentication. A password-less resume proves only
+     * that the caller can access this daemon's existing session state; it may
+     * omit username/UAM and match by host when exactly one live session exists.
+     */
+    if (url->username[0] != '\0'
+            && strcmp(server->username, url->username) != 0) {
+        return 0;
+    }
+
+    if (uam_mask != 0 && server->using_uam != 0
+            && (server->using_uam & uam_mask) == 0) {
+        return 0;
+    }
+
+    return 1;
+}
+
+static struct afp_server *find_resumable_server_hold(void *priv,
+        const struct afp_url *url, unsigned int uam_mask, int *error)
+{
+    struct afp_server *match = NULL;
+    struct addrinfo *address = NULL;
+    int matches = 0;
+
+    if (error) {
+        *error = ENOTCONN;
+    }
+
+    address = afp_get_address(priv, url->servername, url->port);
+    afp_lock_server_list();
+
+    for (struct afp_server *s = get_server_base(); s; s = s->next) {
+        if (s->connect_state != SERVER_STATE_CONNECTED || s->fd <= 0) {
+            continue;
+        }
+
+        if (!server_name_matches_url(s, url)
+                && !server_address_matches(s, address)) {
+            continue;
+        }
+
+        if (!server_auth_matches_resume(s, url, uam_mask)) {
+            continue;
+        }
+
+        match = s;
+        matches++;
+
+        if (matches > 1) {
+            break;
+        }
+    }
+
+    if (matches == 1) {
+        afp_server_hold(match);
+    } else {
+        match = NULL;
+
+        if (error && matches > 1) {
+            *error = EEXIST;
+        }
+    }
+
+    afp_unlock_server_list();
+
+    if (address) {
+        freeaddrinfo(address);
+    }
+
+    return match;
+}
+
 static int process_connect(struct daemon_client * c)
 {
     struct afp_server_connect_request * req;
@@ -1939,54 +2028,29 @@ static int process_connect(struct daemon_client * c)
     log_for_client((void *) c, AFPFSD, LOG_INFO, "Connecting to server %s",
                    (char *) req->url.servername);
 
-    if ((s = afp_server_find_by_name_hold(req->url.servername))) {
-        /* Check if the server is actually connected, not a stale object */
-        if (s->connect_state == SERVER_STATE_CONNECTED && s->fd > 0) {
-            response_result = AFP_SERVER_RESULT_ALREADY_CONNECTED;
-            server_copy = s;
-            memcpy(loginmesg_copy, s->loginmesg, AFP_LOGINMESG_LEN);
-            afp_server_release(s);  /* Release hold; server stays alive via list ref */
-            goto done;
-        } else if (s->connect_state == SERVER_STATE_CONNECTING) {
-            /* Connection in progress by another thread — wait for it */
-            int wait_ms = 0;
-
-            while (s->connect_state == SERVER_STATE_CONNECTING && wait_ms < 10000) {
-                afp_server_release(s);
-                struct timespec ts = {0, 100000000}; /* 100ms */
-                nanosleep(&ts, NULL);
-                wait_ms += 100;
-                s = afp_server_find_by_name_hold(req->url.servername);
-
-                if (!s) {
-                    break;
-                }
-            }
-
-            if (s && s->connect_state == SERVER_STATE_CONNECTED) {
-                response_result = AFP_SERVER_RESULT_ALREADY_CONNECTED;
-                server_copy = s;
-                memcpy(loginmesg_copy, s->loginmesg, AFP_LOGINMESG_LEN);
-                afp_server_release(s);
-                goto done;
-            }
-
-            if (s) {
-                afp_server_release(s);
-            }
-
-            s = NULL;
-            /* Fall through to create new connection */
-        } else {
-            /* Stale server from previous failed connection, remove it */
-            log_for_client((void *) c, AFPFSD, LOG_INFO,
-                           "Removing stale server %s (state=%d, fd=%d)",
-                           req->url.servername, s->connect_state, s->fd);
-            afp_server_remove(s);
-            afp_server_release(s);  /* Release our hold */
-            s = NULL;
-            /* Continue to create a new connection */
+    if (req->flags & AFP_SERVER_CONNECT_RESUME_EXISTING) {
+        if (req->url.password[0] != '\0') {
+            log_for_client((void *) c, AFPFSD, LOG_WARNING,
+                           "Refusing to resume server %s with supplied password",
+                           req->url.servername);
+            error = EACCES;
+            goto error;
         }
+
+        s = find_resumable_server_hold(c, &req->url, req->uam_mask, &error);
+
+        if (!s) {
+            log_for_client((void *) c, AFPFSD, LOG_INFO,
+                           "No resumable session for server %s",
+                           req->url.servername);
+            goto error;
+        }
+
+        response_result = AFP_SERVER_RESULT_ALREADY_CONNECTED;
+        server_copy = s;
+        memcpy(loginmesg_copy, s->loginmesg, AFP_LOGINMESG_LEN);
+        afp_server_release(s);
+        goto done;
     }
 
     /* Initialize connection request */
@@ -2081,7 +2145,6 @@ static int process_attach(struct daemon_client * c)
     struct afp_volume * volume = NULL;
     int response_result = AFP_SERVER_RESULT_ERROR;
     struct afp_server_attach_response response;
-    struct addrinfo * address = NULL;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
             afp_server_attach_request)) {
@@ -2101,28 +2164,14 @@ static int process_attach(struct daemon_client * c)
                    "Attaching volume %s on server %s",
                    (char *) req->url.volumename,
                    (char *) req->url.servername);
+    s = find_server_by_pointer((struct afp_server *)req->serverid);
 
-    /* Try to find existing connected server by name first */
-    if ((s = afp_server_find_by_name_hold(req->url.servername)) != NULL) {
-        /* Found by name */
-    } else {
-        /* Resolve the server name to an address and find by address
-         * This allows matching by IP address even if server reports a different hostname */
-        if ((address = afp_get_address((void *)c, req->url.servername,
-                                       req->url.port)) == NULL) {
-            log_for_client((void *) c, AFPFSD, LOG_ERR,
-                           "Could not resolve address for server %s", req->url.servername);
-            goto error;
-        }
-
-        if ((s = afp_server_find_by_address_hold(address)) == NULL) {
-            log_for_client((void *) c, AFPFSD, LOG_ERR,
-                           "Not yet connected to server %s", req->url.servername);
-            freeaddrinfo(address);
-            goto error;
-        }
-
-        freeaddrinfo(address);
+    if (!s || s->connect_state != SERVER_STATE_CONNECTED || s->fd <= 0) {
+        log_for_client((void *) c, AFPFSD, LOG_ERR,
+                       "Attach request with invalid or disconnected server %p",
+                       req->serverid);
+        response_result = AFP_SERVER_RESULT_NOTCONNECTED;
+        goto error;
     }
 
     /* Always call command_sub_attach_volume, which handles:

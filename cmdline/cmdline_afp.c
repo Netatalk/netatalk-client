@@ -123,8 +123,8 @@ static int command_recursive_option(char **arg)
     return 1;
 }
 
-static int attach_volume_with_password_prompt(volumeid_t *vol_id_ptr,
-        unsigned int volume_options);
+static int attach_volume_with_password_prompt(serverid_t attach_server_id,
+        volumeid_t *vol_id_ptr, unsigned int volume_options);
 
 static unsigned int get_uam_mask_for_url(void)
 {
@@ -192,7 +192,8 @@ static int reconnect_session(int restore_volume, int restore_dir)
 
     if ((restore_volume || had_volume) && saved_volume[0] != '\0') {
         strlcpy(url.volumename, saved_volume, sizeof(url.volumename));
-        ret = attach_volume_with_password_prompt(&new_vol_id, volume_options);
+        ret = attach_volume_with_password_prompt(new_server_id, &new_vol_id,
+              volume_options);
 
         if (ret != 0) {
             return -1;
@@ -347,15 +348,16 @@ static int cmdline_get_volpass(void)
     return 0;
 }
 
-static int attach_volume_with_password_prompt(volumeid_t *vol_id_ptr,
-        unsigned int volume_options)
+static int attach_volume_with_password_prompt(serverid_t attach_server_id,
+        volumeid_t *vol_id_ptr, unsigned int volume_options)
 {
     enum afp_sl_attach_status status;
     int ret;
     /* Clear any previous password to force a fresh prompt if needed */
     explicit_bzero(url.volpassword, sizeof(url.volpassword));
     /* First attempt */
-    ret = afp_sl_attach(&url, volume_options, vol_id_ptr, &status);
+    ret = afp_sl_attach(attach_server_id, &url, volume_options, vol_id_ptr,
+                        &status);
 
     if (ret == 0) {
         return 0;
@@ -368,7 +370,8 @@ static int attach_volume_with_password_prompt(volumeid_t *vol_id_ptr,
         }
 
         /* Second attempt with password */
-        ret = afp_sl_attach(&url, volume_options, vol_id_ptr, &status);
+        ret = afp_sl_attach(attach_server_id, &url, volume_options, vol_id_ptr,
+                            &status);
     }
 
     return ret;
@@ -761,12 +764,12 @@ static void list_volumes(void)
         return;
     }
 
-    ret = afp_sl_getvols(&url, 0, count, &numvols, vols);
+    ret = afp_sl_getvols(server_id, &url, 0, count, &numvols, vols);
 
     if (ret != 0 && is_recoverable_session_error(ret)
             && reconnect_session(0, 0) == 0) {
         numvols = 0;
-        ret = afp_sl_getvols(&url, 0, count, &numvols, vols);
+        ret = afp_sl_getvols(server_id, &url, 0, count, &numvols, vols);
     }
 
     if (ret == 0) {
@@ -3018,11 +3021,13 @@ int com_cd(char *arg)
         /* Not attached to a volume, treat arg as volume name */
         strlcpy(url.volumename, path, AFP_VOLUME_NAME_LEN);
         unsigned int volume_options = VOLUME_EXTRA_FLAGS_NO_LOCKING;
-        ret = attach_volume_with_password_prompt(&vol_id, volume_options);
+        ret = attach_volume_with_password_prompt(server_id, &vol_id,
+              volume_options);
 
         if (ret != 0
                 && is_recoverable_session_error(ret) && reconnect_session(0, 0) == 0) {
-            ret = attach_volume_with_password_prompt(&vol_id, volume_options);
+            ret = attach_volume_with_password_prompt(server_id, &vol_id,
+                  volume_options);
         }
 
         if (ret != 0) {
@@ -3259,7 +3264,8 @@ static int cmdline_server_startup(int batch_mode)
     if (url.volumename[0] != '\0') {
         unsigned int volume_options = VOLUME_EXTRA_FLAGS_NO_LOCKING;
         int ret;
-        ret = attach_volume_with_password_prompt(&vol_id, volume_options);
+        ret = attach_volume_with_password_prompt(server_id, &vol_id,
+              volume_options);
 
         if (ret != 0) {
             if (ret == -EACCES) {
@@ -3757,7 +3763,8 @@ char *afp_remote_file_generator(const char *text, int state)
                 return NULL;
             }
 
-            if (afp_sl_getvols(&url, 0, 100, &numvols, volbase) == 0) {
+            if (afp_sl_getvols(server_id, &url, 0, 100, &numvols,
+                               volbase) == 0) {
                 count = numvols;
                 is_volume_list = 1;
             } else {

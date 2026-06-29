@@ -16,8 +16,11 @@ struct afp_server_request_header {
     unsigned int close;
 };
 
+#define AFP_SERVER_CONNECT_RESUME_EXISTING 0x1U
+
 struct afp_server_attach_request {
     struct afp_server_request_header header;
+    serverid_t serverid;
     struct afp_url url;
     unsigned int volume_options;
 };
@@ -41,6 +44,7 @@ struct afp_server_connect_request {
     struct afp_server_request_header header;
     struct afp_url url;
     unsigned int uam_mask;
+    unsigned int flags;
 };
 
 struct afp_server_connect_response {
@@ -61,6 +65,7 @@ struct afp_server_disconnect_response {
 
 struct afp_server_getvolid_request {
     struct afp_server_request_header header;
+    serverid_t serverid;
     struct afp_url url;
 };
 
@@ -85,6 +90,7 @@ struct afp_server_readdir_response {
 
 struct afp_server_getvols_request {
     struct afp_server_request_header header;
+    serverid_t serverid;
     struct afp_url url;
     int start;
     int count;
