@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "compat.h"
 #include "libafpclient.h"
 #include "tap.h"
 #include "utils.h"
@@ -8,9 +9,9 @@
 static char captured_message[MAX_ERROR_LEN * 4];
 
 static void capture_log_message(
-    __attribute__((unused)) void *priv,
-    __attribute__((unused)) enum logtypes logtype,
-    __attribute__((unused)) int loglevel,
+    void *priv _U_,
+    enum logtypes logtype _U_,
+    int loglevel _U_,
     const char *message)
 {
     snprintf(captured_message, sizeof(captured_message), "%s", message);

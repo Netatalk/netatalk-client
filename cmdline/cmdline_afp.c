@@ -28,6 +28,7 @@
 #include "afp.h"
 #include "afpsl.h"
 #include "afp_server.h"
+#include "compat.h"
 #include "map_def.h"
 
 #include <string.h>
@@ -781,7 +782,7 @@ static void list_volumes(void)
     free(vols);
 }
 
-int com_pass(__attribute__((unused)) char *unused)
+int com_pass(char *unused _U_)
 {
     const char *old_password;
     const char *new_password;
@@ -2881,7 +2882,7 @@ int com_rmdir(char *arg)
     return 0;
 }
 
-int com_status(__attribute__((unused)) char *unused)
+int com_status(char *unused _U_)
 {
     char text[40960];
     unsigned int len = sizeof(text);
@@ -2897,7 +2898,7 @@ int com_status(__attribute__((unused)) char *unused)
     return 0;
 }
 
-int com_statvfs(__attribute__((unused)) char *unused)
+int com_statvfs(char *unused _U_)
 {
     struct statvfs stat;
     char server_path[AFP_MAX_PATH];
@@ -3112,7 +3113,7 @@ error:
 }
 
 /* Disconnect command - explicitly detach volume and terminate server connection */
-int com_disconnect(__attribute__((unused)) char *unused)
+int com_disconnect(char *unused _U_)
 {
     if (!connected) {
         printf("You're not connected to a server\n");
@@ -3137,7 +3138,7 @@ int com_disconnect(__attribute__((unused)) char *unused)
 }
 
 /* Exit command - detach from volume but remain connected */
-int com_exit(__attribute__((unused)) char *unused)
+int com_exit(char *unused _U_)
 {
     if (!connected) {
         printf("You're not connected to a server\n");
@@ -3156,7 +3157,7 @@ int com_exit(__attribute__((unused)) char *unused)
 }
 
 /* Print out the current working directory locally. */
-int com_lpwd(__attribute__((unused)) char *unused)
+int com_lpwd(char *unused _U_)
 {
     char dir[PATH_MAX];
 
@@ -3170,7 +3171,7 @@ int com_lpwd(__attribute__((unused)) char *unused)
 }
 
 /* Print out the current working directory. */
-int com_pwd(__attribute__((unused)) char *unused)
+int com_pwd(char *unused _U_)
 {
     if (!vol_id) {
         printf("You're not attached to a volume\n");
@@ -3196,8 +3197,7 @@ int cmdline_set_metadata_mode(const char *mode)
     return afp_metadata_mode_parse(mode, &transfer_metadata_mode);
 }
 
-static void cmdline_log_for_client(__attribute__((unused)) void * priv,
-                                   __attribute__((unused)) enum logtypes logtype,
+static void cmdline_log_for_client(void *priv _U_, enum logtypes logtype _U_,
                                    int loglevel, const char *message)
 {
     int type_rank = loglevel_to_rank(loglevel);
@@ -3210,7 +3210,7 @@ static void cmdline_log_for_client(__attribute__((unused)) void * priv,
     syslog(loglevel, "%s", message);
 }
 
-static void cmdline_stateless_log(__attribute__((unused)) void *user_data,
+static void cmdline_stateless_log(void *user_data _U_,
                                   int loglevel, const char *message)
 {
     cmdline_log_for_client(NULL, AFPFSD, loglevel, message);

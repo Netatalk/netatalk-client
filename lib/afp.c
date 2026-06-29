@@ -33,6 +33,7 @@
 #include "did.h"
 #include "forklist.h"
 #include "codepage.h"
+#include "compat.h"
 
 struct afp_versions      afp_versions[] = {
     { "AFPVersion 1.1", 11 },
@@ -132,10 +133,10 @@ int (*afp_replies[])(struct afp_server * server, char * buf, unsigned int len,
 
 /* This is the simplest afp reply */
 static int afp_blank_reply(
-    __attribute__((unused)) struct afp_server *server,
+    struct afp_server *server _U_,
     char *buf,
-    __attribute__((unused)) unsigned int size,
-    __attribute__((unused)) void * ignored
+    unsigned int size _U_,
+    void *ignored _U_
 )
 {
     struct {

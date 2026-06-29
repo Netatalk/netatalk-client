@@ -1,6 +1,21 @@
 #ifndef _COMPAT_H_
 #define _COMPAT_H_
 
+/* Mark a declaration as intentionally unused when the compiler supports it. */
+#ifndef _U_
+#if defined(__has_attribute)
+#if __has_attribute(unused)
+#define _U_ __attribute__((unused))
+#else
+#define _U_
+#endif
+#elif defined(__GNUC__)
+#define _U_ __attribute__((unused))
+#else
+#define _U_
+#endif
+#endif
+
 /* Secure memory clearing - prefer memset_explicit (C23) over explicit_bzero */
 #if !defined(HAVE_MEMSET_EXPLICIT) && !defined(HAVE_EXPLICIT_BZERO)
 #include <stddef.h>

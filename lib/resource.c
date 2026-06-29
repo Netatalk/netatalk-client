@@ -14,6 +14,7 @@
 
 #include "afp.h"
 #include "afp_protocol.h"
+#include "compat.h"
 #include "resource.h"
 #include "lowlevel.h"
 #include "did.h"
@@ -163,7 +164,7 @@ out:
 }
 
 int appledouble_creat(struct afp_volume * volume, const char * path,
-                      __attribute__((unused)) mode_t mode)
+                      mode_t mode _U_)
 {
     int resource;
     char *newpath;
@@ -194,7 +195,7 @@ int appledouble_creat(struct afp_volume * volume, const char * path,
 }
 
 int appledouble_chmod(struct afp_volume * volume, const char * path,
-                      __attribute__((unused)) mode_t mode)
+                      mode_t mode _U_)
 {
     int resource;
     char *newpath;
@@ -487,7 +488,7 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
 }
 
 int appledouble_truncate(struct afp_volume * volume, const char * path,
-                         __attribute__((unused)) int offset)
+                         int offset _U_)
 {
     char *newpath;
     int resource = extra_translate(volume, path, &newpath);
@@ -835,7 +836,7 @@ int appledouble_readdir(struct afp_volume * volume,
 }
 
 int appledouble_mkdir(struct afp_volume * volume, const char * path,
-                      __attribute__((unused)) mode_t mode)
+                      mode_t mode _U_)
 {
     int resource;
     char *newpath;
@@ -851,7 +852,7 @@ int appledouble_mkdir(struct afp_volume * volume, const char * path,
 }
 
 int appledouble_readlink(struct afp_volume * volume, const char * path,
-                         __attribute__((unused)) char * buf, __attribute__((unused)) size_t size)
+                         char *buf _U_, size_t size _U_)
 {
     int resource;
     char *newpath;
@@ -882,7 +883,7 @@ int appledouble_rmdir(struct afp_volume * volume, const char * path)
 }
 
 int appledouble_chown(struct afp_volume * volume, const char * path,
-                      __attribute__((unused)) uid_t uid, __attribute__((unused)) gid_t gid)
+                      uid_t uid _U_, gid_t gid _U_)
 {
     int resource;
     char *newpath;
@@ -898,7 +899,7 @@ int appledouble_chown(struct afp_volume * volume, const char * path,
 }
 
 int appledouble_utime(struct afp_volume * volume, const char * path,
-                      __attribute__((unused)) struct utimbuf * timebuf)
+                      struct utimbuf * timebuf _U_)
 {
     int resource;
     char *newpath;
@@ -914,7 +915,7 @@ int appledouble_utime(struct afp_volume * volume, const char * path,
 }
 
 int appledouble_symlink(struct afp_volume *vol, const char *path1,
-                        __attribute__((unused)) const char *path2)
+                        const char *path2 _U_)
 {
     int resource;
     char *newpath;
@@ -930,7 +931,7 @@ int appledouble_symlink(struct afp_volume *vol, const char *path1,
 }
 
 int appledouble_rename(struct afp_volume * volume,
-                       __attribute__((unused)) const char * path_from,
+                       const char *path_from _U_,
                        const char *path_to)
 {
     int resource;

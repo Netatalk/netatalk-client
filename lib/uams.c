@@ -179,8 +179,8 @@ int init_uams(void)
 
 static int noauth_login(
     struct afp_server *server,
-    __attribute__((unused)) char *username,
-    __attribute__((unused)) char *passwd
+    char *username _U_,
+    char *passwd _U_
 )
 {
     return afp_login(server, "No User Authent", NULL, 0, NULL);

@@ -18,6 +18,7 @@
 #include "afp.h"
 #include "afp_protocol.h"
 #include "codepage.h"
+#include "compat.h"
 #include "utils.h"
 #include "midlevel.h"
 #include "did.h"
@@ -234,7 +235,7 @@ int ll_get_directory_entry(struct afp_volume * volume,
 
 
 int ll_open(struct afp_volume * volume,
-            const char *path __attribute__((unused)), int flags,
+            const char *path _U_, int flags,
             struct afp_file_info *fp)
 {
     int ret;

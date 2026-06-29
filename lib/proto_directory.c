@@ -11,6 +11,7 @@
 
 #include "dsi.h"
 #include "afp.h"
+#include "compat.h"
 #include "utils.h"
 #include "afp_protocol.h"
 #include "dsi_protocol.h"
@@ -249,7 +250,7 @@ int afp_createdir(struct afp_volume * volume, unsigned int dirid,
     return ret;
 }
 
-int afp_createdir_reply(__attribute__((unused)) struct afp_server * server,
+int afp_createdir_reply(struct afp_server *server _U_,
                         char *buf, unsigned int size, void *other)
 {
     /* We're actually just going to ignore the return bitmap and forkid. */

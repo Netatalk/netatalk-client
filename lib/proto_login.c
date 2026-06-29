@@ -12,6 +12,7 @@
 #include "dsi.h"
 #include "dsi_protocol.h"
 #include "afp.h"
+#include "compat.h"
 #include "utils.h"
 #include "afp_internal.h"
 
@@ -32,7 +33,7 @@ int afp_logout(struct afp_server *server, unsigned char wait)
                     wait, afpLogout, NULL);
 }
 
-int afp_login_reply(__attribute__((unused)) struct afp_server *server,
+int afp_login_reply(struct afp_server *server _U_,
                     char *buf, unsigned int size,
                     void *other)
 {
@@ -103,7 +104,7 @@ int afp_changepassword(struct afp_server *server, const char * ua_name,
     return ret;
 }
 
-int afp_changepassword_reply(__attribute__((unused)) struct afp_server *server,
+int afp_changepassword_reply(struct afp_server *server _U_,
                              char *buf,
                              unsigned int size, void *other)
 {

@@ -24,6 +24,7 @@
 #include "afp_server.h"
 #include "codepage.h"
 #include "commands.h"
+#include "compat.h"
 #include "daemon.h"
 #include "daemon_client.h"
 #include "dsi.h"
@@ -145,7 +146,7 @@ found:
  *
  */
 
-static int process_client_fds(fd_set * set, __attribute__((unused)) int max_fd,
+static int process_client_fds(fd_set * set, int max_fd _U_,
                               struct daemon_client **found)
 {
     struct daemon_client * c;

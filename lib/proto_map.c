@@ -10,6 +10,7 @@
 
 #include "dsi.h"
 #include "afp.h"
+#include "compat.h"
 #include "utils.h"
 #include "dsi_protocol.h"
 #include "afp_protocol.h"
@@ -55,7 +56,7 @@ int afp_getuserinfo(struct afp_server * server, int thisuser,
 }
 
 
-int afp_getuserinfo_reply(__attribute__((unused)) struct afp_server *server,
+int afp_getuserinfo_reply(struct afp_server *server _U_,
                           char *buf, unsigned int size, void *other)
 {
     struct {
@@ -121,7 +122,7 @@ int afp_mapid(struct afp_server * server, unsigned char subfunction,
     return ret;
 }
 
-int afp_mapid_reply(__attribute__((unused)) struct afp_server *server,
+int afp_mapid_reply(struct afp_server *server _U_,
                     char *buf, unsigned int size, void *other)
 {
     struct {
@@ -183,7 +184,7 @@ int afp_mapname(struct afp_server * server, unsigned char subfunction,
 }
 
 
-int afp_mapname_reply(__attribute__((unused)) struct afp_server *server,
+int afp_mapname_reply(struct afp_server *server _U_,
                       char *buf, unsigned int size, void *other)
 {
     struct {

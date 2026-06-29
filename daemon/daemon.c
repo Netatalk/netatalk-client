@@ -26,6 +26,7 @@
 #include "afp.h"
 #include "afp_server.h"
 #include "commands.h"
+#include "compat.h"
 #include "daemon.h"
 #include "daemon_socket.h"
 #include "dsi.h"
@@ -58,7 +59,7 @@ static void daemon_set_log_level(int loglevel)
 }
 
 static void daemon_log_for_client(void * priv,
-                                  __attribute__((unused)) enum logtypes logtype,
+                                  enum logtypes logtype _U_,
                                   int loglevel, const char *message)
 {
     struct daemon_client * c = priv;
