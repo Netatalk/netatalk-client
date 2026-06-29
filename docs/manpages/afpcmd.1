@@ -69,26 +69,43 @@ Default is
 .Cm notice .
 Logs are written to standard error and syslog.
 .It Fl M , Fl -metadata Ar mode
-Preserves FinderInfo, resource forks, generic extended attributes, modes,
+Preserves FinderInfo, ResourceFork, generic extended attributes, modes,
 and modification times during transfers.
+This option selects the local on-disk representation used by
+.Nm
+when metadata is copied between the AFP server and an ordinary local path;
+it does not configure how the AFP server stores metadata.
 The storage mode may be
+.Cm auto ,
 .Cm netatalk ,
 .Cm xattr ,
 .Cm macos ,
 or
 .Cm none .
+.Cm auto
+is the default; it uses local filesystem extended attributes for generic
+xattrs when available, and falls back to Netatalk AppleDouble EA sidecars
+otherwise.
+FinderInfo and ResourceFork use native filesystem xattrs on macOS, and
+macOS-compatible
+.Pa ._name
+AppleDouble files on other systems.
 .Cm netatalk
 uses
 .Pa .AppleDouble/name
 and
 .Pa name::EA
-files and is the default.
+files.
 .Cm xattr
-uses only local filesystem extended attributes.
+uses local filesystem extended attributes for generic xattrs.
+FinderInfo and ResourceFork use native filesystem xattrs on macOS, and
+macOS-compatible
+.Pa ._name
+AppleDouble files on other systems.
 .Cm macos
 uses macOS-compatible
 .Pa ._name
-AppleDouble files for FinderInfo and resource forks.
+AppleDouble files for FinderInfo and ResourceFork.
 .Cm none
 transfers only the data fork.
 .It Ar afp_url
@@ -205,11 +222,11 @@ Set FinderInfo from an exactly 32-byte local file.
 .It Cm finderinfo remove Ar path
 Clear FinderInfo.
 .It Cm resourcefork get Ar path Op Ar output
-Read a resource fork.
+Read a ResourceFork.
 .It Cm resourcefork set Ar path Ar input
-Set a resource fork from a local binary file.
+Set a ResourceFork from a local binary file.
 .It Cm resourcefork remove Ar path
-Remove a resource fork.
+Remove a ResourceFork.
 .El
 .Ss Status commands
 .Bl -tag -width Ds

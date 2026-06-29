@@ -246,7 +246,7 @@ sub afpcmd_pipe {
 }
 
 # -----------------------------------------------------------------------
-# test_metadata_commands: round-trip FinderInfo, resource fork, and xattr
+# test_metadata_commands: round-trip FinderInfo, ResourceFork, and xattr
 # -----------------------------------------------------------------------
 {
     my $base = "/tmp/afpcmd_metadata_$$";
@@ -289,7 +289,7 @@ sub afpcmd_pipe {
         'test_metadata_commands: xattr appears in list');
 
     for my $pair ([$finder_in, $finder_out, 'FinderInfo'],
-                  [$resource_in, $resource_out, 'resource fork'],
+                  [$resource_in, $resource_out, 'ResourceFork'],
                   [$xattr_in, $xattr_out, 'xattr']) {
         if (!-e $pair->[1]) {
             fail('test_metadata_commands: ' . $pair->[2] . ' output exists');

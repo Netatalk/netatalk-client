@@ -1,12 +1,42 @@
 # Developer Documentation for Netatalk Client
 
-The Apple Filing Protocol is a network filesystem that is commonly used
-to share files between Apple Macintosh computers.
+AFP (Apple Filing Protocol) originated on the Mac as Apple's network
+filesystem protocol. Today it is a cross-platform protocol with multiple
+independent client and server implementations, including Netatalk on the
+server side and this Netatalk Client project on the client side. A client
+has to establish a network connection to an AFP server, attach to a volume,
+and keep that session state alive while file operations are in progress.
 
-A network connection must be established to a server and maintained.  
-Netatalk Client provides a basic library on which to build full clients
-(called libafpclient), and a sample of clients (FUSE and a simple
-command line).
+Netatalk Client is split into a stateful protocol library, a stateless
+adapter layer, and two different front-ends. `libafpclient` is the core
+library that knows how to speak DSI and AFP, but it expects a long-lived
+process that can live with its event loop, threads, signals, and connection
+state.
+
+`libafpsl` is the stateless API in `afpsl.h`. It lets short-lived tools and
+other applications issue one operation at a time without embedding
+`libafpclient`'s event loop. Under the hood, `libafpsl` talks over a Unix
+socket to `afpsld`, the stateless daemon implemented in `daemon/`. `afpsld`
+owns the persistent AFP server and volume state, calls the `libafpclient`
+midlevel API, and returns one response to each stateless request. This is
+the layer used by `afpcmd`, and it can be built without FUSE.
+
+The user-facing clients then choose how to present AFP files to callers:
+
+- The FUSE client in `fuse/` mounts an AFP volume as a local filesystem.
+  Applications operate on files under the mountpoint, and filesystem calls
+  are translated into AFP operations. The AFP server decides how to store
+  file metadata for this path; `afpcmd` metadata mode is not involved.
+- `afpcmd` is an ftp-style file-transfer client built from `cmdline/` on top
+  of `libafpsl` and `afpsld`. It copies data between the AFP server and a
+  path on the ordinary local filesystem, not a FUSE mount. Its `-M` /
+  `--metadata` option only selects the local on-disk representation for
+  metadata preserved during these transfers.
+
+Both front-ends ultimately use the same AFP protocol machinery, but they
+answer different questions. FUSE asks "how do I make this remote volume look
+like a local filesystem?" `afpcmd` asks "how do I copy this remote object to
+or from a regular local path?"
 
 ## Architectural Diagram
 
@@ -25,9 +55,11 @@ command line).
         ├──────────────────┤          ├─────────────────────┤
         │ • CONNECT        │          │ • MOUNT/UNMOUNT     │
         │ • File I/O       │          │ • FUSE operations   │
-        │ • Dir ops        │          │ • Multi-mount mgmt  │
-        │                  │          │                     │
-        │ NO dependencies  │          │ Requires libfuse    │
+        │ • Dir ops        │          │ • xattr callbacks   │
+        │ • Metadata copy  │          │ • Multi-mount mgmt  │
+        │   modes: FI, RF, │          │                     │
+        │   xattrs         │          │                     │
+        │                  │          │ Requires libfuse    │
         └───────┬──────────┘          └───────┬─────────────┘
                 │                             │
                 │  Calls midlevel API         │  Calls midlevel API
@@ -37,6 +69,7 @@ command line).
                 │      libafpclient.so             │
                 ├──────────────────────────────────┤
                 │  • midlevel (afp.h, midlevel.h)  │
+                │  • metadata ops                  │
                 │  • lowlevel                      │
                 │  • proto_* (AFP protocol)        │
                 │  • Engine (DSI, event loop)      │
@@ -340,15 +373,20 @@ The callback runs synchronously on the calling thread. Passing a null callback d
 process-global, matching the stateless library's process-global connection state.
 
 The library also provides metadata-only replacement helpers for local-to-AFP, AFP-to-local, and AFP-to-AFP copies.
-Callers select the local representation on each operation with `enum afp_metadata_mode`;
-supported modes are Netatalk AppleDouble, filesystem xattrs, macOS AppleDouble, and none.
+Callers select the local on-disk representation on each operation with `enum afp_metadata_mode`;
+this is the implementation behind `afpcmd -M` / `--metadata` for file transfers involving an ordinary local path.
+It does not control FUSE mounts or the AFP server's own metadata storage.
+Supported modes are auto, Netatalk AppleDouble, filesystem xattrs, macOS AppleDouble, and none.
 The destination must already exist.
-These helpers clear represented destination metadata before copying Finder Info, the resource fork, and eligible generic
+These helpers clear represented destination metadata before copying FinderInfo, ResourceFork, and eligible generic
 xattrs. They deliberately do not copy the data fork, POSIX mode, or timestamps.
+In auto mode, generic xattrs use filesystem xattrs when available and Netatalk AppleDouble EA sidecars otherwise.
+FinderInfo and ResourceFork use native filesystem xattrs on macOS, and macOS AppleDouble sidecars on other systems
+unless Netatalk mode is selected explicitly.
 
 The stateless API returns zero on success and negative errno values on failure. Metadata read and list calls instead
 return a nonnegative byte count on success. Generic xattr values are limited to 4096 bytes,
-xattr name lists to `AFP_SL_XATTR_LIST_MAX`, and resource forks to `INT_MAX`. Resource-fork data is read and written in
+xattr name lists to `AFP_SL_XATTR_LIST_MAX`, and resource forks to `INT_MAX`. Resource fork data is read and written in
 4096-byte chunks. Positioned writes do not shorten an existing fork, except that a zero-length write at offset
 zero clears it; call `afp_sl_truncateresourcefork()` to set its final length explicitly. `afp_sl_setxattr()` accepts
 `AFP_SL_XATTR_CREATE` or `AFP_SL_XATTR_REPLACE` (the portable equivalents of

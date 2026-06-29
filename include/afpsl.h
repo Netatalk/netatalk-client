@@ -45,8 +45,12 @@ enum afp_sl_password_change_status {
     AFP_SL_PASSWORD_CHANGE_STATUS_INVALID_PARAMETER,
 };
 
-/* Local filesystem representation used by metadata transfer helpers. */
+/* Local filesystem representation used by metadata transfer helpers.  AUTO
+ * probes generic filesystem xattrs, then falls back to Netatalk AppleDouble
+ * EA sidecars.  FinderInfo and ResourceFork use native xattrs on macOS and
+ * macOS AppleDouble sidecars elsewhere unless Netatalk mode is selected. */
 enum afp_metadata_mode {
+    AFP_METADATA_AUTO,
     AFP_METADATA_NETATALK,
     AFP_METADATA_XATTR,
     AFP_METADATA_MACOS,
@@ -159,7 +163,7 @@ int afp_sl_changepw(struct afp_url * url,
  *
  * afp_sl_setxattr accepts zero or one of AFP_SL_XATTR_CREATE and
  * AFP_SL_XATTR_REPLACE; other flag combinations return -EINVAL.
- * Resource-fork writes overwrite or extend the specified range but do not
+ * Resource fork writes overwrite or extend the specified range but do not
  * shorten an existing fork. A zero-length write at offset zero clears
  * the fork. Use afp_sl_truncateresourcefork to set any final length explicitly. */
 int afp_sl_getxattr(volumeid_t *volid, const char *path, const char *name,
