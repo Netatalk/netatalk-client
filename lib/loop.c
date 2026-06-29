@@ -45,7 +45,7 @@ void termination_handler(int signum)
     switch (signum) {
     case SIGINT:
     case SIGTERM:
-        trigger_exit();
+        exit_program = 2;
         break;
 
     default:

@@ -382,9 +382,16 @@ streaming operations, including reads, writes, metadata calls, and directory lis
    send one request, receive one response, and close
 2. **Persistent server/volume state**: Even though socket connections are ephemeral,
    the server and volume state persists in afpsld's memory
-3. **Volume ID handles**: When a volume is attached, afpsld returns a `volumeid_t` (opaque pointer)
+3. **Server ID handles**: When a server is connected, afpsld returns a `serverid_t` (opaque pointer)
+   that identifies the authenticated AFP session. Follow-up attach requests must present this handle;
+   afpsld does not implicitly rediscover authenticated sessions by server name.
+4. **Volume ID handles**: When a volume is attached, afpsld returns a `volumeid_t` (opaque pointer)
    that remains valid across separate socket connections as long as the daemon runs
-4. **Connection reuse for CONNECT/ATTACH**: The CONNECT operation keeps the socket open (`close=0` flag)
+5. **Explicit session resume**: `afp_sl_resume()` can return an existing connected `serverid_t` without
+   reauthentication, but only when the caller supplies no password and the daemon can identify one matching session.
+   Resume authenticates the caller's access to the per-user daemon's existing session state, not the AFP user identity.
+   Normal `afp_sl_connect()` always performs AFP authentication.
+6. **Connection reuse for CONNECT/ATTACH**: The CONNECT operation keeps the socket open (`close=0` flag)
    to allow the subsequent ATTACH to use the same connection
 
 **Request flow:**
@@ -395,15 +402,15 @@ streaming operations, including reads, writes, metadata calls, and directory lis
         |                        |----TCP connect---------->|
         |<---server_id-----------|                          |
         |                        |                          |
-        |--ATTACH (close=1)----->|                          |
+        |--ATTACH server_id----->|                          |
         |                        |----FPOpenVol------------>|
         |<---volumeid------------|                          |
-        [connection closes]      |                          |
+        |  [connection closes]   |                          |
         |                        |                          |
         |--READDIR (close=1)---->|                          |
         |  (new socket)          |----FPEnumerate---------->|
         |<---file list-----------|                          |
-        [connection closes]      |                          |
+        |  [connection closes]   |                          |
 
 **Threading model:**
 
@@ -478,6 +485,7 @@ instead of directly calling the midlevel API. This change provides several benef
 
 afpcmd maintains minimal connection state:
 
+- `serverid_t server_id` - Opaque handle returned by afpsld after CONNECT
 - `volumeid_t vol_id` - Opaque handle returned by afpsld after ATTACH
 - `int connected` - Boolean flag indicating whether a volume is attached
 - `char curdir[]` - Current working directory path (client-side tracking)
@@ -486,10 +494,18 @@ afpcmd maintains minimal connection state:
 
 1. User runs: `afpcmd afp://user:pass@server/volume`
 2. afpcmd calls `afp_sl_connect()` → afpsld connects to AFP server
-3. afpcmd calls `afp_sl_attach()` → afpsld opens volume
+3. afpcmd calls `afp_sl_attach(server_id, ...)` → afpsld opens volume on that authenticated session
 4. afpcmd receives `volumeid_t` handle and sets `connected = 1`
 5. All subsequent commands pass this volumeid to afp_sl_* functions
 6. afpsld uses volumeid to look up the volume in its global state
+
+Volume listing and volume attachment are bound to `server_id`; callers should not rely on URL-only lookup to rediscover
+an authenticated session.
+
+Long-lived clients that need cross-process reuse, such as KIO workers, should first call `afp_sl_resume()` with no
+password. This resumes the per-user daemon's existing host session rather than reauthenticating AFP user identity. If no
+matching daemon session exists, they should retrieve credentials from their own credential cache or prompt the user, then
+call `afp_sl_connect()` to authenticate.
 
 **Disconnect flow:**
 

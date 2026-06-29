@@ -11,6 +11,7 @@
 #include <time.h>
 
 #include "afp.h"
+#include "compat.h"
 #include "dsi.h"
 #include "utils.h"
 #include "uams_def.h"
@@ -68,11 +69,14 @@ struct afp_server *afp_server_complete_connection(
     server->using_uam = using_uam;
 
     if (afp_server_login(server, mesg, &len, MAX_ERROR_LEN)) {
+        explicit_bzero(server->password, sizeof(server->password));
         log_for_client(priv, AFPFSD, LOG_ERR,
                        "Login error: %s", mesg);
         errno = EACCES;
         goto error;
     }
+
+    explicit_bzero(server->password, sizeof(server->password));
 
     if (afp_getsrvrparms(server)) {
         log_for_client(priv, AFPFSD, LOG_ERR,
