@@ -89,7 +89,7 @@ int main(int argc, char **argv)
     char temporary[] = "afpcmd-metadata-XXXXXX";
     char file[1024], missing[1024], macos_sidecar[1024], netatalk_dir[1024];
     char netatalk_sidecar[1024], ea_header[1024], ea_value[1024];
-    unsigned char finder[32], actual_finder[32];
+    unsigned char finder[32], macos_finder[32], actual_finder[32];
     unsigned char resource[7000], actual_resource[7000];
     char *list = NULL;
     size_t list_size = 0;
@@ -146,8 +146,11 @@ int main(int argc, char **argv)
     CHECK(local_resourcefork_size(missing, AFP_METADATA_MACOS) == -ENOENT);
     CHECK(local_metadata_list(missing, AFP_METADATA_NETATALK,
                               &list, &list_size) == -ENOENT);
-    CHECK(afp_metadata_clear_local(missing, AFP_METADATA_NETATALK,
+    CHECK(afp_metadata_clear_local(missing, AFP_METADATA_AUTO,
                                    &warnings) == -ENOENT);
+    CHECK(afp_metadata_mode_parse("auto", &parsed_mode) == 0
+          && parsed_mode == AFP_METADATA_AUTO);
+    CHECK(strcmp(afp_metadata_mode_name(AFP_METADATA_AUTO), "auto") == 0);
     CHECK(afp_metadata_mode_parse("netatalk", &parsed_mode) == 0
           && parsed_mode == AFP_METADATA_NETATALK);
     CHECK(strcmp(afp_metadata_mode_name(AFP_METADATA_NETATALK),
@@ -223,6 +226,8 @@ int main(int argc, char **argv)
     CHECK(local_finderinfo_get(file, AFP_METADATA_MACOS,
                                actual_finder) == -ENOATTR);
     CHECK(local_resourcefork_size(file, AFP_METADATA_MACOS) <= 0);
+    CHECK(local_finderinfo_remove(file, AFP_METADATA_MACOS) == 0);
+    CHECK(local_resourcefork_remove(file, AFP_METADATA_MACOS) == 0);
     CHECK(chmod(temporary, 0750) == 0);
     old_umask = umask(0000);
     CHECK(local_finderinfo_set(file, AFP_METADATA_NETATALK, finder) == 0);
@@ -254,6 +259,23 @@ int main(int argc, char **argv)
                              &value, &value_size) < 0);
     CHECK(local_metadata_set(file, AFP_METADATA_NETATALK, "bad/name",
                              resource, 1) == -EINVAL);
+#ifndef __APPLE__
+    memset(macos_finder, 0xa5, sizeof(macos_finder));
+    CHECK(local_finderinfo_set(file, AFP_METADATA_MACOS, macos_finder) == 0);
+    CHECK(local_resourcefork_write(file, AFP_METADATA_MACOS,
+                                   "macos", 5, 0) == 0);
+    CHECK(local_finderinfo_get(file, AFP_METADATA_AUTO, actual_finder) == 0);
+    CHECK(memcmp(actual_finder, macos_finder, sizeof(actual_finder)) == 0);
+    CHECK(local_resourcefork_size(file, AFP_METADATA_AUTO) == 5);
+    CHECK(local_resourcefork_read(file, AFP_METADATA_AUTO, actual_resource,
+                                  sizeof(actual_resource), 0) == 5);
+    CHECK(memcmp(actual_resource, "macos", 5) == 0);
+    CHECK(local_finderinfo_remove(file, AFP_METADATA_AUTO) == 0);
+    CHECK(local_resourcefork_remove(file, AFP_METADATA_AUTO) == 0);
+    CHECK(local_finderinfo_get(file, AFP_METADATA_MACOS,
+                               actual_finder) == -ENOATTR);
+    CHECK(local_resourcefork_size(file, AFP_METADATA_MACOS) <= 0);
+#endif
     CHECK(local_finderinfo_remove(file, AFP_METADATA_NONE) == -ENOTSUP);
     CHECK(local_resourcefork_remove(file, AFP_METADATA_NONE) == -ENOTSUP);
     {
@@ -300,6 +322,17 @@ int main(int argc, char **argv)
             value = NULL;
             CHECK(local_metadata_remove(file, AFP_METADATA_XATTR,
                                         "user.afpcmd-system") == 0);
+            CHECK(local_metadata_set(file, AFP_METADATA_XATTR,
+                                     "user.afpcmd-merge", "system", 6) == 0);
+            CHECK(local_metadata_get(file, AFP_METADATA_AUTO,
+                                     "user.afpcmd-merge", &value, &value_size) == 0);
+            CHECK(value_size == 6 && memcmp(value, "system", 6) == 0);
+            free(value);
+            value = NULL;
+            CHECK(local_metadata_remove(file, AFP_METADATA_AUTO,
+                                        "user.afpcmd-merge") == 0);
+            CHECK(local_metadata_get(file, AFP_METADATA_AUTO,
+                                     "user.afpcmd-merge", &value, &value_size) < 0);
         } else {
             CHECK(sys_ret == -ENOTSUP || sys_ret == -EOPNOTSUPP);
         }

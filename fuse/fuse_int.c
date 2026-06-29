@@ -178,7 +178,7 @@ static int fuse_getxattr(const char *path, const char *name, char *value,
 
     if (strcmp(name, AFP_XATTR_RESOURCEFORK) == 0) {
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                       "*** getxattr resource fork %s (size=%zu position=%u)",
+                       "*** getxattr ResourceFork %s (size=%zu position=%u)",
                        path, size, position);
         ret = ml_getresourcefork(volume, path, value, size, position);
         return ret;
@@ -239,7 +239,7 @@ static int fuse_setxattr(const char *path, const char *name,
 
     if (strcmp(name, AFP_XATTR_RESOURCEFORK) == 0) {
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                       "*** setxattr resource fork %s (size=%zu position=%u)",
+                       "*** setxattr ResourceFork %s (size=%zu position=%u)",
                        path, size, position);
         ret = ml_setresourcefork_flags(volume, path, value, size, position,
                                        ml_flags);
@@ -1420,7 +1420,7 @@ int afp_register_fuse(int fuseargc, char *fuseargv[], struct afp_volume * vol)
 {
     int ret;
     struct fuse_operations oper = afp_oper;
-    /* FinderInfo and resource forks use the xattr callbacks on macOS even
+    /* FinderInfo and ResourceFork use the xattr callbacks on macOS even
      * when the AFP volume does not support generic extended attributes. */
 #ifndef __APPLE__
 

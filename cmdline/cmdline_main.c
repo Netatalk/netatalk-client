@@ -245,7 +245,7 @@ COMMAND commands[] = {
     { "quit", com_quit, "Shut down afpcmd (leaves server connections intact)", 0 },
     { "rm", com_delete, "Delete FILE (-r for directories)", 1 },
     { "rmdir", com_rmdir, "Remove directory DIRECTORY", 1 },
-    { "resourcefork", com_resourcefork, "Get, set, or remove a resource fork", 1 },
+    { "resourcefork", com_resourcefork, "Get, set, or remove a ResourceFork", 1 },
     { "status", com_status, "Get some server status", 1 },
     { "touch", com_touch, "Touch FILE", 1 },
     { "xattr", com_xattr, "List, get, set, or remove extended attributes", 1 },
@@ -457,7 +457,7 @@ static void usage(void)
         "afpcmd [-h] [-V] [-v loglevel] [-M mode] <afp url>\n"
         "Options:\n"
         "\t-h:          show this help message and exit\n"
-        "\t-M mode:     preserve metadata using netatalk, xattr, macos, or none\n"
+        "\t-M mode:     preserve metadata using auto, netatalk, xattr, macos, or none\n"
         "\t-r:          recursively transfer directories in batch mode\n"
         "\t-V:          verbose mode (show detailed transfer messages)\n"
         "\t-v loglevel: set log verbosity (debug, info, notice, warning, error)\n"
@@ -481,7 +481,7 @@ int main(int argc, char *argv[])
     int verbose = 0;
     int show_usage = 0;
     int log_level = LOG_NOTICE;
-    const char *metadata_mode = "netatalk";
+    const char *metadata_mode = "auto";
     struct option long_options[] = {
         {"help", 0, 0, 'h'},
         {"metadata", 1, 0, 'M'},

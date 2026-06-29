@@ -98,9 +98,13 @@ E.g.
         Getting file /linux-2.6.14.tar.bz2
     Transferred 39172170 bytes in 2.862 seconds. (13687 kB/s)
 
-Transfers preserve FinderInfo, resource forks, generic extended attributes,
+Transfers preserve FinderInfo, ResourceForks, generic extended attributes,
 file modes, and modification times by default.
-Use '-M netatalk', '-M xattr', or '-M macos' to select local metadata storage,
+The default '-M auto' mode uses filesystem extended attributes for generic
+xattrs when available, and falls back to Netatalk AppleDouble EA sidecars
+otherwise. FinderInfo and ResourceForks use native filesystem xattrs on macOS,
+and macOS AppleDouble sidecars on other systems.
+Use '-M netatalk', '-M xattr', or '-M macos' to force local metadata storage,
 and '-M none' to transfer only the data fork.
 
 See afpcmd(1) for more information.

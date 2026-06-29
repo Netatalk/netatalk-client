@@ -78,7 +78,7 @@ if (-e $sidecar_path) {
     my $downloaded_ad = do { local $/; <$read_ad> };
     close $read_ad;
     is($downloaded_ad, $appledouble,
-        'batch_download: FinderInfo and resource fork match');
+        'batch_download: FinderInfo and ResourceFork match');
 }
 if (-e $test_path) {
     is((stat($test_path))[2] & 07777, 0640,

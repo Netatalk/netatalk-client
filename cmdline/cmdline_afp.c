@@ -76,7 +76,7 @@ int full_url = 0;
 static volumeid_t vol_id = NULL;
 static serverid_t server_id = NULL;
 static int connected = 0;
-static enum afp_metadata_mode transfer_metadata_mode = AFP_METADATA_NETATALK;
+static enum afp_metadata_mode transfer_metadata_mode = AFP_METADATA_AUTO;
 static int metadata_warning_emitted = 0;
 
 static int write_all_fd(int fd, const void *data, size_t size);
@@ -86,6 +86,11 @@ static int write_all_fd(int fd, const void *data, size_t size);
  * their contents are transferred while processing the corresponding file. */
 static int metadata_sidecar_entry(const char *name)
 {
+    if (transfer_metadata_mode == AFP_METADATA_AUTO) {
+        return strncmp(name, "._", 2) == 0
+               || strcmp(name, ".AppleDouble") == 0;
+    }
+
     if (transfer_metadata_mode == AFP_METADATA_MACOS) {
         return strncmp(name, "._", 2) == 0;
     }

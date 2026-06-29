@@ -16,12 +16,12 @@ The names of tools and libraries will not be changed to signal continuity and co
 
 - Allow library consumers to register a persistent logging callback with context and syslog severity. Local libafpsl
   diagnostics and structured logs returned by every afpsld command use the same callback.
-- Add reusable metadata replacement and transfer helpers to `libafpsl`, with explicit filesystem-xattr, macOS AppleDouble,
-  and Netatalk AppleDouble storage modes and non-fatal warning flags for non-interactive consumers.
+- Add reusable metadata replacement and transfer helpers to `libafpsl`, with auto, filesystem-xattr,
+  macOS AppleDouble, and Netatalk AppleDouble storage modes and non-fatal warning flags for non-interactive consumers.
 
 ### afpcmd Client Improvements
 
-- Preserve Finder Info, resource forks, and generic extended attributes when transferring files, with selectable local
+- Preserve FinderInfo, ResourceFork, and generic extended attributes when transferring files, with selectable local
   metadata storage modes.
 
 ## afpfs-ng 0.9.4 (February 28, 2026)
