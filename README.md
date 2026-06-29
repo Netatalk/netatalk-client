@@ -105,6 +105,15 @@ libafpclient ABI compatibility with afpfs-ng, and some differences in behavior a
 We have also introduced numerous new options and features, which will not be listed in full here
 but can be found in the documentation and command line help.
 
+## How to Contribute
+
+This project follows the same [Contributing guidelines](https://github.com/Netatalk/netatalk/blob/main/CONTRIBUTING.md)
+and coding standards as the Netatalk project.
+
+The same [Code of Conduct policy](https://github.com/Netatalk/netatalk/blob/main/CODE_OF_CONDUCT.md) is effective as well.
+
+We are looking forward to your contributions!
+
 ## License
 
 Netatalk Client is distributed under the terms of the GNU General Public License v2.
