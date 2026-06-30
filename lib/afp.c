@@ -14,6 +14,8 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 
 #include <errno.h>
 #include <stdio.h>
@@ -906,6 +908,16 @@ int afp_server_connect(struct afp_server *server, int full)
 
         if (server->fd >= 0) {
             if (connect(server->fd, address->ai_addr, address->ai_addrlen) == 0) {
+                /* Disable Nagle */
+                int nodelay = 1;
+
+                if (setsockopt(server->fd, IPPROTO_TCP, TCP_NODELAY,
+                               &nodelay, sizeof(nodelay)) < 0) {
+                    log_for_client(NULL, AFPFSD, LOG_WARNING,
+                                   "Could not set TCP_NODELAY on fd=%d: %s",
+                                   server->fd, strerror(errno));
+                }
+
                 break;
             }
 
