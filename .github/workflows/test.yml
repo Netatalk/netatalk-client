@@ -36,15 +36,15 @@ jobs:
             shfmt \
             yamlfmt
       - name: Check C formatting
-        run: ./codefmt.sh -v -s c
+        run: ./contrib/scripts/codefmt.sh -v -s c
       - name: Check markdown formatting
-        run: ./codefmt.sh -v -s markdown
+        run: ./contrib/scripts/codefmt.sh -v -s markdown
       - name: Check meson formatting
-        run: ./codefmt.sh -v -s meson
+        run: ./contrib/scripts/codefmt.sh -v -s meson
       - name: Check shell script formatting
-        run: ./codefmt.sh -v -s shell
+        run: ./contrib/scripts/codefmt.sh -v -s shell
       - name: Check yaml formatting
-        run: ./codefmt.sh -v -s yaml
+        run: ./contrib/scripts/codefmt.sh -v -s yaml
 
   markdown-linting:
     name: Markdown Linting
