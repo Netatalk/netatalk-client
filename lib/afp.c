@@ -567,6 +567,7 @@ struct afp_server *afp_server_init(struct addrinfo * address)
     s->attention_buffer = malloc(s->attention_quantum);
     s->attention_len = 0;
     s->connect_state = SERVER_STATE_DISCONNECTED;
+    afp_server_reconnect_end(s);
     s->address = address;
     /* Initialize mutexes */
     pthread_mutex_init(&s->requestid_mutex, NULL);
@@ -689,10 +690,19 @@ int afp_server_login(struct afp_server *server,
     if (server->flags & kSupportsReconnect) {
         /* Get the session */
         if (server->need_resume) {
-            resume_token(server);
+            if (resume_token(server) != 0) {
+                *l += snprintf(mesg, max - *l,
+                               "Could not resume session token\n");
+                goto error;
+            }
+
             server->need_resume = 0;
         } else {
-            setup_token(server);
+            if (setup_token(server) != 0) {
+                *l += snprintf(mesg, max - *l,
+                               "Could not set up session token\n");
+                goto error;
+            }
         }
     }
 
@@ -824,35 +834,70 @@ int afp_server_reconnect(struct afp_server * s, char * mesg,
                          unsigned int *l, unsigned int max)
 {
     int i;
+    int ret = 0;
     struct afp_volume * v;
+
+    if (!afp_server_reconnect_try_begin(s)) {
+        return 1;
+    }
+
     /* Flush pending requests before reconnecting to avoid late reply confusion */
     dsi_flush_request_queue(s);
 
     if (afp_server_connect(s, 0))  {
         *l += snprintf(mesg, max - *l, "Error resuming connection to %s\n",
                        s->server_name_printable);
-        return 1;
+
+        if (errno == 0) {
+            errno = ECONNRESET;
+        }
+
+        goto error;
     }
 
-    dsi_opensession(s);
+    if (dsi_opensession(s) != 0) {
+        *l += snprintf(mesg, max - *l, "Error opening DSI session to %s\n",
+                       s->server_name_printable);
+        errno = ECONNRESET;
+        goto error;
+    }
 
     if (afp_server_login(s, mesg, l, max)) {
-        return 1;
+        if (errno == 0) {
+            errno = EACCES;
+        }
+
+        goto error;
     }
 
     for (i = 0; i < s->num_volumes; i++) {
         v = &s->volumes[i];
 
-        if (strlen(v->mountpoint)) {
-            if (afp_connect_volume(v, v->server, mesg, l, max))
-                *l += snprintf(mesg, max - *l,
-                               "Could not mount %s\n",
-                               v->volume_name_printable);
+        if ((v->attached == AFP_VOLUME_ATTACHED || strlen(v->mountpoint))
+                && afp_connect_volume(v, v->server, mesg, l, max)) {
+            *l += snprintf(mesg, max - *l,
+                           "Could not mount %s\n",
+                           v->volume_name_printable);
+
+            if (errno == 0) {
+                errno = EIO;
+            }
+
+            ret = 1;
         }
     }
 
+    if (ret != 0) {
+        goto error;
+    }
+
     s->connect_state = SERVER_STATE_CONNECTED;
+    afp_server_reconnect_end(s);
     return 0;
+error:
+    loop_disconnect(s);
+    afp_server_reconnect_end(s);
+    return 1;
 }
 
 
@@ -865,6 +910,8 @@ int afp_server_connect(struct afp_server *server, int full)
     static char log_msg[LOG_MSG_SIZE];
     char	ip_addr[INET6_ADDRSTRLEN];
     address = server->address;
+    server->data_read = 0;
+    server->attention_len = 0;
 
     if (server->fd > 0) {
         log_for_client(NULL, AFPFSD, LOG_INFO,
@@ -943,8 +990,7 @@ int afp_server_connect(struct afp_server *server, int full)
 
     server->connect_state	= SERVER_STATE_CONNECTING;
     server->used_address	= address;
-    /* Add server to the list if it's not already there.
-     * On reconnect, the server is already in the list, so we skip this. */
+    /* Add server to the list if it's not already there. */
     int found = 0;
 
     for (struct afp_server *s = get_server_base(); s; s = s->next) {

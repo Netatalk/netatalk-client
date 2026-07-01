@@ -155,7 +155,7 @@ static int is_recoverable_session_error(int ret)
     return afp_sl_recovery_for_error(ret) != AFP_SL_RECOVERY_NONE;
 }
 
-static int reconnect_session(int restore_volume, int restore_dir)
+static int recover_session(int restore_volume, int restore_dir)
 {
     char mesg[MAX_ERROR_LEN];
     unsigned int uam_mask;
@@ -163,7 +163,9 @@ static int reconnect_session(int restore_volume, int restore_dir)
     serverid_t new_server_id = NULL;
     volumeid_t new_vol_id = NULL;
     serverid_t old_server_id;
+    volumeid_t old_vol_id;
     struct afp_url reconnect_url;
+    struct afp_url resume_url;
     char saved_volume[AFP_VOLUME_NAME_LEN];
     char saved_dir[AFP_MAX_PATH];
     int had_volume;
@@ -178,15 +180,14 @@ static int reconnect_session(int restore_volume, int restore_dir)
     strlcpy(saved_dir, curdir, sizeof(saved_dir));
     had_volume = (vol_id != NULL);
     old_server_id = server_id;
-
-    /* Drop local cached handles; stale IDs are no longer trustworthy. */
-    if (old_server_id && afp_sl_disconnect(&old_server_id) != 0) {
-        afp_sl_exit();
-    }
-
+    old_vol_id = vol_id;
+    server_id = NULL;
+    vol_id = NULL;
     uam_mask = get_uam_mask_for_url();
 
     if (uam_mask == 0) {
+        server_id = old_server_id;
+        vol_id = old_vol_id;
         return -1;
     }
 
@@ -197,9 +198,28 @@ static int reconnect_session(int restore_volume, int restore_dir)
                 sizeof(reconnect_url.servername));
     }
 
-    if (afp_sl_connect(&reconnect_url, uam_mask, &new_server_id, mesg) != 0) {
+    resume_url = reconnect_url;
+    explicit_bzero(resume_url.password, sizeof(resume_url.password));
+
+    /*
+     * Prefer resuming the daemon's existing AFP session.  This mirrors the
+     * manual recovery path of detaching to the volume list, and avoids tearing
+     * down a server connection that may still be usable after an idle timeout.
+     */
+    if (afp_sl_resume(&resume_url, uam_mask, &new_server_id, mesg) != 0
+            && afp_sl_connect(&reconnect_url, uam_mask, &new_server_id, mesg) != 0) {
+        server_id = old_server_id;
+        vol_id = old_vol_id;
         return -1;
     }
+
+    if (old_server_id && old_server_id != new_server_id
+            && afp_sl_disconnect(&old_server_id) != 0) {
+        afp_sl_exit();
+    }
+
+    server_id = new_server_id;
+    connected = 1;
 
     if ((restore_volume || had_volume) && saved_volume[0] != '\0') {
         strlcpy(url.volumename, saved_volume, sizeof(url.volumename));
@@ -207,13 +227,12 @@ static int reconnect_session(int restore_volume, int restore_dir)
               volume_options);
 
         if (ret != 0) {
+            vol_id = NULL;
             return -1;
         }
     }
 
-    server_id = new_server_id;
     vol_id = new_vol_id;
-    connected = 1;
 
     if (restore_dir && saved_dir[0] != '\0') {
         strlcpy(curdir, saved_dir, sizeof(curdir));
@@ -778,7 +797,7 @@ static void list_volumes(void)
     ret = afp_sl_getvols(server_id, &url, 0, count, &numvols, vols);
 
     if (ret != 0 && is_recoverable_session_error(ret)
-            && reconnect_session(0, 0) == 0) {
+            && recover_session(0, 0) == 0) {
         numvols = 0;
         ret = afp_sl_getvols(server_id, &url, 0, count, &numvols, vols);
     }
@@ -944,7 +963,7 @@ int com_dir(char * arg)
                          &eod);
 
     if (ret != 0 && is_recoverable_session_error(ret)
-            && reconnect_session(1, 1) == 0) {
+            && recover_session(1, 1) == 0) {
         if (filebase) {
             free(filebase);
             filebase = NULL;
@@ -3137,7 +3156,7 @@ int com_cd(char *arg)
               volume_options);
 
         if (ret != 0
-                && is_recoverable_session_error(ret) && reconnect_session(0, 0) == 0) {
+                && is_recoverable_session_error(ret) && recover_session(0, 0) == 0) {
             ret = attach_volume_with_password_prompt(server_id, &vol_id,
                   volume_options);
         }
@@ -3201,7 +3220,7 @@ int com_cd(char *arg)
     ret = afp_sl_stat(&vol_id, dir_path, NULL, &statbuf);
 
     if (ret != 0 && is_recoverable_session_error(ret)
-            && reconnect_session(1, 1) == 0) {
+            && recover_session(1, 1) == 0) {
         ret = afp_sl_stat(&vol_id, dir_path, NULL, &statbuf);
     }
 

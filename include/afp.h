@@ -238,6 +238,7 @@ struct afp_server {
     /* Session */
     struct afp_token token;
     char need_resume;
+    char reconnect_in_progress;
 
     /* Versions */
     unsigned char requested_version;
@@ -291,6 +292,27 @@ struct afp_server {
     char *attention_buffer;
 
 };
+
+static inline int afp_server_reconnect_try_begin(struct afp_server *server)
+{
+    char expected = 0;
+    return __atomic_compare_exchange_n(&server->reconnect_in_progress,
+                                       &expected, 1, 0,
+                                       __ATOMIC_ACQ_REL,
+                                       __ATOMIC_ACQUIRE);
+}
+
+static inline void afp_server_reconnect_end(struct afp_server *server)
+{
+    __atomic_store_n(&server->reconnect_in_progress, 0, __ATOMIC_RELEASE);
+}
+
+static inline int afp_server_reconnect_is_in_progress(
+    const struct afp_server *server)
+{
+    return __atomic_load_n(&server->reconnect_in_progress,
+                           __ATOMIC_ACQUIRE) != 0;
+}
 
 struct afp_comment {
     unsigned int maxsize;
