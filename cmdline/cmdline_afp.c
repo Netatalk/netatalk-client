@@ -81,6 +81,12 @@ static int metadata_warning_emitted = 0;
 
 static int write_all_fd(int fd, const void *data, size_t size);
 
+static const char *display_text(const char *text, char *buf, size_t size)
+{
+    sanitize_text(text, buf, size);
+    return buf;
+}
+
 /* Metadata sidecars are an implementation detail of the selected local
  * storage mode.  Recursive uploads must not expose them as AFP data files;
  * their contents are transferred while processing the corresponding file. */
@@ -1053,13 +1059,20 @@ static int chmod_remote_tree(const char *server_path, mode_t mode)
                               server_path, entry->name);
 
         if (length < 0 || (size_t)length >= sizeof(child)) {
-            printf("Path too long: %s/%s\n", server_path, entry->name);
+            char display_server_path[AFP_MAX_PATH * 4];
+            char display_name[AFP_MAX_PATH * 4];
+            printf("Path too long: %s/%s\n",
+                   display_text(server_path, display_server_path,
+                                sizeof(display_server_path)),
+                   display_text(entry->name, display_name, sizeof(display_name)));
             ret = -1;
             continue;
         }
 
         if (S_ISLNK(entry->unixprivs.permissions)) {
-            printf("Symlinks are not supported: %s\n", child);
+            char display_child[AFP_MAX_PATH * 4];
+            printf("Symlinks are not supported: %s\n",
+                   display_text(child, display_child, sizeof(display_child)));
             ret = -1;
         } else if (S_ISDIR(entry->unixprivs.permissions)
                    && chmod_remote_tree(child, mode) < 0) {
@@ -1067,7 +1080,9 @@ static int chmod_remote_tree(const char *server_path, mode_t mode)
         } else if (!S_ISDIR(entry->unixprivs.permissions)
                    && afp_sl_chmod(&vol_id, child, NULL, mode)
                    != 0) {
-            printf("Could not chmod %s\n", child);
+            char display_child[AFP_MAX_PATH * 4];
+            printf("Could not chmod %s\n",
+                   display_text(child, display_child, sizeof(display_child)));
             ret = -1;
         }
     }
@@ -1076,7 +1091,10 @@ static int chmod_remote_tree(const char *server_path, mode_t mode)
 
     if (afp_sl_chmod(&vol_id, server_path, NULL, mode)
             != 0) {
-        printf("Could not chmod %s\n", server_path);
+        char display_server_path[AFP_MAX_PATH * 4];
+        printf("Could not chmod %s\n",
+               display_text(server_path, display_server_path,
+                            sizeof(display_server_path)));
         ret = -1;
     }
 
@@ -1120,7 +1138,10 @@ int com_chmod(char * arg)
 
         if (afp_sl_stat(&vol_id, server_fullname, NULL, &st)
                 != 0) {
-            printf("File not found: %s\n", filename);
+            char display_filename[AFP_MAX_PATH * 4];
+            printf("File not found: %s\n",
+                   display_text(filename, display_filename,
+                                sizeof(display_filename)));
             return -1;
         }
 
@@ -1133,11 +1154,20 @@ int com_chmod(char * arg)
 
     if (ret != 0) {
         if (ret == -EACCES) {
-            printf("Permission denied changing mode for %s\n", filename);
+            char display_filename[AFP_MAX_PATH * 4];
+            printf("Permission denied changing mode for %s\n",
+                   display_text(filename, display_filename,
+                                sizeof(display_filename)));
         } else if (ret == -ENOENT) {
-            printf("File not found: %s\n", filename);
+            char display_filename[AFP_MAX_PATH * 4];
+            printf("File not found: %s\n",
+                   display_text(filename, display_filename,
+                                sizeof(display_filename)));
         } else {
-            printf("Could not chmod %s (result=%d)\n", filename, ret);
+            char display_filename[AFP_MAX_PATH * 4];
+            printf("Could not chmod %s (result=%d)\n",
+                   display_text(filename, display_filename,
+                                sizeof(display_filename)), ret);
         }
 
         return -1;
@@ -1164,24 +1194,35 @@ static int upload_file(char *local_filename, char *server_fullname,
     localfd = open(local_filename, O_RDONLY);
 
     if (localfd < 0) {
-        printf("Could not open local file \"%s\"\n", local_filename);
+        char display_local[PATH_MAX * 4];
+        printf("Could not open local file \"%s\"\n",
+               display_text(local_filename, display_local, sizeof(display_local)));
         perror("open");
         goto out;
     }
 
     if (fstat(localfd, &localstat) != 0) {
-        printf("Could not get attributes for local file \"%s\"\n", local_filename);
+        char display_local[PATH_MAX * 4];
+        printf("Could not get attributes for local file \"%s\"\n",
+               display_text(local_filename, display_local, sizeof(display_local)));
         perror("fstat");
         goto out;
     }
 
     if (!S_ISREG(localstat.st_mode)) {
-        printf("Not a regular file: %s\n", local_filename);
+        char display_local[PATH_MAX * 4];
+        printf("Not a regular file: %s\n",
+               display_text(local_filename, display_local, sizeof(display_local)));
         goto out;
     }
 
     if (verbose_mode) {
-        printf("    Uploading file %s to %s\n", local_filename, server_fullname);
+        char display_local[PATH_MAX * 4];
+        char display_remote[AFP_MAX_PATH * 4];
+        printf("    Uploading file %s to %s\n",
+               display_text(local_filename, display_local, sizeof(display_local)),
+               display_text(server_fullname, display_remote,
+                            sizeof(display_remote)));
     }
 
     gettimeofday(&starttv, NULL);
@@ -1199,8 +1240,10 @@ static int upload_file(char *local_filename, char *server_fullname,
             ret = afp_sl_truncate(&vol_id, server_fullname, NULL, 0);
 
             if (ret != 0) {
-                printf("Could not truncate existing file \"%s\" (result=%d)\n", server_fullname,
-                       ret);
+                char display_remote[AFP_MAX_PATH * 4];
+                printf("Could not truncate existing file \"%s\" (result=%d)\n",
+                       display_text(server_fullname, display_remote,
+                                    sizeof(display_remote)), ret);
                 goto out;
             }
         } else if (ret == -EACCES) {
@@ -1209,12 +1252,17 @@ static int upload_file(char *local_filename, char *server_fullname,
             ret = afp_sl_truncate(&vol_id, server_fullname, NULL, 0);
 
             if (ret != 0) {
-                printf("Permission denied creating file \"%s\"\n", server_fullname);
+                char display_remote[AFP_MAX_PATH * 4];
+                printf("Permission denied creating file \"%s\"\n",
+                       display_text(server_fullname, display_remote,
+                                    sizeof(display_remote)));
                 goto out;
             }
         } else {
-            printf("Could not create remote file \"%s\" (result=%d)\n", server_fullname,
-                   ret);
+            char display_remote[AFP_MAX_PATH * 4];
+            printf("Could not create remote file \"%s\" (result=%d)\n",
+                   display_text(server_fullname, display_remote,
+                                sizeof(display_remote)), ret);
             goto out;
         }
     }
@@ -1223,9 +1271,15 @@ static int upload_file(char *local_filename, char *server_fullname,
 
     if (ret) {
         if (ret == -EACCES) {
-            printf("Permission denied opening file \"%s\"\n", server_fullname);
+            char display_remote[AFP_MAX_PATH * 4];
+            printf("Permission denied opening file \"%s\"\n",
+                   display_text(server_fullname, display_remote,
+                                sizeof(display_remote)));
         } else if (ret == -ENOENT) {
-            printf("Permission denied creating file \"%s\"\n", server_fullname);
+            char display_remote[AFP_MAX_PATH * 4];
+            printf("Permission denied creating file \"%s\"\n",
+                   display_text(server_fullname, display_remote,
+                                sizeof(display_remote)));
         } else {
             printf("Could not open remote file for writing (result=%d)\n", ret);
         }
@@ -1265,8 +1319,10 @@ static int upload_file(char *local_filename, char *server_fullname,
     fileid = 0;
 
     if (ret != 0) {
+        char display_remote[AFP_MAX_PATH * 4];
         printf("Could not close remote file \"%s\" (result=%d)\n",
-               server_fullname, ret);
+               display_text(server_fullname, display_remote,
+                            sizeof(display_remote)), ret);
         goto out;
     }
 
@@ -1274,8 +1330,10 @@ static int upload_file(char *local_filename, char *server_fullname,
                                         &localstat);
 
     if (ret < 0) {
+        char display_local[PATH_MAX * 4];
         printf("Could not preserve metadata for \"%s\" (error=%d)\n",
-               local_filename, ret);
+               display_text(local_filename, display_local, sizeof(display_local)),
+               ret);
         goto out;
     }
 
@@ -1333,7 +1391,9 @@ static int upload_directory(char *local_dirname, char *server_parent_path,
     }
 
     if (S_ISLNK(dir_stat.st_mode)) {
-        printf("Symlinks are not supported: %s\n", local_dirname);
+        char display_local[PATH_MAX * 4];
+        printf("Symlinks are not supported: %s\n",
+               display_text(local_dirname, display_local, sizeof(display_local)));
         return -1;
     }
 
@@ -1341,8 +1401,10 @@ static int upload_directory(char *local_dirname, char *server_parent_path,
                        dir_stat.st_mode & 0777);
 
     if (ret != 0 && ret != -EEXIST) {
-        printf("Failed to create remote directory %s (error: %d)\n", server_parent_path,
-               ret);
+        char display_remote[AFP_MAX_PATH * 4];
+        printf("Failed to create remote directory %s (error: %d)\n",
+               display_text(server_parent_path, display_remote,
+                            sizeof(display_remote)), ret);
 
         if (total_bytes) {
             *total_bytes = 0;
@@ -1385,7 +1447,9 @@ static int upload_directory(char *local_dirname, char *server_parent_path,
         }
 
         if (S_ISLNK(st.st_mode)) {
-            printf("Symlinks are not supported: %s\n", local_path);
+            char display_local[PATH_MAX * 4];
+            printf("Symlinks are not supported: %s\n",
+                   display_text(local_path, display_local, sizeof(display_local)));
             ret = -1;
             continue;
         }
@@ -1413,7 +1477,9 @@ static int upload_directory(char *local_dirname, char *server_parent_path,
 
     if (copy_local_metadata_to_remote(local_dirname, server_parent_path,
                                       &dir_stat) < 0) {
-        printf("Could not preserve directory metadata for %s\n", local_dirname);
+        char display_local[PATH_MAX * 4];
+        printf("Could not preserve directory metadata for %s\n",
+               display_text(local_dirname, display_local, sizeof(display_local)));
         ret = -1;
     }
 
@@ -1451,7 +1517,9 @@ int com_put(char *arg)
     }
 
     if (S_ISLNK(st.st_mode)) {
-        printf("Symlinks are not supported: %s\n", local_filename);
+        char display_local[PATH_MAX * 4];
+        printf("Symlinks are not supported: %s\n",
+               display_text(local_filename, display_local, sizeof(display_local)));
         goto error;
     }
 
@@ -1463,8 +1531,10 @@ int com_put(char *arg)
             ret = upload_directory(local_filename, server_fullname, &bytes_transferred);
             goto out;
         } else {
+            char display_local[PATH_MAX * 4];
             printf("%s is a directory (use put -r to upload recursively)\n",
-                   local_filename);
+                   display_text(local_filename, display_local,
+                                sizeof(display_local)));
             goto error;
         }
     }
@@ -1572,7 +1642,9 @@ static int download_directory(char *server_path, char *local_path,
     unsigned long long bytes = 0;
 
     if (afp_sl_stat(&vol_id, server_path, NULL, &dir_stat) != 0) {
-        printf("Could not stat directory %s\n", server_path);
+        char display_remote[AFP_MAX_PATH * 4];
+        printf("Could not stat directory %s\n",
+               display_text(server_path, display_remote, sizeof(display_remote)));
         return -1;
     }
 
@@ -1587,7 +1659,9 @@ static int download_directory(char *server_path, char *local_path,
     }
 
     if (remote_readdir_all(server_path, &filebase, &numfiles) != 0) {
-        printf("Could not read directory %s\n", server_path);
+        char display_remote[AFP_MAX_PATH * 4];
+        printf("Could not read directory %s\n",
+               display_text(server_path, display_remote, sizeof(display_remote)));
 
         if (total_bytes) {
             *total_bytes = 0;
@@ -1608,7 +1682,12 @@ static int download_directory(char *server_path, char *local_path,
                                 p->name);
 
         if (path_len < 0 || (size_t)path_len >= sizeof(new_server_path)) {
-            printf("Path too long: %s/%s\n", server_path, p->name);
+            char display_remote[AFP_MAX_PATH * 4];
+            char display_name[AFP_MAX_PATH * 4];
+            printf("Path too long: %s/%s\n",
+                   display_text(server_path, display_remote,
+                                sizeof(display_remote)),
+                   display_text(p->name, display_name, sizeof(display_name)));
             continue;
         }
 
@@ -1616,7 +1695,11 @@ static int download_directory(char *server_path, char *local_path,
                             p->name);
 
         if (path_len < 0 || (size_t)path_len >= sizeof(new_local_path)) {
-            printf("Local path too long: %s/%s\n", local_path, p->name);
+            char display_local[PATH_MAX * 4];
+            char display_name[AFP_MAX_PATH * 4];
+            printf("Local path too long: %s/%s\n",
+                   display_text(local_path, display_local, sizeof(display_local)),
+                   display_text(p->name, display_name, sizeof(display_name)));
             continue;
         }
 
@@ -1629,7 +1712,10 @@ static int download_directory(char *server_path, char *local_path,
                 bytes += subdir_bytes;
             }
         } else if (S_ISLNK(p->unixprivs.permissions)) {
-            printf("Symlinks are not supported: %s\n", new_server_path);
+            char display_remote[AFP_MAX_PATH * 4];
+            printf("Symlinks are not supported: %s\n",
+                   display_text(new_server_path, display_remote,
+                                sizeof(display_remote)));
             ret = -1;
         } else {
             int fd = open(new_local_path, O_CREAT | O_TRUNC | O_RDWR, 0644);
@@ -1650,7 +1736,9 @@ static int download_directory(char *server_path, char *local_path,
             unsigned long long amount = 0;
 
             if (verbose_mode) {
-                printf("    Downloading file %s\n", p->name);
+                char display_name[AFP_MAX_PATH * 4];
+                printf("    Downloading file %s\n",
+                       display_text(p->name, display_name, sizeof(display_name)));
             }
 
             if (retrieve_file(new_server_path, fd, &st, &amount) < 0) {
@@ -1663,7 +1751,10 @@ static int download_directory(char *server_path, char *local_path,
 
             if (copy_remote_metadata_to_local(new_server_path, new_local_path,
                                               &st) < 0) {
-                printf("Could not preserve metadata for %s\n", new_server_path);
+                char display_remote[AFP_MAX_PATH * 4];
+                printf("Could not preserve metadata for %s\n",
+                       display_text(new_server_path, display_remote,
+                                    sizeof(display_remote)));
                 ret = -1;
             }
         }
@@ -1674,7 +1765,9 @@ static int download_directory(char *server_path, char *local_path,
     }
 
     if (copy_remote_metadata_to_local(server_path, local_path, &dir_stat) < 0) {
-        printf("Could not preserve directory metadata for %s\n", server_path);
+        char display_remote[AFP_MAX_PATH * 4];
+        printf("Could not preserve directory metadata for %s\n",
+               display_text(server_path, display_remote, sizeof(display_remote)));
         ret = -1;
     }
 
@@ -1689,7 +1782,7 @@ static int com_get_file(char * arg, unsigned long long *total)
 {
     int fd;
     struct stat stat;
-    char *localfilename;
+    const char *localfilename;
     char filename[AFP_MAX_PATH];
     char getattr_path[AFP_MAX_PATH];
 
@@ -1706,20 +1799,26 @@ static int com_get_file(char * arg, unsigned long long *total)
     localfilename = basename(filename);
 
     if (verbose_mode) {
-        printf("    Downloading file %s\n", filename);
+        char display_filename[AFP_MAX_PATH * 4];
+        printf("    Downloading file %s\n",
+               display_text(filename, display_filename, sizeof(display_filename)));
     }
 
     get_server_path(filename, getattr_path);
 
     if (afp_sl_stat(&vol_id, getattr_path, NULL, &stat)) {
-        printf("Could not get attributes for file \"%s\"\n", filename);
+        char display_filename[AFP_MAX_PATH * 4];
+        printf("Could not get attributes for file \"%s\"\n",
+               display_text(filename, display_filename, sizeof(display_filename)));
         goto error;
     }
 
     fd = open(localfilename, O_CREAT | O_TRUNC | O_RDWR, stat.st_mode);
 
     if (fd < 0) {
-        printf("Failed to open \"%s\" for writing\n", localfilename);
+        char display_local[PATH_MAX * 4];
+        printf("Failed to open \"%s\" for writing\n",
+               display_text(localfilename, display_local, sizeof(display_local)));
         perror("Opening local file");
         goto error;
     }
@@ -1737,7 +1836,9 @@ static int com_get_file(char * arg, unsigned long long *total)
     close(fd);
 
     if (copy_remote_metadata_to_local(getattr_path, localfilename, &stat) < 0) {
-        printf("Could not preserve metadata for %s\n", filename);
+        char display_filename[AFP_MAX_PATH * 4];
+        printf("Could not preserve metadata for %s\n",
+               display_text(filename, display_filename, sizeof(display_filename)));
         goto error;
     }
 
@@ -1769,7 +1870,9 @@ int com_get(char *arg)
     get_server_path(filename, server_path);
 
     if (afp_sl_stat(&vol_id, server_path, NULL, &st) != 0) {
-        printf("File not found: %s\n", filename);
+        char display_filename[AFP_MAX_PATH * 4];
+        printf("File not found: %s\n",
+               display_text(filename, display_filename, sizeof(display_filename)));
         goto error;
     }
 
@@ -1779,14 +1882,18 @@ int com_get(char *arg)
             ret = download_directory(server_path, local_name, &amount_written);
             goto out;
         } else {
+            char display_filename[AFP_MAX_PATH * 4];
             printf("%s is a directory (use get -r to download recursively)\n",
-                   filename);
+                   display_text(filename, display_filename,
+                                sizeof(display_filename)));
             goto error;
         }
     }
 
     if (S_ISLNK(st.st_mode)) {
-        printf("Symlinks are not supported: %s\n", filename);
+        char display_filename[AFP_MAX_PATH * 4];
+        printf("Symlinks are not supported: %s\n",
+               display_text(filename, display_filename, sizeof(display_filename)));
         goto error;
     }
 
