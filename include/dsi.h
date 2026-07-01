@@ -10,6 +10,7 @@ struct dsi_request {
     void *other;
     int wait;
     int done_waiting;
+    int ignore_replies;
     pthread_cond_t  waiting_cond;
     pthread_mutex_t waiting_mutex;
     struct dsi_request *next;
@@ -21,6 +22,7 @@ int dsi_receive(struct afp_server * server, void * data, int size);
 int dsi_getstatus(struct afp_server * server);
 int dsi_sendtickle(struct afp_server *server);
 void dsi_flush_request_queue(struct afp_server *server);
+void dsi_fail_request_queue(struct afp_server *server, int error);
 
 int dsi_opensession(struct afp_server *server);
 

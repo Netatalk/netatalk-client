@@ -194,6 +194,9 @@ void loop_disconnect(struct afp_server *s)
         return;
     }
 
+    dsi_fail_request_queue(s, -EIO);
+    s->data_read = 0;
+    s->attention_len = 0;
     rm_fd_and_signal(s->fd);
     /* Handle disconnect */
     close(s->fd);

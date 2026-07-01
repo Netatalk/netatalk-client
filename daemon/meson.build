@@ -17,6 +17,7 @@ executable(
     'afpsld',
     sources: afpsld_sources,
     dependencies: [
+        root_dependencies,
         pthread_dep,
     ],
     link_with: [libafpclient],

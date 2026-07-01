@@ -75,7 +75,7 @@ int afp_getsessiontoken(struct afp_server * server, int type,
                    DSI_DEFAULT_TIMEOUT, afpGetSessionToken,
                    (void *) incoming_token);
     free(request);
-    return 0;
+    return ret;
 error:
     return ret;
 }
@@ -153,5 +153,4 @@ int afp_disconnectoldsession(struct afp_server * server, int type,
     free(request);
     return ret;
 }
-
 

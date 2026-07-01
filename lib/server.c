@@ -42,7 +42,14 @@ struct afp_server *afp_server_complete_connection(
     strlcpy(server->username, username, sizeof(server->username));
     strlcpy(server->password, password, sizeof(server->password));
     add_fd_and_signal(server->fd);
-    dsi_opensession(server);
+
+    if (dsi_opensession(server) != 0) {
+        log_for_client(priv, AFPFSD, LOG_ERR,
+                       "Could not open DSI session");
+        errno = ECONNRESET;
+        goto error;
+    }
+
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "afp_server_complete_connection -- DSI session: tx_quantum=%u (max write size)",
                    server->tx_quantum);

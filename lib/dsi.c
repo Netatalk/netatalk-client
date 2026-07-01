@@ -110,10 +110,9 @@ int dsi_opensession(struct afp_server *server)
     dsi_opensession_header.flags = 1;
     dsi_opensession_header.length = sizeof(unsigned int);
     dsi_opensession_header.rx_quantum = htonl(server->attention_quantum);
-    dsi_send(server, (char *) &dsi_opensession_header,
-             sizeof(dsi_opensession_header), DSI_BLOCK_TIMEOUT,
-             DSI_DSIOpenSession, NULL);
-    return 0;
+    return dsi_send(server, (char *) &dsi_opensession_header,
+                    sizeof(dsi_opensession_header), DSI_LOGIN_TIMEOUT,
+                    DSI_DSIOpenSession, NULL);
 }
 
 static int dsi_remove_from_request_queue(struct afp_server *server,
@@ -141,12 +140,11 @@ static int dsi_remove_from_request_queue(struct afp_server *server,
             }
 
             server->stats.requests_pending--;
-            /* SAFEGUARD: Wake any waiting thread before destroying */
+            /* Wake any waiter before destroying the request state. */
             pthread_mutex_lock(&p->waiting_mutex);
             p->done_waiting = 1;
             pthread_cond_signal(&p->waiting_cond);
             pthread_mutex_unlock(&p->waiting_mutex);
-            /* Now safe to destroy mutex/cond */
             pthread_cond_destroy(&p->waiting_cond);
             pthread_mutex_destroy(&p->waiting_mutex);
             free(p);
@@ -163,6 +161,14 @@ static int dsi_remove_from_request_queue(struct afp_server *server,
                    "*** Never removed anything for %d, %s", toremove->requestid,
                    afp_get_command_name(toremove->subcommand));
 #endif
+
+    if (toremove->ignore_replies) {
+        pthread_cond_destroy(&toremove->waiting_cond);
+        pthread_mutex_destroy(&toremove->waiting_mutex);
+        free(toremove);
+        return 0;
+    }
+
     log_for_client(NULL, AFPFSD, LOG_WARNING,
                    "Got an unknown reply for requestid %i",
                    ntohs(toremove->requestid));
@@ -179,36 +185,45 @@ void dsi_flush_request_queue(struct afp_server *server)
         return;
     }
 
-    log_for_client(NULL, AFPFSD, LOG_INFO,
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "Flushing pending request queue before reconnection");
     pthread_mutex_lock(&server->request_queue_mutex);
     p = server->command_requests;
+    server->command_requests = NULL;
 
-    while (p != NULL) {
+    while (p) {
         next = p->next;
-#ifdef DEBUG_DSI
-        log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                       "*** Flushing request %d, %s", p->requestid,
-                       afp_get_command_name(p->subcommand));
-#endif
-        /* Wake any waiting thread with error */
+        p->next = NULL;
+        p->ignore_replies = 1;
+        server->stats.requests_pending--;
         pthread_mutex_lock(&p->waiting_mutex);
         p->return_code = -EIO;
         p->done_waiting = 1;
         pthread_cond_signal(&p->waiting_cond);
         pthread_mutex_unlock(&p->waiting_mutex);
-        /* Destroy and free */
-        pthread_cond_destroy(&p->waiting_cond);
-        pthread_mutex_destroy(&p->waiting_mutex);
-        free(p);
-        server->stats.requests_pending--;
         p = next;
     }
 
-    server->command_requests = NULL;
     pthread_mutex_unlock(&server->request_queue_mutex);
-    log_for_client(NULL, AFPFSD, LOG_INFO,
-                   "Request queue flushed");
+}
+
+void dsi_fail_request_queue(struct afp_server *server, int error)
+{
+    if (!server_still_valid(server)) {
+        return;
+    }
+
+    pthread_mutex_lock(&server->request_queue_mutex);
+
+    for (struct dsi_request *p = server->command_requests; p; p = p->next) {
+        pthread_mutex_lock(&p->waiting_mutex);
+        p->return_code = error;
+        p->done_waiting = 1;
+        pthread_cond_signal(&p->waiting_cond);
+        pthread_mutex_unlock(&p->waiting_mutex);
+    }
+
+    pthread_mutex_unlock(&server->request_queue_mutex);
 }
 
 
@@ -226,7 +241,7 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
     struct timeval tv;
     header->length = htonl(size - sizeof(struct dsi_header));
 
-    if (!server || !server_still_valid(server) || server->fd == 0) {
+    if (!server || !server_still_valid(server)) {
         return -1;
     }
 
@@ -235,6 +250,25 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
     }
 
     afp_wait_for_started_loop();
+
+    if (server->connect_state == SERVER_STATE_DISCONNECTED) {
+        char mesg[MAX_ERROR_LEN];
+        unsigned int l = 0;
+
+        if (afp_server_reconnect_is_in_progress(server)) {
+            return -EIO;
+        }
+
+        memset(mesg, 0, sizeof(mesg));
+
+        if (afp_server_reconnect(server, mesg, &l, MAX_ERROR_LEN) != 0) {
+            return -EIO;
+        }
+    }
+
+    if (server->fd <= 0) {
+        return -EIO;
+    }
 
     /* Add request to the queue */
     if ((new_request = malloc(sizeof(struct dsi_request))) == NULL) {
@@ -251,7 +285,7 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
     new_request->next = NULL;
     new_request->done_waiting = 0;
     new_request->connection_generation = server->connection_generation;
-    /* SAFEGUARD: Initialize mutex/cond BEFORE adding to queue to prevent race condition */
+    /* Initialize before queueing so dsi_recv can signal this request safely. */
     pthread_cond_init(&new_request->waiting_cond, NULL);
     pthread_mutex_init(&new_request->waiting_mutex, NULL);
     pthread_mutex_lock(&server->request_queue_mutex);
@@ -266,14 +300,6 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
 
     server->stats.requests_pending++;
     pthread_mutex_unlock(&server->request_queue_mutex);
-
-    if (server->connect_state == SERVER_STATE_DISCONNECTED) {
-        char mesg[MAX_ERROR_LEN];
-        unsigned int l = 0;
-        /* Try and reconnect */
-        afp_server_reconnect(server, mesg, &l, MAX_ERROR_LEN);
-    }
-
     pthread_mutex_lock(&server->send_mutex);
 #ifdef DEBUG_DSI
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** Sending %d, %s",
@@ -298,15 +324,13 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
                 server->connect_state = SERVER_STATE_DISCONNECTED;
                 rc = -1;
                 pthread_mutex_unlock(&server->send_mutex);
-                /* SAFEGUARD: Set return_code so waiting thread gets the error */
                 new_request->return_code = -EIO;
-                goto out;  /* SAFEGUARD: Properly clean up instead of direct return */
+                goto out;
             }
 
             perror("writing to server");
             rc = -1;
             pthread_mutex_unlock(&server->send_mutex);
-            /* SAFEGUARD: Set return_code so waiting thread gets the error */
             new_request->return_code = -EIO;
             goto out;
         }
@@ -331,7 +355,6 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
 #endif
         pthread_mutex_lock(&new_request->waiting_mutex);
 
-        /* SAFEGUARD: Use while loop to handle spurious wakeups */
         while (new_request->done_waiting == 0) {
             rc = pthread_cond_wait(
                      &new_request->waiting_cond,
@@ -355,19 +378,8 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
         ts.tv_sec = tv.tv_sec;
         ts.tv_sec += new_request->wait;
         ts.tv_nsec = tv.tv_usec * 1000;
-
-        if (new_request->wait == 0) {
-#ifdef DEBUG_DSI
-            log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                           "=== Changing my mind, no longer waiting for %d",
-                           new_request->requestid);
-#endif
-            goto skip;
-        }
-
         pthread_mutex_lock(&new_request->waiting_mutex);
 
-        /* SAFEGUARD: Use while loop to handle spurious wakeups */
         while (new_request->done_waiting == 0) {
             rc = pthread_cond_timedwait(
                      &new_request->waiting_cond,
@@ -412,9 +424,7 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
                    new_request->wait,
                    rc, new_request->return_code);
 #endif
-skip:
 
-    /* SAFEGUARD: Only use return_code if we didn't have an error */
     if (rc == 0) {
         rc = new_request->return_code;
     }
@@ -728,7 +738,7 @@ void *dsi_incoming_attention(void * other)
         struct dsi_header header __attribute__((__packed__));
         uint16_t flags ;
     } __attribute__((__packed__)) *packet = (void *) server->attention_buffer;
-    unsigned short flags;
+    unsigned short flags = 0;
     char mesg[AFP_LOGINMESG_LEN];
     unsigned char shutdown = 0;
     unsigned char mins = 0;
@@ -792,7 +802,7 @@ struct dsi_request *dsi_find_request(struct afp_server *server,
     pthread_mutex_lock(&server->request_queue_mutex);
 
     for (p = server->command_requests; p; p = p->next) {
-        if (request_id == p->requestid) {
+        if (!p->ignore_replies && request_id == p->requestid) {
             pthread_mutex_unlock(&server->request_queue_mutex);
             return p;
         }
