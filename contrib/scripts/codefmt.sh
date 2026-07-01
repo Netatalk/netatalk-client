@@ -2,7 +2,7 @@
 
 # Recursively format source files in the current repo directory
 #
-# (c) 2025 Daniel Markstedt <daniel@mindani.net>
+# (c) 2025-2026 Daniel Markstedt <daniel@mindani.net>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -47,9 +47,9 @@ while getopts "vs:" opt; do
     esac
 done
 
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    echo "Warning: Not inside a git repository; will not be able to determine if any changes were made by this script" >&2
-else
+git config --global --add safe.directory "$PWD" > /dev/null 2>&1
+
+if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
     IS_GIT=1
     INITIAL_DIFF_HASH=$(git diff HEAD | git hash-object --stdin)
 fi
@@ -58,11 +58,11 @@ if [ "$SOURCE_TYPE" = "c" ] || [ "$SOURCE_TYPE" = "" ]; then
     if command -v astyle > /dev/null 2>&1; then
         FORMATTER_CMD="astyle --options=.astylerc --recursive --suffix=none"
         if [ $VERBOSE -eq 1 ]; then
-            echo "Formatting C sources..."
+            echo "Formatting C / C++ sources..."
         else
             FORMATTER_CMD="$FORMATTER_CMD --quiet"
         fi
-        eval "$FORMATTER_CMD '*.h' '*.c'"
+        eval "$FORMATTER_CMD '*.h' '*.c' '*.cc'"
     else
         echo "Error: astyle not found in PATH" >&2
         exit 2
@@ -166,4 +166,7 @@ if [ $IS_GIT -eq 1 ]; then
         fi
         exit 0
     fi
+else
+    echo "Error: Not inside a git repository; cannot verify formatting changes" >&2
+    exit 2
 fi
