@@ -169,6 +169,7 @@ static int recover_session(int restore_volume, int restore_dir)
     char saved_volume[AFP_VOLUME_NAME_LEN];
     char saved_dir[AFP_MAX_PATH];
     int had_volume;
+    int was_connected;
     unsigned int volume_options = VOLUME_EXTRA_FLAGS_NO_LOCKING;
 
     if (!connected) {
@@ -181,13 +182,10 @@ static int recover_session(int restore_volume, int restore_dir)
     had_volume = (vol_id != NULL);
     old_server_id = server_id;
     old_vol_id = vol_id;
-    server_id = NULL;
-    vol_id = NULL;
+    was_connected = connected;
     uam_mask = get_uam_mask_for_url();
 
     if (uam_mask == 0) {
-        server_id = old_server_id;
-        vol_id = old_vol_id;
         return -1;
     }
 
@@ -208,9 +206,17 @@ static int recover_session(int restore_volume, int restore_dir)
      */
     if (afp_sl_resume(&resume_url, uam_mask, &new_server_id, mesg) != 0
             && afp_sl_connect(&reconnect_url, uam_mask, &new_server_id, mesg) != 0) {
-        server_id = old_server_id;
-        vol_id = old_vol_id;
         return -1;
+    }
+
+    if ((restore_volume || had_volume) && saved_volume[0] != '\0') {
+        strlcpy(url.volumename, saved_volume, sizeof(url.volumename));
+        ret = attach_volume_with_password_prompt(new_server_id, &new_vol_id,
+              volume_options);
+
+        if (ret != 0) {
+            goto error;
+        }
     }
 
     if (old_server_id && old_server_id != new_server_id
@@ -220,18 +226,6 @@ static int recover_session(int restore_volume, int restore_dir)
 
     server_id = new_server_id;
     connected = 1;
-
-    if ((restore_volume || had_volume) && saved_volume[0] != '\0') {
-        strlcpy(url.volumename, saved_volume, sizeof(url.volumename));
-        ret = attach_volume_with_password_prompt(new_server_id, &new_vol_id,
-              volume_options);
-
-        if (ret != 0) {
-            vol_id = NULL;
-            return -1;
-        }
-    }
-
     vol_id = new_vol_id;
 
     if (restore_dir && saved_dir[0] != '\0') {
@@ -239,6 +233,18 @@ static int recover_session(int restore_volume, int restore_dir)
     }
 
     return 0;
+error:
+
+    if (new_server_id && new_server_id != old_server_id) {
+        afp_sl_disconnect(&new_server_id);
+    }
+
+    server_id = old_server_id;
+    vol_id = old_vol_id;
+    connected = was_connected;
+    strlcpy(url.volumename, saved_volume, sizeof(url.volumename));
+    strlcpy(curdir, saved_dir, sizeof(curdir));
+    return -1;
 }
 
 static int escape_paths(char * outgoing1, char * outgoing2, char * incoming)
