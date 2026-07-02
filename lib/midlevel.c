@@ -212,6 +212,24 @@ static int set_uidgid(struct afp_volume * volume,
     return 0;
 }
 
+static int map_filebase_uidgid_to_client(struct afp_volume * volume,
+        struct afp_file_info * filebase)
+{
+    for (struct afp_file_info * fp = filebase; fp; fp = fp->next) {
+        unsigned int uid = fp->unixprivs.uid;
+        unsigned int gid = fp->unixprivs.gid;
+
+        if (translate_uidgid_to_client(volume, &uid, &gid)) {
+            return -EIO;
+        }
+
+        fp->unixprivs.uid = uid;
+        fp->unixprivs.gid = gid;
+    }
+
+    return 0;
+}
+
 static void update_time(unsigned int * newtime)
 {
     struct timeval tv;
@@ -375,9 +393,21 @@ int ml_readdir(struct afp_volume * volume,
         goto done;
     }
 
-    return ll_readdir(volume, converted_path, fb, 0);
+    ret = ll_readdir(volume, converted_path, fb, 0);
+
+    if (ret < 0) {
+        return ret;
+    }
+
 done:
-    return 0;
+    ret = map_filebase_uidgid_to_client(volume, *fb);
+
+    if (ret < 0) {
+        afp_ml_filebase_free(fb);
+        return ret;
+    }
+
+    return ret;
 }
 
 int ml_read(struct afp_volume * volume, const char *path,
