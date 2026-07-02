@@ -56,13 +56,40 @@ fi
 
 if [ "$SOURCE_TYPE" = "c" ] || [ "$SOURCE_TYPE" = "" ]; then
     if command -v astyle > /dev/null 2>&1; then
-        FORMATTER_CMD="astyle --options=.astylerc --recursive --suffix=none"
+        FORMATTER_QUIET_ARG=""
         if [ $VERBOSE -eq 1 ]; then
             echo "Formatting C / C++ sources..."
         else
-            FORMATTER_CMD="$FORMATTER_CMD --quiet"
+            FORMATTER_QUIET_ARG="--quiet"
         fi
-        eval "$FORMATTER_CMD '*.h' '*.c' '*.cc'"
+        ASTYLE_FAILURES=$(mktemp "${TMPDIR:-/tmp}/codefmt-astyle.XXXXXX") || exit 2
+        if ! find . -type d -name "build*" -prune -o -type f \( -name "*.h" -o -name "*.c" -o -name "*.cc" \) -exec sh -c '
+            failures=$1
+            quiet_arg=$2
+            shift 2
+            status=0
+            for file in "$@"; do
+                if [ -n "$quiet_arg" ]; then
+                    astyle --options=.astylerc --suffix=none "$quiet_arg" "$file"
+                else
+                    astyle --options=.astylerc --suffix=none "$file"
+                fi
+                if [ $? -ne 0 ]; then
+                    printf "%s\n" "$file" >> "$failures"
+                    status=1
+                fi
+            done
+            exit "$status"
+        ' sh "$ASTYLE_FAILURES" "$FORMATTER_QUIET_ARG" {} +; then
+            if [ -s "$ASTYLE_FAILURES" ]; then
+                echo "Error: astyle failed" >&2
+            else
+                echo "Error: find failed while locating C / C++ sources" >&2
+            fi
+            rm -f "$ASTYLE_FAILURES"
+            exit 2
+        fi
+        rm -f "$ASTYLE_FAILURES"
     else
         echo "Error: astyle not found in PATH" >&2
         exit 2
