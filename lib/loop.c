@@ -481,7 +481,7 @@ int afp_main_loop(int command_fd)
                 afp_lock_server_list();
 
                 for (struct afp_server *s = get_server_base(); s; s = s->next) {
-                    if (s->connect_state == SERVER_STATE_CONNECTED && s->fd > 0) {
+                    if (s->connect_state == SERVER_STATE_CONNECTED && s->fd >= 0) {
 #ifdef DEBUG_AFP_LOOP
                         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                                        "afp_main_loop -- Sending tickle to server %s (fd=%d, connected_for=%lds)",
