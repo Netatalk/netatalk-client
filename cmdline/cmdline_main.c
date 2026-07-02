@@ -246,7 +246,7 @@ COMMAND commands[] = {
     { "rm", com_delete, "Delete FILE (-r for directories)", 1 },
     { "rmdir", com_rmdir, "Remove directory DIRECTORY", 1 },
     { "resourcefork", com_resourcefork, "Get, set, or remove a ResourceFork", 1 },
-    { "status", com_status, "Get some server status", 1 },
+    { "status", com_status, "Get status of all active servers", 1 },
     { "touch", com_touch, "Touch FILE", 1 },
     { "xattr", com_xattr, "List, get, set, or remove extended attributes", 1 },
     { "?", com_help, "Same as `help'", 0 },
