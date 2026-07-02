@@ -566,6 +566,7 @@ struct afp_server *afp_server_init(struct addrinfo * address)
     s->attention_quantum = AFP_DEFAULT_ATTENTION_QUANTUM;
     s->attention_buffer = malloc(s->attention_quantum);
     s->attention_len = 0;
+    s->fd = -1;
     s->connect_state = SERVER_STATE_DISCONNECTED;
     afp_server_reconnect_end(s);
     s->address = address;
@@ -913,7 +914,7 @@ int afp_server_connect(struct afp_server *server, int full)
     server->data_read = 0;
     server->attention_len = 0;
 
-    if (server->fd > 0) {
+    if (server->fd >= 0) {
         log_for_client(NULL, AFPFSD, LOG_INFO,
                        "Closing old socket fd=%d before reconnection", server->fd);
         close(server->fd);

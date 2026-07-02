@@ -107,7 +107,7 @@ static int volume_server_is_connected(const struct afp_volume *volume)
 {
     return volume && volume->server
            && volume->server->connect_state == SERVER_STATE_CONNECTED
-           && volume->server->fd > 0;
+           && volume->server->fd >= 0;
 }
 
 static void release_file_handle(int id)
@@ -417,7 +417,7 @@ static unsigned char process_getvolid(struct daemon_client * c)
     req->url.volpassword[AFP_VOLPASS_LEN] = '\0';
     s = find_server_by_pointer((struct afp_server *)req->serverid);
 
-    if (!s || s->connect_state != SERVER_STATE_CONNECTED || s->fd <= 0) {
+    if (!s || s->connect_state != SERVER_STATE_CONNECTED || s->fd < 0) {
         ret = AFP_SERVER_RESULT_NOTCONNECTED;
         goto done;
     }
@@ -556,7 +556,7 @@ static unsigned char process_getvols(struct daemon_client * c)
     server = find_server_by_pointer((struct afp_server *)request->serverid);
 
     if (!server || server->connect_state != SERVER_STATE_CONNECTED
-            || server->fd <= 0) {
+            || server->fd < 0) {
         result = AFP_SERVER_RESULT_NOTCONNECTED;
         goto error;
     }
@@ -2074,7 +2074,7 @@ static struct afp_server *find_resumable_server_hold(void *priv,
     afp_lock_server_list();
 
     for (struct afp_server *s = get_server_base(); s; s = s->next) {
-        if (s->connect_state != SERVER_STATE_CONNECTED || s->fd <= 0) {
+        if (s->connect_state != SERVER_STATE_CONNECTED || s->fd < 0) {
             continue;
         }
 
@@ -2129,7 +2129,7 @@ static struct afp_server *find_disconnected_server_hold(void *priv,
     afp_lock_server_list();
 
     for (struct afp_server *s = get_server_base(); s; s = s->next) {
-        if (s->connect_state != SERVER_STATE_DISCONNECTED || s->fd > 0) {
+        if (s->connect_state != SERVER_STATE_DISCONNECTED || s->fd >= 0) {
             continue;
         }
 
@@ -2379,7 +2379,7 @@ static int process_attach(struct daemon_client * c)
                    (char *) req->url.servername);
     s = find_server_by_pointer((struct afp_server *)req->serverid);
 
-    if (!s || s->connect_state != SERVER_STATE_CONNECTED || s->fd <= 0) {
+    if (!s || s->connect_state != SERVER_STATE_CONNECTED || s->fd < 0) {
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Attach request with invalid or disconnected server %p",
                        req->serverid);

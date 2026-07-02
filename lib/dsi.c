@@ -266,7 +266,7 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
         }
     }
 
-    if (server->fd <= 0) {
+    if (server->fd < 0) {
         return -EIO;
     }
 
