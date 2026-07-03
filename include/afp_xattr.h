@@ -34,12 +34,23 @@
 /* Utility for stripping the "user." prefix from xattr names. */
 static inline const char *afp_xattr_strip_user_prefix(const char *name)
 {
-    if (name && strncmp(name, AFP_XATTR_USER_PREFIX,
-                        AFP_XATTR_USER_PREFIX_LEN) == 0) {
-        return name + AFP_XATTR_USER_PREFIX_LEN;
+    const char *prefix = AFP_XATTR_USER_PREFIX;
+    const char *stripped = name;
+
+    if (!name) {
+        return NULL;
     }
 
-    return name;
+    while (*prefix) {
+        if (*stripped != *prefix) {
+            return name;
+        }
+
+        stripped++;
+        prefix++;
+    }
+
+    return stripped;
 }
 
 struct afp_extattr_info {
