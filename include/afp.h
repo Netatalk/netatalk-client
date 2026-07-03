@@ -149,20 +149,14 @@ struct afp_volume {
 #define SERVER_STATE_DISCONNECTED 2
 #define SERVER_STATE_CONNECTING 3
 
-enum server_type {
-    AFPFS_SERVER_TYPE_UNKNOWN,
-    AFPFS_SERVER_TYPE_NETATALK,
-    AFPFS_SERVER_TYPE_AIRPORT,
-    AFPFS_SERVER_TYPE_MACINTOSH,
-    AFPFS_SERVER_TYPE_TIMECAPSULE,
-    AFPFS_SERVER_TYPE_WINDOWS,
+enum afp_server_type {
+    AFP_SERVER_TYPE_UNKNOWN,
+    AFP_SERVER_TYPE_NETATALK,
+    AFP_SERVER_TYPE_AIRPORT,
+    AFP_SERVER_TYPE_MACINTOSH,
+    AFP_SERVER_TYPE_TIMECAPSULE,
+    AFP_SERVER_TYPE_WINDOWS,
 };
-
-#define is_netatalk(x) ( (x)->machine_type == AFPFS_SERVER_TYPE_NETATALK )
-#define is_airport(x) ( (x)->machine_type == AFPFS_SERVER_TYPE_AIRPORT )
-#define is_macintosh(x) ( (x)->machine_type == AFPFS_SERVER_TYPE_MACINTOSH )
-#define is_timecapsule(x) ( (x)->machine_type == AFPFS_SERVER_TYPE_TIMECAPSULE )
-#define is_windows(x) ( (x)->machine_type == AFPFS_SERVER_TYPE_WINDOWS )
 
 struct afp_versions {
     char        *av_name;
@@ -181,13 +175,11 @@ struct afp_server_basic {
     unsigned short flags;
     /* Skipping addresses */
     /* Skipping directories */
-    enum server_type server_type;
+    enum afp_server_type server_type;
 };
 
 
 struct afp_server {
-
-    struct afp_server_basic basic;
 
     /* Our buffer sizes */
     unsigned int tx_quantum;
@@ -222,7 +214,7 @@ struct afp_server {
     char signature[16];
     unsigned short flags;
     int connect_state;
-    enum server_type server_type;
+    enum afp_server_type server_type;
 
     /* This is the time we connected */
     time_t connect_time;
@@ -341,7 +333,10 @@ char *get_uam_names_list(void);
 
 unsigned int default_uams_mask(void);
 
+enum afp_server_type afp_identify_machine_type(const char *machine_type);
 void afp_server_identify(struct afp_server * s);
+void afp_server_fill_basic(const struct afp_server *server,
+                           struct afp_server_basic *basic);
 
 struct afp_volume *find_volume_by_name(struct afp_server * server,
                                        char *volname);

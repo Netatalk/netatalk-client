@@ -49,6 +49,23 @@ test(
     verbose: true,
 )
 
+identify_test = executable(
+    'test_identify',
+    sources: ['test_identify.c'],
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'AFP server machine type identification',
+    identify_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
 stateless_log_test = executable(
     'test_stateless_log',
     sources: ['test_stateless_log.c'],

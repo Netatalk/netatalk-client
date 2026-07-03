@@ -483,10 +483,7 @@ static unsigned char process_serverinfo(struct daemon_client * c)
 
     if (tmpserver) {
         /* We're already connected */
-        memcpy(tmpserver->basic.server_name_printable,
-               tmpserver->server_name_printable, AFP_SERVER_NAME_UTF8_LEN);
-        memcpy(&response.server_basic, &tmpserver->basic,
-               sizeof(struct afp_server_basic));
+        afp_server_fill_basic(tmpserver, &response.server_basic);
     } else {
         struct addrinfo *address;
 
@@ -503,8 +500,7 @@ static unsigned char process_serverinfo(struct daemon_client * c)
             goto error;
         }
 
-        memcpy(&response.server_basic, &tmpserver->basic,
-               sizeof(struct afp_server_basic));
+        afp_server_fill_basic(tmpserver, &response.server_basic);
         afp_server_remove(tmpserver);
         tmpserver = NULL;  /* Already freed by remove, don't release again */
     }
@@ -2740,7 +2736,7 @@ struct afp_volume *command_sub_attach_volume(struct daemon_client *c,
         if (volname && volname[0]) {
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "Volume %s does not exist on server %s.", volname,
-                           server->basic.server_name_printable);
+                           server->server_name_printable);
         }
 
         if (response_result) {
@@ -2755,7 +2751,7 @@ struct afp_volume *command_sub_attach_volume(struct daemon_client *c,
         } else {
             log_for_client((void *)c, AFPFSD, LOG_ERR,
                            "No volumes available on server %s.",
-                           server->basic.server_name_printable);
+                           server->server_name_printable);
         }
 
         goto error;
