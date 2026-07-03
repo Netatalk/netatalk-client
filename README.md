@@ -36,7 +36,7 @@ Unmount the volume when you are done:
 
     % afp_client unmount /home/myuser/fusemount
 
-Shut down the afpfs-ng management daemon (*afpfsd*) when no FUSE mounts are active:
+Shut down the FUSE management daemon (*afpfsd*) when no FUSE mounts are active:
 
     % afp_client exit
 
@@ -68,7 +68,7 @@ Connect anonymously to afpserver.local, list all volumes available to guest user
     Attached to volume Dropbox
     afpcmd: ls
     -rw-r--r--   6148 2025-07-11 14:09 .DS_Store
-    -rw-r--r-- 108320 2025-10-12 13:59 afpfs-ng-0.9.0.tar.xz
+    -rw-r--r-- 108320 2025-10-12 13:59 mytarball.tar.xz
     -rw-------      0 2025-10-12 00:39 bork.txt
     -rw-r--r-- 525362 2024-10-09 13:02 group_photo.jpg
     -rw-r--r--  46954 2023-08-03 02:03 Information Sheet.xlsx
@@ -80,18 +80,18 @@ and *help* for a list of all supported commands.
 
 Use *afpcmd* in batch mode to download files from the AFP share to the local machine:
 
-    $ afpcmd "afp://myuser@afpserver.local/File Sharing/afpfs-ng-0.9.0.tar.xz" .
+    $ afpcmd "afp://myuser@afpserver.local/File Sharing/mytarball.tar.xz" .
     Password: [input hidden]
     Connected to server afpserver
-        Downloading file afpfs-ng-0.9.0.tar.xz
+        Downloading file mytarball.tar.xz
         Transferred 108320 bytes in 0.015 seconds. (7200 kB/s)
     Transfer complete. 108320 bytes received.
 
-## Differences from afpfs-ng
+## Differences with afpfs-ng
 
 Netatalk Client has the goal of maintaining continuity with afpfs-ng commands and APIs,
 so that moving from one to the other is as seamless as possible. However we do not guarantee
-libafpclient ABI compatibility with afpfs-ng, and some differences in behavior and supported features may exist.
+libafpclient ABI compatibility with afpfs-ng, and differences in behavior and supported features exist.
 
 - afpfsd.h is now a shim header which includes afp_server.h
 - afpfs-ng had to be built either with FUSE or Stateless API support, but Netatalk Client supports both simultaneously
@@ -101,9 +101,12 @@ libafpclient ABI compatibility with afpfs-ng, and some differences in behavior a
 - The *afpcmd* command line client has been rewritten to use the Stateless API instead of implementing
   libafpclient calls directly, and now relies on the *afpsld* daemon to manage AFP sessions and connections
   instead of implementing its own session management
+- The *afpfsd* FUSE controller daemon has been rewritten to have one process per FUSE mount,
+  with a manager process to handle mount requests and manage the afpfsd processes.
+  This allows for better isolation and stability of FUSE mounts compared to a single process handling all mounts.
 
-We have also introduced numerous new options and features, which will not be listed in full here
-but can be found in the documentation and command line help.
+We have also introduced numerous new options and features, which will not be listed in full here.
+Refer to the documentation and command line help text.
 
 ## How to Contribute
 

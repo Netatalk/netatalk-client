@@ -468,7 +468,7 @@ static void usage(void)
         "Batch transfer mode:\n"
         "\tafpcmd [-r] [-V] [-M mode] <afp url> <local path>   (Download from server)\n"
         "\tafpcmd [-r] [-V] [-M mode] <local path> <afp url>   (Upload to server)\n\n"
-        "See the afpcmd(1) man page for more information.\n", AFPFS_VERSION
+        "See the afpcmd(1) man page for more information.\n", NETATALK_CLIENT_VERSION
     );
 }
 

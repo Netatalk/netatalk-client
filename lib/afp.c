@@ -639,7 +639,7 @@ int afp_server_login(struct afp_server *server,
 
     case kFPAuthContinue:
         *l += snprintf(mesg, max - *l,
-                       "Authentication method unsupported by AFPFS\n");
+                       "Unsupported authentication method\n");
         goto error;
 
     case kFPBadUAM:
@@ -671,7 +671,7 @@ int afp_server_login(struct afp_server *server,
 
     case kFPServerGoingDown:
         *l += snprintf(mesg, max - *l,
-                       "Server going down, so I can't log you in.\n");
+                       "Server going down, so I can't log you in\n");
         goto error;
 
     case kFPUserNotAuth:

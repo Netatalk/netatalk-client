@@ -9,8 +9,6 @@ project(
 
 cc = meson.get_compiler('c')
 host_os = host_machine.system()
-build_type = get_option('buildtype')
-afpfsng_version = meson.project_version()
 pkg = import('pkgconfig')
 
 install_prefix = get_option('prefix')
@@ -23,7 +21,7 @@ includedir = install_prefix / get_option('includedir')
 libsearch_dirs = []
 include_dirs = []
 cflags = [
-    '-DAFPFS_VERSION="' + afpfsng_version + '"',
+    '-DNETATALK_CLIENT_VERSION="' + meson.project_version() + '"',
     '-DBINDIR="' + bindir + '"',
     '-D_FILE_OFFSET_BITS=64',
     '-DAFPCLIENT_INTERNAL',
@@ -224,7 +222,7 @@ summary_info = {
     'Host CPU': host_machine.cpu_family(),
     'Host endianness': build_machine.endian(),
     'C compiler': cc.get_id(),
-    'Build stype': build_type,
+    'Build type': get_option('buildtype'),
     'Shared or static libraries': get_option('default_library'),
 }
 summary(summary_info, bool_yn: true, section: 'Compilation:')
