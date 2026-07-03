@@ -17,17 +17,23 @@
 int afp_status_header(char * text, int * len)
 {
     int pos;
+
+    if (*len <= 0) {
+        return -1;
+    }
+
     memset(text, 0, *len);
     pos = snprintf(text, *len, "Netatalk Client Version: %s\n"
                                "Client UAMs: %s\n",
                    NETATALK_CLIENT_VERSION,
                    get_uam_names_list());
-    *len -= pos;
 
-    if (*len == 0) {
+    if ((pos < 0) || (pos >= *len)) {
+        *len = 0;
         return -1;
     }
 
+    *len -= pos;
     return pos;
 }
 
