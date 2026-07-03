@@ -18,9 +18,9 @@ int afp_status_header(char * text, int * len)
 {
     int pos;
     memset(text, 0, *len);
-    pos = snprintf(text, *len, "AFPFS Version: %s\n"
+    pos = snprintf(text, *len, "Netatalk Client Version: %s\n"
                                "Client UAMs: %s\n",
-                   AFPFS_VERSION,
+                   NETATALK_CLIENT_VERSION,
                    get_uam_names_list());
     *len -= pos;
 

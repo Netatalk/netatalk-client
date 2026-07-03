@@ -155,7 +155,7 @@ static void usage(void)
            "  -d, --debug        Do not fork, debug loglevel, log to stdout\n"
            "  -m, --manager      Run as a manager daemon\n"
            "  -s, --socket-id    Socket filename (for per-mount daemon support)\n",
-           AFPFS_VERSION);
+           NETATALK_CLIENT_VERSION);
 }
 
 
@@ -1081,7 +1081,7 @@ int main(int argc, char *argv[])
 
         command_fd_global = command_fd;
         log_for_client(NULL, AFPFSD, LOG_NOTICE,
-                       "Starting up AFPFS version %s", AFPFS_VERSION);
+                       "Starting up AFP FUSE controller daemon version %s", NETATALK_CLIENT_VERSION);
         afp_main_loop(command_fd);
         close_commands(command_fd);
     }

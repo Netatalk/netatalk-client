@@ -290,7 +290,7 @@ static void usage(void)
            "Options:\n"
            "\t-i             Show server icon\n"
            "\t-v loglevel    Set log level (debug, info, notice, warning, error)\n"
-           "\t-h             Show this help\n", AFPFS_VERSION);
+           "\t-h             Show this help\n", NETATALK_CLIENT_VERSION);
 }
 
 void afp_wait_for_started_loop(void);

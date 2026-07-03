@@ -787,7 +787,8 @@ static void mount_afpfs_usage(void)
 {
     printf("Netatalk Client %s - mount an Apple Filing Protocol network filesystem with FUSE\n"
            "Usage:\n"
-           "\tmount_afpfs [-o volpass=password] <afp url> <mountpoint>\n", AFPFS_VERSION);
+           "\tmount_afpfs [-o volpass=password] <afp url> <mountpoint>\n",
+           NETATALK_CLIENT_VERSION);
 }
 
 static int handle_mount_afpfs(int argc, char * argv[])

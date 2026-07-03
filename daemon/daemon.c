@@ -161,7 +161,7 @@ static void usage(void)
            "  -v, --loglevel     LOG_DEBUG|LOG_INFO|LOG_NOTICE|LOG_WARNING|LOG_ERR\n"
            "  -f, --foreground   Do not fork\n"
            "  -d, --debug        Do not fork, debug loglevel, logs to stdout\n"
-           "Version %s\n", AFPFS_VERSION);
+           "Version %s\n", NETATALK_CLIENT_VERSION);
 }
 
 static struct libafpclient client = {
@@ -302,8 +302,9 @@ int main(int argc, char *argv[])
             goto error;
         }
 
-        log_for_client(NULL, AFPFSD, LOG_NOTICE, "Starting up AFPFS version %s",
-                       AFPFS_VERSION);
+        log_for_client(NULL, AFPFSD, LOG_NOTICE,
+                       "Starting up AFP Stateless daemon version %s",
+                       NETATALK_CLIENT_VERSION);
         afp_main_loop(command_fd);
         close_commands(command_fd);
     }
