@@ -585,6 +585,30 @@ struct afp_server *afp_server_init(struct addrinfo * address)
     return s;
 }
 
+void afp_server_fill_basic(const struct afp_server *server,
+                           struct afp_server_basic *basic)
+{
+    memset(basic, 0, sizeof(*basic));
+    memcpy(basic->server_name_printable,
+           server->server_name_printable,
+           sizeof(basic->server_name_printable));
+    memcpy(basic->machine_type,
+           server->machine_type,
+           sizeof(basic->machine_type));
+    memcpy(basic->icon,
+           server->icon,
+           sizeof(basic->icon));
+    memcpy(basic->signature,
+           server->signature,
+           sizeof(basic->signature));
+    memcpy(basic->versions,
+           server->versions,
+           sizeof(basic->versions));
+    basic->supported_uams = server->supported_uams;
+    basic->flags = server->flags;
+    basic->server_type = server->server_type;
+}
+
 static void setup_default_outgoing_token(struct afp_token * token)
 {
     char foo[] = {(char)0x54, (char)0xc0, (char)0x75, (char)0xb0, (char)0x15, (char)0xe6, (char)0x1c, (char)0x13,

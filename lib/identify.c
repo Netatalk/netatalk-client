@@ -10,6 +10,29 @@
 #include "afp.h"
 #include "dsi.h"
 
+enum afp_server_type afp_identify_machine_type(const char *machine_type)
+{
+    if (machine_type == NULL) {
+        return AFP_SERVER_TYPE_UNKNOWN;
+    }
+
+    if (strncmp(machine_type, "Netatalk", 8) == 0) {
+        return AFP_SERVER_TYPE_NETATALK;
+    } else if (strncmp(machine_type, "AirPort", 7) == 0) {
+        return AFP_SERVER_TYPE_AIRPORT;
+    } else if (strncmp(machine_type, "Mac", 3) == 0
+               || strncmp(machine_type, "iMac", 4) == 0
+               || strncmp(machine_type, "Xserve", 6) == 0) {
+        return AFP_SERVER_TYPE_MACINTOSH;
+    } else if (strncmp(machine_type, "TimeCapsule", 11) == 0) {
+        return AFP_SERVER_TYPE_TIMECAPSULE;
+    } else if (strncmp(machine_type, "Windows", 7) == 0) {
+        return AFP_SERVER_TYPE_WINDOWS;
+    }
+
+    return AFP_SERVER_TYPE_UNKNOWN;
+}
+
 /*
  * afp_server_identify()
  *
@@ -23,41 +46,47 @@
 void afp_server_identify(struct afp_server * s)
 {
     s->dsi_default_timeout = DSI_DEFAULT_TIMEOUT;
+    s->server_type = afp_identify_machine_type(s->machine_type);
 
-    if (strncmp(s->machine_type, "Netatalk", 8) == 0) {
+    switch (s->server_type) {
+    case AFP_SERVER_TYPE_NETATALK:
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "Identified server %s as Netatalk",
                        s->server_name_printable);
-        s->server_type = AFPFS_SERVER_TYPE_NETATALK;
-    } else if (strncmp(s->machine_type, "AirPort", 7) == 0) {
+        break;
+
+    case AFP_SERVER_TYPE_AIRPORT:
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "Identified server %s as AirPort",
                        s->server_name_printable);
-        s->server_type = AFPFS_SERVER_TYPE_AIRPORT;
-    } else if (strncmp(s->machine_type, "Mac", 3) == 0
-               || strncmp(s->machine_type, "iMac", 4) == 0
-               || strncmp(s->machine_type, "Xserve", 6) == 0) {
+        break;
+
+    case AFP_SERVER_TYPE_MACINTOSH:
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "Identified server %s as Macintosh",
                        s->server_name_printable);
-        s->server_type = AFPFS_SERVER_TYPE_MACINTOSH;
-    } else if (strncmp(s->machine_type, "TimeCapsule", 11) == 0) {
+        break;
+
+    case AFP_SERVER_TYPE_TIMECAPSULE:
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "Identified server %s as Time Capsule",
                        s->server_name_printable);
-        s->server_type = AFPFS_SERVER_TYPE_TIMECAPSULE;
         s->dsi_default_timeout = DSI_TIMECAPSULE_DEFAULT_TIMEOUT;
-    } else if (strncmp(s->machine_type, "Windows", 7) == 0) {
+        break;
+
+    case AFP_SERVER_TYPE_WINDOWS:
         /* PCMacLan returns "Windows based PC"; Windows SFM returns "Windows NT"*/
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "Identified server %s as Windows",
                        s->server_name_printable);
-        s->server_type = AFPFS_SERVER_TYPE_WINDOWS;
-    } else {
+        break;
+
+    case AFP_SERVER_TYPE_UNKNOWN:
+    default:
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "Could not identify server %s (machine type %s)",
                        s->server_name_printable,
                        s->machine_type);
-        s->server_type = AFPFS_SERVER_TYPE_UNKNOWN;
+        break;
     }
 }
