@@ -1,3 +1,11 @@
+/*
+ *  debug.c
+ *
+ *  Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *
+ */
+
 #include <stdio.h>
 
 /* AFP function names */

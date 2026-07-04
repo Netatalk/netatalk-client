@@ -1,3 +1,11 @@
+/*
+ *  users.c
+ *
+ *  Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <pwd.h>

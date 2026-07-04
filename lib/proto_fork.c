@@ -4,7 +4,7 @@
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
  *
-*/
+ */
 
 #include <stdlib.h>
 #include <string.h>
