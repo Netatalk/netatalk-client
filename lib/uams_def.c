@@ -1,3 +1,12 @@
+/*
+ *  uams_def.c
+ *
+ *  Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2007 Derrik Pates <dpates@dsdk12.net>
+ *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *
+ */
+
 #include <string.h>
 #include <stdlib.h>
 

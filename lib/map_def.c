@@ -1,3 +1,11 @@
+/*
+ *  map_def.c
+ *
+ *  Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *
+ */
+
 #include <string.h>
 #include "afp.h"
 #include "map_def.h"

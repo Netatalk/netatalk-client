@@ -1,5 +1,6 @@
 /*
  * Secure memory clearing implementation for systems without explicit_bzero
+ *
  * Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
  *
  * This program is free software; you can redistribute it and/or modify

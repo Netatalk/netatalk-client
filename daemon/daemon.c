@@ -1,10 +1,10 @@
 /*
  *  daemon.c - Stateless daemon main loop
  *
+ *  This is the main loop for afpsld (stateless daemon).
+ *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
- *
- *  This is the main loop for afpsld (stateless daemon).
  */
 
 #include <errno.h>

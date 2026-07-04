@@ -1,3 +1,11 @@
+/*
+ *  client.c
+ *
+ *  Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *
+ */
+
 #include "afp.h"
 #include "libafpclient.h"
 

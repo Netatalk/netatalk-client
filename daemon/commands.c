@@ -1,10 +1,10 @@
 /*
  *  commands.c - Stateless daemon command handlers
  *
+ *  This file contains command handlers for the afpsld stateless daemon.
+ *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
- *
- *  This file contains command handlers for the afpsld stateless daemon.
  */
 
 #include <errno.h>
