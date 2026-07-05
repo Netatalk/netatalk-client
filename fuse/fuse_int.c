@@ -19,6 +19,7 @@
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <syslog.h>
 #include <stdint.h>
 #include <stdarg.h>
@@ -401,7 +402,7 @@ static int fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     if (ret == 0) {
         fi->fh = (unsigned long) fp;
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                       "*** cache create \"%s\" flags=0x%x fh=%lu forkid=%d",
+                       "*** cache create \"%s\" flags=0x%x fh=%" PRIu64 " forkid=%d",
                        path, fi->flags, fi->fh, fp->forkid);
     } else {
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
@@ -486,7 +487,8 @@ static int fuse_open(const char *path, struct fuse_file_info *fi)
     if (ret == 0) {
         fi->fh = (unsigned long) fp;
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                       "*** cache open \"%s\" flags=0x%x fh=%lu forkid=%d writable=%u resource=%u",
+                       "*** cache open \"%s\" flags=0x%x fh=%" PRIu64
+                       " forkid=%d writable=%u resource=%u",
                        path, flags, fi->fh, fp->forkid, fp->writable,
                        fp->resource);
     }
