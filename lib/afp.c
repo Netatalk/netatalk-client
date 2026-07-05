@@ -648,7 +648,7 @@ struct afp_server *afp_server_init(struct addrinfo * address)
     pthread_mutex_init(&s->requestid_mutex, NULL);
     pthread_mutex_init(&s->request_queue_mutex, NULL);
     pthread_mutex_init(&s->send_mutex, NULL);
-    s->connection_generation = 0;
+    afp_server_connection_generation_init(s);
     s->refcount = 1;
     /* AFP 3.3+ replay cache - initialized to disabled */
     s->replay_cache_size = 0;
@@ -1020,9 +1020,10 @@ int afp_server_connect(struct afp_server *server, int full)
     }
 
     /* Increment connection generation to detect stale replies */
-    server->connection_generation++;
+    unsigned int connection_generation =
+        afp_server_next_connection_generation(server);
     log_for_client(NULL, AFPFSD, LOG_INFO,
-                   "Connection generation now %u", server->connection_generation);
+                   "Connection generation now %u", connection_generation);
 
     while (address) {
         switch (address->ai_family) {
