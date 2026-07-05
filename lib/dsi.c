@@ -290,7 +290,7 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
     new_request->wait = wait;
     new_request->next = NULL;
     new_request->done_waiting = 0;
-    new_request->connection_generation = server->connection_generation;
+    new_request->connection_generation = afp_server_connection_generation(server);
     /* Initialize before queueing so dsi_recv can signal this request safely. */
     pthread_cond_init(&new_request->waiting_cond, NULL);
     pthread_mutex_init(&new_request->waiting_mutex, NULL);
@@ -779,11 +779,13 @@ void *dsi_incoming_attention(void * other)
         checkmessage = 1;
     }
 
-    if (context->connection_generation != server->connection_generation) {
+    unsigned int current_generation = afp_server_connection_generation(server);
+
+    if (context->connection_generation != current_generation) {
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "Ignoring stale attention packet from connection generation %u (current: %u)",
                        context->connection_generation,
-                       server->connection_generation);
+                       current_generation);
         afp_server_release(server);
         free(context);
         return NULL;
@@ -803,15 +805,16 @@ void *dsi_incoming_attention(void * other)
         log_for_client(NULL, AFPFSD, LOG_ERR,
                        "Got a shutdown notice in packet %d, going down in %d mins",
                        ntohs(packet->header.requestid), mins);
+        current_generation = afp_server_connection_generation(server);
 
-        if (context->connection_generation == server->connection_generation) {
+        if (context->connection_generation == current_generation) {
             loop_disconnect(server);
             server->connect_state = SERVER_STATE_DISCONNECTED;
         } else {
             log_for_client(NULL, AFPFSD, LOG_DEBUG,
                            "Ignoring stale shutdown notice from connection generation %u (current: %u)",
                            context->connection_generation,
-                           server->connection_generation);
+                           current_generation);
         }
     }
 
@@ -905,12 +908,14 @@ gotenough:
     }
 
     /* Check if this is a stale reply from an old connection */
+    unsigned int current_generation = afp_server_connection_generation(server);
+
     if (request
-            && request->connection_generation != server->connection_generation) {
+            && request->connection_generation != current_generation) {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
                        "Discarding stale reply id %d from connection generation %u (current: %u)",
                        ntohs(header->requestid), request->connection_generation,
-                       server->connection_generation);
+                       current_generation);
         runt_packet = 1;
         server->stats.runt_packets++;
         request = NULL;
@@ -1116,7 +1121,7 @@ process_packet:
         }
 
         context->server = server;
-        context->connection_generation = server->connection_generation;
+        context->connection_generation = afp_server_connection_generation(server);
         memcpy(context->packet, server->incoming_buffer, packet_len);
         afp_server_hold(server);
 

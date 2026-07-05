@@ -306,6 +306,27 @@ static inline int afp_server_reconnect_is_in_progress(
                            __ATOMIC_ACQUIRE) != 0;
 }
 
+static inline unsigned int afp_server_connection_generation(
+    const struct afp_server *server)
+{
+    return __atomic_load_n(&server->connection_generation,
+                           __ATOMIC_ACQUIRE);
+}
+
+static inline unsigned int afp_server_next_connection_generation(
+    struct afp_server *server)
+{
+    return __atomic_add_fetch(&server->connection_generation, 1,
+                              __ATOMIC_ACQ_REL);
+}
+
+static inline void afp_server_connection_generation_init(
+    struct afp_server *server)
+{
+    __atomic_store_n(&server->connection_generation, 0,
+                     __ATOMIC_RELEASE);
+}
+
 struct afp_comment {
     unsigned int maxsize;
     unsigned int size;
