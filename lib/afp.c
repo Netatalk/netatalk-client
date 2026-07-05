@@ -85,19 +85,19 @@ int (*afp_replies[])(struct afp_server * server, char * buf, unsigned int len,
     NULL, NULL, NULL, NULL,
     NULL, NULL, NULL, NULL,
     NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
+    NULL, NULL, NULL, NULL,                       /* 80 - 99 */
 
     NULL, NULL, NULL, NULL,
     NULL, NULL, NULL, NULL,
     NULL, NULL, NULL, NULL,
     NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
+    NULL, NULL, NULL, NULL,                       /* 100 - 119 */
 
+    NULL, NULL, afp_blank_reply, NULL,
     NULL, NULL, NULL, NULL,
     NULL, NULL, NULL, NULL,
     NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
+    NULL, NULL, NULL, NULL,                       /* 120 - 139 */
 
     NULL, NULL, NULL, NULL,
     NULL, NULL, NULL, NULL,
@@ -564,6 +564,7 @@ void afp_free_server(struct afp_server ** sp)
         free(volumes);
     }
 
+    explicit_bzero(server->password, sizeof(server->password));
     free(server);
     *sp = NULL;
 }

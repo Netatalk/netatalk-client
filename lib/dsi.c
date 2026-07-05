@@ -40,6 +40,12 @@ int convert_utf8dec_to_utf8pre(char *src, int src_len,
 int convert_utf8pre_to_utf8dec(char * src, int src_len,
                                char *dest, int dest_len);
 
+struct dsi_attention_context {
+    struct afp_server *server;
+    unsigned int connection_generation;
+    char packet[];
+};
+
 /* This sets up a DSI header. */
 void dsi_setup_header(struct afp_server * server, struct dsi_header * header,
                       char command)
@@ -733,11 +739,12 @@ void dsi_incoming_tickle(struct afp_server * server)
 
 void *dsi_incoming_attention(void * other)
 {
-    struct afp_server * server = other;
+    struct dsi_attention_context *context = other;
+    struct afp_server * server = context->server;
     struct {
         struct dsi_header header __attribute__((__packed__));
         uint16_t flags ;
-    } __attribute__((__packed__)) *packet = (void *) server->attention_buffer;
+    } __attribute__((__packed__)) *packet = (void *) context->packet;
     unsigned short flags = 0;
     char mesg[AFP_LOGINMESG_LEN];
     unsigned char shutdown = 0;
@@ -772,6 +779,16 @@ void *dsi_incoming_attention(void * other)
         checkmessage = 1;
     }
 
+    if (context->connection_generation != server->connection_generation) {
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "Ignoring stale attention packet from connection generation %u (current: %u)",
+                       context->connection_generation,
+                       server->connection_generation);
+        afp_server_release(server);
+        free(context);
+        return NULL;
+    }
+
     if (checkmessage) {
         afp_getsrvrmsg(server, AFPMESG_SERVER,
                        ((server->using_version && server->using_version->av_number >= 30) ? 1 : 0),
@@ -786,11 +803,20 @@ void *dsi_incoming_attention(void * other)
         log_for_client(NULL, AFPFSD, LOG_ERR,
                        "Got a shutdown notice in packet %d, going down in %d mins",
                        ntohs(packet->header.requestid), mins);
-        loop_disconnect(server);
-        server->connect_state = SERVER_STATE_DISCONNECTED;
+
+        if (context->connection_generation == server->connection_generation) {
+            loop_disconnect(server);
+            server->connect_state = SERVER_STATE_DISCONNECTED;
+        } else {
+            log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                           "Ignoring stale shutdown notice from connection generation %u (current: %u)",
+                           context->connection_generation,
+                           server->connection_generation);
+        }
     }
 
     afp_server_release(server);
+    free(context);
     return NULL;
 }
 
@@ -1081,16 +1107,24 @@ process_packet:
 
     case DSI_DSIAttention: {
         pthread_t thread;
-        memcpy(server->attention_buffer,
-               server->incoming_buffer,
-               server->data_read);
-        server->attention_len = server->data_read;
+        struct dsi_attention_context *context;
+        size_t packet_len = server->data_read;
+        context = malloc(sizeof(*context) + packet_len);
+
+        if (!context) {
+            goto error;
+        }
+
+        context->server = server;
+        context->connection_generation = server->connection_generation;
+        memcpy(context->packet, server->incoming_buffer, packet_len);
         afp_server_hold(server);
 
-        if (pthread_create(&thread, NULL, dsi_incoming_attention, server) == 0) {
+        if (pthread_create(&thread, NULL, dsi_incoming_attention, context) == 0) {
             pthread_detach(thread);
         } else {
             afp_server_release(server);
+            free(context);
         }
     }
     break;

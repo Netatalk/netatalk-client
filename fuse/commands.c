@@ -470,9 +470,10 @@ static int afp_server_reconnect_loud(struct fuse_client * c,
                                      struct afp_server * s)
 {
     char mesg[MAX_ERROR_LEN];
-    unsigned int l = 2040;
+    unsigned int l = 0;
     int rc;
-    rc = afp_server_reconnect(s, mesg, &l, l);
+    memset(mesg, 0, sizeof(mesg));
+    rc = afp_server_reconnect(s, mesg, &l, sizeof(mesg));
 
     if (rc)
         log_for_client((void *) c, AFPFSD, LOG_ERR,
@@ -677,6 +678,13 @@ static int process_mount(struct fuse_client * c)
     if ((s = afp_server_full_connect(c, &conn_req)) == NULL) {
         signal_main_thread();
         goto error;
+    }
+
+    /* FUSE suspend/resume runs without a fresh client password prompt. The
+     * core connect path scrubs this field after initial login, so the
+     * per-mount daemon deliberately restashes it for later reconnects. */
+    if (req.url.password[0] != '\0') {
+        strlcpy(s->password, req.url.password, sizeof(s->password));
     }
 
     if ((volume = mount_volume(c, s, req.url.volumename,
