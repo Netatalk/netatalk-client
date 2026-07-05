@@ -50,6 +50,20 @@ static int command_fd_global = -1;
 /* Forward declaration */
 void close_commands(int command_fd);
 
+static void wake_signal_handler(int signum)
+{
+    (void)signum;
+}
+
+static int install_fuse_wake_signal_handler(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = wake_signal_handler;
+    sigemptyset(&sa.sa_mask);
+    return sigaction(SIGPIPE, &sa, NULL);
+}
+
 int get_debug_mode(void)
 {
     return debug_mode;
@@ -110,18 +124,31 @@ int fuse_unmount_volume(struct afp_volume * volume)
     pthread_t self = pthread_self();
     pthread_t vol_thread = volume->thread;
     int is_same_thread = pthread_equal(self, vol_thread);
+    struct fuse *fuse = (struct fuse *)volume->priv;
     char safe_mountpoint[PATH_MAX * 4];
     sanitize_text(volume->mountpoint, safe_mountpoint,
                   sizeof(safe_mountpoint));
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "Unmounting FUSE filesystem at %s", safe_mountpoint);
-    fuse_unmount((struct fuse *)volume->priv);
+                   "Stopping FUSE filesystem at %s", safe_mountpoint);
+    fuse_exit(fuse);
 
-    /* Wait for FUSE thread to complete (if called from external thread) */
+    /* fuse_exit() only marks the session as exiting.  Wake the FUSE thread
+     * with SIGPIPE, matching libfuse's documented wake path, while main()
+     * ensures SIGPIPE cannot terminate the daemon if libfuse has not installed
+     * its handler yet.  The FUSE thread owns fuse_main() cleanup. */
     if (!is_same_thread && volume->thread) {
+        int wake_rc = pthread_kill(vol_thread, SIGPIPE);
+
+        if (wake_rc != 0) {
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "Could not wake FUSE thread for %s: %s",
+                           safe_mountpoint, strerror(wake_rc));
+        }
+
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "Waiting for FUSE thread to complete");
         pthread_join(volume->thread, NULL);
+        volume->priv = NULL;
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "FUSE thread completed for %s", safe_mountpoint);
     }
@@ -1044,6 +1071,12 @@ int main(int argc, char *argv[])
     /* If logging to stdout, enable line buffering for timely output */
     if (new_log_method & LOG_METHOD_STDOUT) {
         setvbuf(stdout, NULL, _IOLBF, 0);
+    }
+
+    if (install_fuse_wake_signal_handler() != 0) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Could not install FUSE wake signal handler: %s",
+                       strerror(errno));
     }
 
     /* Now register the client callback and initialize UAMs with logging ready */
