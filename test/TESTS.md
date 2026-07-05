@@ -7,15 +7,15 @@
 | `test_afpcmd_batch.t` | Uploads a file to an AFP share via `afpcmd` batch mode, downloads it back, and verifies the checksum matches. |
 | `test_afpcmd_interactive.t` | Exercises `afpcmd` interactive mode by piping command sequences through stdin and asserting expected output patterns. |
 | `test_afpgetstatus.t` | Verifies `afpgetstatus` can retrieve and parse AFP server status information. |
-| `test_fuse.t` | Mounts an AFP share via `mount_afpfs` (FUSE), writes and reads a file with an authenticated mount, verifies authenticated suspend/resume keeps the mount usable, verifies the file is visible on a guest mount, then cleans up with a second authenticated mount. |
+| `test_fuse.t` | Mounts an AFP share via `mount_afpfs` (FUSE) and performs various operations to test its functionality. |
 
 `test_fuse.t` must be run stand-alone on a real host — FUSE kernel support is not reliable inside containers. See below.
 
-All tests use `Test::More` (Perl core) and are run with `prove`.
+All tests use the `Test::More` library (part of Perl core) and are executed with the `prove` test runner.
 
 The tests assume a netatalk AFP server is running locally with a share at `afp://localhost/afpfs_test`
 that allows both guest and authenticated access.
-The authenticated user is `test_usr` with password `test_pwd`.
+The default authenticated user is `test_usr` with password `test_pwd`.
 See Manual environment prep below for setup instructions.
 
 ---
@@ -49,7 +49,35 @@ podman run --rm netatalk-client-test
 - netatalk installed and configured (see Manual environment prep below)
 - Perl (any recent version; all modules used are in core)
 
-Follow the steps in entrypoint.sh script to configure users and a shared volume for a netatalk AFP server used by the tests.
+### Manual environment prep
+
+The stand-alone tests expect a local Netatalk server named `afpfs_testsrv`
+with a volume named `afpfs_test`. The batch and interactive tests use the
+default credentials `test_usr` / `test_pwd`.
+
+Create the test user and shared directory:
+
+```sh
+sudo useradd --no-create-home test_usr || true
+echo 'test_usr:test_pwd' | sudo chpasswd
+sudo mkdir -p /mnt/afpfs
+sudo chmod 2755 /mnt/afpfs
+sudo chown test_usr:test_usr /mnt/afpfs
+```
+
+Configure Netatalk's *afp.conf* with guest and DHX2 authentication enabled:
+
+```ini
+[Global]
+log file = /var/log/afpd.log
+log level = default:debug
+server name = afpfs_testsrv
+uam list = uams_guest.so uams_dhx2.so
+
+[afpfs_test]
+path = /mnt/afpfs
+volume name = afpfs_test
+```
 
 ### Running batch and interactive tests
 
@@ -70,6 +98,19 @@ The `afpsld` session daemon is killed between the two test runs to ensure a clea
 ```sh
 cd test
 prove test_fuse.t
+```
+
+By default, `test_fuse.t` authenticates as `test_usr` with password `test_pwd`.
+Override these credentials with environment variables:
+
+```sh
+AFP_TEST_USER=my_user AFP_TEST_PASSWORD=my_password prove test_fuse.t
+```
+
+or pass them as test arguments:
+
+```sh
+prove test_fuse.t :: --user my_user --password my_password
 ```
 
 The test creates an `afpfs_mnt/` directory in the current working directory and removes it implicitly when unmounted.
