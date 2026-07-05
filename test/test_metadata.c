@@ -89,7 +89,10 @@ int main(int argc, char **argv)
     char temporary[] = "afpcmd-metadata-XXXXXX";
     char file[1024], missing[1024], macos_sidecar[1024], netatalk_dir[1024];
     char netatalk_sidecar[1024], ea_header[1024], ea_value[1024];
-    unsigned char finder[32], macos_finder[32], actual_finder[32];
+    unsigned char finder[32], actual_finder[32];
+#ifndef __APPLE__
+    unsigned char macos_finder[32];
+#endif
     unsigned char resource[7000], actual_resource[7000];
     char *list = NULL;
     size_t list_size = 0;
