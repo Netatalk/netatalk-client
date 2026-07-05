@@ -643,6 +643,7 @@ struct afp_server *afp_server_init(struct addrinfo * address)
     s->fd = -1;
     s->connect_state = SERVER_STATE_DISCONNECTED;
     afp_server_reconnect_end(s);
+    afp_server_set_suspended(s, 0);
     s->address = address;
     /* Initialize mutexes */
     pthread_mutex_init(&s->requestid_mutex, NULL);

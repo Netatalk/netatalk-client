@@ -231,6 +231,7 @@ struct afp_server {
     struct afp_token token;
     char need_resume;
     char reconnect_in_progress;
+    char suspended;
 
     /* Versions */
     unsigned char requested_version;
@@ -304,6 +305,18 @@ static inline int afp_server_reconnect_is_in_progress(
 {
     return __atomic_load_n(&server->reconnect_in_progress,
                            __ATOMIC_ACQUIRE) != 0;
+}
+
+static inline void afp_server_set_suspended(struct afp_server *server,
+        int suspended)
+{
+    __atomic_store_n(&server->suspended, suspended ? 1 : 0,
+                     __ATOMIC_RELEASE);
+}
+
+static inline int afp_server_is_suspended(const struct afp_server *server)
+{
+    return __atomic_load_n(&server->suspended, __ATOMIC_ACQUIRE) != 0;
 }
 
 static inline unsigned int afp_server_connection_generation(

@@ -458,6 +458,7 @@ found:
         return AFP_SERVER_RESULT_ERROR;
     }
 
+    afp_server_set_suspended(s, 1);
     loop_disconnect(s);
     s->connect_state = SERVER_STATE_DISCONNECTED;
     log_for_client((void *) c, AFPFSD, LOG_NOTICE,
@@ -506,8 +507,10 @@ static unsigned char process_resume(struct fuse_client * c)
     return AFP_SERVER_RESULT_ERROR;
 found:
     s = v->server;
+    afp_server_set_suspended(s, 0);
 
     if (afp_server_reconnect_loud(c, s)) {
+        afp_server_set_suspended(s, 1);
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Unable to reconnect for %s", req.mountpoint);
         return AFP_SERVER_RESULT_ERROR;

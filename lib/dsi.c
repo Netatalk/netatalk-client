@@ -261,6 +261,10 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
         char mesg[MAX_ERROR_LEN];
         unsigned int l = 0;
 
+        if (afp_server_is_suspended(server)) {
+            return -EIO;
+        }
+
         if (afp_server_reconnect_is_in_progress(server)) {
             return -EIO;
         }
