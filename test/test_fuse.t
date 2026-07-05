@@ -17,6 +17,15 @@ use Cwd qw(getcwd);
 
 my $mnt_dir = getcwd() . '/afpfs_mnt';
 
+sub mount_or_bail {
+    my ($description, @cmd) = @_;
+    my $rc = system(@cmd);
+
+    is($rc, 0, $description);
+    BAIL_OUT("$description failed: @cmd exited with " . ($rc >> 8))
+        if $rc != 0;
+}
+
 # -----------------------------------------------------------------------
 # prepare test environment: ensure mount directory exists, start afpfsd
 # -----------------------------------------------------------------------
@@ -29,8 +38,8 @@ is(system('afpfsd', '--manager'), 0, 'prepare: afpfsd daemon started');
 # fuse_auth: authenticated mount
 # -----------------------------------------------------------------------
 sleep 1;
-is(system('mount_afpfs', 'afp://test_usr:test_pwd@localhost/afpfs_test', $mnt_dir), 0,
-    'fuse_auth: authenticated mount succeeds');
+mount_or_bail('fuse_auth: authenticated mount succeeds',
+    'mount_afpfs', 'afp://test_usr:test_pwd@localhost/afpfs_test', $mnt_dir);
 
 open(my $wfh, '>', "$mnt_dir/sample.txt")
     or BAIL_OUT("Cannot write to mounted share: $!");
@@ -44,6 +53,48 @@ close $rfh;
 like($content, qr/^You should read this back$/m,
     'fuse_auth: file content readable after write');
 
+# -----------------------------------------------------------------------
+# fuse_resume: authenticated suspend/resume keeps mounted volume usable
+# -----------------------------------------------------------------------
+is(system('afp_client', 'suspend', $mnt_dir), 0,
+    'fuse_resume: authenticated suspend succeeds');
+
+open(my $status_fh, '-|', 'afp_client', 'status', $mnt_dir)
+    or BAIL_OUT("Cannot run afp_client status: $!");
+my $status = do { local $/; <$status_fh> };
+my $status_close_ok = close $status_fh;
+my $status_rc = $?;
+ok($status_close_ok, 'fuse_resume: status command exits successfully')
+    or diag('afp_client status exited with '
+        . ($status_rc == -1 ? "close error: $!" : 'status ' . ($status_rc >> 8)));
+like($status, qr/connection: .*disconnected/,
+    'fuse_resume: status reports disconnected server after suspend');
+
+is(system('afp_client', 'resume', $mnt_dir), 0,
+    'fuse_resume: authenticated resume succeeds without new password');
+
+open(my $resume_rfh, '<', "$mnt_dir/sample.txt")
+    or BAIL_OUT("Cannot read file after resume: $!");
+my $resume_content = do { local $/; <$resume_rfh> };
+close $resume_rfh;
+like($resume_content, qr/^You should read this back$/m,
+    'fuse_resume: existing file readable after resume');
+
+open(my $resume_wfh, '>', "$mnt_dir/resume.txt")
+    or BAIL_OUT("Cannot write file after resume: $!");
+print $resume_wfh "Resume write survived reconnect\n";
+close $resume_wfh;
+
+open(my $resume_check_fh, '<', "$mnt_dir/resume.txt")
+    or BAIL_OUT("Cannot read resume check file: $!");
+my $resume_check = do { local $/; <$resume_check_fh> };
+close $resume_check_fh;
+like($resume_check, qr/^Resume write survived reconnect$/m,
+    'fuse_resume: new file writable after resume');
+
+unlink "$mnt_dir/resume.txt";
+ok(!-e "$mnt_dir/resume.txt", 'fuse_resume: resume check file removed');
+
 is(system('afp_client', 'unmount', $mnt_dir), 0,
     'fuse_auth: authenticated unmount succeeds');
 
@@ -51,8 +102,8 @@ is(system('afp_client', 'unmount', $mnt_dir), 0,
 # fuse_auth: guest mount
 # -----------------------------------------------------------------------
 sleep 1;
-is(system('mount_afpfs', 'afp://localhost/afpfs_test', $mnt_dir), 0,
-    'fuse_auth: guest mount succeeds');
+mount_or_bail('fuse_auth: guest mount succeeds',
+    'mount_afpfs', 'afp://localhost/afpfs_test', $mnt_dir);
 
 ok(-f "$mnt_dir/sample.txt",
     'fuse_auth: guest mount shows previously written file');
@@ -71,8 +122,8 @@ is(system('afp_client', 'unmount', $mnt_dir), 0,
 # fuse_auth: authenticated mount cleanup
 # -----------------------------------------------------------------------
 sleep 1;
-is(system('mount_afpfs', 'afp://test_usr:test_pwd@localhost/afpfs_test', $mnt_dir), 0,
-    'fuse_auth: cleanup mount succeeds');
+mount_or_bail('fuse_auth: cleanup mount succeeds',
+    'mount_afpfs', 'afp://test_usr:test_pwd@localhost/afpfs_test', $mnt_dir);
 
 open(my $cfh, '<', "$mnt_dir/sample.txt")
     or BAIL_OUT("Cannot read file on cleanup mount: $!");

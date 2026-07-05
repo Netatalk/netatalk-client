@@ -7,7 +7,7 @@
 | `test_afpcmd_batch.t` | Uploads a file to an AFP share via `afpcmd` batch mode, downloads it back, and verifies the checksum matches. |
 | `test_afpcmd_interactive.t` | Exercises `afpcmd` interactive mode by piping command sequences through stdin and asserting expected output patterns. |
 | `test_afpgetstatus.t` | Verifies `afpgetstatus` can retrieve and parse AFP server status information. |
-| `test_fuse.t` | Mounts an AFP share via `mount_afpfs` (FUSE), writes and reads a file with an authenticated mount, verifies the file is visible on a guest mount, then cleans up with a second authenticated mount. |
+| `test_fuse.t` | Mounts an AFP share via `mount_afpfs` (FUSE), writes and reads a file with an authenticated mount, verifies authenticated suspend/resume keeps the mount usable, verifies the file is visible on a guest mount, then cleans up with a second authenticated mount. |
 
 `test_fuse.t` must be run stand-alone on a real host — FUSE kernel support is not reliable inside containers. See below.
 
