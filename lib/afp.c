@@ -18,6 +18,7 @@
 #include <netinet/tcp.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,6 +53,8 @@ struct afp_versions      afp_versions[] = {
 
 static int afp_blank_reply(struct afp_server *server, char * buf,
                            unsigned int size, void *ignored);
+static int connect_with_timeout(int fd, const struct sockaddr *addr,
+                                socklen_t addrlen, int timeout);
 
 int (*afp_replies[])(struct afp_server * server, char * buf, unsigned int len,
                      void *other) = {
@@ -145,6 +148,76 @@ static int afp_blank_reply(
         struct dsi_header header __attribute__((__packed__));
     } * reply = (void *) buf;
     return reply->header.return_code.error_code;
+}
+
+static int connect_with_timeout(int fd, const struct sockaddr *addr,
+                                socklen_t addrlen, int timeout)
+{
+    int flags;
+    int ret;
+    int error = 0;
+    socklen_t error_len = sizeof(error);
+    fd_set writefds;
+    struct timeval tv;
+    flags = fcntl(fd, F_GETFL, 0);
+
+    if (flags < 0) {
+        return connect(fd, addr, addrlen);
+    }
+
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        return connect(fd, addr, addrlen);
+    }
+
+    ret = connect(fd, addr, addrlen);
+
+    if (ret == 0) {
+        if (fcntl(fd, F_SETFL, flags) < 0) {
+            return -1;
+        }
+
+        return 0;
+    }
+
+    if (errno != EINPROGRESS) {
+        int saved_errno = errno;
+        fcntl(fd, F_SETFL, flags);
+        errno = saved_errno;
+        return -1;
+    }
+
+    do {
+        FD_ZERO(&writefds);
+        FD_SET(fd, &writefds);
+        tv.tv_sec = timeout;
+        tv.tv_usec = 0;
+        ret = select(fd + 1, NULL, &writefds, NULL, &tv);
+    } while (ret < 0 && errno == EINTR);
+
+    if (ret <= 0) {
+        int saved_errno = (ret == 0) ? ETIMEDOUT : errno;
+        fcntl(fd, F_SETFL, flags);
+        errno = saved_errno;
+        return -1;
+    }
+
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_len) < 0) {
+        int saved_errno = errno;
+        fcntl(fd, F_SETFL, flags);
+        errno = saved_errno;
+        return -1;
+    }
+
+    if (fcntl(fd, F_SETFL, flags) < 0) {
+        return -1;
+    }
+
+    if (error != 0) {
+        errno = error;
+        return -1;
+    }
+
+    return 0;
 }
 
 /* Handle a reply packet */
@@ -979,7 +1052,8 @@ int afp_server_connect(struct afp_server *server, int full)
                             address->ai_socktype, address->ai_protocol);
 
         if (server->fd >= 0) {
-            if (connect(server->fd, address->ai_addr, address->ai_addrlen) == 0) {
+            if (connect_with_timeout(server->fd, address->ai_addr,
+                                     address->ai_addrlen, DSI_DEFAULT_TIMEOUT) == 0) {
                 /* Disable Nagle */
                 int nodelay = 1;
 

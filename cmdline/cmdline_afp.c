@@ -67,6 +67,7 @@ static struct afp_url url;
 static int cmdline_log_min_rank = 2; /* Default rank: notice */
 static int verbose_mode = 0;
 static char connect_servername[AFP_SERVER_NAME_UTF8_LEN];
+static char last_log_message[MAX_ERROR_LEN];
 
 int full_url = 0;
 
@@ -3348,6 +3349,11 @@ static void cmdline_log_for_client(void *priv _U_, enum logtypes logtype _U_,
         return; /* Filter out less-verbose messages */
     }
 
+    if (!verbose_mode && strcmp(last_log_message, message) == 0) {
+        return;
+    }
+
+    strlcpy(last_log_message, message, sizeof(last_log_message));
     fprintf(stderr, "%s\n", message);
     syslog(loglevel, "%s", message);
 }
@@ -3369,6 +3375,7 @@ static struct libafpclient afpclient = {
 static int cmdline_server_startup(int batch_mode)
 {
     char mesg[MAX_ERROR_LEN];
+    int ret;
     memset(mesg, 0, sizeof(mesg));
     unsigned int uam_mask;
     struct afp_server_basic basic;
@@ -3383,8 +3390,11 @@ static int cmdline_server_startup(int batch_mode)
         strlcpy(connect_servername, url.servername, sizeof(connect_servername));
     }
 
-    if (afp_sl_connect(&url, uam_mask, &server_id, mesg)) {
-        printf("Could not connect to server\n");
+    ret = afp_sl_connect(&url, uam_mask, &server_id, mesg);
+
+    if (ret != 0) {
+        int error = ret < 0 ? -ret : ret;
+        printf("Could not connect to server: %s\n", strerror(error));
         return -1;
     }
 
@@ -3400,7 +3410,6 @@ static int cmdline_server_startup(int batch_mode)
 
     if (url.volumename[0] != '\0') {
         unsigned int volume_options = VOLUME_EXTRA_FLAGS_NO_LOCKING;
-        int ret;
         ret = attach_volume_with_password_prompt(server_id, &vol_id,
               volume_options);
 
@@ -3665,6 +3674,7 @@ void cmdline_afp_exit(void)
 void cmdline_afp_setup_client(void)
 {
     openlog("afpcmd", LOG_PID | LOG_CONS, LOG_USER);
+    last_log_message[0] = '\0';
     libafpclient_register(&afpclient);
     afp_sl_set_log_callback(cmdline_stateless_log, NULL);
 }
