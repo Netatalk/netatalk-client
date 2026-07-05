@@ -100,6 +100,18 @@ sub mount_or_bail {
         if $rc != 0;
 }
 
+sub unmount_or_bail {
+    my ($description) = @_;
+    my @cmd = $^O eq 'darwin'
+        ? ('/sbin/umount', $mnt_dir)
+        : ('afp_client', 'unmount', $mnt_dir);
+    my $rc = system(@cmd);
+
+    is($rc, 0, $description);
+    BAIL_OUT("$description failed: @cmd exited with " . ($rc >> 8))
+        if $rc != 0;
+}
+
 # -----------------------------------------------------------------------
 # prepare test environment: ensure mount directory exists, start afpfsd
 # -----------------------------------------------------------------------
@@ -169,8 +181,7 @@ like($resume_check, qr/^Resume write survived reconnect$/m,
 unlink "$mnt_dir/resume.txt";
 ok(!-e "$mnt_dir/resume.txt", 'fuse_resume: resume check file removed');
 
-is(system('afp_client', 'unmount', $mnt_dir), 0,
-    'fuse_auth: authenticated unmount succeeds');
+unmount_or_bail('fuse_auth: authenticated unmount succeeds');
 
 # -----------------------------------------------------------------------
 # fuse_auth: guest mount
@@ -189,8 +200,7 @@ close $gfh;
 like($guest_content, qr/^You should read this back$/m,
     'fuse_auth: guest mount file content matches');
 
-is(system('afp_client', 'unmount', $mnt_dir), 0,
-    'fuse_auth: guest unmount succeeds');
+unmount_or_bail('fuse_auth: guest unmount succeeds');
 
 # -----------------------------------------------------------------------
 # fuse_auth: authenticated mount cleanup
@@ -210,7 +220,6 @@ is(scalar @lines, 1, 'fuse_auth: file has exactly one line');
 unlink "$mnt_dir/sample.txt";
 ok(!-e "$mnt_dir/sample.txt", 'fuse_auth: sample.txt removed');
 
-is(system('afp_client', 'unmount', $mnt_dir), 0,
-    'fuse_auth: cleanup unmount succeeds');
+unmount_or_bail('fuse_auth: cleanup unmount succeeds');
 
 done_testing;

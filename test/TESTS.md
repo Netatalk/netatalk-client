@@ -128,3 +128,9 @@ If a run is interrupted mid-test, unmount manually before re-running:
 ```sh
 afp_client unmount ./afpfs_mnt
 ```
+
+On macOS with macFUSE, use:
+
+```sh
+/sbin/umount ./afpfs_mnt
+```
