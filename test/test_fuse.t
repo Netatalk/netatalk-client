@@ -15,12 +15,16 @@ use warnings;
 use Test::More;
 use Cwd qw(getcwd);
 use Getopt::Long qw(GetOptions);
+use IO::Handle;
+use POSIX qw(WNOHANG setsid);
 
 my $AFP_USER = $ENV{AFP_TEST_USER} // 'test_usr';
 my $AFP_PASS = $ENV{AFP_TEST_PASSWORD} // 'test_pwd';
 my $AFP_HOST = 'localhost';
 my $AFP_VOL  = 'afpfs_test';
+my $AFP_FUSE_DEBUG_LOG = $ENV{AFP_FUSE_DEBUG_LOG};
 my $mnt_dir = getcwd() . '/afpfs_mnt';
+my $afpfsd_pid;
 
 GetOptions(
     'user=s'     => \$AFP_USER,
@@ -42,6 +46,51 @@ my $AFP_AUTH_URL = sprintf(
 );
 my $AFP_GUEST_URL = "afp://$AFP_HOST/$AFP_VOL";
 
+sub start_afpfsd_manager {
+    if (!$AFP_FUSE_DEBUG_LOG) {
+        is(system('afpfsd', '--manager'), 0,
+            'prepare: afpfsd daemon started');
+        return;
+    }
+
+    open(my $log_fh, '>>', $AFP_FUSE_DEBUG_LOG)
+        or BAIL_OUT("Cannot open AFP_FUSE_DEBUG_LOG '$AFP_FUSE_DEBUG_LOG': $!");
+    $log_fh->autoflush(1);
+    print $log_fh "\n==> Starting afpfsd debug manager for test_fuse.t pid $$\n";
+
+    my $pid = fork();
+    BAIL_OUT("Cannot fork afpfsd debug manager: $!") unless defined $pid;
+
+    if ($pid == 0) {
+        setsid() or die "setsid: $!";
+        open(STDOUT, '>&', $log_fh) or die "dup stdout: $!";
+        open(STDERR, '>&', $log_fh) or die "dup stderr: $!";
+        close $log_fh;
+        exec('afpfsd', '--debug', '--manager') or die "exec afpfsd: $!";
+    }
+
+    close $log_fh;
+    $afpfsd_pid = $pid;
+    sleep 1;
+
+    my $exited = waitpid($pid, WNOHANG);
+    if ($exited == $pid) {
+        undef $afpfsd_pid;
+        BAIL_OUT("afpfsd debug manager exited early; see $AFP_FUSE_DEBUG_LOG");
+    }
+
+    ok($pid > 0, "prepare: afpfsd debug manager started, logging to $AFP_FUSE_DEBUG_LOG");
+}
+
+END {
+    if ($afpfsd_pid) {
+        my $exit_status = $?;
+        kill 'TERM', -$afpfsd_pid;
+        waitpid($afpfsd_pid, 0);
+        $? = $exit_status;
+    }
+}
+
 sub mount_or_bail {
     my ($description, @cmd) = @_;
     my $rc = system(@cmd);
@@ -57,7 +106,7 @@ sub mount_or_bail {
 mkdir $mnt_dir unless -d $mnt_dir;
 ok(-d $mnt_dir, 'prepare: mount directory exists');
 
-is(system('afpfsd', '--manager'), 0, 'prepare: afpfsd daemon started');
+start_afpfsd_manager();
 
 # -----------------------------------------------------------------------
 # fuse_auth: authenticated mount

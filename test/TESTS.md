@@ -113,6 +113,15 @@ or pass them as test arguments:
 prove test_fuse.t :: --user my_user --password my_password
 ```
 
+To capture detailed `afpfsd` debug logs for a failing FUSE run, set
+`AFP_FUSE_DEBUG_LOG`. In this mode, `test_fuse.t` starts the manager in
+foreground debug mode and redirects manager and per-mount daemon logs to the
+given file:
+
+```sh
+AFP_FUSE_DEBUG_LOG=/tmp/test_fuse-afpfsd.log prove test_fuse.t
+```
+
 The test creates an `afpfs_mnt/` directory in the current working directory and removes it implicitly when unmounted.
 If a run is interrupted mid-test, unmount manually before re-running:
 
