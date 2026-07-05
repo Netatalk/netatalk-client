@@ -550,15 +550,21 @@ static int start_mount_daemon(char *socket_id, const char *mountpoint,
                                ? "stdout" : "syslog";
         /* Type cast away const for execvp() */
         char *log_level_str = (char *) log_level_to_string(current_log_level);
-        char *argv[8];
-        argv[0] = "afpfsd";
-        argv[1] = "--socket-id";
-        argv[2] = socket_id;
-        argv[3] = "--logmethod";
-        argv[4] = log_method_str;
-        argv[5] = "--loglevel";
-        argv[6] = log_level_str;
-        argv[7] = NULL;
+        char *argv[9];
+        int argc = 0;
+        argv[argc++] = "afpfsd";
+        argv[argc++] = "--socket-id";
+        argv[argc++] = socket_id;
+        argv[argc++] = "--logmethod";
+        argv[argc++] = log_method_str;
+        argv[argc++] = "--loglevel";
+        argv[argc++] = log_level_str;
+
+        if (current_log_method & LOG_METHOD_STDOUT) {
+            argv[argc++] = "--foreground";
+        }
+
+        argv[argc] = NULL;
         execvp("afpfsd", argv);
         /* If exec fails */
         _exit(1);
