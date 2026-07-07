@@ -156,12 +156,13 @@ void close_commands(int command_fd)
 
 static void usage(void)
 {
-    printf("Usage: afpsld [OPTION]\n"
+    printf("Netatalk Client %s - AFP Stateless client daemon\n"
+           "Usage: afpsld [OPTION]\n"
            "  -l, --logmethod    Either 'syslog' or 'stdout'\n"
            "  -v, --loglevel     LOG_DEBUG|LOG_INFO|LOG_NOTICE|LOG_WARNING|LOG_ERR\n"
            "  -f, --foreground   Do not fork\n"
-           "  -d, --debug        Do not fork, debug loglevel, logs to stdout\n"
-           "Version %s\n", NETATALK_CLIENT_VERSION);
+           "  -d, --debug        Do not fork, debug loglevel, logs to stdout\n",
+           NETATALK_CLIENT_VERSION);
 }
 
 static struct libafpclient client = {

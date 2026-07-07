@@ -174,7 +174,7 @@ void close_commands(int command_fd)
 
 static void usage(void)
 {
-    printf("Netatalk Client %s - Apple Filing Protocol client FUSE daemon\n"
+    printf("Netatalk Client %s - AFP client FUSE daemon\n"
            "Usage: afpfsd [OPTION]\n"
            "  -l, --logmethod    Either 'syslog' or 'stdout'\n"
            "  -v, --loglevel     LOG_DEBUG|LOG_INFO|LOG_NOTICE|LOG_WARNING|LOG_ERR\n"
