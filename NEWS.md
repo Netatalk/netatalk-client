@@ -21,6 +21,7 @@ The names of tools and libraries will not be changed to signal continuity and co
 
 ### afpcmd Client Improvements
 
+- Pagination of long directory listings where we previously truncated the output at 256 entries.
 - Preserve FinderInfo, ResourceFork, and generic extended attributes when transferring files, with selectable local
   metadata storage modes.
 

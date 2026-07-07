@@ -7,11 +7,6 @@ General client shortcomings
 * integration with avahi/bonjour
 * shutting down notices aren't honoured
 
-Command line client
--------------------
-
-* paginate directory listings with >256 files
-
 FUSE client
 -----------
 

@@ -45,6 +45,9 @@
 #include <stdint.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+#include <unistd.h>
 
 #ifdef HAVE_LIBBSD
 #include <bsd/string.h>
@@ -73,6 +76,13 @@ int full_url = 0;
 
 #define DEFAULT_DIRECTORY "/"
 #define METADATA_OUTPUT_MODE 0600
+#define DIRECTORY_PAGE_SIZE 256
+
+enum directory_prompt_result {
+    DIRECTORY_PROMPT_CONTINUE = 0,
+    DIRECTORY_PROMPT_QUIT = 1,
+    DIRECTORY_PROMPT_ERROR = -1,
+};
 
 static volumeid_t vol_id = NULL;
 static serverid_t server_id = NULL;
@@ -788,6 +798,96 @@ static void print_file_details_basic(struct afp_file_info_basic * p,
     printf("%s %*lld %s %s\n", mode_str, size_width, p->size, datestr, p->name);
 }
 
+static enum directory_prompt_result prompt_next_directory_page(
+    unsigned int shown)
+{
+    struct termios old_termios;
+    struct termios new_termios;
+    char ch;
+    int stdin_is_tty = isatty(STDIN_FILENO);
+
+    if (stdin_is_tty) {
+        printf("-- %u entries shown; press any key for next page, or q to quit --",
+               shown);
+    } else {
+        printf("-- %u entries shown; press Enter for next page, or q then Enter to quit --",
+               shown);
+    }
+
+    fflush(stdout);
+
+    if (!stdin_is_tty) {
+        char *line = readline("");
+        printf("\n");
+
+        if (!line) {
+            return DIRECTORY_PROMPT_ERROR;
+        }
+
+        enum directory_prompt_result result =
+            line[0] == 'q' || line[0] == 'Q'
+            ? DIRECTORY_PROMPT_QUIT : DIRECTORY_PROMPT_CONTINUE;
+        free(line);
+        return result;
+    }
+
+    if (tcgetattr(STDIN_FILENO, &old_termios) != 0) {
+        int c = getchar();
+        printf("\n");
+
+        if (c == EOF) {
+            return DIRECTORY_PROMPT_ERROR;
+        }
+
+        return c == 'q' || c == 'Q'
+               ? DIRECTORY_PROMPT_QUIT : DIRECTORY_PROMPT_CONTINUE;
+    }
+
+    new_termios = old_termios;
+    new_termios.c_lflag &= ~(ICANON | ECHO);
+    new_termios.c_cc[VMIN] = 1;
+    new_termios.c_cc[VTIME] = 0;
+
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &new_termios) != 0) {
+        int c = getchar();
+        printf("\n");
+
+        if (c == EOF) {
+            return DIRECTORY_PROMPT_ERROR;
+        }
+
+        return c == 'q' || c == 'Q'
+               ? DIRECTORY_PROMPT_QUIT : DIRECTORY_PROMPT_CONTINUE;
+    }
+
+    ssize_t bytes_read = read(STDIN_FILENO, &ch, 1);
+    tcsetattr(STDIN_FILENO, TCSANOW, &old_termios);
+    printf("\n");
+
+    if (bytes_read != 1) {
+        return DIRECTORY_PROMPT_ERROR;
+    }
+
+    return ch == 'q' || ch == 'Q'
+           ? DIRECTORY_PROMPT_QUIT : DIRECTORY_PROMPT_CONTINUE;
+}
+
+static unsigned int directory_entries_per_screen(void)
+{
+    struct winsize ws;
+
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0
+            && ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) != 0) {
+        return DIRECTORY_PAGE_SIZE;
+    }
+
+    if (ws.ws_row <= 1) {
+        return 1;
+    }
+
+    return (unsigned int)ws.ws_row - 1U;
+}
+
 static void list_volumes(void)
 {
     unsigned int numvols = 0;
@@ -933,9 +1033,14 @@ int com_dir(char * arg)
 
     struct afp_file_info_basic *filebase = NULL;
 
+    struct afp_file_info_basic *screenbase = NULL;
     unsigned int numfiles = 0;
+    unsigned int fetchedfiles = 0;
+    unsigned int shownfiles = 0;
+    unsigned int batch_index = 0;
     int eod = 0;
     int ret = -1;
+    int stop_listing = 0;
     char path[AFP_MAX_PATH];
     char dir_path[AFP_MAX_PATH];
 
@@ -966,50 +1071,127 @@ int com_dir(char * arg)
         strlcpy(dir_path, curdir, AFP_MAX_PATH);
     }
 
-    ret = afp_sl_readdir(&vol_id, dir_path, NULL, 0, 100, &numfiles, &filebase,
-                         &eod);
+    while (!stop_listing) {
+        unsigned int screen_entries = directory_entries_per_screen();
+        unsigned int screen_count = 0;
+        screenbase = malloc((size_t)screen_entries * sizeof(*screenbase));
 
-    if (ret != 0 && is_recoverable_session_error(ret)
-            && recover_session(1, 1) == 0) {
-        if (filebase) {
-            free(filebase);
-            filebase = NULL;
+        if (!screenbase) {
+            printf("Out of memory\n");
+            ret = -1;
+            goto out;
         }
 
-        numfiles = 0;
-        eod = 0;
-        ret = afp_sl_readdir(&vol_id, dir_path, NULL, 0, 100, &numfiles,
-                             &filebase, &eod);
-    }
+        while (screen_count < screen_entries) {
+            if (batch_index >= numfiles) {
+                free(filebase);
+                filebase = NULL;
+                batch_index = 0;
+                numfiles = 0;
 
-    if (ret != 0) {
-        printf("Could not read directory\n");
-        goto out;
-    }
+                if (eod) {
+                    break;
+                }
 
-    if (numfiles == 0) {
-        ret = 0;
-        goto out;
-    }
+                if (fetchedfiles > INT_MAX) {
+                    printf("Too many directory entries\n");
+                    ret = -1;
+                    goto out;
+                }
 
-    /* Calculate max width for file size column */
-    int max_width = 0;
+                ret = afp_sl_readdir(&vol_id, dir_path, NULL,
+                                     (int)fetchedfiles, DIRECTORY_PAGE_SIZE,
+                                     &numfiles, &filebase, &eod);
 
-    for (unsigned int i = 0; i < numfiles; i++) {
-        char size_str[32];
-        int width = snprintf(size_str, sizeof(size_str), "%lld", filebase[i].size);
+                if (ret != 0 && is_recoverable_session_error(ret)
+                        && recover_session(1, 1) == 0) {
+                    if (filebase) {
+                        free(filebase);
+                        filebase = NULL;
+                    }
 
-        if (width > max_width) {
-            max_width = width;
+                    numfiles = 0;
+                    ret = afp_sl_readdir(&vol_id, dir_path, NULL,
+                                         (int)fetchedfiles,
+                                         DIRECTORY_PAGE_SIZE, &numfiles,
+                                         &filebase, &eod);
+                }
+
+                if (ret != 0) {
+                    printf("Could not read directory\n");
+                    goto out;
+                }
+
+                if (numfiles == 0) {
+                    break;
+                }
+
+                if (UINT_MAX - fetchedfiles < numfiles) {
+                    printf("Too many directory entries\n");
+                    ret = -1;
+                    goto out;
+                }
+
+                fetchedfiles += numfiles;
+            }
+
+            screenbase[screen_count++] = filebase[batch_index++];
         }
-    }
 
-    for (unsigned int i = 0; i < numfiles; i++) {
-        print_file_details_basic(&filebase[i], max_width);
+        if (screen_count == 0) {
+            ret = 0;
+            goto out;
+        }
+
+        /* Calculate max width for file size column in this screen page. */
+        int max_width = 0;
+
+        for (unsigned int i = 0; i < screen_count; i++) {
+            char size_str[32];
+            int width = snprintf(size_str, sizeof(size_str), "%lld",
+                                 screenbase[i].size);
+
+            if (width > max_width) {
+                max_width = width;
+            }
+        }
+
+        for (unsigned int i = 0; i < screen_count; i++) {
+            print_file_details_basic(&screenbase[i], max_width);
+        }
+
+        if (UINT_MAX - shownfiles < screen_count) {
+            printf("Too many directory entries\n");
+            ret = -1;
+            goto out;
+        }
+
+        shownfiles += screen_count;
+        free(screenbase);
+        screenbase = NULL;
+
+        if (batch_index < numfiles || !eod) {
+            enum directory_prompt_result prompt_ret =
+                prompt_next_directory_page(shownfiles);
+
+            if (prompt_ret == DIRECTORY_PROMPT_ERROR) {
+                printf("Could not read prompt input\n");
+                ret = -1;
+                goto out;
+            }
+
+            if (prompt_ret == DIRECTORY_PROMPT_QUIT) {
+                stop_listing = 1;
+            }
+        }
     }
 
     ret = 0;
 out:
+
+    if (screenbase) {
+        free(screenbase);
+    }
 
     if (filebase) {
         free(filebase);

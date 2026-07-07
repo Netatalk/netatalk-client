@@ -75,6 +75,14 @@ sub afpcmd_pipe {
     return $output // '';
 }
 
+sub pagination_setup_commands {
+    my ($dir, $count) = @_;
+    return (
+        "mkdir $dir",
+        map { sprintf('touch %s/page%03d', $dir, $_) } 0 .. ($count - 1),
+    );
+}
+
 # -----------------------------------------------------------------------
 # test_help: help and ? alias both list known commands
 # -----------------------------------------------------------------------
@@ -113,6 +121,52 @@ sub afpcmd_pipe {
     like($out, qr/Now in directory \//,        'test_navigation: pwd at root');
     like($out, qr/navtest/,                    'test_navigation: ls shows navtest');
     like($out, qr/Now in directory \/navtest/, 'test_navigation: pwd in navtest');
+}
+
+# -----------------------------------------------------------------------
+# test_ls_pagination_continue: ls prompts and continues to the next page
+# -----------------------------------------------------------------------
+{
+    my $dir = "pagetest_continue_$$";
+    local $ENV{AFPCMD_TEST_TIMEOUT} = $ENV{AFPCMD_TEST_TIMEOUT} // 60;
+    my $out = afpcmd_pipe($AFP_URL,
+        pagination_setup_commands($dir, 257),
+        "ls $dir",
+        '',
+        'quit');
+
+    like($out,
+        qr/256 entries shown; press Enter for next page, or q then Enter to quit/,
+        'test_ls_pagination_continue: prompt after first page');
+    like($out, qr/^-.* page000$/m,
+        'test_ls_pagination_continue: first page shown');
+    like($out, qr/^-.* page256$/m,
+        'test_ls_pagination_continue: next page shown');
+
+    afpcmd_pipe($AFP_URL, "rm -r $dir", 'quit');
+}
+
+# -----------------------------------------------------------------------
+# test_ls_pagination_quit: q stops ls pagination before the next page
+# -----------------------------------------------------------------------
+{
+    my $dir = "pagetest_quit_$$";
+    local $ENV{AFPCMD_TEST_TIMEOUT} = $ENV{AFPCMD_TEST_TIMEOUT} // 60;
+    my $out = afpcmd_pipe($AFP_URL,
+        pagination_setup_commands($dir, 257),
+        "ls $dir",
+        'q',
+        'quit');
+
+    like($out,
+        qr/256 entries shown; press Enter for next page, or q then Enter to quit/,
+        'test_ls_pagination_quit: prompt advertises q');
+    like($out, qr/^-.* page255$/m,
+        'test_ls_pagination_quit: first page reaches page255');
+    unlike($out, qr/^-.* page256$/m,
+        'test_ls_pagination_quit: q suppresses next page');
+
+    afpcmd_pipe($AFP_URL, "rm -r $dir", 'quit');
 }
 
 # -----------------------------------------------------------------------
