@@ -93,17 +93,21 @@ Netatalk Client has the goal of maintaining continuity with afpfs-ng commands an
 so that moving from one to the other is as seamless as possible. However we do not guarantee
 libafpclient ABI compatibility with afpfs-ng, and differences in behavior and supported features exist.
 
-- afpfsd.h is now a shim header which includes afp_server.h
-- afpfs-ng had to be built either with FUSE or Stateless API support, but Netatalk Client supports both simultaneously
-- As a result of the above, the Stateless client controller daemon is now called *afpsld* instead of *afpfsd*
-  to avoid namespace conflicts with the FUSE controller daemon
-- *mount_afp* has been renamed to *mount_afpfs* to avoid namespace conflicts with the macOS *mount_afp* command
+- afpfs-ng is fully compliant with AFP 3.1, and partially compliant with AFP 3.2;
+  Netatalk Client is (almost) fully compliant with AFP 2 through AFP 3.4
+- afpfsd.h symbols have been moved to afp_server.h, and the former is now a shim for backwards compatibility
+- With afpfs-ng you have to choose at compile time whether to build the FUSE or Stateless client,
+  while Netatalk Client can build both simultaneously
+- To accommodate the above, the Stateless client controller daemon has been renamed to *afpsld*,
+  reserving *afpfsd* for the FUSE controller daemon
+- *mount_afp* has been renamed to *mount_afpfs* to avoid namespace conflict with the macOS *mount_afp* command
 - The *afpcmd* command line client has been rewritten to use the Stateless API instead of implementing
   libafpclient calls directly, and now relies on the *afpsld* daemon to manage AFP sessions and connections
   instead of implementing its own session management
 - The *afpfsd* FUSE controller daemon has been rewritten to have one process per FUSE mount,
   with a manager process to handle mount requests and manage the afpfsd processes.
   This allows for better isolation and stability of FUSE mounts compared to a single process handling all mounts.
+- The FUSE client has been rewritten for FUSE v3 and macFUSE
 
 We have also introduced numerous new options and features, which will not be listed in full here.
 Refer to the documentation and command line help text.
