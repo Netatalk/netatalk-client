@@ -1141,31 +1141,28 @@ error:
 struct afp_versions *pick_version(unsigned char *versions,
                                   unsigned char requested)
 {
-    /* Pick the right version number.  This means either the
-       one requested or the last one. Set both the number and the
-       string. */
+    /* Pick the highest mutually supported AFP version, bounded by the
+       requested version when one was supplied. */
     int i;
     char version_num = 0;
-    char found_version = 0;
     struct afp_versions * p;
-    char highest = 0;
 
     if (requested) {
         requested = min(requested, AFP_MAX_SUPPORTED_VERSION);
     }
 
-    for (i = 0; versions[i] && (i < SERVER_MAX_VERSIONS); i++) {
-        version_num = versions[i];
-        highest = max(highest, version_num);
+    i = 0;
 
-        if (versions[i] == requested) {
-            found_version = 1;
+    while (i < SERVER_MAX_VERSIONS) {
+        if (!versions[i]) {
             break;
         }
-    };
 
-    if (!found_version) {
-        version_num = highest;
+        if (!requested || versions[i] <= requested) {
+            version_num = max(version_num, versions[i]);
+        }
+
+        i++;
     }
 
     for (p = afp_versions; p->av_name; p++) {
