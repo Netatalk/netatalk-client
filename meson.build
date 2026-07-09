@@ -179,8 +179,8 @@ if with_crypt
 endif
 
 if not with_afpcmd and not with_fuse
-    error(
-        'At least one of AFP command line client or FUSE client must be buildable.',
+    message(
+        'neither afpcmd nor the FUSE client will be built.',
     )
 endif
 
