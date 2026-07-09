@@ -17,34 +17,40 @@ env:
 jobs:
   formatting:
     name: Code Formatting
-    runs-on: macos-latest
-    env:
-      HOMEBREW_NO_INSTALL_CLEANUP: 1
-      HOMEBREW_NO_AUTO_UPDATE: 1
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.23.2
     steps:
+      - name: Install dependencies
+        run: |
+          apk add --no-cache \
+            build-base \
+            ca-certificates \
+            cmake \
+            git \
+            muon \
+            nodejs \
+            npm \
+            perl-tidy \
+            shfmt \
+            yamlfmt
+          npm install --global --ignore-scripts markdownlint-cli2@0.22.0
+      - name: Build astyle 3.6.14 from source
+        run: |
+          git clone --depth 1 --branch 3.6.14 \
+            https://gitlab.com/saalen/astyle.git /tmp/astyle
+          cmake -S /tmp/astyle -B /tmp/astyle/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build /tmp/astyle/build -j"$(nproc)"
+          cmake --install /tmp/astyle/build
+          astyle --version
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-      - name: Install dependencies
-        run: |
-          brew update
-          brew install \
-            astyle \
-            markdownlint-cli2 \
-            muon \
-            shfmt \
-            yamlfmt
-      - name: Check C formatting
-        run: ./contrib/scripts/codefmt.sh -v -s c
-      - name: Check markdown formatting
-        run: ./contrib/scripts/codefmt.sh -v -s markdown
-      - name: Check meson formatting
-        run: ./contrib/scripts/codefmt.sh -v -s meson
-      - name: Check shell script formatting
-        run: ./contrib/scripts/codefmt.sh -v -s shell
-      - name: Check yaml formatting
-        run: ./contrib/scripts/codefmt.sh -v -s yaml
+      - name: Check formatting
+        run: ./contrib/scripts/codefmt.sh -v
 
   markdown-linting:
     name: Markdown Linting
