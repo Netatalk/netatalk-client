@@ -66,6 +66,23 @@ test(
     verbose: true,
 )
 
+versions_test = executable(
+    'test_versions',
+    sources: ['test_versions.c'],
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'AFP version selection',
+    versions_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
 stateless_log_test = executable(
     'test_stateless_log',
     sources: ['test_stateless_log.c'],
