@@ -101,11 +101,11 @@ libafpclient ABI compatibility with afpfs-ng, and differences in behavior and su
 - To accommodate the above, the Stateless client controller daemon has been renamed to *afpsld*,
   reserving *afpfsd* for the FUSE controller daemon
 - *mount_afp* has been renamed to *mount_afpfs* to avoid namespace conflict with the macOS *mount_afp* command
-- The *afpcmd* command line client has been rewritten to use the Stateless API instead of implementing
-  libafpclient calls directly, and now relies on the *afpsld* daemon to manage AFP sessions and connections
-  instead of implementing its own session management
+- The *afpcmd* TUI client has to be invoked with an AFP URL, and the interactive **connect** command has been
+  removed; Conversely, when you execute the **disconnect** command the server session will be
+  terminated and *afpcmd* will shut down
 - The *afpfsd* FUSE controller daemon has been rewritten to have one process per FUSE mount,
-  with a manager process to handle mount requests and manage the afpfsd processes.
+  with a manager process to handle mount requests and manage the afpfsd processes
   This allows for better isolation and stability of FUSE mounts compared to a single process handling all mounts.
 - The FUSE client has been rewritten for FUSE v3 and macFUSE
 
