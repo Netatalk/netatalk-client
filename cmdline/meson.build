@@ -3,8 +3,10 @@ executable(
     sources: 'getstatus.c',
     include_directories: incdir,
     link_with: libafpclient,
+    dependencies: root_dependencies,
     c_args: cflags,
     install: true,
+    install_rpath: install_runtime_path,
 )
 
 if with_afpcmd
@@ -19,5 +21,6 @@ if with_afpcmd
         dependencies: [root_dependencies, cmdline_dependencies],
         c_args: cflags,
         install: true,
+        install_rpath: install_runtime_path,
     )
 endif
