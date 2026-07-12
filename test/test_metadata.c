@@ -1,6 +1,3 @@
-#include "metadata.h"
-#include "tap.h"
-
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -11,6 +8,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include "lib/xattr.h"
+#include "metadata.h"
+#include "tap.h"
 
 #ifdef HAVE_LIBBSD
 #include <bsd/string.h>
@@ -101,7 +102,7 @@ int main(int argc, char **argv)
     struct stat st;
     mode_t old_umask;
     enum afp_metadata_mode parsed_mode;
-    volumeid_t dummy_volume = (volumeid_t)(uintptr_t)1;
+    afpc_volume_t dummy_volume = (afpc_volume_t)(uintptr_t)1;
     unsigned int warnings = UINT_MAX;
     test_tap_init(argc, argv);
     CHECK(AFP_SL_XATTR_CREATE == 0x1);

@@ -6,8 +6,8 @@
  *
  */
 
-#include "afp.h"
-#include "libafpclient.h"
+#include "afp_internal.h"
+#include "client.h"
 
 static struct libafpclient null_afpclient = {
     .unmount_volume = NULL,

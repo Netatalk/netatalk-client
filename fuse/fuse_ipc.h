@@ -2,8 +2,10 @@
 #define _FUSE_IPC_H_
 
 #include <limits.h>
-#include "afp.h"
-#include "afp_ipc.h"
+
+#include "lib/afp_internal.h"
+
+#include "daemon/ipc.h"
 
 #define SERVER_FUSE_SOCKET_PATH "/tmp/afp_server"
 
@@ -23,7 +25,7 @@ struct afp_server_unmount_request {
 };
 
 struct afp_server_mount_request {
-    struct afp_url url;
+    struct afpc_url url;
     unsigned int uam_mask;
     char mountpoint[AFP_MOUNTPOINT_LEN];
     unsigned int volume_options;

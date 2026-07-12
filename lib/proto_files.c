@@ -8,14 +8,14 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include "dsi.h"
-#include "afp.h"
-#include "compat.h"
-#include "utils.h"
-#include "dsi_protocol.h"
-#include "afp_protocol.h"
+
 #include "afp_internal.h"
+#include "afp_protocol.h"
 #include "afp_replies.h"
+#include "compat.h"
+#include "dsi.h"
+#include "dsi_protocol.h"
+#include "utils.h"
 
 /* afp_setfileparms, afp_setdirparms and afpsetfiledirparms are all remarkably
    similiar.  We abstract them to afp-setparms_lowlevel. */
@@ -57,7 +57,7 @@ static int afp_setparms_lowlevel(struct afp_volume * volume,
     memset(msg, 0, len);
     request_packet = (void *) msg;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet->command = command;
     request_packet->pad = 0;
@@ -116,22 +116,22 @@ static int afp_setparms_lowlevel(struct afp_volume * volume,
     }
 
     if (bitmap & kFPUnixPrivsBit) {
-        struct afp_unixprivs * t_unixprivs = (void *) p;
+        struct afpc_unix_privileges * t_unixprivs = (void *) p;
         memcpy(t_unixprivs, &fp->unixprivs,
-               sizeof(struct afp_unixprivs));
+               sizeof(struct afpc_unix_privileges));
         /* Convert the different components */
         t_unixprivs->uid = htonl(t_unixprivs->uid);
         t_unixprivs->gid = htonl(t_unixprivs->gid);
         t_unixprivs->permissions = htonl(t_unixprivs->permissions);
         t_unixprivs->ua_permissions = htonl(t_unixprivs->ua_permissions);
-        p += sizeof(struct afp_unixprivs);
+        p += sizeof(struct afpc_unix_privileges);
 #if 0
         result_bitmap |= kFPUnixPrivsBit;
 #endif
     }
 
-    ret = dsi_send(server, (char *) msg, p - msg, DSI_DEFAULT_TIMEOUT,
-                   command, NULL);
+    ret = afpc_dsi_send(server, (char *) msg, p - msg, DSI_DEFAULT_TIMEOUT,
+                        command, NULL);
     free(msg);
     return ret;
 }
@@ -188,7 +188,7 @@ int afp_delete(struct afp_volume * volume,
 
     struct dsi_header hdr;
 
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet->command = afpDelete;
     request_packet->pad = 0;
@@ -196,8 +196,8 @@ int afp_delete(struct afp_volume * volume,
     request_packet->dirid = htonl(dirid);
     copy_path(server, pathptr, pathname, strlen(pathname));
     unixpath_to_afppath(server, pathptr);
-    ret = dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
-                   afpDelete, NULL);
+    ret = afpc_dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
+                        afpDelete, NULL);
     free(msg);
     return ret;
 }
@@ -220,7 +220,7 @@ int afp_read(struct afp_volume * volume, unsigned short forkid,
         uint8_t newlinechar;
     }  __attribute__((__packed__)) readext_packet;
     struct dsi_header hdr;
-    dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
     memcpy(&readext_packet.dsi_header, &hdr, sizeof(struct dsi_header));
     readext_packet.command = afpRead;
     readext_packet.pad = 0x0;
@@ -229,9 +229,9 @@ int afp_read(struct afp_volume * volume, unsigned short forkid,
     readext_packet.reqcount = htonl(count);
     readext_packet.newlinemask = 0;
     readext_packet.newlinechar = 0;
-    rc = dsi_send(volume->server, (char *) &readext_packet,
-                  sizeof(readext_packet), DSI_DEFAULT_TIMEOUT,
-                  afpRead, (void *) rx);
+    rc = afpc_dsi_send(volume->server, (char *) &readext_packet,
+                       sizeof(readext_packet), DSI_DEFAULT_TIMEOUT,
+                       afpRead, (void *) rx);
     return rc;
 }
 
@@ -278,16 +278,16 @@ int afp_readext(struct afp_volume * volume, unsigned short forkid,
         uint64_t reqcount;
     }  __attribute__((__packed__)) readext_packet;
     struct dsi_header hdr;
-    dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
     memcpy(&readext_packet.dsi_header, &hdr, sizeof(struct dsi_header));
     readext_packet.command = afpReadExt;
     readext_packet.pad = 0x0;
     readext_packet.forkrefnum = htons(forkid);
     readext_packet.offset = hton64(offset);
     readext_packet.reqcount = hton64(count);
-    rc = dsi_send(volume->server, (char *) &readext_packet,
-                  sizeof(readext_packet), DSI_DEFAULT_TIMEOUT,
-                  afpReadExt, (void *) rx);
+    rc = afpc_dsi_send(volume->server, (char *) &readext_packet,
+                       sizeof(readext_packet), DSI_DEFAULT_TIMEOUT,
+                       afpReadExt, (void *) rx);
     return rc;
 }
 
@@ -386,7 +386,7 @@ int afp_getfiledirparms(struct afp_volume *volume, unsigned int did,
     path = msg + (sizeof(*getfiledirparms));
     getfiledirparms = (void *) msg;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&getfiledirparms->dsi_header, &hdr, sizeof(struct dsi_header));
     getfiledirparms->command = afpGetFileDirParms;
     getfiledirparms->pad = 0;
@@ -396,8 +396,8 @@ int afp_getfiledirparms(struct afp_volume *volume, unsigned int did,
     getfiledirparms->directory_bitmap = htons(dirbitmap);
     copy_path(server, path, pathname, strlen(pathname));
     unixpath_to_afppath(server, path);
-    ret = dsi_send(server, (char *) getfiledirparms, len, DSI_DEFAULT_TIMEOUT,
-                   afpGetFileDirParms, (void *) fpp);
+    ret = afpc_dsi_send(server, (char *) getfiledirparms, len, DSI_DEFAULT_TIMEOUT,
+                        afpGetFileDirParms, (void *) fpp);
     free(msg);
     return ret;
 }
@@ -426,7 +426,7 @@ int afp_createfile(struct afp_volume * volume, unsigned char flag,
     path = msg + (sizeof(*request_packet));
     request_packet = (void *) msg;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet->command = afpCreateFile;
     request_packet->flag = flag;
@@ -434,8 +434,8 @@ int afp_createfile(struct afp_volume * volume, unsigned char flag,
     request_packet->did = htonl(did);
     copy_path(server, path, pathname, strlen(pathname));
     unixpath_to_afppath(server, path);
-    ret = dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
-                   afpCreateFile, NULL);
+    ret = afpc_dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
+                        afpCreateFile, NULL);
     free(msg);
     return ret;
 }
@@ -466,7 +466,7 @@ int afp_write(struct afp_volume * volume, unsigned short forkid,
     dataptr = msg + (sizeof(*request_packet));
     memcpy(dataptr, data, reqcount);
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSIWrite);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSIWrite);
     memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet->dsi_header.return_code.data_offset = htonl(sizeof(
             *request_packet) - sizeof(struct dsi_header));
@@ -476,8 +476,8 @@ int afp_write(struct afp_volume * volume, unsigned short forkid,
     request_packet->forkid = htons(forkid);
     request_packet->offset = htonl(offset);
     request_packet->reqcount = htonl(reqcount);
-    ret = dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
-                   afpWrite, (void *) written);
+    ret = afpc_dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
+                        afpWrite, (void *) written);
     free(msg);
     return ret;
 }
@@ -534,7 +534,7 @@ int afp_writeext(struct afp_volume * volume, unsigned short forkid,
     dataptr = msg + (sizeof(*request_packet));
     memcpy(dataptr, data, reqcount);
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSIWrite);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSIWrite);
     memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet->dsi_header.return_code.data_offset = htonl(sizeof(
             *request_packet) - sizeof(struct dsi_header));
@@ -544,8 +544,8 @@ int afp_writeext(struct afp_volume * volume, unsigned short forkid,
     request_packet->forkid = htons(forkid);
     request_packet->offset = hton64(offset);
     request_packet->reqcount = hton64(reqcount);
-    ret = dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
-                   afpWriteExt, (void *) written);
+    ret = afpc_dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
+                        afpWriteExt, (void *) written);
     free(msg);
     return ret;
 }

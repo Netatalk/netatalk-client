@@ -8,9 +8,6 @@
     See the file COPYING.
 */
 
-
-#include "afp.h"
-
 #include <sys/stat.h>
 #include <string.h>
 #include <errno.h>
@@ -19,21 +16,20 @@
 #include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
-
 #include <fcntl.h>
 
-#include "users.h"
+#include "afp_internal.h"
 #include "did.h"
-#include "resource.h"
-#include "utils.h"
 #include "codepage.h"
 #include "compat.h"
-#include "midlevel.h"
-#include "afp_internal.h"
-#include "afp_xattr.h"
-#include "forklist.h"
-#include "uams.h"
 #include "lowlevel.h"
+#include "midlevel.h"
+#include "forklist.h"
+#include "resource.h"
+#include "uams.h"
+#include "users.h"
+#include "utils.h"
+#include "xattr.h"
 
 
 #define min(a,b) (((a)<(b)) ? (a) : (b))

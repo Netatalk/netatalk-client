@@ -7,10 +7,11 @@
 
 #include <stdlib.h>
 #include <string.h>
+
+#include "afp_internal.h"
+#include "compat.h"
 #include "dsi.h"
 #include "dsi_protocol.h"
-#include "afp.h"
-#include "compat.h"
 #include "utils.h"
 
 int afp_getsessiontoken(struct afp_server * server, int type,
@@ -66,14 +67,14 @@ int afp_getsessiontoken(struct afp_server * server, int type,
     request->pad = 0;
     request->type = htons(type);
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request->header, &hdr, sizeof(struct dsi_header));
     request->command = afpGetSessionToken;
     memcpy(data, outgoing_token->data, datalen);
-    ret = dsi_send(server, (char *)request,
-                   sizeof(*request) + datalen + timelen,
-                   DSI_DEFAULT_TIMEOUT, afpGetSessionToken,
-                   (void *) incoming_token);
+    ret = afpc_dsi_send(server, (char *)request,
+                        sizeof(*request) + datalen + timelen,
+                        DSI_DEFAULT_TIMEOUT, afpGetSessionToken,
+                        (void *) incoming_token);
     free(request);
     return ret;
 error:
@@ -142,14 +143,14 @@ int afp_disconnectoldsession(struct afp_server * server, int type,
 
     struct dsi_header hdr;
 
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request->header, &hdr, sizeof(struct dsi_header));
     request->command = afpDisconnectOldSession;
     request->idlength = htonl(token->length);
     memcpy(token_data, token->data, token->length);
-    ret = dsi_send(server, (char *)request,
-                   sizeof(*request) + token->length,
-                   DSI_DEFAULT_TIMEOUT, afpDisconnectOldSession, NULL);
+    ret = afpc_dsi_send(server, (char *)request,
+                        sizeof(*request) + token->length,
+                        DSI_DEFAULT_TIMEOUT, afpDisconnectOldSession, NULL);
     free(request);
     return ret;
 }

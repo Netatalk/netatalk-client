@@ -14,14 +14,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
-#include "afp.h"
-#include "libafpclient.h"
-#include "uams_def.h"
 
-void afp_default_url(struct afp_url *url)
+#include "afp_internal.h"
+#include "client.h"
+#include "uam_registry.h"
+
+void afp_default_url(struct afpc_url *url)
 {
-    memset(url, 0, sizeof(struct afp_url));
-    url->protocol = TCPIP;
+    memset(url, 0, sizeof(struct afpc_url));
+    url->protocol = AFPC_TRANSPORT_TCPIP;
     url->port = 548;
 }
 
@@ -84,29 +85,12 @@ static void escape_string(char * string, char c)
     strcpy(string, tmpstring);
 }
 
-static void escape_url(struct afp_url * url)
+static void escape_url(struct afpc_url * url)
 {
     escape_string(url->password, '@');
     escape_string(url->username, ':');
 }
 
-
-void afp_print_url(struct afp_url * url)
-{
-    printf("servername: %s\n"
-           "volumename: %s\n"
-           "path: %s\n"
-           "username: %s\n"
-           "password: %s\n"
-           "port: %d\n"
-           "uam name: %s\n",
-           url->servername,
-           url->volumename,
-           url->path,
-           url->username,
-           url->password,
-           url->port, url->uamname);
-}
 
 static char *escape_strrchr(const char * haystack, int c, const char *toescape)
 {
@@ -169,7 +153,7 @@ static char *escape_strchr(const char * haystack, int c, const char * toescape)
  * afp://server-name/volume-name/path
  *
  */
-int afp_parse_url(struct afp_url * url, const char * toparse)
+int afp_parse_url(struct afpc_url * url, const char * toparse)
 {
     char firstpart[AFP_HOSTNAME_LEN], secondpart[MAX_CLIENT_RESPONSE];
     char *p, *q;

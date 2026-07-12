@@ -9,13 +9,13 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "dsi.h"
-#include "afp.h"
-#include "compat.h"
-#include "utils.h"
+#include "afp_internal.h"
 #include "afp_protocol.h"
-#include "dsi_protocol.h"
 #include "afp_replies.h"
+#include "compat.h"
+#include "dsi.h"
+#include "dsi_protocol.h"
+#include "utils.h"
 
 typedef struct reply_entry {
     uint8_t size;
@@ -81,7 +81,7 @@ int afp_exchangefiles(struct afp_volume *volume,
 
     request_packet = (void *) msg;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet->command = afpExchangeFiles;
     request_packet->pad = 0;
@@ -94,8 +94,9 @@ int afp_exchangefiles(struct afp_volume *volume,
     p += header_len + slen;
     copy_path(server, p, dst_path, dlen);
     unixpath_to_afppath(server, p);
-    ret = dsi_send(server, msg, (int)len, DSI_DEFAULT_TIMEOUT, afpExchangeFiles,
-                   NULL);
+    ret = afpc_dsi_send(server, msg, (int)len, DSI_DEFAULT_TIMEOUT,
+                        afpExchangeFiles,
+                        NULL);
     free(msg);
     return ret;
 }
@@ -148,7 +149,7 @@ int afp_moveandrename(struct afp_volume *volume,
 
     request_packet = (void *) msg;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet->command = afpMoveAndRename;
     request_packet->pad = 0;
@@ -164,8 +165,9 @@ int afp_moveandrename(struct afp_volume *volume,
     p += sizeof_path_header(server) + dlen;
     copy_path(server, p, new_name, nlen);
     unixpath_to_afppath(server, p);
-    ret = dsi_send(server, msg, (int)len, DSI_DEFAULT_TIMEOUT, afpMoveAndRename,
-                   NULL);
+    ret = afpc_dsi_send(server, msg, (int)len, DSI_DEFAULT_TIMEOUT,
+                        afpMoveAndRename,
+                        NULL);
     free(msg);
     return ret;
 }
@@ -195,7 +197,7 @@ int afp_rename(struct afp_volume *volume,
 
     request_packet = (void *) msg;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet->command = afpRename;
     request_packet->pad = 0;
@@ -207,7 +209,7 @@ int afp_rename(struct afp_volume *volume,
     pathtoptr = pathfromptr + sizeof_path_header(server) + strlen(path_from);
     copy_path(server, pathtoptr, path_to, strlen(path_to));
     unixpath_to_afppath(server, pathtoptr);
-    ret = dsi_send(server, msg, len, DSI_DEFAULT_TIMEOUT, afpRename, NULL);
+    ret = afpc_dsi_send(server, msg, len, DSI_DEFAULT_TIMEOUT, afpRename, NULL);
     free(msg);
     return ret;
 }
@@ -236,7 +238,7 @@ int afp_createdir(struct afp_volume * volume, unsigned int dirid,
     pathptr = msg + sizeof(*request_packet);
     request_packet = (void *) msg;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet->command = afpCreateDir;
     request_packet->pad = 0;
@@ -244,8 +246,8 @@ int afp_createdir(struct afp_volume * volume, unsigned int dirid,
     request_packet->dirid = htonl(dirid);
     copy_path(server, pathptr, pathname, strlen(pathname));
     unixpath_to_afppath(server, pathptr);
-    ret = dsi_send(server, msg, len, DSI_DEFAULT_TIMEOUT,
-                   afpCreateDir, (void *)did_p);
+    ret = afpc_dsi_send(server, msg, len, DSI_DEFAULT_TIMEOUT,
+                        afpCreateDir, (void *)did_p);
     free(msg);
     return ret;
 }
@@ -468,7 +470,7 @@ int afp_enumerate(
     path = data + sizeof(*afp_enumerate_request_packet);
     afp_enumerate_request_packet = (void *) data;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&afp_enumerate_request_packet->dsi_header, &hdr,
            sizeof(struct dsi_header));
     afp_enumerate_request_packet->command = afpEnumerate;
@@ -483,8 +485,8 @@ int afp_enumerate(
         htons((uint16_t)enumerate_max_reply_size(server));
     copy_path(server, path, pathname, strlen(pathname));
     unixpath_to_afppath(server, path);
-    rc = dsi_send(server, data, len, DSI_DEFAULT_TIMEOUT,
-                  afpEnumerate, (void **) &files);
+    rc = afpc_dsi_send(server, data, len, DSI_DEFAULT_TIMEOUT,
+                       afpEnumerate, (void **) &files);
     *file_p = files;
     free(data);
     return rc;
@@ -527,7 +529,7 @@ int afp_enumerateext(
     path = data + sizeof(*afp_enumerateext_request_packet);
     afp_enumerateext_request_packet = (void *) data;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&afp_enumerateext_request_packet->dsi_header, &hdr,
            sizeof(struct dsi_header));
     afp_enumerateext_request_packet->command = afpEnumerateExt;
@@ -542,8 +544,8 @@ int afp_enumerateext(
         htons((uint16_t)enumerate_max_reply_size(server));
     copy_path(server, path, pathname, strlen(pathname));
     unixpath_to_afppath(server, path);
-    rc = dsi_send(server, data, len, DSI_DEFAULT_TIMEOUT,
-                  afpEnumerateExt, (void **) &files);
+    rc = afpc_dsi_send(server, data, len, DSI_DEFAULT_TIMEOUT,
+                       afpEnumerateExt, (void **) &files);
     *file_p = files;
     free(data);
     return rc;
@@ -586,7 +588,7 @@ int afp_enumerateext2(
     path = data + sizeof(*afp_enumerateext2_request_packet);
     afp_enumerateext2_request_packet = (void *) data;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&afp_enumerateext2_request_packet->dsi_header, &hdr,
            sizeof(struct dsi_header));
     afp_enumerateext2_request_packet->command = afpEnumerateExt2;
@@ -601,8 +603,8 @@ int afp_enumerateext2(
         htonl(enumerate_max_reply_size(server));
     copy_path(server, path, pathname, strlen(pathname));
     unixpath_to_afppath(server, path);
-    rc = dsi_send(server, data, len, DSI_DEFAULT_TIMEOUT,
-                  afpEnumerateExt2, (void **) &files);
+    rc = afpc_dsi_send(server, data, len, DSI_DEFAULT_TIMEOUT,
+                       afpEnumerateExt2, (void **) &files);
     *file_p = files;
     free(data);
     return rc;

@@ -17,12 +17,12 @@
 #include <bsd/string.h>
 #endif
 
+#include "afp_internal.h"
+#include "uam_registry.h"
 #include "compat.h"
 #include "dsi.h"
-#include "afp.h"
-#include "utils.h"
-#include "uams_def.h"
 #include "uams.h"
+#include "utils.h"
 
 /*
  *   Request block when using the Cleartext Password UAM:

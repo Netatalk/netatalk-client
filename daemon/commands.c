@@ -26,20 +26,20 @@
 #include <bsd/string.h>
 #endif
 
-#include "afp.h"
-#include "afp_server.h"
-#include "codepage.h"
-#include "compat.h"
-#include "dsi.h"
-#include "libafpclient.h"
-#include "map_def.h"
-#include "midlevel.h"
-#include "uams_def.h"
-#include "utils.h"
+#include "lib/afp_internal.h"
+#include "lib/codepage.h"
+#include "lib/compat.h"
+#include "lib/dsi.h"
+#include "lib/client.h"
+#include "lib/mapping.h"
+#include "lib/midlevel.h"
+#include "lib/uam_registry.h"
+#include "lib/utils.h"
 
 #include "commands.h"
 #include "daemon.h"
 #include "daemon_client.h"
+#include "server.h"
 
 /* File handle table for mapping 32-bit IDs to 64-bit pointers */
 #define MAX_OPEN_FILES 1024
@@ -357,7 +357,7 @@ static unsigned char process_disconnect(struct daemon_client * c)
     if (!server) {
         log_for_client((void *)c, AFPFSD, LOG_WARNING,
                        "Disconnect request with invalid server %p",
-                       req->serverid);
+                       (void *)req->serverid);
         response.header.result = AFP_SERVER_RESULT_OKAY;
         goto done;
     }
@@ -432,7 +432,7 @@ static unsigned char process_getvolid(struct daemon_client * c)
         goto done;
     }
 
-    response.volumeid = (volumeid_t) v;
+    response.volumeid = (afpc_volume_t) v;
     response.header.result = AFP_SERVER_RESULT_OKAY;
 done:
     response.header.result = ret;
@@ -532,7 +532,7 @@ static unsigned char process_getvols(struct daemon_client * c)
     unsigned int numvols;
     char *p;
     unsigned int len = sizeof(struct afp_server_getvols_response);
-    struct afp_volume_summary * sum;
+    struct afpc_volume_info * sum;
 
     if (((size_t)(c->completed_packet_size) < sizeof(struct
             afp_server_getvols_request)) || (request->start < 0)) {
@@ -569,7 +569,7 @@ static unsigned char process_getvols(struct daemon_client * c)
         goto error;
     }
 
-    len += numvols * sizeof(struct afp_volume_summary);
+    len += numvols * sizeof(struct afpc_volume_info);
     response = alloc_response(len, sizeof(*response));
 
     if (!response) {
@@ -586,7 +586,7 @@ static unsigned char process_getvols(struct daemon_client * c)
         memcpy(sum->volume_name_printable, volume->volume_name_printable,
                AFP_VOLUME_NAME_UTF8_LEN);
         sum->flags = volume->flags;
-        p = p + sizeof(struct afp_volume_summary);
+        p = p + sizeof(struct afpc_volume_info);
     }
 
     response->num = numvols;
@@ -1929,7 +1929,7 @@ static unsigned char process_readdir(struct daemon_client * c)
         size_t name_len = strlen(fp->name);
         size_t entry_size = sizeof(uint32_t) + name_len +
                             sizeof(uint32_t) * 2 +
-                            sizeof(struct afp_unixprivs) +
+                            sizeof(struct afpc_unix_privileges) +
                             sizeof(uint64_t);
 
         if (p + entry_size > end) {
@@ -1946,8 +1946,8 @@ static unsigned char process_readdir(struct daemon_client * c)
         p += sizeof(uint32_t);
         memcpy(p, &fp->modification_date, sizeof(uint32_t));
         p += sizeof(uint32_t);
-        memcpy(p, &fp->unixprivs, sizeof(struct afp_unixprivs));
-        p += sizeof(struct afp_unixprivs);
+        memcpy(p, &fp->unixprivs, sizeof(struct afpc_unix_privileges));
+        p += sizeof(struct afpc_unix_privileges);
         memcpy(p, &fp->size, sizeof(uint64_t));
         p += sizeof(uint64_t);
         fp = fp->next;
@@ -1993,7 +1993,7 @@ done:
 }
 
 static int server_name_matches_url(struct afp_server *server,
-                                   const struct afp_url *url)
+                                   const struct afpc_url *url)
 {
     return strcmp(server->server_name_utf8, url->servername) == 0
            || strcmp(server->server_name, url->servername) == 0
@@ -2019,7 +2019,7 @@ static int server_address_matches(struct afp_server *server,
 }
 
 static int server_auth_matches_resume(struct afp_server *server,
-                                      const struct afp_url *url,
+                                      const struct afpc_url *url,
                                       unsigned int uam_mask)
 {
     /*
@@ -2041,7 +2041,7 @@ static int server_auth_matches_resume(struct afp_server *server,
 }
 
 static int server_auth_matches_reconnect(struct afp_server *server,
-        const struct afp_url *url, unsigned int uam_mask)
+        const struct afpc_url *url, unsigned int uam_mask)
 {
     if (strcmp(server->username, url->username) != 0) {
         return 0;
@@ -2056,7 +2056,7 @@ static int server_auth_matches_reconnect(struct afp_server *server,
 }
 
 static struct afp_server *find_resumable_server_hold(void *priv,
-        const struct afp_url *url, unsigned int uam_mask, int *error)
+        const struct afpc_url *url, unsigned int uam_mask, int *error)
 {
     struct afp_server *match = NULL;
     struct addrinfo *address = NULL;
@@ -2111,7 +2111,7 @@ static struct afp_server *find_resumable_server_hold(void *priv,
 }
 
 static struct afp_server *find_disconnected_server_hold(void *priv,
-        const struct afp_url *url, unsigned int uam_mask, int *error)
+        const struct afpc_url *url, unsigned int uam_mask, int *error)
 {
     struct afp_server *match = NULL;
     struct addrinfo *address = NULL;
@@ -2166,7 +2166,7 @@ static struct afp_server *find_disconnected_server_hold(void *priv,
 }
 
 static int reconnect_disconnected_server(void *priv, struct afp_server *server,
-        const struct afp_url *url)
+        const struct afpc_url *url)
 {
     char mesg[MAX_ERROR_LEN];
     unsigned int len = 0;
@@ -2264,7 +2264,7 @@ static int process_connect(struct daemon_client * c)
 
     /* Initialize connection request */
     conn_req.uam_mask = req->uam_mask;
-    memcpy(&conn_req.url, &req->url, sizeof(struct afp_url));
+    memcpy(&conn_req.url, &req->url, sizeof(struct afpc_url));
 
     /*
     * Sets connect_error:
@@ -2378,7 +2378,7 @@ static int process_attach(struct daemon_client * c)
     if (!s || s->connect_state != SERVER_STATE_CONNECTED || s->fd < 0) {
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Attach request with invalid or disconnected server %p",
-                       req->serverid);
+                       (void *)req->serverid);
         response_result = AFP_SERVER_RESULT_NOTCONNECTED;
         goto error;
     }
@@ -2420,7 +2420,7 @@ done:
     response.header.len = sizeof(response);
 
     if (volume) {
-        response.volumeid = (volumeid_t) volume;
+        response.volumeid = (afpc_volume_t) volume;
     }
 
     finish_response(c, send_command(c, sizeof(response), (char *) &response),

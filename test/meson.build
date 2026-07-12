@@ -1,3 +1,21 @@
+public_headers_test = executable(
+    'test_public_headers',
+    sources: ['test_public_headers.c'],
+    include_directories: incdir,
+    link_with: libafpsl,
+)
+
+test('public headers compile standalone', public_headers_test)
+
+transport_api_test = executable(
+    'test_transport_api',
+    sources: ['test_transport_api.c'],
+    include_directories: incdir,
+    link_with: libafpclient,
+)
+
+test('stateful transport public API', transport_api_test)
+
 metadata_test = executable(
     'test_metadata',
     sources: ['test_metadata.c'],

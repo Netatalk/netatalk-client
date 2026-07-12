@@ -5,7 +5,8 @@
 #include <sys/types.h>
 #include <stdint.h>
 #include <utime.h>
-#include "afp.h"
+
+#include "afp_internal.h"
 
 int ml_open(struct afp_volume * volume, const char *path, int flags,
             struct afp_file_info **newfp);

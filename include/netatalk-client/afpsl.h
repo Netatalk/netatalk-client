@@ -1,11 +1,20 @@
-#ifndef __AFPSL_H_
-#define __AFPSL_H_
+#ifndef NETATALK_CLIENT_AFPSL_H
+#define NETATALK_CLIENT_AFPSL_H
 
+#include <errno.h>
+#include <stddef.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <sys/types.h>
 #include <syslog.h>
 #include <utime.h>
 
-#include "afp.h"
-#include "errno.h"
+#include "types.h"
+#include "url.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* Maximum value or resource-fork payload per stateless metadata request. */
 #define AFP_SL_METADATA_CHUNK 4096
@@ -45,6 +54,18 @@ enum afp_sl_password_change_status {
     AFP_SL_PASSWORD_CHANGE_STATUS_INVALID_PARAMETER,
 };
 
+enum afp_sl_uam {
+    AFP_SL_UAM_NO_USER_AUTH = 0x1,
+    AFP_SL_UAM_CLEARTEXT = 0x2,
+    AFP_SL_UAM_RANDNUM = 0x4,
+    AFP_SL_UAM_TWO_WAY_RANDNUM = 0x8,
+    AFP_SL_UAM_DHCAST128 = 0x10,
+    AFP_SL_UAM_KERBEROS = 0x20,
+    AFP_SL_UAM_DHX2 = 0x40,
+    AFP_SL_UAM_RECONNECT = 0x80,
+    AFP_SL_UAM_SRP = 0x100,
+};
+
 /* Local filesystem representation used by metadata transfer helpers.  AUTO
  * probes generic filesystem xattrs, then falls back to Netatalk AppleDouble
  * EA sidecars.  FinderInfo and ResourceFork use native xattrs on macOS and
@@ -64,32 +85,13 @@ enum afp_metadata_warning {
     AFP_METADATA_WARNING_LIST_TOO_LARGE = 1U << 2,
 };
 
-/* Basic file information structure for stateless API
- * This is the wire protocol format sent between afpsld and clients.
- * Contains essential file metadata without the full afp_file_info details.
- */
-struct afp_file_info_basic {
-    char name[AFP_MAX_PATH];
-    unsigned int creation_date;
-    unsigned int modification_date;
-    struct afp_unixprivs unixprivs;
-    unsigned long long size;
-};
-
-struct afp_volume_summary {
-    char volume_name_printable[AFP_VOLUME_NAME_UTF8_LEN];
-    char flags;
-};
-
-typedef void   *serverid_t;
-typedef void   *volumeid_t;
-
 /* loglevel uses the LOG_* values from syslog.h. The callback runs
  * synchronously on the thread making the afp_sl_* call. */
 typedef void (*afp_sl_log_callback)(void *user_data, int loglevel,
                                     const char *message);
 
 void afp_sl_set_log_callback(afp_sl_log_callback callback, void *user_data);
+unsigned int afp_sl_default_uams(void);
 
 /* Unless documented otherwise, libafpsl operations return zero on success and
  * negative errno on failure. Read-like metadata operations return a
@@ -97,63 +99,66 @@ void afp_sl_set_log_callback(afp_sl_log_callback callback, void *user_data);
 int afp_sl_exit(void);
 int afp_sl_status(const char * volumename, const char * servername,
                   char *text, unsigned int *remaining);
-int afp_sl_connect(struct afp_url * url, unsigned int uam_mask,
-                   serverid_t *id, char *loginmesg);
-int afp_sl_resume(struct afp_url * url, unsigned int uam_mask,
-                  serverid_t *id, char *loginmesg);
-int afp_sl_disconnect(serverid_t *id);
-int afp_sl_getvolid(serverid_t serverid, struct afp_url * url,
-                    volumeid_t *volid);
+int afp_sl_connect(struct afpc_url * url, unsigned int uam_mask,
+                   afpc_server_t *id, char *loginmesg);
+int afp_sl_resume(struct afpc_url * url, unsigned int uam_mask,
+                  afpc_server_t *id, char *loginmesg);
+int afp_sl_disconnect(afpc_server_t *id);
+int afp_sl_getvolid(afpc_server_t serverid, struct afpc_url * url,
+                    afpc_volume_t *volid);
 /* status is optional. On return it distinguishes a volume-password challenge
  * from other -EACCES failures. */
-int afp_sl_attach(serverid_t serverid, struct afp_url * url,
-                  unsigned int volume_options, volumeid_t *volumeid,
+int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
+                  unsigned int volume_options, afpc_volume_t *volumeid,
                   enum afp_sl_attach_status *status);
-int afp_sl_detach(volumeid_t * volumeid,
-                  struct afp_url * url);
-int afp_sl_readdir(volumeid_t * volid, const char * path, struct afp_url * url,
+int afp_sl_detach(afpc_volume_t * volumeid,
+                  struct afpc_url * url);
+int afp_sl_readdir(afpc_volume_t * volid, const char * path,
+                   struct afpc_url * url,
                    int start, int count, unsigned int *numfiles,
-                   struct afp_file_info_basic **fpb,
+                   struct afpc_file_info **fpb,
                    int *eod);
-int afp_sl_getvols(serverid_t serverid, struct afp_url * url,
+int afp_sl_getvols(afpc_server_t serverid, struct afpc_url * url,
                    unsigned int start,
                    unsigned int count, unsigned int *numvols,
-                   struct afp_volume_summary * vols);
-int afp_sl_stat(volumeid_t * volid, const char * path,
-                struct afp_url * url, struct stat * stat);
-int afp_sl_open(volumeid_t * volid, const char * path,
-                struct afp_url * url, unsigned int *fileid,
+                   struct afpc_volume_info * vols);
+int afp_sl_stat(afpc_volume_t * volid, const char * path,
+                struct afpc_url * url, struct stat * stat);
+int afp_sl_open(afpc_volume_t * volid, const char * path,
+                struct afpc_url * url, unsigned int *fileid,
                 unsigned int mode);
-int afp_sl_read(volumeid_t * volid, unsigned int fileid, unsigned int resource,
+int afp_sl_read(afpc_volume_t * volid, unsigned int fileid,
+                unsigned int resource,
                 unsigned long long start,
                 unsigned int length, unsigned int *received,
                 unsigned int *eof, char *data);
-int afp_sl_write(volumeid_t * volid, unsigned int fileid, unsigned int resource,
+int afp_sl_write(afpc_volume_t * volid, unsigned int fileid,
+                 unsigned int resource,
                  unsigned long long offset, unsigned int size,
                  unsigned int *written, const char *data);
-int afp_sl_creat(volumeid_t * volid, const char * path,
-                 struct afp_url * url, mode_t mode);
-int afp_sl_chmod(volumeid_t * volid, const char * path,
-                 struct afp_url * url, mode_t mode);
-int afp_sl_rename(volumeid_t * volid, const char * path_from,
-                  const char *path_to, struct afp_url * url);
-int afp_sl_unlink(volumeid_t * volid, const char * path,
-                  struct afp_url * url);
-int afp_sl_truncate(volumeid_t * volid, const char * path,
-                    struct afp_url * url, unsigned long long offset);
-int afp_sl_utime(volumeid_t * volid, const char * path,
-                 struct afp_url * url, struct utimbuf * times);
-int afp_sl_mkdir(volumeid_t * volid, const char * path,
-                 struct afp_url * url, mode_t mode);
-int afp_sl_rmdir(volumeid_t * volid, const char * path,
-                 struct afp_url * url);
-int afp_sl_statfs(volumeid_t * volid, const char * path,
-                  struct afp_url * url, struct statvfs * stat);
-int afp_sl_close(volumeid_t * volid, unsigned int fileid);
-int afp_sl_serverinfo(struct afp_url * url, struct afp_server_basic * basic);
+int afp_sl_creat(afpc_volume_t * volid, const char * path,
+                 struct afpc_url * url, mode_t mode);
+int afp_sl_chmod(afpc_volume_t * volid, const char * path,
+                 struct afpc_url * url, mode_t mode);
+int afp_sl_rename(afpc_volume_t * volid, const char * path_from,
+                  const char *path_to, struct afpc_url * url);
+int afp_sl_unlink(afpc_volume_t * volid, const char * path,
+                  struct afpc_url * url);
+int afp_sl_truncate(afpc_volume_t * volid, const char * path,
+                    struct afpc_url * url, unsigned long long offset);
+int afp_sl_utime(afpc_volume_t * volid, const char * path,
+                 struct afpc_url * url, struct utimbuf * times);
+int afp_sl_mkdir(afpc_volume_t * volid, const char * path,
+                 struct afpc_url * url, mode_t mode);
+int afp_sl_rmdir(afpc_volume_t * volid, const char * path,
+                 struct afpc_url * url);
+int afp_sl_statfs(afpc_volume_t * volid, const char * path,
+                  struct afpc_url * url, struct statvfs * stat);
+int afp_sl_close(afpc_volume_t * volid, unsigned int fileid);
+int afp_sl_serverinfo(struct afpc_url * url, struct afpc_server_info * basic);
 /* status is optional. On failure it provides password-policy detail that is
  * more specific than the returned errno. */
-int afp_sl_changepw(struct afp_url * url,
+int afp_sl_changepw(struct afpc_url * url,
                     const char *old_password,
                     const char *new_password,
                     enum afp_sl_password_change_status *status);
@@ -170,26 +175,28 @@ int afp_sl_changepw(struct afp_url * url,
  * Resource fork writes overwrite or extend the specified range but do not
  * shorten an existing fork. A zero-length write at offset zero clears
  * the fork. Use afp_sl_truncateresourcefork to set any final length explicitly. */
-int afp_sl_getxattr(volumeid_t *volid, const char *path, const char *name,
+int afp_sl_getxattr(afpc_volume_t *volid, const char *path, const char *name,
                     void *value, size_t size);
-int afp_sl_setxattr(volumeid_t *volid, const char *path, const char *name,
+int afp_sl_setxattr(afpc_volume_t *volid, const char *path, const char *name,
                     void *value, size_t size, int flags);
-int afp_sl_listxattr(volumeid_t *volid, const char *path, char *list,
+int afp_sl_listxattr(afpc_volume_t *volid, const char *path, char *list,
                      size_t size);
-int afp_sl_removexattr(volumeid_t *volid, const char *path, const char *name);
-int afp_sl_getfinderinfo(volumeid_t *volid, const char *path, void *value,
+int afp_sl_removexattr(afpc_volume_t *volid, const char *path,
+                       const char *name);
+int afp_sl_getfinderinfo(afpc_volume_t *volid, const char *path, void *value,
                          size_t size);
-int afp_sl_setfinderinfo(volumeid_t *volid, const char *path, const void *value,
+int afp_sl_setfinderinfo(afpc_volume_t *volid, const char *path,
+                         const void *value,
                          size_t size);
-int afp_sl_removefinderinfo(volumeid_t *volid, const char *path);
-int afp_sl_getresourcefork(volumeid_t *volid, const char *path, void *value,
+int afp_sl_removefinderinfo(afpc_volume_t *volid, const char *path);
+int afp_sl_getresourcefork(afpc_volume_t *volid, const char *path, void *value,
                            size_t size, unsigned long long offset);
-int afp_sl_setresourcefork(volumeid_t *volid, const char *path,
+int afp_sl_setresourcefork(afpc_volume_t *volid, const char *path,
                            const void *value, size_t size,
                            unsigned long long offset);
-int afp_sl_truncateresourcefork(volumeid_t *volid, const char *path,
+int afp_sl_truncateresourcefork(afpc_volume_t *volid, const char *path,
                                 unsigned long long size);
-int afp_sl_removeresourcefork(volumeid_t *volid, const char *path);
+int afp_sl_removeresourcefork(afpc_volume_t *volid, const char *path);
 
 /* Classify errno-style failures. ESTALE requires restoring the volume
  * attachment; connection failures require rebuilding the daemon/session
@@ -208,18 +215,23 @@ const char *afp_metadata_mode_name(enum afp_metadata_mode mode);
 int afp_metadata_clear_local(const char *path,
                              enum afp_metadata_mode mode,
                              unsigned int *warnings);
-int afp_sl_metadata_clear(volumeid_t *volume, const char *path,
+int afp_sl_metadata_clear(afpc_volume_t *volume, const char *path,
                           unsigned int *warnings);
 int afp_sl_metadata_copy_local_to_remote(
     const char *local_path, enum afp_metadata_mode local_mode,
-    volumeid_t *destination_volume, const char *destination_path,
+    afpc_volume_t *destination_volume, const char *destination_path,
     unsigned int *warnings);
 int afp_sl_metadata_copy_remote_to_local(
-    volumeid_t *source_volume, const char *source_path,
+    afpc_volume_t *source_volume, const char *source_path,
     const char *local_path, enum afp_metadata_mode local_mode,
     unsigned int *warnings);
 int afp_sl_metadata_copy_remote_to_remote(
-    volumeid_t *source_volume, const char *source_path,
-    volumeid_t *destination_volume, const char *destination_path,
+    afpc_volume_t *source_volume, const char *source_path,
+    afpc_volume_t *destination_volume, const char *destination_path,
     unsigned int *warnings);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif

@@ -40,6 +40,7 @@ libafpclient_sources = files(
     'resource.c',
     'server.c',
     'status.c',
+    'transport.c',
     'uams.c',
     'uams_clrtxt.c',
     'uams_def.c',
@@ -71,13 +72,7 @@ libafpclient = shared_library(
 
 pkg.generate(
     libafpclient,
-    description: 'AFP client library',
+    description: 'Stateful AFP transport client library',
     name: 'libafpclient',
-    version: libafpclient_version,
-)
-
-afpclient_dep = declare_dependency(
-    link_with: libafpclient,
-    include_directories: incdir,
     version: libafpclient_version,
 )

@@ -23,12 +23,12 @@
 #include <bsd/string.h>
 #endif
 
+#include "afp_internal.h"
 #include "compat.h"
 #include "dsi.h"
-#include "afp.h"
-#include "utils.h"
-#include "uams_def.h"
+#include "uam_registry.h"
 #include "uams.h"
+#include "utils.h"
 
 /*
  *   Request block when changing the password for Randnum Exchange

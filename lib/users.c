@@ -12,8 +12,8 @@
 #include <grp.h>
 #include <string.h>
 
-#include "afp.h"
-#include "map_def.h"
+#include "afp_internal.h"
+#include "mapping.h"
 
 /* How mapping works
  *

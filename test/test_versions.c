@@ -1,4 +1,4 @@
-#include "afp.h"
+#include "lib/afp_internal.h"
 #include "tap.h"
 
 static int version_number(unsigned char *versions, unsigned char requested)

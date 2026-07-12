@@ -23,11 +23,11 @@
 #include <gcrypt.h>
 #endif
 
+#include "afp_internal.h"
 #include "dsi.h"
-#include "afp.h"
-#include "utils.h"
-#include "uams_def.h"
+#include "uam_registry.h"
 #include "uams.h"
+#include "utils.h"
 
 #define SRP_INIT_MARKER   0x0001
 #define SRP_CLIENT_PROOF  0x0003

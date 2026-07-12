@@ -5,11 +5,8 @@
 #include <unistd.h>
 #include <syslog.h>
 #include <sys/select.h>
-
-#ifdef AFPCLIENT_INTERNAL
 #include <stdarg.h>
 #include <stdio.h>
-#endif
 
 #define MAX_CLIENT_RESPONSE 16384
 
@@ -51,7 +48,6 @@ void log_for_client(void * priv,
                     enum logtypes logtype, int loglevel,
                     const char *message);
 
-#ifdef AFPCLIENT_INTERNAL
 /* Internal convenience for literal printf-style formats. */
 static inline void log_for_clientf(void * priv,
                                    enum logtypes logtype, int loglevel,
@@ -78,7 +74,6 @@ static inline void log_for_clientf(void * priv,
 
 #ifndef AFPCLIENT_NO_LOG_MACRO
 #define log_for_client(...) log_for_clientf(__VA_ARGS__)
-#endif
 #endif
 
 void stdout_log_for_client(void * priv,

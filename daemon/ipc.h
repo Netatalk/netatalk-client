@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifndef MAX_CLIENT_RESPONSE
+#define MAX_CLIENT_RESPONSE 16384
+#endif
+
 /* Unix socket shared by afpsld and libafpsl. */
 #define SERVER_SL_SOCKET_PATH "/tmp/afp_sl"
 

@@ -12,14 +12,14 @@
 #include <signal.h>
 #include <string.h>
 
-#include "afp.h"
-#include "dsi.h"
-#include "utils.h"
-#include "uams_def.h"
+#include "afp_internal.h"
+#include "client.h"
 #include "codepage.h"
-#include "users.h"
-#include "libafpclient.h"
+#include "dsi.h"
 #include "server.h"
+#include "uam_registry.h"
+#include "users.h"
+#include "utils.h"
 
 
 struct addrinfo *afp_get_address(void * priv, const char * hostname,

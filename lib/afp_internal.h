@@ -1,16 +1,638 @@
-#ifndef _AFP_INTERNAL_H_
-#define _AFP_INTERNAL_H_
+#ifndef AFPCLIENT_INTERNAL_H
+#define AFPCLIENT_INTERNAL_H
 
-#include "afp.h"
+#include <arpa/inet.h>
+#include <pthread.h>
+#include <netdb.h>
+#include <sys/statvfs.h>
+#include <pwd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <netinet/in.h>
+
+#include "netatalk-client/types.h"
+#include "netatalk-client/url.h"
+#include "afp_protocol.h"
+#include "client.h"
+#include "xattr.h"
+
+/* This is the maximum AFP version this library supports */
+#define AFP_MAX_SUPPORTED_VERSION 34
+
+struct afp_token {
+    unsigned int length;
+    char data[AFP_TOKEN_MAX_LEN];
+};
+
+#define SERVER_MAX_VERSIONS 10
+#define SERVER_MAX_UAMS 10
+
+struct afp_rx_buffer {
+    unsigned int size;
+    unsigned int maxsize;
+    char *data;
+    int errorcode;
+};
+
+
+struct afp_file_info {
+    unsigned short attributes;
+    unsigned int did;
+    unsigned int creation_date;
+    unsigned int modification_date;
+    unsigned int backup_date;
+    unsigned int fileid;
+    unsigned short offspring;
+    unsigned char sync;
+    unsigned char writable;
+    unsigned char dirty;
+    char finderinfo[32];
+    char name[AFP_MAX_PATH];
+    char basename[AFP_MAX_PATH];
+    char translated_name[AFP_MAX_PATH];
+    struct afpc_unix_privileges unixprivs;
+    unsigned int accessrights;
+    struct afp_file_info *next;
+    struct afp_file_info *largelist_next;
+    unsigned char isdir;
+    unsigned long long size;
+    unsigned long long resourcesize;
+    unsigned int resource;
+    unsigned short forkid;
+    struct afp_icon *icon;
+    int eof;
+};
+
+#if 0
+/* obsolete netatalk workaround flags */
+#define VOLUME_EXTRA_FLAGS_VOL_CHMOD_KNOWN 0x1
+#define VOLUME_EXTRA_FLAGS_VOL_CHMOD_BROKEN 0x2
+#endif
+#define VOLUME_EXTRA_FLAGS_SHOW_APPLEDOUBLE 0x4
+#define VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX 0x8
+#define VOLUME_EXTRA_FLAGS_NO_LOCKING 0x10
+#define VOLUME_EXTRA_FLAGS_IGNORE_UNIXPRIVS 0x20
+#define VOLUME_EXTRA_FLAGS_READONLY 0x40
+
+#define AFP_VOLUME_UNMOUNTED 0
+#define AFP_VOLUME_MOUNTED 1
+#define AFP_VOLUME_UNMOUNTING 2
+
+#define AFP_VOLUME_DETACHED    0
+#define AFP_VOLUME_ATTACHED    1
+#define AFP_VOLUME_DETACHING   2
+
+struct afp_volume {
+    unsigned short volid;
+    char flags;  /* This is from afpGetSrvrParms */
+    unsigned short attributes; /* This is from VolOpen */
+    unsigned short signature;  /* This is fixed or variable */
+    unsigned int creation_date;
+    unsigned int modification_date;
+    unsigned int backup_date;
+    struct statvfs stat;
+    unsigned char mounted;
+    unsigned char attached;
+    char mountpoint[AFP_MOUNTPOINT_LEN];
+    struct afp_server *server;
+    char volume_name[AFP_VOLUME_NAME_UTF8_LEN];
+    char volume_name_printable[AFP_VOLUME_NAME_UTF8_LEN];
+    unsigned short dtrefnum;
+    char volpassword[AFP_VOLPASS_LEN];
+    unsigned int extra_flags; /* This is a Netatalk Client specific field */
+    time_t mount_time; /* Time when the volume was mounted */
+
+    /* Our directory ID cache */
+    struct did_cache_entry *did_cache_base;
+    pthread_mutex_t did_cache_mutex;
+
+    /* Our journal of open forks */
+    struct afp_file_info *open_forks;
+    pthread_mutex_t open_forks_mutex;
+
+    /* Used to trigger startup */
+    pthread_cond_t  startup_condition_cond;
+
+    struct {
+        uint64_t hits;
+        uint64_t misses;
+        uint64_t expired;
+        uint64_t force_removed;
+    } did_cache_stats;
+
+    void *priv;   /* This is a private structure for fuse/cmdline, etc */
+    pthread_t thread; /* This is the per-volume thread */
+
+    int mapping;
+
+};
+
+#define SERVER_STATE_CONNECTED 1
+#define SERVER_STATE_DISCONNECTED 2
+#define SERVER_STATE_CONNECTING 3
+
+struct afp_versions {
+    char        *av_name;
+    int         av_number;
+};
 
 extern struct afp_versions afp_versions[];
 
-/* From netatalk's adouble.h */
+struct afp_server {
+
+    /* Our buffer sizes */
+    unsigned int tx_quantum;
+    unsigned int rx_quantum;
+
+    unsigned int tx_delay;
+    int dsi_default_timeout;
+
+    /* Connection information */
+    //the linked list returned by getaddrinfo
+    struct addrinfo *address;
+    //the address we successfully connected to
+    struct addrinfo *used_address;
+    int fd;
+
+    /* Some stats, for information only */
+    struct {
+        uint64_t runt_packets;
+        uint64_t incoming_dsi;
+        uint64_t rx_bytes;
+        uint64_t tx_bytes;
+        uint64_t requests_pending;
+    } stats;
+
+    /* General information */
+    char server_name[AFP_SERVER_NAME_LEN];
+    char server_name_utf8[AFP_SERVER_NAME_UTF8_LEN];
+    char server_name_printable[AFP_SERVER_NAME_UTF8_LEN];
+
+    char machine_type[17];
+    char icon[AFP_SERVER_ICON_LEN];
+    char signature[16];
+    unsigned short flags;
+    int connect_state;
+    enum afpc_server_type server_type;
+
+    /* This is the time we connected */
+    time_t connect_time;
+
+    /* UAMs */
+    unsigned int supported_uams;
+    unsigned int using_uam;
+
+    /* Authentication */
+    char username[AFP_MAX_USERNAME_LEN];
+    char password[AFP_MAX_PASSWORD_LEN];
+
+    /* Session */
+    struct afp_token token;
+    char need_resume;
+    char reconnect_in_progress;
+    char suspended;
+
+    /* Versions */
+    unsigned char requested_version;
+    unsigned char versions[SERVER_MAX_VERSIONS];
+    struct afp_versions *using_version;
+
+    /* Volumes */
+    unsigned char num_volumes;
+    struct afp_volume *volumes;
+
+    void *dsi;
+    unsigned int exit_flag;
+
+    /* Our DSI request queue */
+    pthread_mutex_t requestid_mutex;
+    pthread_mutex_t request_queue_mutex;
+    unsigned short lastrequestid;
+    unsigned short expectedrequestid;
+    struct dsi_request *command_requests;
+    unsigned int connection_generation;  /* Incremented on each reconnect */
+
+    /* AFP 3.3+ Replay cache support */
+    unsigned int replay_cache_size;  /* Server's replay cache size */
+    unsigned char supports_replay_cache;  /* 1 if server supports replay cache */
+
+
+    char loginmesg[200];
+    char path_encoding;
+
+    /* This is the data for the incoming buffer */
+    char *incoming_buffer;
+    int data_read;
+    int bufsize;
+
+    /* And this is for the outgoing queue */
+    pthread_mutex_t send_mutex;
+
+    /* This is for user mapping */
+    struct passwd passwd;
+    unsigned int server_uid, server_gid;
+    int server_gid_valid;
+
+    struct afp_server *next;
+
+    /* Reference counting for safe multi-threaded access */
+    int refcount;
+
+    /* These are for DSI attention packets */
+    unsigned int attention_quantum;
+    unsigned int attention_len;
+    char *attention_buffer;
+
+};
+
+static inline int afp_server_reconnect_try_begin(struct afp_server *server)
+{
+    char expected = 0;
+    return __atomic_compare_exchange_n(&server->reconnect_in_progress,
+                                       &expected, 1, 0,
+                                       __ATOMIC_ACQ_REL,
+                                       __ATOMIC_ACQUIRE);
+}
+
+static inline void afp_server_reconnect_end(struct afp_server *server)
+{
+    __atomic_store_n(&server->reconnect_in_progress, 0, __ATOMIC_RELEASE);
+}
+
+static inline int afp_server_reconnect_is_in_progress(
+    const struct afp_server *server)
+{
+    return __atomic_load_n(&server->reconnect_in_progress,
+                           __ATOMIC_ACQUIRE) != 0;
+}
+
+static inline void afp_server_set_suspended(struct afp_server *server,
+        int suspended)
+{
+    __atomic_store_n(&server->suspended, suspended ? 1 : 0,
+                     __ATOMIC_RELEASE);
+}
+
+static inline int afp_server_is_suspended(const struct afp_server *server)
+{
+    return __atomic_load_n(&server->suspended, __ATOMIC_ACQUIRE) != 0;
+}
+
+static inline unsigned int afp_server_connection_generation(
+    const struct afp_server *server)
+{
+    return __atomic_load_n(&server->connection_generation,
+                           __ATOMIC_ACQUIRE);
+}
+
+static inline unsigned int afp_server_next_connection_generation(
+    struct afp_server *server)
+{
+    return __atomic_add_fetch(&server->connection_generation, 1,
+                              __ATOMIC_ACQ_REL);
+}
+
+static inline void afp_server_connection_generation_init(
+    struct afp_server *server)
+{
+    __atomic_store_n(&server->connection_generation, 0,
+                     __ATOMIC_RELEASE);
+}
+
+struct afp_comment {
+    unsigned int maxsize;
+    unsigned int size;
+    char *data;
+};
+
+struct afp_icon {
+    unsigned int maxsize;
+    unsigned int size;
+    char *data;
+};
+
+#define AFP_DEFAULT_ATTENTION_QUANTUM 1024
+
+void afp_unixpriv_to_stat(struct afp_file_info *fp,
+                          struct stat *stat);
+
+int init_uams(void) ;
+
+unsigned int find_uam_by_name(const char * name);
+char *uam_bitmap_to_string(unsigned int bitmap);
+
+
+char *get_uam_names_list(void);
+
+unsigned int default_uams_mask(void);
+
+enum afpc_server_type afp_identify_machine_type(const char *machine_type);
+void afp_server_identify(struct afp_server * s);
+void afp_server_fill_basic(const struct afp_server *server,
+                           struct afpc_server_info *basic);
+
+struct afp_volume *find_volume_by_name(struct afp_server * server,
+                                       char *volname);
+
+struct afp_connection_request {
+    unsigned int uam_mask;
+    struct afpc_url url;
+};
+
+int afp_list_volnames(struct afp_server * server, char * names, int max);
+
+void afp_default_url(struct afpc_url *url);
+int afp_parse_url(struct afpc_url *url, const char *text);
+
+/* User mapping */
+int afp_detect_mapping(struct afp_volume * volume);
+
+/* These are some functions that help with simple status text generation */
+
+int afp_status_header(char * text, int * len);
+int afp_status_server(struct afp_server * s, char * text, int * len);
+
+
+struct afp_server *afp_server_full_connect(void * priv,
+        struct afp_connection_request * req);
+
+void *just_end_it_now(void *other);
+void add_fd_and_signal(int fd);
+void loop_disconnect(struct afp_server *s);
+void afp_wait_for_started_loop(void);
+
+
+struct afp_versions *pick_version(unsigned char *versions,
+                                  unsigned char requested) ;
+int pick_uam(unsigned int u1, unsigned int u2);
+
+int afp_server_login(struct afp_server *server,
+                     char *mesg, unsigned int *l, unsigned int max);
+
+
+int afp_dologin(struct afp_server *server,
+                unsigned int uam, char *username, char *passwd);
+
+int afp_dopasswd(struct afp_server *server,
+                 unsigned int uam, char *username,
+                 char *oldpasswd, char *newpasswd);
+
+void afp_free_server(struct afp_server **server);
+
+struct afp_server *afp_server_init(struct addrinfo * address);
+struct addrinfo *afp_get_address(void * priv, const char * hostname,
+                                 unsigned int port);
+
+
+int afp_main_loop(int command_fd);
+int afp_main_quick_startup(pthread_t * thread);
+
+int afp_server_destroy(struct afp_server *s) ;
+int afp_server_reconnect(struct afp_server * s, char * mesg,
+                         unsigned int *l, unsigned int max);
+int afp_server_connect(struct afp_server *s, int full);
+
+struct afp_server *afp_server_complete_connection(
+    void *priv,
+    struct afp_server * server,
+    unsigned char *versions,
+    unsigned int uams, char *username, char *password,
+    unsigned int requested_version, unsigned int uam_mask);
+
+int afp_connect_volume(struct afp_volume * volume, struct afp_server * server,
+                       char *mesg, unsigned int *l, unsigned int max);
+int something_is_mounted(struct afp_server * server);
+int something_is_attached(struct afp_server * server);
+
+int add_cache_entry(struct afp_file_info * file) ;
+struct afp_file_info *get_cache_by_name(char * name);
+struct afp_server *find_server_by_address(struct addrinfo * address);
+struct afp_server *find_server_by_pointer(struct afp_server * target);
+struct afp_server *find_server_by_signature(char * signature);
+struct afp_server *find_server_by_name(char * name);
+int server_still_valid(struct afp_server * server);
+
+/* Reference-counted server lookups for multi-threaded use.
+ * These atomically find and hold a reference. Caller must
+ * call afp_server_release() when done with the returned pointer. */
+struct afp_server *afp_server_find_by_name_hold(char * name);
+struct afp_server *afp_server_find_by_address_hold(struct addrinfo * address);
+struct afp_volume *afp_volume_find_by_pointer_hold(void * id);
+
+void afp_server_hold(struct afp_server *s);
+void afp_server_release(struct afp_server *s);
+
+void afp_lock_server_list(void);
+void afp_unlock_server_list(void);
+
+struct afp_server *get_server_base(void);
+int afp_server_remove(struct afp_server * server);
+
+int afp_detach_volume(struct afp_volume * volume);
+int afp_unmount_volume(struct afp_volume * volume);
+int afp_unmount_all_volumes(struct afp_server * server);
+
+#define volume_is_readonly(x) (((x)->attributes&kReadOnly) || \
+	((x)->extra_flags & VOLUME_EXTRA_FLAGS_READONLY))
+
+int afp_opendt(struct afp_volume *volume, unsigned short * refnum);
+
+int afp_closedt(struct afp_server * server, unsigned short refnum);
+
+int afp_getcomment(struct afp_volume *volume, unsigned int did,
+                   const char *pathname, struct afp_comment * comment);
+
+int afp_addcomment(struct afp_volume *volume, unsigned int did,
+                   const char *pathname, char *comment, uint64_t *size);
+
+int afp_geticon(struct afp_volume * volume, unsigned int filecreator,
+                unsigned int filetype, unsigned char icontype,
+                unsigned short length, struct afp_icon * icon);
+
+/* Things you want to do to a server */
+
+int afp_getsrvrmsg(struct afp_server *server, unsigned short messagetype,
+                   unsigned char utf8, unsigned char block, char *mesg);
+
+int afp_login(struct afp_server *server, const char * uaname,
+              char *userauthinfo, unsigned int userauthinfo_len,
+              struct afp_rx_buffer *rx);
+
+int afp_loginext(struct afp_server *server, const char *uaname,
+                 const char *username,
+                 char *userauthinfo, unsigned int userauthinfo_len,
+                 struct afp_rx_buffer *rx);
+
+int afp_changepassword(struct afp_server *server, const char * uaname,
+                       char *userauthinfo, unsigned int userauthinfo_len,
+                       struct afp_rx_buffer *rx);
+
+int afp_logincont(struct afp_server *server, unsigned short id,
+                  char *userauthinfo, unsigned int userauthinfo_len,
+                  struct afp_rx_buffer *rx);
+
+int afp_getsessiontoken(struct afp_server * server, int type,
+                        unsigned int timestamp, struct afp_token *outgoing_token,
+                        struct afp_token * incoming_token);
+
+int afp_getsrvrparms(struct afp_server *server);
+
+int afp_logout(struct afp_server *server, unsigned char wait);
+
+int afp_mapname(struct afp_server * server, unsigned char subfunction,
+                char *name, unsigned int *id);
+
+int afp_mapid(struct afp_server * server, unsigned char subfunction,
+              unsigned int id, char *name);
+
+int afp_getuserinfo(struct afp_server * server, int thisuser,
+                    unsigned int userid, unsigned short bitmap,
+                    unsigned int *newuid, unsigned int *newgid);
+
+int afp_zzzzz(struct afp_server *server);
+
+int afp_volopen(struct afp_volume * volume,
+                unsigned short bitmap, char *password);
+
+int afp_flush(struct afp_volume * volume);
+
+int afp_getfiledirparms(struct afp_volume *volume, unsigned int did,
+                        unsigned int filebitmap, unsigned int dirbitmap, const char *pathname,
+                        struct afp_file_info *fp);
+
+int afp_enumerate(struct afp_volume * volume,
+                  unsigned int dirid,
+                  unsigned int filebitmap, unsigned int dirbitmap,
+                  unsigned short reqcount,
+                  unsigned short startindex,
+                  char *path,
+                  struct afp_file_info **file_p);
+
+int afp_enumerateext(struct afp_volume * volume,
+                     unsigned int dirid,
+                     unsigned int filebitmap, unsigned int dirbitmap,
+                     unsigned short reqcount,
+                     unsigned short startindex,
+                     char *path,
+                     struct afp_file_info **file_p);
+
+int afp_enumerateext2(struct afp_volume * volume,
+                      unsigned int dirid,
+                      unsigned int filebitmap, unsigned int dirbitmap,
+                      unsigned short reqcount,
+                      unsigned long startindex,
+                      char *path,
+                      struct afp_file_info **file_p);
+
+int afp_openfork(struct afp_volume * volume,
+                 unsigned char forktype,
+                 unsigned int dirid,
+                 unsigned short accessmode,
+                 char *filename,
+                 struct afp_file_info *fp);
+
+int afp_read(struct afp_volume * volume, unsigned short forkid,
+             uint32_t offset,
+             uint32_t count, struct afp_rx_buffer * rx);
+
+int afp_readext(struct afp_volume * volume, unsigned short forkid,
+                uint64_t offset,
+                uint64_t count, struct afp_rx_buffer * rx);
+
+int afp_getvolparms(struct afp_volume * volume, unsigned short bitmap);
+
+
+int afp_createdir(struct afp_volume * volume, unsigned int dirid,
+                  const char *pathname, unsigned int *did_p);
+
+int afp_delete(struct afp_volume * volume,
+               unsigned int dirid, char *pathname);
+
+
+int afp_createfile(struct afp_volume * volume, unsigned char flag,
+                   unsigned int did, char *pathname);
+
+int afp_write(struct afp_volume * volume, unsigned short forkid,
+              uint32_t offset, uint32_t reqcount,
+              char *data, uint32_t *written);
+
+int afp_writeext(struct afp_volume * volume, unsigned short forkid,
+                 uint64_t offset, uint64_t reqcount,
+                 char *data, uint64_t *written);
+
+int afp_flushfork(struct afp_volume * volume, unsigned short forkid);
+
+int afp_closefork(struct afp_volume * volume, unsigned short forkid);
+int afp_setfileparms(struct afp_volume * volume,
+                     unsigned int dirid, const char *pathname, unsigned short bitmap,
+                     struct afp_file_info *fp);
+int afp_setfiledirparms(struct afp_volume * volume,
+                        unsigned int dirid, const char *pathname, unsigned short bitmap,
+                        struct afp_file_info *fp);
+
+int afp_setdirparms(struct afp_volume * volume,
+                    unsigned int dirid, const char *pathname, unsigned short bitmap,
+                    struct afp_file_info *fp);
+
+int afp_volclose(struct afp_volume * volume);
+
+
+int afp_setforkparms(struct afp_volume *volume,
+                     unsigned short forkid, unsigned short bitmap, unsigned long len);
+
+int afp_byterangelock(struct afp_volume * volume,
+                      unsigned char flag,
+                      unsigned short forkid,
+                      uint32_t offset,
+                      uint32_t len, uint32_t *generated_offset);
+
+int afp_byterangelockext(struct afp_volume * volume,
+                         unsigned char flag,
+                         unsigned short forkid,
+                         uint64_t offset,
+                         uint64_t len, uint64_t *generated_offset);
+
+int afp_exchangefiles(struct afp_volume *volume,
+                      unsigned int src_did,
+                      unsigned int dst_did,
+                      char *src_path, char *dst_path);
+
+int afp_moveandrename(struct afp_volume *volume,
+                      unsigned int src_did,
+                      unsigned int dst_did,
+                      char *src_path, char *dst_path, char *new_name);
+
+int afp_rename(struct afp_volume * volume,
+               unsigned int dirid,
+               char *path_from, char *path_to);
+
+int afp_listextattr(struct afp_volume * volume,
+                    unsigned int dirid, unsigned short bitmap,
+                    char *pathname, struct afp_extattr_info * info);
+
+int afp_getextattr(struct afp_volume * volume, unsigned int dirid,
+                   unsigned short bitmap, unsigned int replysize,
+                   const char *pathname, unsigned short namelen, const char *name,
+                   struct afp_extattr_info * info);
+
+int afp_setextattr(struct afp_volume * volume, unsigned int dirid,
+                   unsigned short bitmap, uint64_t offset, const char *pathname,
+                   unsigned short namelen, const char *name,
+                   unsigned int attribdatalen, const char *attribdata);
+
+int afp_removeextattr(struct afp_volume * volume, unsigned int dirid,
+                      unsigned short bitmap, const char *pathname,
+                      unsigned short namelen, const char *name);
+
+/* For debugging */
+char *afp_get_command_name(unsigned char code);
+
+/* From Netatalk's adouble.h. */
 #define AD_DATE_DELTA         946684800
 #define AD_DATE_FROM_UNIX(x)  (htonl((x) - AD_DATE_DELTA))
 #define AD_DATE_TO_UNIX(x)    (ntohl(x) + AD_DATE_DELTA)
 
-void add_file_by_name(struct afp_file_info ** base, const char *filename);
+void add_file_by_name(struct afp_file_info **base, const char *filename);
 
 #endif
-

@@ -2,7 +2,8 @@
 #define __DAEMON_H_
 
 #include <sys/select.h>
-#include "afp.h"
+
+#include "lib/afp_internal.h"
 
 void rm_fd_and_signal(int fd);
 void signal_main_thread(void);

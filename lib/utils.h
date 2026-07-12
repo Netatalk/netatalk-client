@@ -1,10 +1,11 @@
 #ifndef __UTILS_H_
 #define __UTILS_H_
+
 #include <arpa/inet.h>
 #include <stdint.h>
 #include <stdio.h>
 
-#include "afp.h"
+#include "afp_internal.h"
 
 static inline uint64_t hton64(uint64_t value)
 {

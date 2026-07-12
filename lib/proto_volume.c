@@ -8,14 +8,14 @@
 
 #include <string.h>
 #include <stdlib.h>
-#include "dsi.h"
-#include "afp.h"
-#include "compat.h"
-#include "utils.h"
-#include "dsi_protocol.h"
-#include "afp_protocol.h"
+
 #include "afp_internal.h"
+#include "afp_protocol.h"
 #include "codepage.h"
+#include "compat.h"
+#include "dsi.h"
+#include "dsi_protocol.h"
+#include "utils.h"
 
 static int parse_volbitmap_reply(struct afp_server *server _U_,
                                  struct afp_volume *tmpvol,
@@ -114,13 +114,13 @@ int afp_volclose(struct afp_volume * volume)
         uint16_t volid;
     }  __attribute__((__packed__)) request;
     struct dsi_header hdr;
-    dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
     memcpy(&request.dsi_header, &hdr, sizeof(hdr));
     request.command = afpCloseVol;
     request.pad = 0;
     request.volid = htons(volume->volid);
-    return dsi_send(volume->server, (char *) &request, sizeof(request),
-                    DSI_DEFAULT_TIMEOUT, afpCloseVol, NULL);
+    return afpc_dsi_send(volume->server, (char *) &request, sizeof(request),
+                         DSI_DEFAULT_TIMEOUT, afpCloseVol, NULL);
 }
 
 
@@ -193,7 +193,7 @@ int afp_volopen(struct afp_volume * volume,
 
     afp_volopen_request = (void *) msg;
     struct dsi_header hdr;
-    dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
     memcpy(&afp_volopen_request->dsi_header, &hdr, sizeof(hdr));
     afp_volopen_request->command = afpOpenVol;
     afp_volopen_request->pad = 0;
@@ -213,8 +213,8 @@ int afp_volopen(struct afp_volume * volume,
         memcpy(password_ptr, password, len2);
     }
 
-    ret = dsi_send(volume->server, (char *) msg, len,
-                   DSI_OPENVOLUME_TIMEOUT, afpOpenVol, (void *) &volume);
+    ret = afpc_dsi_send(volume->server, (char *) msg, len,
+                        DSI_OPENVOLUME_TIMEOUT, afpOpenVol, (void *) &volume);
     free(msg);
     return ret;
 }
@@ -262,14 +262,14 @@ int afp_flush(struct afp_volume * volume)
     }  __attribute__((__packed__)) afp_flush_request;
     int ret;
     struct dsi_header hdr;
-    dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
     memcpy(&afp_flush_request.dsi_header, &hdr, sizeof(hdr));
     afp_flush_request.command = afpFlush;
     afp_flush_request.pad = 0;
     afp_flush_request.volid = htons(volume->volid);
-    ret = dsi_send(volume->server, (char *) &afp_flush_request,
-                   sizeof(afp_flush_request), DSI_DEFAULT_TIMEOUT,
-                   afpFlush, (void *) volume);
+    ret = afpc_dsi_send(volume->server, (char *) &afp_flush_request,
+                        sizeof(afp_flush_request), DSI_DEFAULT_TIMEOUT,
+                        afpFlush, (void *) volume);
     return ret;
 }
 
@@ -284,14 +284,14 @@ int afp_getvolparms(struct afp_volume * volume, unsigned short bitmap)
     }  __attribute__((__packed__)) afp_getvolparms_request;
     int ret;
     struct dsi_header hdr;
-    dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
     memcpy(&afp_getvolparms_request.dsi_header, &hdr, sizeof(hdr));
     afp_getvolparms_request.command = afpGetVolParms;
     afp_getvolparms_request.pad = 0;
     afp_getvolparms_request.volid = htons(volume->volid);
     afp_getvolparms_request.bitmap = htons(bitmap);
-    ret = dsi_send(volume->server, (char *) &afp_getvolparms_request,
-                   sizeof(afp_getvolparms_request), DSI_DEFAULT_TIMEOUT,
-                   afpGetVolParms, (void *) volume);
+    ret = afpc_dsi_send(volume->server, (char *) &afp_getvolparms_request,
+                        sizeof(afp_getvolparms_request), DSI_DEFAULT_TIMEOUT,
+                        afpGetVolParms, (void *) volume);
     return ret;
 }

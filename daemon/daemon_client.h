@@ -2,7 +2,8 @@
 #define __DAEMON_CLIENT_H_
 
 #include <pthread.h>
-#include "afp_server.h"
+
+#include "server.h"
 
 #define AFP_CLIENT_INCOMING_BUF 8192
 

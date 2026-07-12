@@ -17,10 +17,6 @@
  *
  */
 
-#include "metadata.h"
-#include "afpsl.h"
-#include "afp_xattr.h"
-
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -43,6 +39,11 @@
 #elif defined(HAVE_SYS_EXTATTR_H)
 #include <sys/extattr.h>
 #endif
+
+#include "netatalk-client/afpsl.h"
+#include "lib/xattr.h"
+
+#include "metadata.h"
 
 #define COPY_SOURCE "com.apple.finder.copy.source"
 #define COPY_CHECKPOINT "com.apple.finder.copy.checkpoint#"
@@ -1822,7 +1823,7 @@ static int transfer_list_next(const char *list, size_t size, size_t *position,
     return 1;
 }
 
-static int transfer_remote_list(volumeid_t *volume, const char *path,
+static int transfer_remote_list(afpc_volume_t *volume, const char *path,
                                 char **list, size_t *size)
 {
     int ret = afp_sl_listxattr(volume, path, NULL, 0);
@@ -1855,7 +1856,7 @@ static int transfer_remote_list(volumeid_t *volume, const char *path,
     return 0;
 }
 
-static int transfer_remote_get(volumeid_t *volume, const char *path,
+static int transfer_remote_get(afpc_volume_t *volume, const char *path,
                                const char *name, void **value, size_t *size)
 {
     int ret = afp_sl_getxattr(volume, path, name, NULL, 0);
@@ -1964,7 +1965,7 @@ int afp_metadata_clear_local(const char *path, enum afp_metadata_mode mode,
     return next < 0 ? next : 0;
 }
 
-int afp_sl_metadata_clear(volumeid_t *volume, const char *path,
+int afp_sl_metadata_clear(afpc_volume_t *volume, const char *path,
                           unsigned int *warnings)
 {
     char *list = NULL;
@@ -2025,7 +2026,7 @@ int afp_sl_metadata_clear(volumeid_t *volume, const char *path,
 }
 
 static int transfer_local_xattrs_to_remote(const char *local_path,
-        enum afp_metadata_mode mode, volumeid_t *volume, const char *remote_path,
+        enum afp_metadata_mode mode, afpc_volume_t *volume, const char *remote_path,
         unsigned int *warnings)
 {
     char *list = NULL;
@@ -2074,7 +2075,7 @@ static int transfer_local_xattrs_to_remote(const char *local_path,
 
 int afp_sl_metadata_copy_local_to_remote(
     const char *local_path, enum afp_metadata_mode mode,
-    volumeid_t *destination_volume, const char *destination_path,
+    afpc_volume_t *destination_volume, const char *destination_path,
     unsigned int *warnings)
 {
     unsigned char finderinfo[32];
@@ -2172,7 +2173,7 @@ int afp_sl_metadata_copy_local_to_remote(
                                            destination_path, warnings);
 }
 
-static int transfer_remote_xattrs_to_local(volumeid_t *volume,
+static int transfer_remote_xattrs_to_local(afpc_volume_t *volume,
         const char *remote_path, const char *local_path,
         enum afp_metadata_mode mode, unsigned int *warnings)
 {
@@ -2225,7 +2226,7 @@ static int transfer_remote_xattrs_to_local(volumeid_t *volume,
 }
 
 int afp_sl_metadata_copy_remote_to_local(
-    volumeid_t *source_volume, const char *source_path,
+    afpc_volume_t *source_volume, const char *source_path,
     const char *local_path, enum afp_metadata_mode mode,
     unsigned int *warnings)
 {
@@ -2323,8 +2324,8 @@ int afp_sl_metadata_copy_remote_to_local(
                                            local_path, mode, warnings);
 }
 
-static int transfer_remote_xattrs_to_remote(volumeid_t *source_volume,
-        const char *source_path, volumeid_t *destination_volume,
+static int transfer_remote_xattrs_to_remote(afpc_volume_t *source_volume,
+        const char *source_path, afpc_volume_t *destination_volume,
         const char *destination_path, unsigned int *warnings)
 {
     char *list = NULL;
@@ -2378,8 +2379,8 @@ static int transfer_remote_xattrs_to_remote(volumeid_t *source_volume,
 }
 
 int afp_sl_metadata_copy_remote_to_remote(
-    volumeid_t *source_volume, const char *source_path,
-    volumeid_t *destination_volume, const char *destination_path,
+    afpc_volume_t *source_volume, const char *source_path,
+    afpc_volume_t *destination_volume, const char *destination_path,
     unsigned int *warnings)
 {
     unsigned char finderinfo[32];

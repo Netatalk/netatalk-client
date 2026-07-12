@@ -9,7 +9,6 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
-
 #include <errno.h>
 #include <fcntl.h>
 #include <iconv.h>
@@ -20,16 +19,15 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "utils.h"
-#include "dsi.h"
-#include "afp.h"
-#include "uams_def.h"
-#include "dsi_protocol.h"
-#include "libafpclient.h"
 #include "afp_internal.h"
 #include "afp_protocol.h"
 #include "afp_replies.h"
+#include "client.h"
 #include "codepage.h"
+#include "dsi.h"
+#include "dsi_protocol.h"
+#include "uam_registry.h"
+#include "utils.h"
 
 #ifndef ICONV_CONST
 #define ICONV_CONST
@@ -37,7 +35,7 @@
 
 /* Define DEBUG_DSI explicitly to get reams of DSI debugging information. */
 
-static int dsi_remove_from_request_queue(struct afp_server *server,
+static int afpc_dsi_remove_from_request_queue(struct afp_server *server,
         struct dsi_request *toremove);
 int convert_utf8dec_to_utf8pre(char *src, int src_len,
                                char *dest, int dest_len);
@@ -51,8 +49,9 @@ struct dsi_attention_context {
 };
 
 /* This sets up a DSI header. */
-void dsi_setup_header(struct afp_server * server, struct dsi_header * header,
-                      char command)
+void afpc_dsi_setup_header(struct afp_server * server,
+                           struct dsi_header * header,
+                           char command)
 {
     memset(header, 0, sizeof(struct dsi_header));
     pthread_mutex_lock(&server->requestid_mutex);
@@ -75,7 +74,7 @@ void dsi_setup_header(struct afp_server * server, struct dsi_header * header,
     header->command = command;
 }
 
-int dsi_getstatus(struct afp_server * server)
+int afpc_dsi_getstatus(struct afp_server * server)
 {
     struct dsi_header  header;
     struct afp_rx_buffer rx;
@@ -88,24 +87,24 @@ int dsi_getstatus(struct afp_server * server)
 
     rx.maxsize = GETSTATUS_BUF_SIZE;
     rx.size = 0;
-    dsi_setup_header(server, &header, DSI_DSIGetStatus);
+    afpc_dsi_setup_header(server, &header, DSI_DSIGetStatus);
     /* We're intentionally ignoring the results */
-    ret = dsi_send(server, (char *) &header, sizeof(struct dsi_header), 60,
-                   DSI_DSIGetStatus, (void *) &rx);
+    ret = afpc_dsi_send(server, (char *) &header, sizeof(struct dsi_header), 60,
+                        DSI_DSIGetStatus, (void *) &rx);
     free(rx.data);
     return ret;
 }
 
-int dsi_sendtickle(struct afp_server *server)
+int afpc_dsi_sendtickle(struct afp_server *server)
 {
     struct dsi_header  header;
-    dsi_setup_header(server, &header, DSI_DSITickle);
-    dsi_send(server, (char *) &header, sizeof(struct dsi_header),
-             DSI_DONT_WAIT, DSI_DSITickle, NULL);
+    afpc_dsi_setup_header(server, &header, DSI_DSITickle);
+    afpc_dsi_send(server, (char *) &header, sizeof(struct dsi_header),
+                  DSI_DONT_WAIT, DSI_DSITickle, NULL);
     return 0;
 }
 
-int dsi_opensession(struct afp_server *server)
+int afpc_dsi_opensession(struct afp_server *server)
 {
     struct {
         struct dsi_header dsi_header  __attribute__((__packed__));
@@ -114,18 +113,18 @@ int dsi_opensession(struct afp_server *server)
         uint32_t rx_quantum ;
     } __attribute__((__packed__)) dsi_opensession_header;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSIOpenSession);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSIOpenSession);
     memcpy(&dsi_opensession_header.dsi_header, &hdr, sizeof(struct dsi_header));
     /* Advertize our rx quantum */
     dsi_opensession_header.flags = 1;
     dsi_opensession_header.length = sizeof(unsigned int);
     dsi_opensession_header.rx_quantum = htonl(server->attention_quantum);
-    return dsi_send(server, (char *) &dsi_opensession_header,
-                    sizeof(dsi_opensession_header), DSI_LOGIN_TIMEOUT,
-                    DSI_DSIOpenSession, NULL);
+    return afpc_dsi_send(server, (char *) &dsi_opensession_header,
+                         sizeof(dsi_opensession_header), DSI_LOGIN_TIMEOUT,
+                         DSI_DSIOpenSession, NULL);
 }
 
-static int dsi_remove_from_request_queue(struct afp_server *server,
+static int afpc_dsi_remove_from_request_queue(struct afp_server *server,
         struct dsi_request *toremove)
 {
     struct dsi_request *p, *prev = NULL;
@@ -187,7 +186,7 @@ static int dsi_remove_from_request_queue(struct afp_server *server,
 
 /* Flush all pending requests from the queue when reconnecting
  * to prevent late replies from arriving on a new connection */
-void dsi_flush_request_queue(struct afp_server *server)
+void afpc_dsi_flush_request_queue(struct afp_server *server)
 {
     struct dsi_request *p, *next;
 
@@ -217,7 +216,7 @@ void dsi_flush_request_queue(struct afp_server *server)
     pthread_mutex_unlock(&server->request_queue_mutex);
 }
 
-void dsi_fail_request_queue(struct afp_server *server, int error)
+void afpc_dsi_fail_request_queue(struct afp_server *server, int error)
 {
     if (!server_still_valid(server)) {
         return;
@@ -237,8 +236,17 @@ void dsi_fail_request_queue(struct afp_server *server, int error)
 }
 
 
-int dsi_send(struct afp_server *server, char * msg, int size, int wait,
-             unsigned char subcommand, void **other)
+int afpc_dsi_send(struct afp_server *server, char *msg, int size, int wait,
+                  unsigned char subcommand, void *other)
+{
+    return afpc_dsi_send_with_reply(server, msg, size, wait, subcommand,
+                                    other, NULL, NULL);
+}
+
+int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
+                             int wait, unsigned char subcommand, void *other,
+                             afpc_dsi_reply_handler reply_handler,
+                             struct afp_rx_buffer *stream_buffer)
 {
     /* For wait:
      * -1: wait forever
@@ -299,6 +307,8 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
     new_request->next = NULL;
     new_request->done_waiting = 0;
     new_request->connection_generation = afp_server_connection_generation(server);
+    new_request->reply_handler = reply_handler;
+    new_request->stream_buffer = stream_buffer;
     /* Initialize before queueing so dsi_recv can signal this request safely. */
     pthread_cond_init(&new_request->waiting_cond, NULL);
     pthread_mutex_init(&new_request->waiting_mutex, NULL);
@@ -444,12 +454,12 @@ int dsi_send(struct afp_server *server, char * msg, int size, int wait,
     }
 
 out:
-    dsi_remove_from_request_queue(server, new_request);
+    afpc_dsi_remove_from_request_queue(server, new_request);
     return rc;
 }
 
-int dsi_command_reply(struct afp_server* server, unsigned short subcommand,
-                      void *other)
+int afpc_dsi_command_reply(struct afp_server* server, unsigned short subcommand,
+                           void *other)
 {
     int ret = 0;
 
@@ -499,7 +509,7 @@ int dsi_command_reply(struct afp_server* server, unsigned short subcommand,
 /* Default tx_quantum if server doesn't provide one (64KB is conservative) */
 #define DSI_DEFAULT_TX_QUANTUM 65536
 
-void dsi_opensession_reply(struct afp_server * server)
+void afpc_dsi_opensession_reply(struct afp_server * server)
 {
     const char *p;
     int offset;
@@ -548,7 +558,7 @@ void dsi_opensession_reply(struct afp_server * server)
     }
 }
 
-static int dsi_parse_versions(struct afp_server * server, char * msg)
+static int afpc_dsi_parse_versions(struct afp_server * server, char * msg)
 {
     unsigned char num_versions = msg[0];
     int i, j = 0;
@@ -581,7 +591,7 @@ static int dsi_parse_versions(struct afp_server * server, char * msg)
     return 0;
 }
 
-static int dsi_parse_uams(struct afp_server * server, char * msg)
+static int afpc_dsi_parse_uams(struct afp_server * server, char * msg)
 {
     unsigned char num_uams = msg[0];
     unsigned char len;
@@ -610,7 +620,7 @@ static int dsi_parse_uams(struct afp_server * server, char * msg)
 /* The parsing of the return for DSI GetStatus is the same as for
  * AFP GetSrvrInfo (which we don't yet support) */
 
-void dsi_getstatus_reply(struct afp_server * server)
+void afpc_dsi_getstatus_reply(struct afp_server * server)
 {
     /* Todo: check for buffer overruns */
     char *data, *p, *p2;
@@ -643,9 +653,9 @@ void dsi_getstatus_reply(struct afp_server * server)
     p = data + ntohs(reply1->machine_offset);
     copy_from_pascal(server->machine_type, p, sizeof(server->machine_type));
     p = data + ntohs(reply1->version_offset);
-    dsi_parse_versions(server, p);
+    afpc_dsi_parse_versions(server, p);
     p = data + ntohs(reply1->uams_offset);
-    dsi_parse_uams(server, p);
+    afpc_dsi_parse_uams(server, p);
 
     if (ntohs(reply1->icon_offset) > 0) {
         /* The icon and mask are optional */
@@ -730,22 +740,22 @@ void dsi_getstatus_reply(struct afp_server * server)
 }
 
 
-void dsi_incoming_closesession(struct afp_server *server)
+void afpc_dsi_incoming_closesession(struct afp_server *server)
 {
     afp_unmount_all_volumes(server);
     loop_disconnect(server);
 }
 
-void dsi_incoming_tickle(struct afp_server * server)
+void afpc_dsi_incoming_tickle(struct afp_server * server)
 {
     struct dsi_header  header;
-    dsi_setup_header(server, &header, DSI_DSITickle);
-    dsi_send(server, (char *) &header, sizeof(struct dsi_header),
-             DSI_DONT_WAIT, DSI_DSITickle, NULL);
+    afpc_dsi_setup_header(server, &header, DSI_DSITickle);
+    afpc_dsi_send(server, (char *) &header, sizeof(struct dsi_header),
+                  DSI_DONT_WAIT, DSI_DSITickle, NULL);
 }
 
 
-void *dsi_incoming_attention(void * other)
+void *afpc_dsi_incoming_attention(void * other)
 {
     struct dsi_attention_context *context = other;
     struct afp_server * server = context->server;
@@ -832,8 +842,8 @@ void *dsi_incoming_attention(void * other)
 }
 
 
-struct dsi_request *dsi_find_request(struct afp_server *server,
-                                     unsigned short request_id)
+struct dsi_request *afpc_dsi_find_request(struct afp_server *server,
+        unsigned short request_id)
 {
     struct dsi_request *p;
     pthread_mutex_lock(&server->request_queue_mutex);
@@ -849,7 +859,7 @@ struct dsi_request *dsi_find_request(struct afp_server *server,
     return NULL;
 }
 
-int dsi_recv(struct afp_server * server)
+int afpc_dsi_recv(struct afp_server * server)
 {
     struct dsi_header * header = (void *) server->incoming_buffer;
     struct dsi_request * request = NULL;
@@ -905,7 +915,7 @@ int dsi_recv(struct afp_server * server)
 gotenough:
     /* At this point, we have just the header */
     /* Figure out what it is a reply to */
-    request = dsi_find_request(server, ntohs(header->requestid));
+    request = afpc_dsi_find_request(server, ntohs(header->requestid));
 
     if (!request && (header->flags == DSI_REPLY)) {
         log_for_client(NULL, AFPFSD, LOG_ERR,
@@ -937,7 +947,9 @@ gotenough:
     if ((request) &&
             ((request->subcommand == afpRead) ||
              (request->subcommand == afpReadExt))) {
-        struct afp_rx_buffer * buf = request->other;
+        struct afp_rx_buffer *buf = request->stream_buffer
+                                        ? request->stream_buffer
+                                        : request->other;
         unsigned int newmax = buf->maxsize - buf->size;
 
         if (((server->data_read == sizeof(struct dsi_header)) &&
@@ -1095,25 +1107,40 @@ process_packet:
 
     switch (header->command) {
     case DSI_DSICloseSession:
-        dsi_incoming_closesession(server);
+        afpc_dsi_incoming_closesession(server);
         break;
 
     case DSI_DSIGetStatus:
-        dsi_getstatus_reply(server);
+        afpc_dsi_getstatus_reply(server);
         break;
 
     case DSI_DSIOpenSession:
-        dsi_opensession_reply(server);
+        afpc_dsi_opensession_reply(server);
         break;
 
     case DSI_DSITickle:
-        dsi_incoming_tickle(server);
+        afpc_dsi_incoming_tickle(server);
         break;
 
     case DSI_DSIWrite:
     case DSI_DSICommand:
         if (!runt_packet) {
-            dsi_command_reply(server, request->subcommand, request->other);
+            int reply_result;
+
+            if (request->reply_handler) {
+                reply_result = request->reply_handler(
+                                   server, server->incoming_buffer,
+                                   (unsigned int)server->data_read,
+                                   request->other);
+            } else {
+                reply_result = afpc_dsi_command_reply(
+                                   server, request->subcommand,
+                                   request->other);
+            }
+
+            if (reply_result != 0 && request->return_code == 0) {
+                request->return_code = reply_result;
+            }
         }
 
         break;
@@ -1133,7 +1160,8 @@ process_packet:
         memcpy(context->packet, server->incoming_buffer, packet_len);
         afp_server_hold(server);
 
-        if (pthread_create(&thread, NULL, dsi_incoming_attention, context) == 0) {
+        if (pthread_create(&thread, NULL, afpc_dsi_incoming_attention,
+                           context) == 0) {
             pthread_detach(thread);
         } else {
             afp_server_release(server);
@@ -1193,7 +1221,7 @@ out:
             pthread_cond_signal(&request->waiting_cond);
             pthread_mutex_unlock(&request->waiting_mutex);
         } else {
-            dsi_remove_from_request_queue(server, request);
+            afpc_dsi_remove_from_request_queue(server, request);
         }
     }
 

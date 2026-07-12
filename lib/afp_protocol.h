@@ -1,4 +1,3 @@
-
 #ifndef _AFP_PROTOCOL_H_
 #define _AFP_PROTOCOL_H_
 
@@ -6,6 +5,8 @@
 #include <stddef.h>
 #include <unistd.h>
 #include <stdint.h>
+
+#include "netatalk-client/types.h"
 
 /* This file defines constants for the Apple Filing Protocol.
    Section references are to the AFP Programming Guide and
@@ -75,15 +76,6 @@ typedef enum {
 
 /* The maximum size of a file for AFP 2 */
 #define AFP_MAX_AFP2_FILESIZE (4294967296)
-
-/* AFP Reference: Data Types > AFP Protocol Data Types > FPUnixPrivs */
-struct afp_unixprivs {
-    uint32_t uid __attribute__((__packed__));
-    uint32_t gid __attribute__((__packed__));
-    uint32_t permissions __attribute__((__packed__));
-    uint32_t ua_permissions __attribute__((__packed__));
-
-};
 
 /* AFP Reference: Constants > AFP Protocol Constants > Volume Attributes Bitmap */
 enum {

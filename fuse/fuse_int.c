@@ -23,7 +23,6 @@
 #include <syslog.h>
 #include <stdint.h>
 #include <stdarg.h>
-
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <stdlib.h>
@@ -42,8 +41,15 @@
 #include <sys/extattr.h>
 #endif
 
-#include "afp.h"
-#include "compat.h"
+#include "lib/afp_internal.h"
+#include "lib/afp_protocol.h"
+#include "lib/codepage.h"
+#include "lib/compat.h"
+#include "lib/dsi.h"
+#include "lib/midlevel.h"
+#include "lib/xattr.h"
+
+#include "fuse_error.h"
 
 /* Define xattr constants if not provided by system headers */
 #ifndef XATTR_CREATE
@@ -76,13 +82,6 @@
 #ifndef FUSE_NEW_API
 #define FUSE_NEW_API 0
 #endif
-
-#include "dsi.h"
-#include "afp_protocol.h"
-#include "afp_xattr.h"
-#include "codepage.h"
-#include "midlevel.h"
-#include "fuse_error.h"
 
 #ifdef __APPLE__
 static uint16_t finderinfo_get_flags(const char finderinfo[32])

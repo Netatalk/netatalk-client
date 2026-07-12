@@ -32,13 +32,14 @@
 #include <bsd/string.h>
 #endif
 
-#include "afp.h"
-#include "compat.h"
+#include "lib/afp_internal.h"
+#include "lib/client.h"
+#include "lib/compat.h"
+#include "lib/mapping.h"
+#include "lib/uam_registry.h"
+#include "lib/utils.h"
+
 #include "fuse_ipc.h"
-#include "uams_def.h"
-#include "map_def.h"
-#include "libafpclient.h"
-#include "utils.h"
 
 #define default_uam "Cleartxt Passwrd"
 

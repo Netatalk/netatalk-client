@@ -1,7 +1,7 @@
 #ifndef __MAP_H_
 #define __MAP_H_
 
-#include "afp.h"
+#include "afp_internal.h"
 
 #define AFP_MAPPING_UNKNOWN 0
 #define AFP_MAPPING_COMMON 1

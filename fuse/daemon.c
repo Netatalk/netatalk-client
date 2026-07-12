@@ -15,7 +15,6 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
-
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -31,15 +30,15 @@
 #include <fuse.h>
 #include <glob.h>
 
-#include "afp.h"
-#include "dsi.h"
-#include "fuse_ipc.h"
-#include "utils.h"
-#include "daemon.h"
-#include "commands.h"
-#include "daemon_socket.h"
-#include "daemon_signals.h"
+#include "lib/afp_internal.h"
+#include "lib/daemon_signals.h"
+#include "lib/daemon_socket.h"
+#include "lib/dsi.h"
+#include "lib/utils.h"
 
+#include "commands.h"
+#include "daemon.h"
+#include "fuse_ipc.h"
 
 static int debug_mode = 0;
 static char commandfilename[PATH_MAX];

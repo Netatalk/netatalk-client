@@ -8,12 +8,12 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "dsi.h"
-#include "afp.h"
-#include "compat.h"
-#include "utils.h"
+#include "afp_internal.h"
 #include "afp_protocol.h"
+#include "compat.h"
+#include "dsi.h"
 #include "dsi_protocol.h"
+#include "utils.h"
 
 /* closedt, addicon, geticoninfo, addappl, removeappl */
 
@@ -33,7 +33,7 @@ int afp_geticon(struct afp_volume * volume, unsigned int filecreator,
         uint16_t length ;
     } __attribute__((__packed__)) request_packet;
     struct dsi_header hdr;
-    dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
     memcpy(&request_packet.dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet.command = afpGetIcon;
     request_packet.pad1 = 0;
@@ -44,9 +44,9 @@ int afp_geticon(struct afp_volume * volume, unsigned int filecreator,
     request_packet.icontype = icontype;
     request_packet.pad2 = 0;
     request_packet.length = htons(length);
-    return dsi_send(volume->server, (char *)&request_packet,
-                    sizeof(request_packet), DSI_DEFAULT_TIMEOUT,
-                    afpGetIcon, (void *) icon);
+    return afpc_dsi_send(volume->server, (char *)&request_packet,
+                         sizeof(request_packet), DSI_DEFAULT_TIMEOUT,
+                         afpGetIcon, (void *) icon);
 }
 
 int afp_geticon_reply(struct afp_server *server _U_,
@@ -90,7 +90,7 @@ int afp_addcomment(struct afp_volume *volume, unsigned int did,
     p = msg + (sizeof(*request_packet));
     request_packet = (void *) msg;
     struct dsi_header hdr;
-    dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
     memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet->command = afpAddComment;
     request_packet->pad = 0;
@@ -109,8 +109,8 @@ int afp_addcomment(struct afp_volume *volume, unsigned int did,
 
     copy_to_pascal(p, comment);
     *size = strlen(comment);
-    rc = dsi_send(volume->server, (char *)msg, len, DSI_DEFAULT_TIMEOUT,
-                  afpAddComment, (void *) comment);
+    rc = afpc_dsi_send(volume->server, (char *)msg, len, DSI_DEFAULT_TIMEOUT,
+                       afpAddComment, (void *) comment);
     free(msg);
     return rc;
 }
@@ -133,7 +133,7 @@ int afp_getcomment(struct afp_volume *volume, unsigned int did,
     path = msg + (sizeof(*request_packet));
     request_packet = (void *) msg;
     struct dsi_header hdr;
-    dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
     memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet->command = afpGetComment;
     request_packet->pad = 0;
@@ -141,8 +141,8 @@ int afp_getcomment(struct afp_volume *volume, unsigned int did,
     request_packet->dirid = htonl(did);
     copy_path(volume->server, path, pathname, strlen(pathname));
     unixpath_to_afppath(volume->server, path);
-    rc = dsi_send(volume->server, (char *)msg, len, DSI_DEFAULT_TIMEOUT,
-                  afpGetComment, (void *) comment);
+    rc = afpc_dsi_send(volume->server, (char *)msg, len, DSI_DEFAULT_TIMEOUT,
+                       afpGetComment, (void *) comment);
     free(msg);
     return rc;
 }
@@ -179,13 +179,13 @@ int afp_closedt(struct afp_server * server, unsigned short refnum)
         uint16_t refnum ;
     } __attribute__((__packed__)) request_packet;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request_packet.dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet.command = afpCloseDT;
     request_packet.pad = 0;
     request_packet.refnum = htons(refnum);
-    return dsi_send(server, (char *) &request_packet,
-                    sizeof(request_packet), DSI_DEFAULT_TIMEOUT, afpCloseDT, NULL);
+    return afpc_dsi_send(server, (char *) &request_packet,
+                         sizeof(request_packet), DSI_DEFAULT_TIMEOUT, afpCloseDT, NULL);
 }
 
 
@@ -199,14 +199,14 @@ int afp_opendt(struct afp_volume *volume, unsigned short * refnum)
         uint16_t volid ;
     } __attribute__((__packed__)) request_packet;
     struct dsi_header hdr;
-    dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
     memcpy(&request_packet.dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet.command = afpOpenDT;
     request_packet.pad = 0;
     request_packet.volid = htons(volume->volid);
-    return dsi_send(volume->server, (char *) &request_packet,
-                    sizeof(request_packet), DSI_DEFAULT_TIMEOUT, afpOpenDT,
-                    (void *) refnum);
+    return afpc_dsi_send(volume->server, (char *) &request_packet,
+                         sizeof(request_packet), DSI_DEFAULT_TIMEOUT, afpOpenDT,
+                         (void *) refnum);
 }
 
 

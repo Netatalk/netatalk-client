@@ -19,11 +19,11 @@
 #include <getopt.h>
 #include <syslog.h>
 
-#include "afp.h"
-#include "afp_protocol.h"
-#include "compat.h"
-#include "uams_def.h"
-#include "utils.h"
+#include "lib/afp_internal.h"
+#include "lib/afp_protocol.h"
+#include "lib/compat.h"
+#include "lib/uam_registry.h"
+#include "lib/utils.h"
 
 #define FLAG_COUNT 16
 
@@ -313,7 +313,7 @@ int main(int argc, char *argv[])
         {NULL, 0, NULL, 0},
     };
     unsigned int port = 548;
-    struct afp_url url;
+    struct afpc_url url;
     char *servername = NULL;
 
     while (1) {

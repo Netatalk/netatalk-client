@@ -20,18 +20,19 @@
 #include <unistd.h>
 #include <utime.h>
 
-#include "afp.h"
-#include "afp_server.h"
-#include "codepage.h"
+#include "lib/afp_internal.h"
+#include "lib/client.h"
+#include "lib/codepage.h"
+#include "lib/compat.h"
+#include "lib/dsi.h"
+#include "lib/mapping.h"
+#include "lib/uam_registry.h"
+#include "lib/utils.h"
+
 #include "commands.h"
-#include "compat.h"
 #include "daemon.h"
 #include "daemon_client.h"
-#include "dsi.h"
-#include "libafpclient.h"
-#include "map_def.h"
-#include "uams_def.h"
-#include "utils.h"
+#include "server.h"
 
 static struct daemon_client client_pool[DAEMON_NUM_CLIENTS];
 

@@ -7,8 +7,9 @@
  */
 
 #include <string.h>
-#include "afp.h"
-#include "map_def.h"
+
+#include "afp_internal.h"
+#include "mapping.h"
 
 static char *afp_map_strings[] = {
     "Unknown",

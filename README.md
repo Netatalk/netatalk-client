@@ -17,9 +17,11 @@ file and directory operations, filesystem extended attributes, and FUSE-based mo
 You can use Netatalk Client either to mount an AFP share with FUSE,
 or interactively with the command-line client.
 
-The shared library *libafpclient* can also be used to add AFP support to other applications.
-For instance, [kio-afp](https://invent.kde.org/dmark/kio-afp) which provides a KDE KIO worker for browsing
-AFP shares in Dolphin and other KDE applications.
+Applications can use the stateless *libafpsl* API through
+`<netatalk-client/afpsl.h>`, or the opaque stateful *libafpclient* transport API
+through `<netatalk-client/transport.h>`.
+The stateless API is intended for integrations such as KDE KIO workers and
+other applications that need to browse AFP shares.
 
 ### FUSE
 
@@ -89,13 +91,16 @@ Use *afpcmd* in batch mode to download files from the AFP share to the local mac
 
 ## Differences with afpfs-ng
 
-Netatalk Client has the goal of maintaining continuity with afpfs-ng commands and APIs,
-so that moving from one to the other is as seamless as possible. However we do not guarantee
-libafpclient ABI compatibility with afpfs-ng, and differences in behavior and supported features exist.
+Netatalk Client has the goal of maintaining continuity with afpfs-ng commands,
+so that moving from one to the other is as seamless as possible. Differences in
+library APIs, behavior, and supported features nevertheless exist.
 
 - afpfs-ng is fully compliant with AFP 3.1, and partially compliant with AFP 3.2;
   Netatalk Client is (almost) fully compliant with AFP 2 through AFP 3.4
-- afpfsd.h symbols have been moved to afp_server.h, and the former is now a shim for backwards compatibility
+- Netatalk Client replaces the concrete afpfs-ng libafpclient headers with namespaced APIs:
+  `<netatalk-client/afpsl.h>` for daemon-backed operations and
+  `<netatalk-client/transport.h>` for opaque stateful transport. Private headers such as `afp.h`
+  and `dsi.h` are not installed, and public types and handles use `afpc_`-prefixed names
 - With afpfs-ng you have to choose at compile time whether to build the FUSE or Stateless client,
   while Netatalk Client can build both simultaneously
 - To accommodate the above, the Stateless client controller daemon has been renamed to *afpsld*,

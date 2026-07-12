@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <sys/types.h>
 
-#include "afpsl.h"
+#include "netatalk-client/afpsl.h"
 
 int metadata_name_filtered(const char *name);
 
