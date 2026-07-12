@@ -11,6 +11,7 @@ on:
       - 'NEWS'
       - 'README.md'
       - 'TODO'
+
   pull_request:
     branches: ["main"]
     types:
@@ -25,6 +26,10 @@ on:
       - 'NEWS'
       - 'README.md'
       - 'TODO'
+
+env:
+  SMARTOS_BOOTSTRAP_URL: https://pkgsrc.smartos.org/packages/SmartOS/bootstrap/bootstrap-2025Q4-x86_64.tar.gz
+  SMARTOS_BOOTSTRAP_SHA256: 4842f72b610d44cf98560253b6bf16ff4056016e5fe2c6932bc195156ac75772
 
 jobs:
   build-alpine-fuse2:
@@ -416,6 +421,132 @@ jobs:
             meson test -C build
             meson install -C build
             afpcmd -h
+      - name: Upload meson logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: meson-logs-${{ github.job }}
+          path: build/meson-logs
+
+  build-omnios:
+    name: OmniOS
+    runs-on: ubuntu-latest
+    timeout-minutes: 24
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Build on VM
+        uses: vmactions/omnios-vm@7f2be0b927aad1a78498c8aeeac4c4ce1fabd322 # v1.3.3
+        with:
+          release: "r151056-build"
+          copyback: true
+          prepare: |
+            set -e
+            pkg install \
+              build-essential \
+              pkg-config
+            curl --proto '=https' --location --fail -o bootstrap.tar.gz "${{ env.SMARTOS_BOOTSTRAP_URL }}"
+            bootstrap_sha256=$(/bin/digest -a sha256 bootstrap.tar.gz)
+            if [ "$bootstrap_sha256" != "${{ env.SMARTOS_BOOTSTRAP_SHA256 }}" ]; then
+              echo "bootstrap.tar.gz SHA-256 mismatch" >&2
+              exit 1
+            fi
+            tar -zxpf bootstrap.tar.gz -C /
+            export PATH=/opt/local/sbin:/opt/local/bin:/usr/gnu/bin:/usr/bin:/usr/sbin:/sbin:$PATH
+            pkgin -y install \
+              meson \
+              libgcrypt
+          run: |
+            set -e
+            export PATH=/opt/local/sbin:/opt/local/bin:/usr/gnu/bin:/usr/bin:/usr/sbin:/sbin:$PATH
+            export LD_LIBRARY_PATH=/opt/local/lib
+            export PKG_CONFIG_PATH=/opt/local/lib/pkgconfig
+            meson setup build \
+              --prefix=/opt/local \
+              -Denable-fuse=false \
+              -Dpkg_config_path=/opt/local/lib/pkgconfig
+            meson compile -C build
+            meson test -C build
+            meson install -C build
+            afpcmd -h
+      - name: Upload meson logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: meson-logs-${{ github.job }}
+          path: build/meson-logs
+
+  build-openindiana:
+    name: OpenIndiana
+    runs-on: ubuntu-latest
+    timeout-minutes: 24
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Build on VM
+        uses: vmactions/openindiana-vm@3248e8c61485588528c034a4285242f77efd8b97 # v1.1.3
+        with:
+          release: "202510-build"
+          copyback: true
+          prepare: |
+            set -e
+            pkg install \
+              developer/build/meson \
+              developer/build/ninja \
+              developer/build/pkg-config \
+              developer/gcc-14 \
+              library/libedit \
+              system/library/security/libgcrypt
+          run: |
+            set -e
+            export PKG_CONFIG_PATH=/usr/lib/amd64/pkgconfig
+            meson setup build \
+              -Denable-fuse=false \
+              -Dpkg_config_path=/usr/lib/amd64/pkgconfig
+            meson compile -C build
+            meson test -C build
+            meson install -C build
+            /usr/local/bin/afpcmd -h
+      - name: Upload meson logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: meson-logs-${{ github.job }}
+          path: build/meson-logs
+
+  build-solaris:
+    name: Solaris 11
+    runs-on: ubuntu-latest
+    timeout-minutes: 24
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Build on VM
+        uses: vmactions/solaris-vm@d30dd6c228c8661ade859e36ead7660b9a62efcc # v1.3.7
+        with:
+          copyback: true
+          sync-time: true
+          sync: nfs
+          prepare: |
+            set -e
+            pkg install \
+              gcc \
+              library/libedit \
+              libgcrypt \
+              meson \
+              ninja \
+              pkg-config
+          run: |
+            set -e
+            export PKG_CONFIG_PATH=/usr/lib/amd64/pkgconfig
+            meson setup build \
+              --prefix=/usr/local \
+              -Denable-fuse=false \
+              -Dpkg_config_path=/usr/lib/amd64/pkgconfig
+            meson compile -C build
+            meson test -C build
+            meson install -C build
+            /usr/local/bin/afpcmd -h
       - name: Upload meson logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

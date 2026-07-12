@@ -16,22 +16,14 @@ struct listxattr_reply {
     char data[];
 } __attribute__((__packed__));
 
-static uint64_t host_to_network64(uint64_t value)
-{
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    return ((uint64_t)htonl((uint32_t)value) << 32)
-           | htonl((uint32_t)(value >> 32));
-#else
-    return value;
-#endif
-}
-
 int main(int argc, char **argv)
 {
     unsigned char reply[sizeof(struct dsi_header) + 16];
     struct dsi_header *header = (struct dsi_header *)reply;
     uint32_t wire32;
-    uint64_t wire64;
+    static const unsigned char wire64[] = {
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08
+    };
     uint32_t written32 = 99;
     uint64_t written64 = 99;
     struct afp_extattr_info xattr_info;
@@ -47,8 +39,7 @@ int main(int argc, char **argv)
     memcpy(reply + sizeof(reply) - sizeof(wire32), &wire32, sizeof(wire32));
     CHECK(afp_write_reply(NULL, (char *)reply, sizeof(reply), &written32) == 0);
     CHECK(written32 == 1234);
-    wire64 = host_to_network64(UINT64_C(0x0102030405060708));
-    memcpy(reply + sizeof(reply) - sizeof(wire64), &wire64, sizeof(wire64));
+    memcpy(reply + sizeof(reply) - sizeof(wire64), wire64, sizeof(wire64));
     CHECK(afp_writeext_reply(NULL, (char *)reply, sizeof(reply), &written64) == 0);
     CHECK(written64 == UINT64_C(0x0102030405060708));
     header->return_code.error_code = 1;

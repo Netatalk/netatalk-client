@@ -31,6 +31,10 @@
 #include "afp_replies.h"
 #include "codepage.h"
 
+#ifndef ICONV_CONST
+#define ICONV_CONST
+#endif
+
 /* Define DEBUG_DSI explicitly to get reams of DSI debugging information. */
 
 static int dsi_remove_from_request_queue(struct afp_server *server,
@@ -712,7 +716,7 @@ void dsi_getstatus_reply(struct afp_server * server)
         iconv_t cd;
         size_t inbytesleft = strlen(server->server_name);
         size_t outbytesleft = AFP_SERVER_NAME_UTF8_LEN;
-        char *inbuf = server->server_name;
+        ICONV_CONST char *inbuf = server->server_name;
         char *outbuf = server->server_name_printable;
 
         if ((cd  = iconv_open("MACINTOSH", "UTF-8")) == (iconv_t) -1) {
@@ -800,7 +804,7 @@ void *dsi_incoming_attention(void * other)
                        ((server->using_version && server->using_version->av_number >= 30) ? 1 : 0),
                        DSI_DEFAULT_TIMEOUT, mesg);
 
-        if (bcmp(mesg, "The server is going down for maintenance.", 41) == 0) {
+        if (memcmp(mesg, "The server is going down for maintenance.", 41) == 0) {
             shutdown = 1;
         }
     }

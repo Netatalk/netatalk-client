@@ -1,6 +1,9 @@
 #ifndef _COMPAT_H_
 #define _COMPAT_H_
 
+#include <stddef.h>
+#include <strings.h>
+
 /* Mark a declaration as intentionally unused when the compiler supports it. */
 #ifndef _U_
 #if defined(__has_attribute)
@@ -18,7 +21,6 @@
 
 /* Secure memory clearing - prefer memset_explicit (C23) over explicit_bzero */
 #if !defined(HAVE_MEMSET_EXPLICIT) && !defined(HAVE_EXPLICIT_BZERO)
-#include <stddef.h>
 extern void explicit_bzero(void *s, size_t n);
 #elif defined(HAVE_MEMSET_EXPLICIT) && !defined(HAVE_EXPLICIT_BZERO)
 #include <string.h>

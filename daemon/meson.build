@@ -24,6 +24,7 @@ executable(
     include_directories: incdir,
     c_args: cflags,
     install: true,
+    install_rpath: install_runtime_path,
 )
 
 libafpsl = shared_library(
@@ -34,6 +35,7 @@ libafpsl = shared_library(
     link_with: libafpclient,
     c_args: cflags,
     install: true,
+    install_rpath: install_runtime_path,
     version: libafpsl_version,
     soversion: libafpsl_version_major,
 )

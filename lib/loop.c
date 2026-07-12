@@ -27,8 +27,10 @@
 
 static unsigned char exit_program = 0;
 
-static pthread_t ending_thread = (pthread_t)NULL;
-static pthread_t main_thread = (pthread_t)NULL;
+static pthread_t ending_thread;
+static int ending_thread_valid = 0;
+static pthread_t main_thread;
+static int main_thread_valid = 0;
 
 static int loop_started = 0;
 static pthread_cond_t loop_started_condition = PTHREAD_COND_INITIALIZER;
@@ -108,7 +110,7 @@ static int rm_invalid_fds(void)
 void signal_main_thread(void)
 {
     /* Don't signal if we're already in the main thread - we're already awake! */
-    if (main_thread && pthread_equal(pthread_self(), main_thread)) {
+    if (main_thread_valid && pthread_equal(pthread_self(), main_thread)) {
 #ifdef DEBUG_AFP_LOOP
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "signal_main_thread: already in main thread, skipping signal");
@@ -118,10 +120,10 @@ void signal_main_thread(void)
 
 #ifdef DEBUG_AFP_LOOP
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "signal_main_thread: sending signal to main_thread=%p", (void*)main_thread);
+                   "signal_main_thread: sending signal to main thread");
 #endif
 
-    if (main_thread) {
+    if (main_thread_valid) {
         int ret = pthread_kill(main_thread, SIGNAL_TO_USE);
 #ifdef DEBUG_AFP_LOOP
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
@@ -152,6 +154,14 @@ void *just_end_it_now(void * ignore _U_)
 
 /*This is a hack to handle a problem where the first pthread_kill doesnt' work*/
 static unsigned char firsttime = 0;
+
+static void start_ending_thread(void)
+{
+    if (pthread_create(&ending_thread, NULL, just_end_it_now, NULL) == 0) {
+        ending_thread_valid = 1;
+    }
+}
+
 void add_fd_and_signal(int fd)
 {
 #ifdef DEBUG_AFP_LOOP
@@ -260,7 +270,7 @@ static int process_server_fds(fd_set *set, int **onfd)
 static void deal_with_server_signals(void)
 {
     if (exit_program == 1) {
-        pthread_create(&ending_thread, NULL, just_end_it_now, NULL);
+        start_ending_thread();
     }
 }
 
@@ -301,6 +311,7 @@ int afp_main_loop(int command_fd)
     int fderrors = 0;
     sigset_t sigmask, orig_sigmask;
     main_thread = pthread_self();
+    main_thread_valid = 1;
     FD_ZERO(&rds);
 
     if (command_fd >= 0) {
@@ -380,7 +391,7 @@ int afp_main_loop(int command_fd)
         }
 
         if (exit_program == 1) {
-            pthread_create(&ending_thread, NULL, just_end_it_now, NULL);
+            start_ending_thread();
             continue;
         }
 
@@ -403,7 +414,7 @@ int afp_main_loop(int command_fd)
         }
 
         if (exit_program == 1) {
-            pthread_create(&ending_thread, NULL, just_end_it_now, NULL);
+            start_ending_thread();
             continue;
         }
 
@@ -559,13 +570,15 @@ int afp_main_loop(int command_fd)
 
 #ifdef DEBUG_AFP_LOOP
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "afp_main_loop -- Exiting main loop (exit_program=%d, ending_thread=%p)",
-                   exit_program, (void*)ending_thread);
+                   "afp_main_loop -- Exiting main loop (exit_program=%d, ending_thread=%s)",
+                   exit_program, ending_thread_valid ? "started" : "not started");
 #endif
 error:
+    main_thread_valid = 0;
 
-    if (ending_thread != (pthread_t)NULL) {
+    if (ending_thread_valid) {
         pthread_detach(ending_thread);
+        ending_thread_valid = 0;
     }
 
     return -1;

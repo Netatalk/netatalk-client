@@ -1,17 +1,25 @@
 #ifndef __UTILS_H_
 #define __UTILS_H_
+#include <arpa/inet.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #include "afp.h"
 
-#if BYTE_ORDER == BIG_ENDIAN
-#define hton64(x)       (x)
-#define ntoh64(x)       (x)
-#else /* BYTE_ORDER == BIG_ENDIAN */
-#define hton64(x)       ((u_int64_t) (htonl((((unsigned long long)(x)) >> 32) & 0xffffffffLL)) | \
-                         (u_int64_t) ((htonl((unsigned long long)(x)) & 0xffffffffLL) << 32))
-#define ntoh64(x)       (hton64(x))
-#endif /* BYTE_ORDER == BIG_ENDIAN */
+static inline uint64_t hton64(uint64_t value)
+{
+    if (htonl(UINT32_C(1)) == UINT32_C(1)) {
+        return value;
+    }
+
+    return (uint64_t)htonl((uint32_t)(value >> 32))
+           | ((uint64_t)htonl((uint32_t)value) << 32);
+}
+
+static inline uint64_t ntoh64(uint64_t value)
+{
+    return hton64(value);
+}
 
 #define min(a,b) (((a)<(b)) ? (a) : (b))
 #define max(a,b) (((a)>(b)) ? (a) : (b))

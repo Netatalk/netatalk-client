@@ -28,6 +28,7 @@
 #include "afp_protocol.h"
 #include "libafpclient.h"
 #include "server.h"
+#include "compat.h"
 #include "dsi.h"
 #include "dsi_protocol.h"
 #include "utils.h"

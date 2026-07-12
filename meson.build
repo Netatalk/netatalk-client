@@ -10,6 +10,8 @@ project(
 cc = meson.get_compiler('c')
 host_os = host_machine.system()
 pkg = import('pkgconfig')
+uname = find_program('uname', required: false)
+uname_stdout = run_command(uname, '-a', check: false).stdout().strip()
 
 install_prefix = get_option('prefix')
 bindir = install_prefix / get_option('bindir')
@@ -17,6 +19,10 @@ libdir = install_prefix / get_option('libdir')
 mandir = install_prefix / get_option('mandir')
 datadir = install_prefix / get_option('datadir')
 includedir = install_prefix / get_option('includedir')
+
+# The Solaris runtime linker does not search /usr/local/lib by default. Keep
+# installed binaries and libraries pointed at Meson's configured library dir.
+install_runtime_path = host_os == 'sunos' ? libdir : ''
 
 libsearch_dirs = []
 include_dirs = []
@@ -37,6 +43,14 @@ endif
 
 if host_os == 'linux'
     cflags += '-D_GNU_SOURCE'
+elif host_os == 'sunos'
+    # illumos/Solaris hides POSIX and system extension declarations (including
+    # sigaction(), strnlen(), and strlcpy()) when compiling in strict C mode.
+    cflags += '-D__EXTENSIONS__'
+    if uname.found() and uname_stdout.to_lower().contains('omnios')
+        libsearch_dirs += '/opt/local/lib'
+        include_dirs += ['/opt/local/include']
+    endif
 elif host_os in ['dragonfly', 'freebsd', 'openbsd']
     libsearch_dirs += '/usr/local/lib'
     include_dirs += ['/usr/local/include']
@@ -52,8 +66,36 @@ pthread_dep = cc.find_library('pthread', dirs: libsearch_dirs, required: true)
 libiconv_dep = cc.find_library('iconv', dirs: libsearch_dirs, required: false)
 libbsd_dep = cc.find_library('bsd', dirs: libsearch_dirs, required: false)
 
+iconv_check_deps = []
+if libiconv_dep.found()
+    iconv_check_deps += libiconv_dep
+endif
+
+# POSIX specifies char ** for iconv()'s input buffer, while Solaris and some
+# other historical implementations declare it as const char **.
+if cc.compiles(
+    '''
+    #include <stdlib.h>
+    #include <iconv.h>
+    extern size_t iconv(iconv_t cd, const char **inbuf, size_t *inbytesleft,
+                        char **outbuf, size_t *outbytesleft);
+    ''',
+    args: cflags,
+    dependencies: iconv_check_deps,
+    include_directories: include_directories(include_dirs),
+    name: 'iconv with const inbuf',
+)
+    cflags += '-DICONV_CONST=const'
+endif
+
 root_dependencies = []
 cmdline_dependencies = [readline_dep]
+
+if host_os == 'sunos'
+    # illumos/Solaris provides socket(), getaddrinfo(), and related interfaces
+    # in libsocket rather than libc.
+    root_dependencies += cc.find_library('socket', required: true)
+endif
 
 if editline_dep.found()
     cmdline_dependencies += editline_dep
@@ -68,9 +110,17 @@ if libbsd_dep.found()
     cflags += '-DHAVE_LIBBSD'
 endif
 
-if cc.has_function('explicit_bzero')
+if cc.has_function(
+    'explicit_bzero',
+    prefix: '#include <strings.h>',
+    args: cflags,
+)
     cflags += '-DHAVE_EXPLICIT_BZERO'
-elif cc.has_function('memset_explicit')
+elif cc.has_function(
+    'memset_explicit',
+    prefix: '#include <string.h>',
+    args: cflags,
+)
     cflags += '-DHAVE_MEMSET_EXPLICIT'
 endif
 
