@@ -17,7 +17,7 @@
 #include <unistd.h>
 #include <sys/time.h>
 
-#include "afp.h"
+#include "afp_internal.h"
 #include "compat.h"
 #include "dsi.h"
 #include "utils.h"
@@ -204,7 +204,7 @@ void loop_disconnect(struct afp_server *s)
         return;
     }
 
-    dsi_fail_request_queue(s, -EIO);
+    afpc_dsi_fail_request_queue(s, -EIO);
     s->data_read = 0;
     s->attention_len = 0;
     rm_fd_and_signal(s->fd);
@@ -221,7 +221,7 @@ static int process_server_fds(fd_set *set, int **onfd)
     int ret;
     /* Hold the server list lock while searching to prevent use-after-free.
      * A connection thread could call afp_server_remove() (freeing the server)
-     * between our finding the server and calling dsi_recv() on it. */
+     * between our finding the server and calling afpc_dsi_recv() on it. */
     afp_lock_server_list();
     s  = get_server_base();
 
@@ -239,10 +239,10 @@ static int process_server_fds(fd_set *set, int **onfd)
 
         if (FD_ISSET(s->fd, set)) {
             /* Take a reference before releasing the lock so the server
-             * cannot be freed while we call dsi_recv(). */
+             * cannot be freed while we call afpc_dsi_recv(). */
             afp_server_hold(s);
             afp_unlock_server_list();
-            ret = dsi_recv(s);
+            ret = afpc_dsi_recv(s);
             *onfd = &s->fd;
 
             if (ret == -1) {
@@ -499,7 +499,7 @@ int afp_main_loop(int command_fd)
                                        s->server_name_printable, s->fd,
                                        time(NULL) - s->connect_time);
 #endif
-                        dsi_sendtickle(s);
+                        afpc_dsi_sendtickle(s);
                     }
                 }
 

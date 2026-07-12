@@ -25,12 +25,6 @@
     59 Temple Place, Suite 330, Boston, MA 02111 USA.
 */
 
-#include "afp.h"
-#include "afpsl.h"
-#include "afp_server.h"
-#include "compat.h"
-#include "map_def.h"
-
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,14 +53,21 @@
 #include <editline/readline.h>
 #endif
 
-#include "compat.h"
-#include "libafpclient.h"
-#include "utils.h"
+#include "netatalk-client/afpsl.h"
+
+#include "lib/afp_internal.h"
+#include "lib/client.h"
+#include "lib/compat.h"
+#include "lib/mapping.h"
+#include "lib/utils.h"
+
+#include "daemon/server.h"
+
 #include "cmdline_afp.h"
 #include "cmdline_main.h"
 
 static char curdir[AFP_MAX_PATH];
-static struct afp_url url;
+static struct afpc_url url;
 static int cmdline_log_min_rank = 2; /* Default rank: notice */
 static int verbose_mode = 0;
 static char connect_servername[AFP_SERVER_NAME_UTF8_LEN];
@@ -84,8 +85,8 @@ enum directory_prompt_result {
     DIRECTORY_PROMPT_ERROR = -1,
 };
 
-static volumeid_t vol_id = NULL;
-static serverid_t server_id = NULL;
+static afpc_volume_t vol_id = NULL;
+static afpc_server_t server_id = NULL;
 static int connected = 0;
 static enum afp_metadata_mode transfer_metadata_mode = AFP_METADATA_AUTO;
 static int metadata_warning_emitted = 0;
@@ -145,8 +146,8 @@ static int command_recursive_option(char **arg)
     return 1;
 }
 
-static int attach_volume_with_password_prompt(serverid_t attach_server_id,
-        volumeid_t *vol_id_ptr, unsigned int volume_options);
+static int attach_volume_with_password_prompt(afpc_server_t attach_server_id,
+        afpc_volume_t *vol_id_ptr, unsigned int volume_options);
 
 static unsigned int get_uam_mask_for_url(void)
 {
@@ -171,12 +172,12 @@ static int recover_session(int restore_volume, int restore_dir)
     char mesg[MAX_ERROR_LEN];
     unsigned int uam_mask;
     int ret;
-    serverid_t new_server_id = NULL;
-    volumeid_t new_vol_id = NULL;
-    serverid_t old_server_id;
-    volumeid_t old_vol_id;
-    struct afp_url reconnect_url;
-    struct afp_url resume_url;
+    afpc_server_t new_server_id = NULL;
+    afpc_volume_t new_vol_id = NULL;
+    afpc_server_t old_server_id;
+    afpc_volume_t old_vol_id;
+    struct afpc_url reconnect_url;
+    struct afpc_url resume_url;
     char saved_volume[AFP_VOLUME_NAME_LEN];
     char saved_dir[AFP_MAX_PATH];
     int had_volume;
@@ -395,8 +396,8 @@ static int cmdline_get_volpass(void)
     return 0;
 }
 
-static int attach_volume_with_password_prompt(serverid_t attach_server_id,
-        volumeid_t *vol_id_ptr, unsigned int volume_options)
+static int attach_volume_with_password_prompt(afpc_server_t attach_server_id,
+        afpc_volume_t *vol_id_ptr, unsigned int volume_options)
 {
     enum afp_sl_attach_status status;
     int ret;
@@ -595,15 +596,15 @@ static int remote_xattr_get(const char *path, const char *name,
 }
 
 static int remote_readdir_all(const char *path,
-                              struct afp_file_info_basic **files,
+                              struct afpc_file_info **files,
                               unsigned int *count)
 {
-    struct afp_file_info_basic *all = NULL;
+    struct afpc_file_info *all = NULL;
     size_t total = 0;
     int eod = 0;
 
     while (!eod) {
-        struct afp_file_info_basic *page = NULL;
+        struct afpc_file_info *page = NULL;
         unsigned int page_count = 0;
 
         if (total > INT_MAX) {
@@ -632,8 +633,8 @@ static int remote_readdir_all(const char *path,
         }
 
         size_t new_total = total + (size_t)page_count;
-        struct afp_file_info_basic *grown = realloc(all,
-                                            new_total * sizeof(*all));
+        struct afpc_file_info *grown = realloc(all,
+                                               new_total * sizeof(*all));
 
         if (!grown) {
             free(page);
@@ -741,7 +742,7 @@ static int copy_remote_metadata(const char *source, const char *target,
     return apply_remote_posix_metadata(target, st);
 }
 
-static void print_file_details_basic(struct afp_file_info_basic * p,
+static void print_file_details_basic(struct afpc_file_info * p,
                                      int size_width)
 {
     struct tm * mtime;
@@ -891,10 +892,10 @@ static unsigned int directory_entries_per_screen(void)
 static void list_volumes(void)
 {
     unsigned int numvols = 0;
-    struct afp_volume_summary *vols;
+    struct afpc_volume_info *vols;
     unsigned int count = 100; /* Reasonable limit for CLI listing */
     int ret;
-    vols = malloc(sizeof(struct afp_volume_summary) * count);
+    vols = malloc(sizeof(struct afpc_volume_info) * count);
 
     if (!vols) {
         printf("Out of memory\n");
@@ -1031,9 +1032,9 @@ int com_dir(char * arg)
         arg = "";
     }
 
-    struct afp_file_info_basic *filebase = NULL;
+    struct afpc_file_info *filebase = NULL;
 
-    struct afp_file_info_basic *screenbase = NULL;
+    struct afpc_file_info *screenbase = NULL;
     unsigned int numfiles = 0;
     unsigned int fetchedfiles = 0;
     unsigned int shownfiles = 0;
@@ -1246,7 +1247,7 @@ int com_touch(char * arg)
 
 static int chmod_remote_tree(const char *server_path, mode_t mode)
 {
-    struct afp_file_info_basic *entries = NULL;
+    struct afpc_file_info *entries = NULL;
     unsigned int count = 0;
     int ret = 0;
 
@@ -1256,7 +1257,7 @@ static int chmod_remote_tree(const char *server_path, mode_t mode)
     }
 
     for (unsigned int i = 0; i < count; i++) {
-        struct afp_file_info_basic *entry = &entries[i];
+        struct afpc_file_info *entry = &entries[i];
         char child[AFP_MAX_PATH];
 
         if (strcmp(entry->name, ".") == 0 || strcmp(entry->name, "..") == 0) {
@@ -1840,7 +1841,7 @@ out:
 static int download_directory(char *server_path, char *local_path,
                               unsigned long long *total_bytes)
 {
-    struct afp_file_info_basic *filebase = NULL;
+    struct afpc_file_info *filebase = NULL;
     unsigned int numfiles = 0;
     int ret = 0;
     char new_server_path[AFP_MAX_PATH];
@@ -1879,7 +1880,7 @@ static int download_directory(char *server_path, char *local_path,
     }
 
     for (unsigned int i = 0; i < numfiles; i++) {
-        struct afp_file_info_basic *p = &filebase[i];
+        struct afpc_file_info *p = &filebase[i];
 
         if (strcmp(p->name, ".") == 0 || strcmp(p->name, "..") == 0) {
             continue;
@@ -2685,7 +2686,7 @@ static int quote_copy_argument(char *output, size_t output_size,
 static int copy_remote_tree(const char *source, const char *target,
                             const struct stat *source_stat)
 {
-    struct afp_file_info_basic *entries = NULL;
+    struct afpc_file_info *entries = NULL;
     unsigned int count = 0;
     int ret = 0;
     int mkdir_ret = afp_sl_mkdir(&vol_id, target, NULL,
@@ -2718,7 +2719,7 @@ static int copy_remote_tree(const char *source, const char *target,
     }
 
     for (unsigned int i = 0; i < count; i++) {
-        struct afp_file_info_basic *entry = &entries[i];
+        struct afpc_file_info *entry = &entries[i];
         char child_source[AFP_MAX_PATH];
         char child_target[AFP_MAX_PATH];
 
@@ -2985,7 +2986,7 @@ out:
 
 static int delete_directory(char *server_path)
 {
-    struct afp_file_info_basic *filebase = NULL;
+    struct afpc_file_info *filebase = NULL;
     unsigned int numfiles = 0;
     int eod = 0;
     int ret = 0;
@@ -2998,7 +2999,7 @@ static int delete_directory(char *server_path)
     }
 
     for (unsigned int i = 0; i < numfiles; i++) {
-        struct afp_file_info_basic *p = &filebase[i];
+        struct afpc_file_info *p = &filebase[i];
 
         if (strcmp(p->name, ".") == 0 || strcmp(p->name, "..") == 0) {
             continue;
@@ -3560,7 +3561,7 @@ static int cmdline_server_startup(int batch_mode)
     int ret;
     memset(mesg, 0, sizeof(mesg));
     unsigned int uam_mask;
-    struct afp_server_basic basic;
+    struct afpc_server_info basic;
     uam_mask = get_uam_mask_for_url();
 
     if (uam_mask == 0) {
@@ -4014,8 +4015,8 @@ static char *unescape_spaces(const char *str)
 
 char *afp_remote_file_generator(const char *text, int state)
 {
-    static struct afp_file_info_basic *filebase = NULL;
-    static struct afp_volume_summary *volbase = NULL;
+    static struct afpc_file_info *filebase = NULL;
+    static struct afpc_volume_info *volbase = NULL;
     static unsigned int count = 0;
     static unsigned int list_index = 0;
     static size_t len = 0;
@@ -4067,7 +4068,7 @@ char *afp_remote_file_generator(const char *text, int state)
 
         if (!vol_id) {
             unsigned int numvols = 0;
-            volbase = malloc(sizeof(struct afp_volume_summary) * 100);
+            volbase = malloc(sizeof(struct afpc_volume_info) * 100);
 
             if (!volbase) {
                 return NULL;

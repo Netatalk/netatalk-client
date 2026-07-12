@@ -46,11 +46,12 @@
 #include <bsd/string.h>
 #endif
 
-#include "afp.h"
-#include "libafpclient.h"
-#include "utils.h"
+#include "lib/afp_internal.h"
+#include "lib/client.h"
+#include "lib/compat.h"
+#include "lib/utils.h"
+
 #include "cmdline_afp.h"
-#include "compat.h"
 
 static int running = 1;
 static int loop_started = 0;
@@ -557,7 +558,7 @@ int main(int argc, char *argv[])
 
     /* Check arguments for batch mode */
     if (argc - optind == 2) {
-        struct afp_url tmp_url;
+        struct afpc_url tmp_url;
         char *arg1 = argv[optind];
         char *arg2 = argv[optind + 1];
 

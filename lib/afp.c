@@ -16,7 +16,6 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -24,20 +23,18 @@
 #include <string.h>
 #include <time.h>
 
-#include "afp.h"
-#include "afp_protocol.h"
-#include "libafpclient.h"
-#include "server.h"
-#include "compat.h"
-#include "dsi.h"
-#include "dsi_protocol.h"
-#include "utils.h"
-#include "afp_replies.h"
 #include "afp_internal.h"
-#include "did.h"
-#include "forklist.h"
+#include "afp_protocol.h"
+#include "afp_replies.h"
+#include "client.h"
 #include "codepage.h"
 #include "compat.h"
+#include "did.h"
+#include "dsi.h"
+#include "dsi_protocol.h"
+#include "forklist.h"
+#include "server.h"
+#include "utils.h"
 
 struct afp_versions      afp_versions[] = {
     { "AFPVersion 1.1", 11 },
@@ -662,7 +659,7 @@ struct afp_server *afp_server_init(struct addrinfo * address)
 }
 
 void afp_server_fill_basic(const struct afp_server *server,
-                           struct afp_server_basic *basic)
+                           struct afpc_server_info *basic)
 {
     memset(basic, 0, sizeof(*basic));
     memcpy(basic->server_name_printable,
@@ -943,7 +940,7 @@ int afp_server_reconnect(struct afp_server * s, char * mesg,
     }
 
     /* Flush pending requests before reconnecting to avoid late reply confusion */
-    dsi_flush_request_queue(s);
+    afpc_dsi_flush_request_queue(s);
 
     if (afp_server_connect(s, 0))  {
         *l += snprintf(mesg, max - *l, "Error resuming connection to %s\n",
@@ -956,7 +953,7 @@ int afp_server_reconnect(struct afp_server * s, char * mesg,
         goto error;
     }
 
-    if (dsi_opensession(s) != 0) {
+    if (afpc_dsi_opensession(s) != 0) {
         *l += snprintf(mesg, max - *l, "Error opening DSI session to %s\n",
                        s->server_name_printable);
         errno = ECONNRESET;
@@ -1117,7 +1114,7 @@ int afp_server_connect(struct afp_server *server, int full)
     * calculate our rx quantum. */
     gettimeofday(&t1, NULL);
 
-    if ((error = dsi_getstatus(server)) != 0) {
+    if ((error = afpc_dsi_getstatus(server)) != 0) {
         goto error;
     }
 

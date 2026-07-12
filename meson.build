@@ -30,7 +30,6 @@ cflags = [
     '-DNETATALK_CLIENT_VERSION="' + meson.project_version() + '"',
     '-DBINDIR="' + bindir + '"',
     '-D_FILE_OFFSET_BITS=64',
-    '-DAFPCLIENT_INTERNAL',
 ]
 
 if 'afp' in get_option('enable-debugging')

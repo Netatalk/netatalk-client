@@ -8,13 +8,12 @@
     See the file COPYING.
 */
 
-
-#include "afp.h"
-#include "utils.h"
-
 #include <stdlib.h>
 #include <pthread.h>
 #include <string.h>
+
+#include "afp_internal.h"
+#include "utils.h"
 
 struct dirty_fork_record {
     unsigned short forkid;

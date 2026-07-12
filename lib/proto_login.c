@@ -9,13 +9,12 @@
 
 #include <stdlib.h>
 #include <string.h>
+
+#include "afp_internal.h"
+#include "compat.h"
 #include "dsi.h"
 #include "dsi_protocol.h"
-#include "afp.h"
-#include "compat.h"
 #include "utils.h"
-#include "afp_internal.h"
-
 
 int afp_logout(struct afp_server *server, unsigned char wait)
 {
@@ -25,12 +24,12 @@ int afp_logout(struct afp_server *server, unsigned char wait)
         uint8_t pad;
     }  __attribute__((__packed__)) request;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request.dsi_header, &hdr, sizeof(struct dsi_header));
     request.command = afpLogout;
     request.pad = 0;
-    return dsi_send(server, (char *) &request, sizeof(request),
-                    wait, afpLogout, NULL);
+    return afpc_dsi_send(server, (char *) &request, sizeof(request),
+                         wait, afpLogout, NULL);
 }
 
 int afp_login_reply(struct afp_server *server _U_,
@@ -87,7 +86,7 @@ int afp_changepassword(struct afp_server *server, const char * ua_name,
     request = (void *) msg;
     p = msg + (sizeof(*request));
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request->header, &hdr, sizeof(struct dsi_header));
     request->command = afpChangePassword;
     request->pad = 0;
@@ -98,8 +97,8 @@ int afp_changepassword(struct afp_server *server, const char * ua_name,
     }
 
     memcpy(p, userauthinfo, userauthinfo_len);
-    ret = dsi_send(server, (char *) msg, len, DSI_DEFAULT_TIMEOUT,
-                   afpChangePassword, (void *)rx);
+    ret = afpc_dsi_send(server, msg, len, DSI_DEFAULT_TIMEOUT,
+                        afpChangePassword, (void *)rx);
     free(msg);
     return ret;
 }
@@ -154,14 +153,14 @@ int afp_login(struct afp_server *server, const char * ua_name,
     request = (void *) msg;
     p = msg + (sizeof(*request));
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request->header, &hdr, sizeof(struct dsi_header));
     request->command = afpLogin;
     p += copy_to_pascal(p, server->using_version->av_name) +1;
     p += copy_to_pascal(p, ua_name) +1;
     memcpy(p, userauthinfo, userauthinfo_len);
-    ret = dsi_send(server, (char *) msg, len, DSI_LOGIN_TIMEOUT,
-                   afpLogin, (void *)rx);
+    ret = afpc_dsi_send(server, msg, len, DSI_LOGIN_TIMEOUT,
+                        afpLogin, (void *)rx);
     free(msg);
     return ret;
 }
@@ -214,7 +213,7 @@ int afp_loginext(struct afp_server *server, const char *ua_name,
     request = (void *)msg;
     p = msg + sizeof(*request);
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request->header, &hdr, sizeof(struct dsi_header));
     request->command = afpLoginExt;
     request->pad = 0;
@@ -239,8 +238,8 @@ int afp_loginext(struct afp_server *server, const char *ua_name,
 
     /* UserAuthInfo */
     memcpy(p, userauthinfo, userauthinfo_len);
-    ret = dsi_send(server, msg, len, DSI_LOGIN_TIMEOUT,
-                   afpLoginExt, (void *)rx);
+    ret = afpc_dsi_send(server, msg, len, DSI_LOGIN_TIMEOUT,
+                        afpLoginExt, (void *)rx);
     free(msg);
     return ret;
 }
@@ -274,13 +273,13 @@ int afp_logincont(struct afp_server *server, unsigned short id,
     request = (void *)msg;
     p = msg + sizeof(*request);
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request->header, &hdr, sizeof(struct dsi_header));
     request->command = afpLoginCont;
     request->id = htons(id);
     memcpy(p, userauthinfo, userauthinfo_len);
-    ret = dsi_send(server, (char *)msg, len, DSI_LOGIN_TIMEOUT,
-                   afpLoginCont, (void *)rx);
+    ret = afpc_dsi_send(server, msg, len, DSI_LOGIN_TIMEOUT,
+                        afpLoginCont, (void *)rx);
     free(msg);
     return ret;
 }

@@ -32,19 +32,20 @@
 #include <sys/socket.h>
 #include <fuse.h>
 
-#include "afp.h"
-#include "dsi.h"
-#include "fuse_ipc.h"
-#include "utils.h"
+#include "lib/afp_internal.h"
+#include "lib/client.h"
+#include "lib/codepage.h"
+#include "lib/compat.h"
+#include "lib/dsi.h"
+#include "lib/mapping.h"
+#include "lib/uam_registry.h"
+#include "lib/utils.h"
+
 #include "daemon.h"
-#include "uams_def.h"
-#include "codepage.h"
-#include "compat.h"
-#include "libafpclient.h"
-#include "map_def.h"
-#include "fuse_int.h"
 #include "fuse_error.h"
+#include "fuse_int.h"
 #include "fuse_internal.h"
+#include "fuse_ipc.h"
 
 #if defined(__APPLE__)
 #define FUSE_DEVICE "/dev/macfuse0"

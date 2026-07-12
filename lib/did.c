@@ -11,7 +11,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#include "afp.h"
+#include "afp_internal.h"
 #include "afp_protocol.h"
 
 #undef DID_CACHE_DISABLE

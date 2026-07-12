@@ -9,9 +9,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+
 #define AFPCLIENT_NO_LOG_MACRO
+
+#include "client.h"
 #include "compat.h"
-#include "libafpclient.h"
 #include "utils.h"
 
 void log_for_client(void * priv,

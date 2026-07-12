@@ -15,16 +15,16 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <limits.h>
-#include "afp.h"
+
+#include "afp_internal.h"
 #include "afp_protocol.h"
 #include "codepage.h"
 #include "compat.h"
-#include "utils.h"
-#include "midlevel.h"
 #include "did.h"
-#include "users.h"
-#include "midlevel.h"
 #include "forklist.h"
+#include "midlevel.h"
+#include "users.h"
+#include "utils.h"
 
 static void set_nonunix_perms(unsigned int * mode, struct afp_file_info *fp)
 {

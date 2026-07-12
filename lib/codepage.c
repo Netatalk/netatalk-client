@@ -15,9 +15,9 @@
 #include <string.h>
 
 #include "afp_protocol.h"
-#include "utils.h"
-#include "unicode.h"
 #include "mac_roman.h"
+#include "unicode.h"
+#include "utils.h"
 
 int convert_utf8dec_to_utf8pre(char *src, int src_len,
                                char *dest, int dest_len);

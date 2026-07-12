@@ -1,10 +1,10 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "compat.h"
-#include "libafpclient.h"
+#include "lib/compat.h"
+#include "lib/client.h"
 #include "tap.h"
-#include "utils.h"
+#include "lib/utils.h"
 
 static char captured_message[MAX_ERROR_LEN * 4];
 

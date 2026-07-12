@@ -1,14 +1,8 @@
 public_headers = files(
-    'afp.h',
-    'afp_ipc.h',
-    'afp_protocol.h',
-    'afp_server.h',
-    'afp_xattr.h',
-    'afpfsd.h',
-    'afpsl.h',
-    'libafpclient.h',
-    'map_def.h',
-    'uams_def.h',
+    'netatalk-client/afpsl.h',
+    'netatalk-client/transport.h',
+    'netatalk-client/types.h',
+    'netatalk-client/url.h',
 )
 
-install_headers(public_headers)
+install_headers(public_headers, subdir: 'netatalk-client')

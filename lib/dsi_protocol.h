@@ -31,8 +31,8 @@ struct dsi_header {
     uint32_t reserved;
 };
 
-void dsi_setup_header(struct afp_server * server, struct dsi_header * header,
-                      char command);
+void afpc_dsi_setup_header(struct afp_server *server,
+                           struct dsi_header *header, char command);
 
 
 #endif

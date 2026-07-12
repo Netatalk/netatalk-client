@@ -1,13 +1,13 @@
-#include "afp.h"
-#include "lib/afp_replies.h"
-#include "lib/dsi_protocol.h"
-#include "tap.h"
-
 #include <arpa/inet.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "lib/afp_internal.h"
+#include "lib/afp_replies.h"
+#include "lib/dsi_protocol.h"
+#include "tap.h"
 
 struct listxattr_reply {
     struct dsi_header header __attribute__((__packed__));

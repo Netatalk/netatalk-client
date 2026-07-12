@@ -12,14 +12,14 @@
 #include <errno.h>
 #include <fcntl.h>
 
-#include "afp.h"
+#include "afp_internal.h"
 #include "afp_protocol.h"
 #include "compat.h"
-#include "resource.h"
-#include "lowlevel.h"
 #include "did.h"
-#include "midlevel.h"
 #include "forklist.h"
+#include "lowlevel.h"
+#include "midlevel.h"
+#include "resource.h"
 
 #define appledouble ".AppleDouble"
 #define finderinfo_string ".finderinfo"

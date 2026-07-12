@@ -23,14 +23,15 @@
 #include <unistd.h>
 #include <utime.h>
 
-#include "afp.h"
-#include "afp_server.h"
+#include "lib/afp_internal.h"
+#include "lib/compat.h"
+#include "lib/daemon_socket.h"
+#include "lib/dsi.h"
+#include "lib/utils.h"
+
 #include "commands.h"
-#include "compat.h"
 #include "daemon.h"
-#include "daemon_socket.h"
-#include "dsi.h"
-#include "utils.h"
+#include "server.h"
 
 #define MAX_ERROR_LEN 1024
 #define STATUS_LEN 1024

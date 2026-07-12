@@ -7,13 +7,12 @@
  */
 
 #include <string.h>
-#include "dsi.h"
-#include "afp.h"
-#include "compat.h"
-#include "utils.h"
+
 #include "afp_internal.h"
 #include "afp_replies.h"
-
+#include "compat.h"
+#include "dsi.h"
+#include "utils.h"
 
 static int need_bytes(const char *p, const char *end, size_t len)
 {
@@ -323,7 +322,7 @@ int parse_reply_block(struct afp_server *server _U_,
     }
 
     if (bitmap & kFPUnixPrivsBit) {
-        const struct afp_unixprivs *unixpriv = (const void *) p2;
+        const struct afpc_unix_privileges *unixpriv = (const void *) p2;
 
         if (!need_bytes(p2, end, sizeof(*unixpriv))) {
             return -1;

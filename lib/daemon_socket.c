@@ -22,7 +22,7 @@
 #include <unistd.h>
 #include <errno.h>
 
-#include "afp_server.h"
+#include "daemon/server.h"
 #include "daemon_socket.h"
 
 /*

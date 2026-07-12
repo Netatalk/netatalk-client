@@ -10,17 +10,14 @@
 #include <sys/time.h>
 #include <time.h>
 
-#include "afp.h"
+#include "afp_internal.h"
+#include "client.h"
+#include "codepage.h"
 #include "compat.h"
 #include "dsi.h"
-#include "utils.h"
-#include "uams_def.h"
-#include "codepage.h"
+#include "uam_registry.h"
 #include "users.h"
-#include "libafpclient.h"
-#include "afp_internal.h"
-#include "dsi.h"
-
+#include "utils.h"
 
 struct afp_server *afp_server_complete_connection(
     void *priv,
@@ -43,7 +40,7 @@ struct afp_server *afp_server_complete_connection(
     strlcpy(server->password, password, sizeof(server->password));
     add_fd_and_signal(server->fd);
 
-    if (dsi_opensession(server) != 0) {
+    if (afpc_dsi_opensession(server) != 0) {
         log_for_client(priv, AFPFSD, LOG_ERR,
                        "Could not open DSI session");
         errno = ECONNRESET;

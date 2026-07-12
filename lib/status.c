@@ -10,9 +10,10 @@
 #include <stdio.h>
 #include <inttypes.h>
 #include <sys/socket.h>
-#include "map_def.h"
+
+#include "afp_internal.h"
 #include "dsi.h"
-#include "afp.h"
+#include "mapping.h"
 
 int afp_status_header(char * text, int * len)
 {

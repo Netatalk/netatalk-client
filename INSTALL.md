@@ -51,7 +51,10 @@ To see available options, run:
 
 ## Development files
 
-The build system will install the libafpclient shared library and development headers.
-A pkg-config file `libafpclient.pc` is installed to the configured
-`pkgconfig` directory (use `pkg-config --cflags --libs libafpclient` to build
-against the library).
+The build system installs namespaced API headers under `netatalk-client/` and
+pkg-config metadata for both supported library layers:
+
+- `pkg-config --cflags --libs libafpsl` for daemon-backed filesystem operations
+- `pkg-config --cflags --libs libafpclient` for the opaque stateful transport API
+
+Concrete libafpclient implementation headers under `lib/` are not installed.

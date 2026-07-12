@@ -15,7 +15,9 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <errno.h>
-#include "libafpclient.h"
+
+#include "lib/client.h"
+
 #include "fuse_internal.h"
 
 /* Simple global capture state (not thread-safe, but adequate for mount startup) */

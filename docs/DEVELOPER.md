@@ -81,13 +81,13 @@ or from a regular local path?"
 
 ## libafpclient
 
-This is a shared library (libafpclient.so) that implements the basic DSI
-and AFP communication requirements for connecting to AFP servers.  An
-AFP client uses this library through several APIs, defined later.
+This shared library (libafpclient.so) implements the DSI and AFP communication
+engine used by the bundled daemons and tools. Stateful consumers use its opaque
+transport interface from `<netatalk-client/transport.h>`; concrete headers
+under `lib/` remain implementation details.
 
-You should use libafpclient in a situation where you have a stateful process.
-This means that the process that's handling your client lives for the duration
-of the transactions required.
+Applications that prefer daemon-managed connections should use the stateless
+libafpsl interface from `<netatalk-client/afpsl.h>`.
 
 A key point to know when building libafpclients is that libafpclient will
 spawn threads and override signals.  Asynchronous events need to be
@@ -100,7 +100,7 @@ They are:
 
 ### Logging
 
-`log_for_client()` is the shared logging entry point. Public consumers pass it a complete message string; it trims
+`log_for_client()` is the private shared logging entry point. Callers pass it a complete message string; it trims
 trailing newlines, escapes control characters, and forwards the sanitized text to the registered client logger.
 If the message pointer is null, it is logged as `(null)`.
 
@@ -114,16 +114,15 @@ literal `%s` format:
 
     log_for_client(priv, AFPFSD, LOG_ERR, "%s", message);
 
-The underlying exported function remains the plain-message API for external users. Internal code that deliberately needs
+The underlying function remains the plain-message API. Internal code that deliberately needs
 to call that function directly can use the parenthesized form `(log_for_client)(priv, AFPFSD, level, message)` to bypass
 the internal macro, but that should stay rare and explicit.
 
 ### Midlevel
 
-This is an API that simplifies the AFP functions that does some simplification
+This is an internal API that simplifies the AFP functions and does some simplification
 of the protocol, such as calling multiple AFP functions to perform a basic
-task.  This is the most likely API set to use when using libafpclient
-directly.
+task. It is not an application-facing interface.
 
 Typically, a midlevel function will:
 
@@ -420,12 +419,12 @@ streaming operations, including reads, writes, metadata calls, and directory lis
    send one request, receive one response, and close
 2. **Persistent server/volume state**: Even though socket connections are ephemeral,
    the server and volume state persists in afpsld's memory
-3. **Server ID handles**: When a server is connected, afpsld returns a `serverid_t` (opaque pointer)
+3. **Server ID handles**: When a server is connected, afpsld returns an opaque `afpc_server_t`
    that identifies the authenticated AFP session. Follow-up attach requests must present this handle;
    afpsld does not implicitly rediscover authenticated sessions by server name.
-4. **Volume ID handles**: When a volume is attached, afpsld returns a `volumeid_t` (opaque pointer)
+4. **Volume ID handles**: When a volume is attached, afpsld returns an opaque `afpc_volume_t`
    that remains valid across separate socket connections as long as the daemon runs
-5. **Explicit session resume**: `afp_sl_resume()` can return an existing connected `serverid_t` without
+5. **Explicit session resume**: `afp_sl_resume()` can return an existing connected `afpc_server_t` without
    reauthentication, but only when the caller supplies no password and the daemon can identify one matching session.
    Resume authenticates the caller's access to the per-user daemon's existing session state, not the AFP user identity.
    Normal `afp_sl_connect()` always performs AFP authentication.
@@ -523,8 +522,8 @@ instead of directly calling the midlevel API. This change provides several benef
 
 afpcmd maintains minimal connection state:
 
-- `serverid_t server_id` - Opaque handle returned by afpsld after CONNECT
-- `volumeid_t vol_id` - Opaque handle returned by afpsld after ATTACH
+- `afpc_server_t server_id` - Opaque handle returned by afpsld after CONNECT
+- `afpc_volume_t vol_id` - Opaque handle returned by afpsld after ATTACH
 - `int connected` - Boolean flag indicating whether a volume is attached
 - `char curdir[]` - Current working directory path (client-side tracking)
 
@@ -533,9 +532,9 @@ afpcmd maintains minimal connection state:
 1. User runs: `afpcmd afp://user:pass@server/volume`
 2. afpcmd calls `afp_sl_connect()` → afpsld connects to AFP server
 3. afpcmd calls `afp_sl_attach(server_id, ...)` → afpsld opens volume on that authenticated session
-4. afpcmd receives `volumeid_t` handle and sets `connected = 1`
-5. All subsequent commands pass this volumeid to afp_sl_* functions
-6. afpsld uses volumeid to look up the volume in its global state
+4. afpcmd receives `afpc_volume_t` handle and sets `connected = 1`
+5. All subsequent commands pass this volume handle to `afp_sl_*` functions
+6. afpsld uses the volume handle to look up the volume in its global state
 
 Volume listing and volume attachment are bound to `server_id`; callers should not rely on URL-only lookup to rediscover
 an authenticated session.

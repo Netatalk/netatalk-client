@@ -8,14 +8,14 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include "dsi.h"
-#include "afp.h"
-#include "compat.h"
-#include "utils.h"
-#include "dsi_protocol.h"
+
+#include "afp_internal.h"
 #include "afp_protocol.h"
 #include "codepage.h"
-#include "afp_internal.h"
+#include "compat.h"
+#include "dsi.h"
+#include "dsi_protocol.h"
+#include "utils.h"
 
 int afp_getsrvrparms(struct afp_server *server)
 {
@@ -24,13 +24,12 @@ int afp_getsrvrparms(struct afp_server *server)
         uint8_t command;
     }  __attribute__((__packed__)) afp_getsrvrparms_request;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&afp_getsrvrparms_request.dsi_header, &hdr, sizeof(struct dsi_header));
     afp_getsrvrparms_request.command = afpGetSrvrParms;
-    dsi_send(server, (char *) &afp_getsrvrparms_request,
-             sizeof(afp_getsrvrparms_request), DSI_DEFAULT_TIMEOUT,
-             afpGetSrvrParms, NULL);
-    return 0;
+    return afpc_dsi_send(server, (char *) &afp_getsrvrparms_request,
+                         sizeof(afp_getsrvrparms_request),
+                         DSI_DEFAULT_TIMEOUT, afpGetSrvrParms, NULL);
 }
 
 
@@ -145,7 +144,7 @@ int afp_getsrvrmsg(struct afp_server *server, unsigned short messagetype,
         uint16_t messagebitmap __attribute__((__packed__));
     }  __attribute__((__packed__)) afp_getsrvrmsg_request;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&afp_getsrvrmsg_request.dsi_header, &hdr, sizeof(struct dsi_header));
     afp_getsrvrmsg_request.command = afpGetSrvrMsg;
     afp_getsrvrmsg_request.pad = 0;
@@ -153,8 +152,8 @@ int afp_getsrvrmsg(struct afp_server *server, unsigned short messagetype,
     afp_getsrvrmsg_request.messagebitmap =
         htons(AFP_GETSRVRMSG_GETMSG | (utf8 ? AFP_GETSRVRMSG_UTF8 : 0));
     /* Get the message, and yes, we support UTF8 */
-    rc = dsi_send(server, (char *) &afp_getsrvrmsg_request,
-                  sizeof(afp_getsrvrmsg_request), block, afpGetSrvrMsg, (void *) mesg);
+    rc = afpc_dsi_send(server, (char *) &afp_getsrvrmsg_request,
+                       sizeof(afp_getsrvrmsg_request), block, afpGetSrvrMsg, (void *) mesg);
     return rc;
 }
 
@@ -167,11 +166,11 @@ int afp_zzzzz(struct afp_server *server)
         uint32_t reserved;
     }  __attribute__((__packed__)) request;
     struct dsi_header hdr;
-    dsi_setup_header(server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request.dsi_header, &hdr, sizeof(struct dsi_header));
     request.command = afpZzzzz;
     request.pad = 0;
     request.reserved = 0;
-    return dsi_send(server, (char *) &request,
-                    sizeof(request), DSI_DEFAULT_TIMEOUT, afpZzzzz, NULL);
+    return afpc_dsi_send(server, (char *) &request,
+                         sizeof(request), DSI_DEFAULT_TIMEOUT, afpZzzzz, NULL);
 }
