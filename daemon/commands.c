@@ -137,32 +137,32 @@ static int volopen(struct daemon_client * c, struct afp_volume * volume)
 
 static unsigned char process_status(struct daemon_client * c)
 {
-    struct afp_server_status_request * req = (void *) c->complete_packet;
-    struct afp_server_status_response * response;
+    struct afpsl_ipc_status_request * req = (void *) c->complete_packet;
+    struct afpsl_ipc_status_response * response;
     char *output_buffer;
     int output_len = 0;
-    int max_len = MAX_CLIENT_RESPONSE - sizeof(struct afp_server_status_response);
+    int max_len = AFPSL_IPC_MAX_RESPONSE - sizeof(struct afpsl_ipc_status_response);
     unsigned int response_len;
     int len;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_status_request)) {
-        return AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_status_request)) {
+        return AFPSL_IPC_RESULT_ERROR;
     }
 
     /* Force null-termination of all string fields from untrusted client data */
     req->volumename[AFP_VOLUME_NAME_UTF8_LEN - 1] = '\0';
     req->servername[AFP_SERVER_NAME_LEN - 1] = '\0';
     req->mountpoint[AFP_MOUNTPOINT_LEN - 1] = '\0';
-    output_buffer = malloc(MAX_CLIENT_RESPONSE);
+    output_buffer = malloc(AFPSL_IPC_MAX_RESPONSE);
 
     if (!output_buffer) {
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Out of memory in process_status");
-        return AFP_SERVER_RESULT_ERROR;
+        return AFPSL_IPC_RESULT_ERROR;
     }
 
-    memset(output_buffer, 0, MAX_CLIENT_RESPONSE);
+    memset(output_buffer, 0, AFPSL_IPC_MAX_RESPONSE);
     /* Header */
     len = max_len;
 
@@ -198,20 +198,20 @@ static unsigned char process_status(struct daemon_client * c)
     }
 
     afp_unlock_server_list();
-    response_len = sizeof(struct afp_server_status_response) + output_len + 1;
+    response_len = sizeof(struct afpsl_ipc_status_response) + output_len + 1;
     response = alloc_response(response_len, sizeof(*response));
 
     if (!response) {
         free(output_buffer);
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Out of memory allocating status response");
-        return AFP_SERVER_RESULT_ERROR;
+        return AFPSL_IPC_RESULT_ERROR;
     }
 
-    response->header.result = AFP_SERVER_RESULT_OKAY;
+    response->header.result = AFPSL_IPC_RESULT_OK;
     response->header.len = response_len;
     /* Copy text after the header */
-    memcpy((char*)response + sizeof(struct afp_server_status_response),
+    memcpy((char*)response + sizeof(struct afpsl_ipc_status_response),
            output_buffer, output_len + 1);
     finish_response(c, send_command(c, response_len, (char *)response),
                     req->header.close);
@@ -222,8 +222,8 @@ static unsigned char process_status(struct daemon_client * c)
 
 static unsigned char process_detach(struct daemon_client * c)
 {
-    struct afp_server_detach_request * req;
-    struct afp_server_detach_response response;
+    struct afpsl_ipc_detach_request * req;
+    struct afpsl_ipc_detach_response response;
     struct afp_volume * v = NULL;
     req = (void *) c->complete_packet;
 
@@ -232,24 +232,24 @@ static unsigned char process_detach(struct daemon_client * c)
     if ((v = afp_volume_find_by_pointer_hold(req->volumeid)) == NULL) {
         snprintf(response.detach_message, sizeof(response.detach_message),
                  "No such volume to detach");
-        response.header.result = AFP_SERVER_RESULT_ERROR;
+        response.header.result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
     if (v->attached != AFP_VOLUME_ATTACHED) {
         snprintf(response.detach_message, sizeof(response.detach_message),
                  "%s was not attached\n", v->volume_name);
-        response.header.result = AFP_SERVER_RESULT_ERROR;
+        response.header.result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
     afp_detach_volume(v);
-    response.header.result = AFP_SERVER_RESULT_OKAY;
+    response.header.result = AFPSL_IPC_RESULT_OK;
     snprintf(response.detach_message, 1023, "Detached volume %s.\n",
              v->volume_name);
     goto done;
 done:
-    response.header.len = sizeof(struct afp_server_detach_response);
+    response.header.len = sizeof(struct afpsl_ipc_detach_response);
     finish_response(c,
                     send_command(c, response.header.len, (char *) &response),
                     req->header.close);
@@ -263,13 +263,13 @@ done:
 
 static unsigned char process_exit(struct daemon_client * c)
 {
-    struct afp_server_response_header response;
+    struct afpsl_ipc_response_header response;
     /* Check before releasing our slot: count == 1 means we are the only client */
     int last_client = (count_active_clients() == 1);
     log_for_client((void *)c, AFPFSD, LOG_INFO,
                    last_client ? "Exiting (last client)" :
                    "Exit requested but other clients active, staying up");
-    response.result = AFP_SERVER_RESULT_OKAY;
+    response.result = AFPSL_IPC_RESULT_OK;
     response.len = sizeof(response);
     finish_response(c, send_command(c, sizeof(response), (char *)&response), 1);
 
@@ -283,14 +283,14 @@ static unsigned char process_exit(struct daemon_client * c)
 
 static unsigned char process_changepw(struct daemon_client * c)
 {
-    struct afp_server_changepw_request *req = (void *)c->complete_packet;
-    struct afp_server_changepw_response response;
+    struct afpsl_ipc_changepw_request *req = (void *)c->complete_packet;
+    struct afpsl_ipc_changepw_response response;
     struct afp_server *server = NULL;
     int ret;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_changepw_request)) {
-        response.header.result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_changepw_request)) {
+        response.header.result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -305,25 +305,25 @@ static unsigned char process_changepw(struct daemon_client * c)
         log_for_client((void *)c, AFPFSD, LOG_WARNING,
                        "Password change: not connected to server %s",
                        req->url.servername);
-        response.header.result = AFP_SERVER_RESULT_NOTCONNECTED;
+        response.header.result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
     ret = ml_passwd(server, req->url.username, req->oldpasswd, req->newpasswd);
 
     if (ret == 0) {
-        response.header.result = AFP_SERVER_RESULT_OKAY;
+        response.header.result = AFPSL_IPC_RESULT_OK;
         response.afp_error = 0;
     } else {
         log_for_client((void *)c, AFPFSD, LOG_WARNING,
                        "Password change failed for user %s (error %d)",
                        req->url.username, ret);
-        response.header.result = AFP_SERVER_RESULT_ERROR;
+        response.header.result = AFPSL_IPC_RESULT_ERROR;
         response.afp_error = ret;
     }
 
 done:
-    response.header.len = sizeof(struct afp_server_changepw_response);
+    response.header.len = sizeof(struct afpsl_ipc_changepw_response);
     finish_response(c, send_command(c, response.header.len, (char *)&response),
                     req->header.close);
 
@@ -336,13 +336,13 @@ done:
 
 static unsigned char process_disconnect(struct daemon_client * c)
 {
-    struct afp_server_disconnect_request *req = (void *)c->complete_packet;
-    struct afp_server_disconnect_response response;
+    struct afpsl_ipc_disconnect_request *req = (void *)c->complete_packet;
+    struct afpsl_ipc_disconnect_response response;
     struct afp_server *server = NULL;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_disconnect_request)) {
-        response.header.result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_disconnect_request)) {
+        response.header.result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -352,7 +352,7 @@ static unsigned char process_disconnect(struct daemon_client * c)
         log_for_client((void *)c, AFPFSD, LOG_WARNING,
                        "Disconnect request with invalid server %p",
                        (void *)req->serverid);
-        response.header.result = AFP_SERVER_RESULT_OKAY;
+        response.header.result = AFPSL_IPC_RESULT_OK;
         goto done;
     }
 
@@ -361,9 +361,9 @@ static unsigned char process_disconnect(struct daemon_client * c)
     afp_unmount_all_volumes(server);
     afp_logout(server, DSI_DONT_WAIT);
     afp_server_remove(server);
-    response.header.result = AFP_SERVER_RESULT_OKAY;
+    response.header.result = AFPSL_IPC_RESULT_OK;
 done:
-    response.header.len = sizeof(struct afp_server_disconnect_response);
+    response.header.len = sizeof(struct afpsl_ipc_disconnect_response);
     finish_response(c, send_command(c, response.header.len, (char *)&response),
                     req->header.close);
 
@@ -380,23 +380,23 @@ done:
  * Gets the volume id for a url provided, if it exists
  *
  * Sets the return result to be:
- * AFP_SERVER_RESULT_ERROR : internal error
- * AFP_SERVER_RESULT_NOTCONNECTED: not logged in
- * AFP_SERVER_RESULT_NOTATTACHED: connected, but not attached to volume
- * AFP_SERVER_RESULT_OKAY: lookup succeeded, volumeid set
+ * AFPSL_IPC_RESULT_ERROR : internal error
+ * AFPSL_IPC_RESULT_NOTCONNECTED: not logged in
+ * AFPSL_IPC_RESULT_NOTATTACHED: connected, but not attached to volume
+ * AFPSL_IPC_RESULT_OK: lookup succeeded, volumeid set
  */
 
 static unsigned char process_getvolid(struct daemon_client * c)
 {
     struct afp_volume * v = NULL;
     struct afp_server * s = NULL;
-    struct afp_server_getvolid_request * req = (void *) c->complete_packet;
-    struct afp_server_getvolid_response response;
-    int ret = AFP_SERVER_RESULT_OKAY;
+    struct afpsl_ipc_getvolid_request * req = (void *) c->complete_packet;
+    struct afpsl_ipc_getvolid_response response;
+    int ret = AFPSL_IPC_RESULT_OK;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_getvolid_request)) {
-        ret = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_getvolid_request)) {
+        ret = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -412,25 +412,25 @@ static unsigned char process_getvolid(struct daemon_client * c)
     s = find_server_by_pointer((struct afp_server *)req->serverid);
 
     if (!s || s->connect_state != SERVER_STATE_CONNECTED || s->fd < 0) {
-        ret = AFP_SERVER_RESULT_NOTCONNECTED;
+        ret = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
     if ((v = find_volume_by_name(s, req->url.volumename)) == NULL) {
-        ret = AFP_SERVER_RESULT_NOVOLUME;
+        ret = AFPSL_IPC_RESULT_NOVOLUME;
         goto done;
     }
 
     if (v->attached != AFP_VOLUME_ATTACHED) {
-        ret = AFP_SERVER_RESULT_NOTATTACHED;
+        ret = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     response.volumeid = (afpc_volume_t) v;
-    response.header.result = AFP_SERVER_RESULT_OKAY;
+    response.header.result = AFPSL_IPC_RESULT_OK;
 done:
     response.header.result = ret;
-    response.header.len = sizeof(struct afp_server_getvolid_response);
+    response.header.len = sizeof(struct afpsl_ipc_getvolid_response);
     finish_response(c,
                     send_command(c, response.header.len, (char *) &response),
                     req->header.close);
@@ -444,15 +444,15 @@ done:
 
 static unsigned char process_serverinfo(struct daemon_client * c)
 {
-    struct afp_server_serverinfo_request * req = (void *) c->complete_packet;
-    struct afp_server_serverinfo_response response;
+    struct afpsl_ipc_serverinfo_request * req = (void *) c->complete_packet;
+    struct afpsl_ipc_serverinfo_response response;
     struct afp_server * tmpserver = NULL;
     memset(&response, 0, sizeof(response));
     c->pending = 1;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_serverinfo_request)) {
-        return AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_serverinfo_request)) {
+        return AFPSL_IPC_RESULT_ERROR;
     }
 
     /* Force null-termination of all string fields from untrusted client data */
@@ -499,12 +499,12 @@ static unsigned char process_serverinfo(struct daemon_client * c)
         tmpserver = NULL;  /* Already freed by remove, don't release again */
     }
 
-    response.header.result = AFP_SERVER_RESULT_OKAY;
+    response.header.result = AFPSL_IPC_RESULT_OK;
     goto done;
 error:
-    response.header.result = AFP_SERVER_RESULT_ERROR;
+    response.header.result = AFPSL_IPC_RESULT_ERROR;
 done:
-    response.header.len = sizeof(struct afp_server_serverinfo_response);
+    response.header.len = sizeof(struct afpsl_ipc_serverinfo_response);
     finish_response(c,
                     send_command(c, response.header.len, (char *) &response),
                     req->header.close);
@@ -518,19 +518,19 @@ done:
 
 static unsigned char process_getvols(struct daemon_client * c)
 {
-    struct afp_server_getvols_request * request = (void *) c->complete_packet;
-    struct afp_server_getvols_response * response;
+    struct afpsl_ipc_getvols_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_getvols_response * response;
     struct afp_server * server = NULL;
     const struct afp_volume * volume;
-    unsigned int result = AFP_SERVER_RESULT_OKAY;
+    unsigned int result = AFPSL_IPC_RESULT_OK;
     unsigned int numvols;
     char *p;
-    unsigned int len = sizeof(struct afp_server_getvols_response);
+    unsigned int len = sizeof(struct afpsl_ipc_getvols_response);
     struct afpc_volume_info * sum;
 
     if (((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_getvols_request)) || (request->start < 0)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_getvols_request)) || (request->start < 0)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto error;
     }
 
@@ -547,7 +547,7 @@ static unsigned char process_getvols(struct daemon_client * c)
 
     if (!server || server->connect_state != SERVER_STATE_CONNECTED
             || server->fd < 0) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto error;
     }
 
@@ -559,7 +559,7 @@ static unsigned char process_getvols(struct daemon_client * c)
     }
 
     if ((unsigned int)request->start > numvols) {
-        result = AFP_SERVER_RESULT_ERROR;
+        result = AFPSL_IPC_RESULT_ERROR;
         goto error;
     }
 
@@ -572,7 +572,7 @@ static unsigned char process_getvols(struct daemon_client * c)
         goto error;
     }
 
-    p = (char *) response + sizeof(struct afp_server_getvols_response);
+    p = (char *) response + sizeof(struct afpsl_ipc_getvols_response);
 
     for (int i = request->start; i < (int)(request->start + numvols); i++) {
         volume = &server->volumes[i];
@@ -595,7 +595,7 @@ error:
             afp_server_release(server);
         }
 
-        return AFP_SERVER_RESULT_ERROR;
+        return AFPSL_IPC_RESULT_ERROR;
     }
 
 done:
@@ -615,16 +615,16 @@ done:
 
 static unsigned char process_open(struct daemon_client * c)
 {
-    struct afp_server_open_response response;
-    struct afp_server_open_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_open_response response;
+    struct afpsl_ipc_open_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     int ret;
-    int result = AFP_SERVER_RESULT_OKAY;
+    int result = AFPSL_IPC_RESULT_OK;
     struct afp_file_info * fp;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_open_request)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_open_request)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -632,12 +632,12 @@ static unsigned char process_open(struct daemon_client * c)
     request->path[AFP_MAX_PATH - 1] = '\0';
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
-        result = AFP_SERVER_RESULT_NOTATTACHED;
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     if (!volume_server_is_connected(v)) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
@@ -647,11 +647,11 @@ static unsigned char process_open(struct daemon_client * c)
 
     if (ret) {
         if (ret == -ENOENT) {
-            result = AFP_SERVER_RESULT_ENOENT;
+            result = AFPSL_IPC_RESULT_ENOENT;
         } else if (ret == -EACCES) {
-            result = AFP_SERVER_RESULT_ACCESS;
+            result = AFPSL_IPC_RESULT_ACCESS;
         } else {
-            result = AFP_SERVER_RESULT_ERROR;
+            result = AFPSL_IPC_RESULT_ERROR;
         }
 
         log_for_client((void *) c, AFPFSD, LOG_DEBUG,
@@ -665,7 +665,7 @@ static unsigned char process_open(struct daemon_client * c)
     if (handle == 0) {
         ml_close(v, NULL, fp);
         free(fp);
-        result = AFP_SERVER_RESULT_ERROR;
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -673,7 +673,7 @@ static unsigned char process_open(struct daemon_client * c)
     log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                    "File opened successfully, handle=%d", handle);
 done:
-    response.header.len = sizeof(struct afp_server_open_response);
+    response.header.len = sizeof(struct afpsl_ipc_open_response);
     response.header.result = result;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
                     request->header.close);
@@ -687,26 +687,26 @@ done:
 
 static unsigned char process_read(struct daemon_client * c)
 {
-    struct afp_server_read_response * response;
-    struct afp_server_read_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_read_response * response;
+    struct afpsl_ipc_read_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     int ret;
-    int result = AFP_SERVER_RESULT_OKAY;
+    int result = AFPSL_IPC_RESULT_OK;
     char *data;
     unsigned int eof = 0;
     unsigned int received = 0;
-    unsigned int len = sizeof(struct afp_server_read_response);
+    unsigned int len = sizeof(struct afpsl_ipc_read_response);
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_read_request)) {
+            afpsl_ipc_read_request)) {
         response = alloc_response(len, sizeof(*response));
 
         if (!response) {
             log_for_client((void *) c, AFPFSD, LOG_ERR, "Out of memory in read");
-            return AFP_SERVER_RESULT_ERROR;
+            return AFPSL_IPC_RESULT_ERROR;
         }
 
-        result = AFP_SERVER_RESULT_ERROR;
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -715,10 +715,10 @@ static unsigned char process_read(struct daemon_client * c)
 
         if (!response) {
             log_for_client((void *) c, AFPFSD, LOG_ERR, "Out of memory in read");
-            return AFP_SERVER_RESULT_ERROR;
+            return AFPSL_IPC_RESULT_ERROR;
         }
 
-        result = AFP_SERVER_RESULT_NOTATTACHED;
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
@@ -727,10 +727,10 @@ static unsigned char process_read(struct daemon_client * c)
 
         if (!response) {
             log_for_client((void *) c, AFPFSD, LOG_ERR, "Out of memory in read");
-            return AFP_SERVER_RESULT_ERROR;
+            return AFPSL_IPC_RESULT_ERROR;
         }
 
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
@@ -745,15 +745,15 @@ static unsigned char process_read(struct daemon_client * c)
             afp_server_release(v->server);
         }
 
-        return AFP_SERVER_RESULT_ERROR;
+        return AFPSL_IPC_RESULT_ERROR;
     }
 
-    data = ((char *) response) + sizeof(struct afp_server_read_response);
+    data = ((char *) response) + sizeof(struct afpsl_ipc_read_response);
     /* Cast fileid back to file_info pointer for stateless operation */
     struct afp_file_info *fp = get_file_handle(request->fileid);
 
     if (!fp) {
-        result = AFP_SERVER_RESULT_ERROR;
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -762,13 +762,13 @@ static unsigned char process_read(struct daemon_client * c)
     if (ret > 0) {
         received = ret;
     } else if (ret < 0) {
-        result = AFP_SERVER_RESULT_ERROR;
+        result = AFPSL_IPC_RESULT_ERROR;
     }
 
 done:
     response->eof = eof;
     /* Only send the actual data read, not the full requested buffer size */
-    response->header.len = sizeof(struct afp_server_read_response) + received;
+    response->header.len = sizeof(struct afpsl_ipc_read_response) + received;
     response->header.result = result;
     response->received = received;
     finish_response(c, send_command(c, response->header.len, (char *) response),
@@ -784,27 +784,27 @@ done:
 
 static unsigned char process_write(struct daemon_client * c)
 {
-    struct afp_server_write_response response;
-    struct afp_server_write_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_write_response response;
+    struct afpsl_ipc_write_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     int ret;
-    int result = AFP_SERVER_RESULT_OKAY;
+    int result = AFPSL_IPC_RESULT_OK;
     char *data = NULL;
     unsigned int written = 0;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_write_request)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_write_request)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
-        result = AFP_SERVER_RESULT_NOTATTACHED;
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     if (!volume_server_is_connected(v)) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
@@ -814,7 +814,7 @@ static unsigned char process_write(struct daemon_client * c)
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Out of memory allocating %u bytes for write",
                        request->size);
-        result = AFP_SERVER_RESULT_ERROR;
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -850,7 +850,7 @@ static unsigned char process_write(struct daemon_client * c)
         if (ret <= 0) {
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "Error reading write data payload");
-            result = AFP_SERVER_RESULT_ERROR;
+            result = AFPSL_IPC_RESULT_ERROR;
             goto done;
         }
 
@@ -862,7 +862,7 @@ static unsigned char process_write(struct daemon_client * c)
     struct afp_file_info *fp = get_file_handle(request->fileid);
 
     if (!fp) {
-        result = AFP_SERVER_RESULT_ERROR;
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -872,11 +872,11 @@ static unsigned char process_write(struct daemon_client * c)
     if (ret > 0) {
         written = ret;
     } else if (ret < 0) {
-        result = AFP_SERVER_RESULT_ERROR;
+        result = AFPSL_IPC_RESULT_ERROR;
     }
 
 done:
-    response.header.len = sizeof(struct afp_server_write_response);
+    response.header.len = sizeof(struct afpsl_ipc_write_response);
     response.header.result = result;
     response.written = written;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
@@ -895,15 +895,15 @@ done:
 
 static unsigned char process_creat(struct daemon_client * c)
 {
-    struct afp_server_creat_response response;
-    struct afp_server_creat_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_creat_response response;
+    struct afpsl_ipc_creat_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     int ret;
-    int result = AFP_SERVER_RESULT_OKAY;
+    int result = AFPSL_IPC_RESULT_OK;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_creat_request)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_creat_request)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -911,12 +911,12 @@ static unsigned char process_creat(struct daemon_client * c)
     request->path[AFP_MAX_PATH - 1] = '\0';
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
-        result = AFP_SERVER_RESULT_NOTATTACHED;
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     if (!volume_server_is_connected(v)) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
@@ -926,16 +926,16 @@ static unsigned char process_creat(struct daemon_client * c)
 
     if (ret < 0) {
         if (ret == -EEXIST) {
-            result = AFP_SERVER_RESULT_EXIST;
+            result = AFPSL_IPC_RESULT_EXIST;
             log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                            "process_creat: File %s exists (EEXIST)", request->path);
         } else if (ret == -EACCES) {
-            result = AFP_SERVER_RESULT_ACCESS;
+            result = AFPSL_IPC_RESULT_ACCESS;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_creat: Permission denied creating %s (EACCES)",
                            request->path);
         } else {
-            result = AFP_SERVER_RESULT_ERROR;
+            result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_creat: Failed to create file %s: %d (%s)",
                            request->path, ret, strerror(-ret));
@@ -943,7 +943,7 @@ static unsigned char process_creat(struct daemon_client * c)
     }
 
 done:
-    response.header.len = sizeof(struct afp_server_creat_response);
+    response.header.len = sizeof(struct afpsl_ipc_creat_response);
     response.header.result = result;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
                     request->header.close);
@@ -957,15 +957,15 @@ done:
 
 static unsigned char process_chmod(struct daemon_client * c)
 {
-    struct afp_server_chmod_response response;
-    struct afp_server_chmod_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_chmod_response response;
+    struct afpsl_ipc_chmod_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     int ret;
-    int result = AFP_SERVER_RESULT_OKAY;
+    int result = AFPSL_IPC_RESULT_OK;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_chmod_request)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_chmod_request)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -973,12 +973,12 @@ static unsigned char process_chmod(struct daemon_client * c)
     request->path[AFP_MAX_PATH - 1] = '\0';
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
-        result = AFP_SERVER_RESULT_NOTATTACHED;
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     if (!volume_server_is_connected(v)) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
@@ -986,11 +986,11 @@ static unsigned char process_chmod(struct daemon_client * c)
 
     if (ret < 0) {
         if (ret == -ENOENT) {
-            result = AFP_SERVER_RESULT_ENOENT;
+            result = AFPSL_IPC_RESULT_ENOENT;
         } else if (ret == -EACCES || ret == -EPERM) {
-            result = AFP_SERVER_RESULT_ACCESS;
+            result = AFPSL_IPC_RESULT_ACCESS;
         } else {
-            result = AFP_SERVER_RESULT_ERROR;
+            result = AFPSL_IPC_RESULT_ERROR;
         }
 
         log_for_client((void *) c, AFPFSD, LOG_ERR,
@@ -999,7 +999,7 @@ static unsigned char process_chmod(struct daemon_client * c)
     }
 
 done:
-    response.header.len = sizeof(struct afp_server_chmod_response);
+    response.header.len = sizeof(struct afpsl_ipc_chmod_response);
     response.header.result = result;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
                     request->header.close);
@@ -1013,15 +1013,15 @@ done:
 
 static unsigned char process_rename(struct daemon_client * c)
 {
-    struct afp_server_rename_response response;
-    struct afp_server_rename_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_rename_response response;
+    struct afpsl_ipc_rename_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     int ret;
-    int result = AFP_SERVER_RESULT_OKAY;
+    int result = AFPSL_IPC_RESULT_OK;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_rename_request)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_rename_request)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -1030,26 +1030,26 @@ static unsigned char process_rename(struct daemon_client * c)
     request->path_to[AFP_MAX_PATH - 1] = '\0';
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
-        result = AFP_SERVER_RESULT_NOTATTACHED;
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     if (!volume_server_is_connected(v)) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
     ret = ml_rename(v, request->path_from, request->path_to);
 
     if (ret < 0) {
-        result = AFP_SERVER_RESULT_ERROR;
+        result = AFPSL_IPC_RESULT_ERROR;
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Failed to rename file from %s to %s: %d",
                        request->path_from, request->path_to, ret);
     }
 
 done:
-    response.header.len = sizeof(struct afp_server_rename_response);
+    response.header.len = sizeof(struct afpsl_ipc_rename_response);
     response.header.result = result;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
                     request->header.close);
@@ -1063,15 +1063,15 @@ done:
 
 static unsigned char process_unlink(struct daemon_client * c)
 {
-    struct afp_server_unlink_response response;
-    struct afp_server_unlink_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_unlink_response response;
+    struct afpsl_ipc_unlink_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     int ret;
-    int result = AFP_SERVER_RESULT_OKAY;
+    int result = AFPSL_IPC_RESULT_OK;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_unlink_request)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_unlink_request)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -1079,12 +1079,12 @@ static unsigned char process_unlink(struct daemon_client * c)
     request->path[AFP_MAX_PATH - 1] = '\0';
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
-        result = AFP_SERVER_RESULT_NOTATTACHED;
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     if (!volume_server_is_connected(v)) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
@@ -1092,17 +1092,17 @@ static unsigned char process_unlink(struct daemon_client * c)
 
     if (ret < 0) {
         if (ret == -ENOENT) {
-            result = AFP_SERVER_RESULT_ENOENT;
+            result = AFPSL_IPC_RESULT_ENOENT;
             log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                            "process_unlink: File %s not found (ENOENT)",
                            request->path);
         } else if (ret == -EACCES || ret == -EPERM) {
-            result = AFP_SERVER_RESULT_ACCESS;
+            result = AFPSL_IPC_RESULT_ACCESS;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_unlink: Permission denied for %s (EACCES/EPERM)",
                            request->path);
         } else {
-            result = AFP_SERVER_RESULT_ERROR;
+            result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "Failed to unlink file %s: %d (%s)", request->path, ret,
                            strerror(-ret));
@@ -1110,7 +1110,7 @@ static unsigned char process_unlink(struct daemon_client * c)
     }
 
 done:
-    response.header.len = sizeof(struct afp_server_unlink_response);
+    response.header.len = sizeof(struct afpsl_ipc_unlink_response);
     response.header.result = result;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
                     request->header.close);
@@ -1124,15 +1124,15 @@ done:
 
 static unsigned char process_truncate(struct daemon_client * c)
 {
-    struct afp_server_truncate_response response;
-    struct afp_server_truncate_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_truncate_response response;
+    struct afpsl_ipc_truncate_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     int ret;
-    int result = AFP_SERVER_RESULT_OKAY;
+    int result = AFPSL_IPC_RESULT_OK;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_truncate_request)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_truncate_request)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -1140,12 +1140,12 @@ static unsigned char process_truncate(struct daemon_client * c)
     request->path[AFP_MAX_PATH - 1] = '\0';
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
-        result = AFP_SERVER_RESULT_NOTATTACHED;
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     if (!volume_server_is_connected(v)) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
@@ -1153,17 +1153,17 @@ static unsigned char process_truncate(struct daemon_client * c)
 
     if (ret < 0) {
         if (ret == -ENOENT) {
-            result = AFP_SERVER_RESULT_ENOENT;
+            result = AFPSL_IPC_RESULT_ENOENT;
             log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                            "process_truncate: File %s not found (ENOENT)",
                            request->path);
         } else if (ret == -EACCES) {
-            result = AFP_SERVER_RESULT_ACCESS;
+            result = AFPSL_IPC_RESULT_ACCESS;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_truncate: Permission denied for %s (EACCES)",
                            request->path);
         } else {
-            result = AFP_SERVER_RESULT_ERROR;
+            result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "Failed to truncate file %s: %d (%s)", request->path, ret,
                            strerror(-ret));
@@ -1171,7 +1171,7 @@ static unsigned char process_truncate(struct daemon_client * c)
     }
 
 done:
-    response.header.len = sizeof(struct afp_server_truncate_response);
+    response.header.len = sizeof(struct afpsl_ipc_truncate_response);
     response.header.result = result;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
                     request->header.close);
@@ -1185,15 +1185,15 @@ done:
 
 static unsigned char process_utime(struct daemon_client * c)
 {
-    struct afp_server_utime_response response;
-    struct afp_server_utime_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_utime_response response;
+    struct afpsl_ipc_utime_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     int ret;
-    int result = AFP_SERVER_RESULT_OKAY;
+    int result = AFPSL_IPC_RESULT_OK;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_utime_request)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_utime_request)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -1201,12 +1201,12 @@ static unsigned char process_utime(struct daemon_client * c)
     request->path[AFP_MAX_PATH - 1] = '\0';
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
-        result = AFP_SERVER_RESULT_NOTATTACHED;
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     if (!volume_server_is_connected(v)) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
@@ -1214,11 +1214,11 @@ static unsigned char process_utime(struct daemon_client * c)
 
     if (ret < 0) {
         if (ret == -ENOENT) {
-            result = AFP_SERVER_RESULT_ENOENT;
+            result = AFPSL_IPC_RESULT_ENOENT;
         } else if (ret == -EACCES) {
-            result = AFP_SERVER_RESULT_ACCESS;
+            result = AFPSL_IPC_RESULT_ACCESS;
         } else {
-            result = AFP_SERVER_RESULT_ERROR;
+            result = AFPSL_IPC_RESULT_ERROR;
         }
 
         log_for_client((void *) c, AFPFSD, LOG_ERR, "Failed to utime file %s: %d",
@@ -1226,7 +1226,7 @@ static unsigned char process_utime(struct daemon_client * c)
     }
 
 done:
-    response.header.len = sizeof(struct afp_server_utime_response);
+    response.header.len = sizeof(struct afpsl_ipc_utime_response);
     response.header.result = result;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
                     request->header.close);
@@ -1240,15 +1240,15 @@ done:
 
 static unsigned char process_mkdir(struct daemon_client * c)
 {
-    struct afp_server_mkdir_response response;
-    struct afp_server_mkdir_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_mkdir_response response;
+    struct afpsl_ipc_mkdir_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     int ret;
-    int result = AFP_SERVER_RESULT_OKAY;
+    int result = AFPSL_IPC_RESULT_OK;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_mkdir_request)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_mkdir_request)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -1256,12 +1256,12 @@ static unsigned char process_mkdir(struct daemon_client * c)
     request->path[AFP_MAX_PATH - 1] = '\0';
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
-        result = AFP_SERVER_RESULT_NOTATTACHED;
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     if (!volume_server_is_connected(v)) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
@@ -1269,23 +1269,23 @@ static unsigned char process_mkdir(struct daemon_client * c)
 
     if (ret < 0) {
         if (ret == -EEXIST) {
-            result = AFP_SERVER_RESULT_EXIST;
+            result = AFPSL_IPC_RESULT_EXIST;
             log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                            "process_mkdir: Directory %s already exists (EEXIST)",
                            request->path);
         } else if (ret == -EACCES) {
-            result = AFP_SERVER_RESULT_ACCESS;
+            result = AFPSL_IPC_RESULT_ACCESS;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_mkdir: Permission denied creating %s (EACCES)",
                            request->path);
         } else if (ret == -ENOENT) {
-            result = AFP_SERVER_RESULT_ENOENT;
+            result = AFPSL_IPC_RESULT_ENOENT;
             log_for_client(
                 (void *) c, AFPFSD, LOG_ERR,
                 "process_mkdir: Parent directory not found for %s (ENOENT)",
                 request->path);
         } else {
-            result = AFP_SERVER_RESULT_ERROR;
+            result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "Failed to create directory %s: %d (%s)", request->path,
                            ret, strerror(-ret));
@@ -1293,7 +1293,7 @@ static unsigned char process_mkdir(struct daemon_client * c)
     }
 
 done:
-    response.header.len = sizeof(struct afp_server_mkdir_response);
+    response.header.len = sizeof(struct afpsl_ipc_mkdir_response);
     response.header.result = result;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
                     request->header.close);
@@ -1307,15 +1307,15 @@ done:
 
 static unsigned char process_rmdir(struct daemon_client * c)
 {
-    struct afp_server_rmdir_response response;
-    struct afp_server_rmdir_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_rmdir_response response;
+    struct afpsl_ipc_rmdir_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     int ret;
-    int result = AFP_SERVER_RESULT_OKAY;
+    int result = AFPSL_IPC_RESULT_OK;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_rmdir_request)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_rmdir_request)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -1323,12 +1323,12 @@ static unsigned char process_rmdir(struct daemon_client * c)
     request->path[AFP_MAX_PATH - 1] = '\0';
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
-        result = AFP_SERVER_RESULT_NOTATTACHED;
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     if (!volume_server_is_connected(v)) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
@@ -1336,22 +1336,22 @@ static unsigned char process_rmdir(struct daemon_client * c)
 
     if (ret < 0) {
         if (ret == -ENOENT) {
-            result = AFP_SERVER_RESULT_ENOENT;
+            result = AFPSL_IPC_RESULT_ENOENT;
             log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                            "process_rmdir: Directory %s not found (ENOENT)",
                            request->path);
         } else if (ret == -EACCES) {
-            result = AFP_SERVER_RESULT_ACCESS;
+            result = AFPSL_IPC_RESULT_ACCESS;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_rmdir: Permission denied for %s (EACCES)",
                            request->path);
         } else if (ret == -ENOTEMPTY) {
-            result = AFP_SERVER_RESULT_ENOTEMPTY;
+            result = AFPSL_IPC_RESULT_ENOTEMPTY;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_rmdir: Directory %s is not empty (ENOTEMPTY)",
                            request->path);
         } else {
-            result = AFP_SERVER_RESULT_ERROR;
+            result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "Failed to remove directory %s: %d (%s)", request->path,
                            ret, strerror(-ret));
@@ -1359,7 +1359,7 @@ static unsigned char process_rmdir(struct daemon_client * c)
     }
 
 done:
-    response.header.len = sizeof(struct afp_server_rmdir_response);
+    response.header.len = sizeof(struct afpsl_ipc_rmdir_response);
     response.header.result = result;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
                     request->header.close);
@@ -1373,16 +1373,16 @@ done:
 
 static unsigned char process_statfs(struct daemon_client * c)
 {
-    struct afp_server_statfs_response response;
-    struct afp_server_statfs_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_statfs_response response;
+    struct afpsl_ipc_statfs_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     int ret;
-    int result = AFP_SERVER_RESULT_OKAY;
+    int result = AFPSL_IPC_RESULT_OK;
     memset(&response.stat, 0, sizeof(struct statvfs));
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_statfs_request)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_statfs_request)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -1390,12 +1390,12 @@ static unsigned char process_statfs(struct daemon_client * c)
     request->path[AFP_MAX_PATH - 1] = '\0';
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
-        result = AFP_SERVER_RESULT_NOTATTACHED;
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     if (!volume_server_is_connected(v)) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
@@ -1405,17 +1405,17 @@ static unsigned char process_statfs(struct daemon_client * c)
 
     if (ret < 0) {
         if (ret == -ENOENT) {
-            result = AFP_SERVER_RESULT_ENOENT;
+            result = AFPSL_IPC_RESULT_ENOENT;
             log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                            "process_statfs: Path %s not found (ENOENT)",
                            request->path);
         } else if (ret == -EACCES) {
-            result = AFP_SERVER_RESULT_ACCESS;
+            result = AFPSL_IPC_RESULT_ACCESS;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_statfs: Permission denied for %s (EACCES)",
                            request->path);
         } else {
-            result = AFP_SERVER_RESULT_ERROR;
+            result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "Failed to get filesystem stats for %s: %d (%s)",
                            request->path, ret, strerror(-ret));
@@ -1429,7 +1429,7 @@ static unsigned char process_statfs(struct daemon_client * c)
     }
 
 done:
-    response.header.len = sizeof(struct afp_server_statfs_response);
+    response.header.len = sizeof(struct afpsl_ipc_statfs_response);
     response.header.result = result;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
                     request->header.close);
@@ -1443,31 +1443,31 @@ done:
 
 static unsigned char process_close(struct daemon_client * c)
 {
-    struct afp_server_close_response response;
-    struct afp_server_close_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_close_response response;
+    struct afpsl_ipc_close_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
-    int ret = AFP_SERVER_RESULT_OKAY;
+    int ret = AFPSL_IPC_RESULT_OK;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_close_request)) {
-        ret = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_close_request)) {
+        ret = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
-        ret = AFP_SERVER_RESULT_NOTATTACHED;
+        ret = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     if (!volume_server_is_connected(v)) {
-        ret = AFP_SERVER_RESULT_NOTCONNECTED;
+        ret = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
     struct afp_file_info *fp = get_file_handle(request->fileid);
 
     if (!fp) {
-        ret = AFP_SERVER_RESULT_ERROR;
+        ret = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -1475,7 +1475,7 @@ static unsigned char process_close(struct daemon_client * c)
     free(fp);
     release_file_handle(request->fileid);
 done:
-    response.header.len = sizeof(struct afp_server_close_response);
+    response.header.len = sizeof(struct afpsl_ipc_close_response);
     response.header.result = ret;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
                     request->header.close);
@@ -1489,17 +1489,17 @@ done:
 
 static unsigned char process_stat(struct daemon_client * c)
 {
-    struct afp_server_stat_response response;
-    struct afp_server_stat_request * request = (void *) c->complete_packet;
+    struct afpsl_ipc_stat_response response;
+    struct afpsl_ipc_stat_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     int ret;
-    int result = AFP_SERVER_RESULT_OKAY;
+    int result = AFPSL_IPC_RESULT_OK;
     log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                    "Getting attributes for path '%s'", request->path);
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_stat_request)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_stat_request)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
@@ -1507,12 +1507,12 @@ static unsigned char process_stat(struct daemon_client * c)
     request->path[AFP_MAX_PATH - 1] = '\0';
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
-        result = AFP_SERVER_RESULT_NOTATTACHED;
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
         goto done;
     }
 
     if (!volume_server_is_connected(v)) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto done;
     }
 
@@ -1525,15 +1525,15 @@ static unsigned char process_stat(struct daemon_client * c)
     }
 
     if (ret == -ENOENT) {
-        result = AFP_SERVER_RESULT_ENOENT;
+        result = AFPSL_IPC_RESULT_ENOENT;
     } else if (ret < 0) {
-        result = AFP_SERVER_RESULT_ERROR;
+        result = AFPSL_IPC_RESULT_ERROR;
     } else {
-        result = AFP_SERVER_RESULT_OKAY;
+        result = AFPSL_IPC_RESULT_OK;
     }
 
 done:
-    response.header.len = sizeof(struct afp_server_stat_response);
+    response.header.len = sizeof(struct afpsl_ipc_stat_response);
     response.header.result = result;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
                     request->header.close);
@@ -1549,7 +1549,7 @@ static void send_metadata_response(struct daemon_client *c, int error,
                                    const void *data, unsigned int data_size,
                                    unsigned int reported_size)
 {
-    struct afp_server_metadata_response *response;
+    struct afpsl_ipc_metadata_response *response;
     size_t len = sizeof(*response) + data_size;
     response = calloc(1, len);
 
@@ -1558,7 +1558,7 @@ static void send_metadata_response(struct daemon_client *c, int error,
         return;
     }
 
-    response->header.result = AFP_SERVER_RESULT_OKAY;
+    response->header.result = AFPSL_IPC_RESULT_OK;
     response->header.len = (unsigned int)len;
     response->error = error;
     response->size = reported_size;
@@ -1574,9 +1574,9 @@ static void send_metadata_response(struct daemon_client *c, int error,
 
 static unsigned char process_metadata(struct daemon_client *c)
 {
-    struct afp_server_metadata_request *request = (void *)c->complete_packet;
+    struct afpsl_ipc_metadata_request *request = (void *)c->complete_packet;
     struct afp_volume *volume = NULL;
-    size_t base = offsetof(struct afp_server_metadata_request, data);
+    size_t base = offsetof(struct afpsl_ipc_metadata_request, data);
     char data[AFP_SL_METADATA_CHUNK];
     const char *response_data = data;
     char *allocated_data = NULL;
@@ -1592,10 +1592,10 @@ static unsigned char process_metadata(struct daemon_client *c)
         return 0;
     }
 
-    sends_data = request->header.command == AFP_SERVER_COMMAND_SETXATTR
-                 || request->header.command == AFP_SERVER_COMMAND_SETFINDERINFO
-                 || request->header.command == AFP_SERVER_COMMAND_SETRESOURCEFORK;
-    request_limit = request->header.command == AFP_SERVER_COMMAND_LISTXATTR
+    sends_data = request->header.command == AFPSL_IPC_COMMAND_SETXATTR
+                 || request->header.command == AFPSL_IPC_COMMAND_SETFINDERINFO
+                 || request->header.command == AFPSL_IPC_COMMAND_SETRESOURCEFORK;
+    request_limit = request->header.command == AFPSL_IPC_COMMAND_LISTXATTR
                     ? AFP_SL_XATTR_LIST_MAX
                     : AFP_SL_METADATA_CHUNK;
     expected_len = base;
@@ -1617,21 +1617,21 @@ static unsigned char process_metadata(struct daemon_client *c)
         return 0;
     }
 
-    if ((request->header.command == AFP_SERVER_COMMAND_GETXATTR
-            || request->header.command == AFP_SERVER_COMMAND_SETXATTR
-            || request->header.command == AFP_SERVER_COMMAND_REMOVEXATTR)
+    if ((request->header.command == AFPSL_IPC_COMMAND_GETXATTR
+            || request->header.command == AFPSL_IPC_COMMAND_SETXATTR
+            || request->header.command == AFPSL_IPC_COMMAND_REMOVEXATTR)
             && request->name[0] == '\0') {
         send_metadata_response(c, -EINVAL, NULL, 0, 0);
         return 0;
     }
 
-    if (request->header.command == AFP_SERVER_COMMAND_SETFINDERINFO
+    if (request->header.command == AFPSL_IPC_COMMAND_SETFINDERINFO
             && request->size != 32) {
         send_metadata_response(c, -EINVAL, NULL, 0, 0);
         return 0;
     }
 
-    if (request->header.command == AFP_SERVER_COMMAND_SETXATTR
+    if (request->header.command == AFPSL_IPC_COMMAND_SETXATTR
             && ((request->flags & ~(kXAttrCreate | kXAttrReplace)) != 0
                 || (request->flags & kXAttrCreate
                     && request->flags & kXAttrReplace))) {
@@ -1639,14 +1639,14 @@ static unsigned char process_metadata(struct daemon_client *c)
         return 0;
     }
 
-    if (request->header.command == AFP_SERVER_COMMAND_SETRESOURCEFORK
+    if (request->header.command == AFPSL_IPC_COMMAND_SETRESOURCEFORK
             && (request->offset > INT_MAX
                 || request->size > (size_t)(INT_MAX - request->offset))) {
         send_metadata_response(c, -EFBIG, NULL, 0, 0);
         return 0;
     }
 
-    if (request->header.command == AFP_SERVER_COMMAND_TRUNCATERESOURCEFORK
+    if (request->header.command == AFPSL_IPC_COMMAND_TRUNCATERESOURCEFORK
             && request->offset > INT_MAX) {
         send_metadata_response(c, -EFBIG, NULL, 0, 0);
         return 0;
@@ -1666,7 +1666,7 @@ static unsigned char process_metadata(struct daemon_client *c)
     }
 
     switch (request->header.command) {
-    case AFP_SERVER_COMMAND_GETXATTR: {
+    case AFPSL_IPC_COMMAND_GETXATTR: {
         char *xattr_data = NULL;
 
         if (request->size) {
@@ -1678,7 +1678,7 @@ static unsigned char process_metadata(struct daemon_client *c)
     }
     break;
 
-    case AFP_SERVER_COMMAND_LISTXATTR: {
+    case AFPSL_IPC_COMMAND_LISTXATTR: {
         char *listxattr_data = NULL;
 
         if (request->size) {
@@ -1697,7 +1697,7 @@ static unsigned char process_metadata(struct daemon_client *c)
     }
     break;
 
-    case AFP_SERVER_COMMAND_GETFINDERINFO: {
+    case AFPSL_IPC_COMMAND_GETFINDERINFO: {
         char *finderinfo_data = NULL;
 
         if (request->size) {
@@ -1708,7 +1708,7 @@ static unsigned char process_metadata(struct daemon_client *c)
     }
     break;
 
-    case AFP_SERVER_COMMAND_GETRESOURCEFORK:
+    case AFPSL_IPC_COMMAND_GETRESOURCEFORK:
         if (request->offset > (unsigned long long)INT64_MAX) {
             ret = -EOVERFLOW;
         } else {
@@ -1719,17 +1719,17 @@ static unsigned char process_metadata(struct daemon_client *c)
 
         break;
 
-    case AFP_SERVER_COMMAND_SETXATTR:
+    case AFPSL_IPC_COMMAND_SETXATTR:
         ret = ml_setxattr(volume, request->path, request->name,
                           request->data, request->size, request->flags);
         break;
 
-    case AFP_SERVER_COMMAND_SETFINDERINFO:
+    case AFPSL_IPC_COMMAND_SETFINDERINFO:
         ret = ml_setfinderinfo(volume, request->path,
                                request->data, request->size);
         break;
 
-    case AFP_SERVER_COMMAND_SETRESOURCEFORK:
+    case AFPSL_IPC_COMMAND_SETRESOURCEFORK:
         if (request->offset > (unsigned long long)INT64_MAX) {
             ret = -EOVERFLOW;
         } else {
@@ -1739,19 +1739,19 @@ static unsigned char process_metadata(struct daemon_client *c)
 
         break;
 
-    case AFP_SERVER_COMMAND_TRUNCATERESOURCEFORK:
+    case AFPSL_IPC_COMMAND_TRUNCATERESOURCEFORK:
         ret = ml_truncateresourcefork(volume, request->path, request->offset);
         break;
 
-    case AFP_SERVER_COMMAND_REMOVEXATTR:
+    case AFPSL_IPC_COMMAND_REMOVEXATTR:
         ret = ml_removexattr(volume, request->path, request->name);
         break;
 
-    case AFP_SERVER_COMMAND_REMOVEFINDERINFO:
+    case AFPSL_IPC_COMMAND_REMOVEFINDERINFO:
         ret = ml_removefinderinfo(volume, request->path);
         break;
 
-    case AFP_SERVER_COMMAND_REMOVERESOURCEFORK:
+    case AFPSL_IPC_COMMAND_REMOVERESOURCEFORK:
         ret = ml_removeresourcefork(volume, request->path);
         break;
 
@@ -1798,9 +1798,9 @@ static int compare_afp_file_info(const void *a, const void *b)
 
 static unsigned char process_readdir(struct daemon_client * c)
 {
-    struct afp_server_readdir_request * req = (void *) c->complete_packet;
-    struct afp_server_readdir_response * response;
-    unsigned int len = sizeof(struct afp_server_readdir_response);
+    struct afpsl_ipc_readdir_request * req = (void *) c->complete_packet;
+    struct afpsl_ipc_readdir_response * response;
+    unsigned int len = sizeof(struct afpsl_ipc_readdir_response);
     unsigned int result;
     struct afp_volume * v = NULL;
     char *data, *p;
@@ -1813,8 +1813,8 @@ static unsigned char process_readdir(struct daemon_client * c)
                    req->start, req->count);
 
     if (((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_readdir_request)) || (req->start < 0)) {
-        result = AFP_SERVER_RESULT_ERROR;
+            afpsl_ipc_readdir_request)) || (req->start < 0)) {
+        result = AFPSL_IPC_RESULT_ERROR;
         goto error;
     }
 
@@ -1822,19 +1822,19 @@ static unsigned char process_readdir(struct daemon_client * c)
     req->path[AFP_MAX_PATH - 1] = '\0';
 
     if ((v = afp_volume_find_by_pointer_hold(req->volumeid)) == NULL) {
-        result = AFP_SERVER_RESULT_ENOENT;
+        result = AFPSL_IPC_RESULT_ENOENT;
         goto error;
     }
 
     if (!volume_server_is_connected(v)) {
-        result = AFP_SERVER_RESULT_NOTCONNECTED;
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto error;
     }
 
     ret = ml_readdir(v, req->path, &filebase);
 
     if (ret) {
-        result = AFP_SERVER_RESULT_ERROR;
+        result = AFPSL_IPC_RESULT_ERROR;
         goto error;
     }
 
@@ -1873,7 +1873,7 @@ static unsigned char process_readdir(struct daemon_client * c)
 
     /* Make sure we're not running off the end */
     if ((unsigned int)req->start > numfiles) {
-        result = AFP_SERVER_RESULT_ERROR;
+        result = AFPSL_IPC_RESULT_ERROR;
         goto error;
     }
 
@@ -1883,20 +1883,20 @@ static unsigned char process_readdir(struct daemon_client * c)
     }
 
     /* We allocate max buffer, actual length will be determined during packing */
-    response = alloc_response(MAX_CLIENT_RESPONSE, sizeof(*response));
+    response = alloc_response(AFPSL_IPC_MAX_RESPONSE, sizeof(*response));
 
     if (!response) {
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Out of memory allocating readdir response");
         afp_ml_filebase_free(&filebase);
-        return AFP_SERVER_RESULT_ERROR;
+        return AFPSL_IPC_RESULT_ERROR;
     }
 
-    result = AFP_SERVER_RESULT_OKAY;
+    result = AFPSL_IPC_RESULT_OK;
     /* Initialize to 0, will be set to 1 if we reach the end */
     response->eod = 0;
-    data = (char *) response + sizeof(struct afp_server_readdir_response);
-    const char *end = (char *) response + MAX_CLIENT_RESPONSE;
+    data = (char *) response + sizeof(struct afpsl_ipc_readdir_response);
+    const char *end = (char *) response + AFPSL_IPC_MAX_RESPONSE;
     p = data;
     fp = filebase;
 
@@ -1957,14 +1957,14 @@ static unsigned char process_readdir(struct daemon_client * c)
     goto done;
 error:
     /* Reset len for error case */
-    len = sizeof(struct afp_server_readdir_response);
+    len = sizeof(struct afpsl_ipc_readdir_response);
     response = alloc_response(len, sizeof(*response));
 
     if (!response) {
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Out of memory in readdir error path");
         afp_ml_filebase_free(&filebase);
-        return AFP_SERVER_RESULT_ERROR;
+        return AFPSL_IPC_RESULT_ERROR;
     }
 
     response->numfiles = 0;
@@ -2180,10 +2180,10 @@ static int reconnect_disconnected_server(void *priv, struct afp_server *server,
 
 static int process_connect(struct daemon_client * c)
 {
-    struct afp_server_connect_request * req;
+    struct afpsl_ipc_connect_request * req;
     struct afp_server  * s = NULL;
     struct afp_connection_request conn_req;
-    struct afp_server_connect_response response;
+    struct afpsl_ipc_connect_response response;
     int ret = 0;
     int response_result;
     int error = 0;
@@ -2191,7 +2191,7 @@ static int process_connect(struct daemon_client * c)
     struct afp_server *server_copy = NULL;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_connect_request)) {
+            afpsl_ipc_connect_request)) {
         return -1;
     }
 
@@ -2209,7 +2209,7 @@ static int process_connect(struct daemon_client * c)
     log_for_client((void *) c, AFPFSD, LOG_INFO, "Connecting to server %s",
                    (char *) req->url.servername);
 
-    if (req->flags & AFP_SERVER_CONNECT_RESUME_EXISTING) {
+    if (req->flags & AFPSL_IPC_CONNECT_RESUME_EXISTING) {
         if (req->url.password[0] != '\0') {
             log_for_client((void *) c, AFPFSD, LOG_WARNING,
                            "Refusing to resume server %s with supplied password",
@@ -2227,7 +2227,7 @@ static int process_connect(struct daemon_client * c)
             goto error;
         }
 
-        response_result = AFP_SERVER_RESULT_ALREADY_CONNECTED;
+        response_result = AFPSL_IPC_RESULT_ALREADY_CONNECTED;
         server_copy = s;
         memcpy(loginmesg_copy, s->loginmesg, AFP_LOGINMESG_LEN);
         afp_server_release(s);
@@ -2242,7 +2242,7 @@ static int process_connect(struct daemon_client * c)
                        req->url.servername);
 
         if (reconnect_disconnected_server(c, s, &req->url) == 0) {
-            response_result = AFP_SERVER_RESULT_OKAY;
+            response_result = AFPSL_IPC_RESULT_OK;
             server_copy = s;
             memcpy(loginmesg_copy, s->loginmesg, AFP_LOGINMESG_LEN);
             afp_server_release(s);
@@ -2299,18 +2299,18 @@ static int process_connect(struct daemon_client * c)
         memcpy(loginmesg_copy, s->loginmesg, AFP_LOGINMESG_LEN);
     }
 
-    response_result = AFP_SERVER_RESULT_OKAY;
+    response_result = AFPSL_IPC_RESULT_OK;
     goto done;
 error:
 
     switch (error) {
     case EACCES:
     case EPERM:
-        response_result = AFP_SERVER_RESULT_NOAUTHENT;
+        response_result = AFPSL_IPC_RESULT_NOAUTHENT;
         break;
 
     case ETIMEDOUT:
-        response_result = AFP_SERVER_RESULT_TIMEDOUT;
+        response_result = AFPSL_IPC_RESULT_TIMEDOUT;
         break;
 #ifdef ENONET
 
@@ -2319,11 +2319,11 @@ error:
     case ENETUNREACH:
     case EHOSTUNREACH:
     case ECONNREFUSED:
-        response_result = AFP_SERVER_RESULT_NOSERVER;
+        response_result = AFPSL_IPC_RESULT_NOSERVER;
         break;
 
     default:
-        response_result = AFP_SERVER_RESULT_ERROR;
+        response_result = AFPSL_IPC_RESULT_ERROR;
         break;
     }
 
@@ -2343,14 +2343,14 @@ done:
 
 static int process_attach(struct daemon_client * c)
 {
-    struct afp_server_attach_request * req = (void *) c->complete_packet;
+    struct afpsl_ipc_attach_request * req = (void *) c->complete_packet;
     struct afp_server * s = NULL;
     struct afp_volume * volume = NULL;
-    int response_result = AFP_SERVER_RESULT_ERROR;
-    struct afp_server_attach_response response;
+    int response_result = AFPSL_IPC_RESULT_ERROR;
+    struct afpsl_ipc_attach_response response;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afp_server_attach_request)) {
+            afpsl_ipc_attach_request)) {
         goto error;
     }
 
@@ -2373,7 +2373,7 @@ static int process_attach(struct daemon_client * c)
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Attach request with invalid or disconnected server %p",
                        (void *)req->serverid);
-        response_result = AFP_SERVER_RESULT_NOTCONNECTED;
+        response_result = AFPSL_IPC_RESULT_NOTCONNECTED;
         goto error;
     }
 
@@ -2385,23 +2385,23 @@ static int process_attach(struct daemon_client * c)
     volume = command_sub_attach_volume(c, s, req->url.volumename,
                                        req->url.volpassword, &response_result);
 
-    if (volume == NULL && response_result == AFP_SERVER_RESULT_ALREADY_ATTACHED) {
+    if (volume == NULL && response_result == AFPSL_IPC_RESULT_ALREADY_ATTACHED) {
         /* Volume is already attached — look it up for returning its ID */
         volume = find_volume_by_name(s, req->url.volumename);
 
         if (!volume) {
-            response_result = AFP_SERVER_RESULT_ERROR;
+            response_result = AFPSL_IPC_RESULT_ERROR;
             goto error;
         }
 
-        response_result = AFP_SERVER_RESULT_ALREADY_ATTACHED;
+        response_result = AFPSL_IPC_RESULT_ALREADY_ATTACHED;
     } else if (volume == NULL) {
         /* command_sub_attach_volume sets response_result appropriately */
         goto error;
     }
 
     volume->extra_flags |= req->volume_options;
-    response_result = AFP_SERVER_RESULT_OKAY;
+    response_result = AFPSL_IPC_RESULT_OK;
     log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                    "Volume '%s' attached successfully",
                    volume->volume_name_printable);
@@ -2419,7 +2419,7 @@ done:
 
     finish_response(c, send_command(c, sizeof(response), (char *) &response),
                     (size_t) c->completed_packet_size >= sizeof(struct
-                            afp_server_request_header) && req->header.close);
+                            afpsl_ipc_request_header) && req->header.close);
 
     if (s) {
         afp_server_release(s);
@@ -2433,7 +2433,7 @@ static void *process_command_thread(void * other)
 {
     struct daemon_client * c = other;
     int ret = 0;
-    const struct afp_server_request_header * req = (void *) c->complete_packet;
+    const struct afpsl_ipc_request_header * req = (void *) c->complete_packet;
     /* Clear the outgoing log buffer from any previous command on this connection */
     pthread_mutex_lock(&c->command_string_mutex);
     c->outgoing_string[0] = '\0';
@@ -2444,134 +2444,129 @@ static void *process_command_thread(void * other)
     pthread_mutex_lock(&server_op_mutex);
 
     switch (req->command) {
-    case AFP_SERVER_COMMAND_SERVERINFO:
+    case AFPSL_IPC_COMMAND_SERVERINFO:
         ret = process_serverinfo(c);
         break;
 
-    case AFP_SERVER_COMMAND_CONNECT:
+    case AFPSL_IPC_COMMAND_CONNECT:
         ret = process_connect(c);
         break;
 
-    case AFP_SERVER_COMMAND_ATTACH:
+    case AFPSL_IPC_COMMAND_ATTACH:
         ret = process_attach(c);
         break;
 
-    case AFP_SERVER_COMMAND_DETACH:
+    case AFPSL_IPC_COMMAND_DETACH:
         ret = process_detach(c);
         break;
 
-    case AFP_SERVER_COMMAND_GETVOLID:
+    case AFPSL_IPC_COMMAND_GETVOLID:
         ret = process_getvolid(c);
         break;
 
-    case AFP_SERVER_COMMAND_READDIR:
+    case AFPSL_IPC_COMMAND_READDIR:
         ret = process_readdir(c);
         break;
 
-    case AFP_SERVER_COMMAND_GETVOLS:
+    case AFPSL_IPC_COMMAND_GETVOLS:
         ret = process_getvols(c);
         break;
 
-    case AFP_SERVER_COMMAND_STAT:
+    case AFPSL_IPC_COMMAND_STAT:
         ret = process_stat(c);
         break;
 
-    case AFP_SERVER_COMMAND_OPEN:
+    case AFPSL_IPC_COMMAND_OPEN:
         ret = process_open(c);
         break;
 
-    case AFP_SERVER_COMMAND_READ:
+    case AFPSL_IPC_COMMAND_READ:
         ret = process_read(c);
         break;
 
-    case AFP_SERVER_COMMAND_WRITE:
+    case AFPSL_IPC_COMMAND_WRITE:
         ret = process_write(c);
         break;
 
-    case AFP_SERVER_COMMAND_CREAT:
+    case AFPSL_IPC_COMMAND_CREAT:
         ret = process_creat(c);
         break;
 
-    case AFP_SERVER_COMMAND_CHMOD:
+    case AFPSL_IPC_COMMAND_CHMOD:
         ret = process_chmod(c);
         break;
 
-    case AFP_SERVER_COMMAND_RENAME:
+    case AFPSL_IPC_COMMAND_RENAME:
         ret = process_rename(c);
         break;
 
-    case AFP_SERVER_COMMAND_UNLINK:
+    case AFPSL_IPC_COMMAND_UNLINK:
         ret = process_unlink(c);
         break;
 
-    case AFP_SERVER_COMMAND_TRUNCATE:
+    case AFPSL_IPC_COMMAND_TRUNCATE:
         ret = process_truncate(c);
         break;
 
-    case AFP_SERVER_COMMAND_UTIME:
+    case AFPSL_IPC_COMMAND_UTIME:
         ret = process_utime(c);
         break;
 
-    case AFP_SERVER_COMMAND_MKDIR:
+    case AFPSL_IPC_COMMAND_MKDIR:
         ret = process_mkdir(c);
         break;
 
-    case AFP_SERVER_COMMAND_RMDIR:
+    case AFPSL_IPC_COMMAND_RMDIR:
         ret = process_rmdir(c);
         break;
 
-    case AFP_SERVER_COMMAND_STATFS:
+    case AFPSL_IPC_COMMAND_STATFS:
         ret = process_statfs(c);
         break;
 
-    case AFP_SERVER_COMMAND_CLOSE:
+    case AFPSL_IPC_COMMAND_CLOSE:
         ret = process_close(c);
         break;
 
-    case AFP_SERVER_COMMAND_EXIT:
+    case AFPSL_IPC_COMMAND_EXIT:
         ret = process_exit(c);
         break;
 
-    case AFP_SERVER_COMMAND_STATUS:
+    case AFPSL_IPC_COMMAND_STATUS:
         ret = process_status(c);
         break;
 
-    case AFP_SERVER_COMMAND_DISCONNECT:
+    case AFPSL_IPC_COMMAND_DISCONNECT:
         ret = process_disconnect(c);
         break;
 
-    case AFP_SERVER_COMMAND_CHANGEPW:
+    case AFPSL_IPC_COMMAND_CHANGEPW:
         ret = process_changepw(c);
         break;
 
-    case AFP_SERVER_COMMAND_GETXATTR:
-    case AFP_SERVER_COMMAND_SETXATTR:
-    case AFP_SERVER_COMMAND_LISTXATTR:
-    case AFP_SERVER_COMMAND_REMOVEXATTR:
-    case AFP_SERVER_COMMAND_GETFINDERINFO:
-    case AFP_SERVER_COMMAND_SETFINDERINFO:
-    case AFP_SERVER_COMMAND_REMOVEFINDERINFO:
-    case AFP_SERVER_COMMAND_GETRESOURCEFORK:
-    case AFP_SERVER_COMMAND_SETRESOURCEFORK:
-    case AFP_SERVER_COMMAND_TRUNCATERESOURCEFORK:
-    case AFP_SERVER_COMMAND_REMOVERESOURCEFORK:
+    case AFPSL_IPC_COMMAND_GETXATTR:
+    case AFPSL_IPC_COMMAND_SETXATTR:
+    case AFPSL_IPC_COMMAND_LISTXATTR:
+    case AFPSL_IPC_COMMAND_REMOVEXATTR:
+    case AFPSL_IPC_COMMAND_GETFINDERINFO:
+    case AFPSL_IPC_COMMAND_SETFINDERINFO:
+    case AFPSL_IPC_COMMAND_REMOVEFINDERINFO:
+    case AFPSL_IPC_COMMAND_GETRESOURCEFORK:
+    case AFPSL_IPC_COMMAND_SETRESOURCEFORK:
+    case AFPSL_IPC_COMMAND_TRUNCATERESOURCEFORK:
+    case AFPSL_IPC_COMMAND_REMOVERESOURCEFORK:
         ret = process_metadata(c);
         break;
 
-    case AFP_SERVER_COMMAND_MOUNT:
-    case AFP_SERVER_COMMAND_UNMOUNT:
-    case AFP_SERVER_COMMAND_GET_MOUNTPOINT:
-    case AFP_SERVER_COMMAND_SUSPEND:
-    case AFP_SERVER_COMMAND_RESUME:
+    case AFPSL_IPC_COMMAND_GET_MOUNTPOINT:
         log_for_client((void *)c, AFPFSD, LOG_ERR,
-                       "Command %d not supported by afpsld (stateless daemon). "
-                       "Use afpfsd (FUSE daemon) instead.", req->command);
-        ret = AFP_SERVER_RESULT_NOTSUPPORTED;
+                       "Command %d not supported by afpsld", req->command);
+        ret = AFPSL_IPC_RESULT_NOTSUPPORTED;
         break;
 
     default:
         log_for_client((void *)c, AFPFSD, LOG_ERR, "Unknown command %d", req->command);
-        ret = AFP_SERVER_RESULT_ERROR;
+        ret = AFPSL_IPC_RESULT_ERROR;
     }
 
     /* Shift back */
@@ -2588,14 +2583,14 @@ static void *process_command_thread(void * other)
 int process_command(struct daemon_client * c)
 {
     ssize_t ret;
-    const struct afp_server_request_header * header;
+    const struct afpsl_ipc_request_header * header;
     pthread_attr_t attr;
 
     if (c->incoming_size == 0) {
         /* We're at the start of the packet */
         c->a = c->incoming_string;
         ret = read(c->fd, c->incoming_string,
-                   sizeof(struct afp_server_request_header));
+                   sizeof(struct afpsl_ipc_request_header));
 
         if (ret == 0) {
             return -1;
@@ -2609,12 +2604,12 @@ int process_command(struct daemon_client * c)
         c->incoming_size += (int) ret;
         c->a += (size_t) ret;
 
-        if ((size_t)ret < sizeof(struct afp_server_request_header)) {
+        if ((size_t)ret < sizeof(struct afpsl_ipc_request_header)) {
             /* incomplete header, continue to read */
             return 2;
         }
 
-        header = (const struct afp_server_request_header *) c->incoming_string;
+        header = (const struct afpsl_ipc_request_header *) c->incoming_string;
 
         if (header->len < sizeof(*header)
                 || header->len > sizeof(c->incoming_string)) {
@@ -2647,7 +2642,7 @@ int process_command(struct daemon_client * c)
         return 0;
     }
 
-    header = (const struct afp_server_request_header *) c->incoming_string;
+    header = (const struct afpsl_ipc_request_header *) c->incoming_string;
 
     if (header->len < sizeof(*header)
             || header->len > sizeof(c->incoming_string)) {
@@ -2662,7 +2657,7 @@ int process_command(struct daemon_client * c)
 
 havefullone:
     /* Okay, so we have a full one.  Copy the buffer. */
-    header = (const struct afp_server_request_header *) c->incoming_string;
+    header = (const struct afpsl_ipc_request_header *) c->incoming_string;
     /* do the copy */
     c->completed_packet_size = header->len;
     memcpy(c->complete_packet, c->incoming_string, c->completed_packet_size);
@@ -2695,15 +2690,15 @@ havefullone:
  *
  * Sets response_result to:
  *
- * AFP_SERVER_RESULT_OKAY:
+ * AFPSL_IPC_RESULT_OK:
  * 	Attached properly
- * AFP_SERVER_RESULT_NOVOLUME:
+ * AFPSL_IPC_RESULT_NOVOLUME:
  * 	No volume exists by that name
- * AFP_SERVER_RESULT_ALREADY_ATTACHED:
+ * AFPSL_IPC_RESULT_ALREADY_ATTACHED:
  * 	Volume's AFP session is already active
- * AFP_SERVER_RESULT_VOLPASS_NEEDED:
+ * AFPSL_IPC_RESULT_VOLPASS_NEEDED:
  * 	A volume password is needed
- * AFP_SERVER_RESULT_ERROR_UNKNOWN:
+ * AFPSL_IPC_RESULT_ERROR_UNKNOWN:
  * 	An unknown error occured when attaching.
  *
  */
@@ -2717,7 +2712,7 @@ struct afp_volume *command_sub_attach_volume(struct daemon_client *c,
     struct afp_volume *using_volume;
 
     if (response_result) {
-        *response_result = AFP_SERVER_RESULT_OKAY;
+        *response_result = AFPSL_IPC_RESULT_OK;
     }
 
     using_volume = find_volume_by_name(server, volname);
@@ -2730,7 +2725,7 @@ struct afp_volume *command_sub_attach_volume(struct daemon_client *c,
         }
 
         if (response_result) {
-            *response_result = AFP_SERVER_RESULT_NOVOLUME;
+            *response_result = AFPSL_IPC_RESULT_NOVOLUME;
         }
 
         if (server->num_volumes) {
@@ -2752,7 +2747,7 @@ struct afp_volume *command_sub_attach_volume(struct daemon_client *c,
                        "Volume %s is already attached", volname);
 
         if (response_result) {
-            *response_result = AFP_SERVER_RESULT_ALREADY_ATTACHED;
+            *response_result = AFPSL_IPC_RESULT_ALREADY_ATTACHED;
         }
 
         goto error;
@@ -2763,7 +2758,7 @@ struct afp_volume *command_sub_attach_volume(struct daemon_client *c,
             log_for_client((void *) c, AFPFSD, LOG_ERR, "Volume password needed");
 
             if (response_result) {
-                *response_result = AFP_SERVER_RESULT_VOLPASS_NEEDED;
+                *response_result = AFPSL_IPC_RESULT_VOLPASS_NEEDED;
             }
 
             goto error;
@@ -2781,7 +2776,7 @@ struct afp_volume *command_sub_attach_volume(struct daemon_client *c,
                        volname);
 
         if (response_result) {
-            *response_result = AFP_SERVER_RESULT_ERROR_UNKNOWN;
+            *response_result = AFPSL_IPC_RESULT_ERROR_UNKNOWN;
         }
 
         goto error;

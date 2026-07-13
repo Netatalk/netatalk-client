@@ -12,6 +12,5 @@ int fuse_unmount_volume(struct afp_volume * volume);
 void fuse_forced_ending_hook(void);
 
 #define STATUS_LEN 1024
-#define MAX_CLIENT_RESPONSE 16384
 
 #endif

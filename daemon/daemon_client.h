@@ -18,7 +18,7 @@ struct daemon_client {
     int completed_packet_size;
     pthread_mutex_t command_string_mutex;
 
-    char outgoing_string[AFP_SERVER_LOG_BUFFER_SIZE];
+    char outgoing_string[AFPSL_IPC_LOG_BUFFER_SIZE];
     size_t outgoing_string_len;
     int fd;
     int lock;

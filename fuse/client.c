@@ -181,8 +181,8 @@ static int start_afpfsd(const char *mountpoint, const char *volumename)
     struct sockaddr_un servaddr;
     char manager_socket[PATH_MAX];
     char mount_socket[PATH_MAX];
-    struct afp_server_spawn_mount_request req;
-    unsigned char command = AFP_SERVER_COMMAND_SPAWN_MOUNT;
+    struct afpfsd_ipc_spawn_mount_request req;
+    unsigned char command = AFPFSD_IPC_COMMAND_SPAWN_MOUNT;
     unsigned char result;
     /* Get manager socket name (NULL = shared socket) */
     get_daemon_filename(manager_socket, sizeof(manager_socket), NULL);
@@ -255,7 +255,7 @@ static int start_afpfsd(const char *mountpoint, const char *volumename)
 
     close(sock);
 
-    if (result != AFP_SERVER_RESULT_OKAY) {
+    if (result != AFPFSD_IPC_RESULT_OK) {
         return -1;
     }
 
@@ -277,10 +277,10 @@ static void get_daemon_filename(char *filename, size_t size,
         }
 
         /* One daemon per mountpoint */
-        snprintf(filename, size, "%s-%d-%lx", SERVER_FUSE_SOCKET_PATH, uid, hash);
+        snprintf(filename, size, "%s-%d-%lx", AFPFSD_IPC_SOCKET_PATH, uid, hash);
     } else {
         /* Shared management socket for status/exit commands */
-        snprintf(filename, size, "%s-%d", SERVER_FUSE_SOCKET_PATH, uid);
+        snprintf(filename, size, "%s-%d", AFPFSD_IPC_SOCKET_PATH, uid);
     }
 }
 
@@ -455,7 +455,7 @@ static int send_command(int sock, char * msg, int len)
 static int do_exit(int argc _U_, char **argv _U_)
 {
     outgoing_len = 1;
-    outgoing_buffer[0] = AFP_SERVER_COMMAND_EXIT;
+    outgoing_buffer[0] = AFPFSD_IPC_COMMAND_EXIT;
     return 0;
 }
 
@@ -509,14 +509,14 @@ static int do_status(int argc, char ** argv)
 {
     int c;
     int option_index = 0;
-    struct afp_server_status_request req = {0};
+    struct afpfsd_ipc_status_request req = {0};
     struct option long_options[] = {
         {"volume", 1, 0, 'v'},
         {"server", 1, 0, 's'},
         {0, 0, 0, 0},
     };
-    outgoing_buffer[0] = AFP_SERVER_COMMAND_STATUS;
-    outgoing_len = sizeof(struct afp_server_status_request) + 1;
+    outgoing_buffer[0] = AFPFSD_IPC_COMMAND_STATUS;
+    outgoing_len = sizeof(struct afpfsd_ipc_status_request) + 1;
 
     while (1) {
         c = getopt_long(argc, argv, "v:s:", long_options, &option_index);
@@ -545,15 +545,15 @@ static int do_status(int argc, char ** argv)
 
 static int do_resume(int argc, char ** argv)
 {
-    struct afp_server_resume_request request = {0};
+    struct afpfsd_ipc_resume_request request = {0};
 
     if (argc < 3) {
         usage();
         return -1;
     }
 
-    outgoing_buffer[0] = AFP_SERVER_COMMAND_RESUME;
-    outgoing_len = sizeof(struct afp_server_resume_request) + 1;
+    outgoing_buffer[0] = AFPFSD_IPC_COMMAND_RESUME;
+    outgoing_len = sizeof(struct afpfsd_ipc_resume_request) + 1;
 
     if (resolve_mountpoint(argv[2], request.mountpoint,
                            sizeof(request.mountpoint)) < 0) {
@@ -567,15 +567,15 @@ static int do_resume(int argc, char ** argv)
 
 static int do_suspend(int argc, char ** argv)
 {
-    struct afp_server_suspend_request request = {0};
+    struct afpfsd_ipc_suspend_request request = {0};
 
     if (argc < 3) {
         usage();
         return -1;
     }
 
-    outgoing_buffer[0] = AFP_SERVER_COMMAND_SUSPEND;
-    outgoing_len = sizeof(struct afp_server_suspend_request) + 1;
+    outgoing_buffer[0] = AFPFSD_IPC_COMMAND_SUSPEND;
+    outgoing_len = sizeof(struct afpfsd_ipc_suspend_request) + 1;
 
     if (resolve_mountpoint(argv[2], request.mountpoint,
                            sizeof(request.mountpoint)) < 0) {
@@ -589,15 +589,15 @@ static int do_suspend(int argc, char ** argv)
 
 static int do_unmount(int argc, char ** argv)
 {
-    struct afp_server_unmount_request request = {0};
+    struct afpfsd_ipc_unmount_request request = {0};
 
     if (argc < 3) {
         usage();
         return -1;
     }
 
-    outgoing_buffer[0] = AFP_SERVER_COMMAND_UNMOUNT;
-    outgoing_len = sizeof(struct afp_server_unmount_request) + 1;
+    outgoing_buffer[0] = AFPFSD_IPC_COMMAND_UNMOUNT;
+    outgoing_len = sizeof(struct afpfsd_ipc_unmount_request) + 1;
 
     if (resolve_mountpoint(argv[2], request.mountpoint,
                            sizeof(request.mountpoint)) < 0) {
@@ -613,7 +613,7 @@ static int do_mount(int argc, char ** argv)
 {
     int c;
     int option_index = 0;
-    struct afp_server_mount_request request = {0};
+    struct afpfsd_ipc_mount_request request = {0};
     int optnum = 0;
     unsigned int uam_mask = default_uams_mask();
     struct option long_options[] = {
@@ -633,8 +633,8 @@ static int do_mount(int argc, char ** argv)
         return -1;
     }
 
-    outgoing_buffer[0] = AFP_SERVER_COMMAND_MOUNT;
-    outgoing_len = sizeof(struct afp_server_mount_request) + 1;
+    outgoing_buffer[0] = AFPFSD_IPC_COMMAND_MOUNT;
+    outgoing_len = sizeof(struct afpfsd_ipc_mount_request) + 1;
     request.url.port = 548;
     request.map = AFP_MAPPING_UNKNOWN;
     request.fuse_options[0] = '\0';
@@ -794,7 +794,7 @@ static void mount_afpfs_usage(void)
 
 static int handle_mount_afpfs(int argc, char * argv[])
 {
-    struct afp_server_mount_request * req = (struct afp_server_mount_request *)
+    struct afpfsd_ipc_mount_request * req = (struct afpfsd_ipc_mount_request *)
                                             &outgoing_buffer[1];
     unsigned int uam_mask = default_uams_mask();
     char *urlstring, *mountpoint;
@@ -892,7 +892,7 @@ static int handle_mount_afpfs(int argc, char * argv[])
         mountpoint = argv[2];
     }
 
-    outgoing_len = sizeof(struct afp_server_mount_request) +1;
+    outgoing_len = sizeof(struct afpfsd_ipc_mount_request) +1;
     memset(outgoing_buffer, 0, outgoing_len);
     afp_default_url(&req->url);
     req->changeuid = changeuid;
@@ -903,7 +903,7 @@ static int handle_mount_afpfs(int argc, char * argv[])
     }
 
     req->uam_mask = uam_mask;
-    outgoing_buffer[0] = AFP_SERVER_COMMAND_MOUNT;
+    outgoing_buffer[0] = AFPFSD_IPC_COMMAND_MOUNT;
     req->map = AFP_MAPPING_UNKNOWN;
 
     if (mountpoint == NULL) {
@@ -1015,11 +1015,11 @@ int read_answer(int sock)
 {
     int len = 0, expected_len = 0, packetlen;
     char *incoming_buffer = NULL;
-    int buffer_size = MAX_CLIENT_RESPONSE;
+    int buffer_size = AFPFSD_IPC_MAX_RESPONSE;
     struct timeval tv;
     fd_set rds, ords;
     int ret;
-    const struct afp_server_response * answer;
+    const struct afpfsd_ipc_response * answer;
     incoming_buffer = malloc(buffer_size);
 
     if (!incoming_buffer) {
@@ -1052,14 +1052,14 @@ int read_answer(int sock)
                 /* Read header first */
                 do {
                     packetlen = read(sock, incoming_buffer + len,
-                                     sizeof(struct afp_server_response));
+                                     sizeof(struct afpfsd_ipc_response));
                 } while (packetlen < 0 && errno == EINTR);
 
                 if (packetlen <= 0) {
                     /* If the outgoing command was UNMOUNT, treat EOF as success */
                     extern char outgoing_buffer[];
 
-                    if (outgoing_buffer[0] == AFP_SERVER_COMMAND_UNMOUNT) {
+                    if (outgoing_buffer[0] == AFPFSD_IPC_COMMAND_UNMOUNT) {
                         free(incoming_buffer);
                         return 0;
                     }
@@ -1073,8 +1073,8 @@ int read_answer(int sock)
                 expected_len = answer->len;
 
                 /* Grow buffer if needed */
-                if (expected_len + sizeof(struct afp_server_response) > (size_t)buffer_size) {
-                    buffer_size = expected_len + sizeof(struct afp_server_response) + 1;
+                if (expected_len + sizeof(struct afpfsd_ipc_response) > (size_t)buffer_size) {
+                    buffer_size = expected_len + sizeof(struct afpfsd_ipc_response) + 1;
                     char *new_buffer = realloc(incoming_buffer, buffer_size);
 
                     if (!new_buffer) {
@@ -1103,7 +1103,7 @@ int read_answer(int sock)
                 len += packetlen;
             }
 
-            if ((unsigned long) len >= expected_len + sizeof(struct afp_server_response)) {
+            if ((unsigned long) len >= expected_len + sizeof(struct afpfsd_ipc_response)) {
                 goto done;
             }
         }
@@ -1138,9 +1138,9 @@ int main(int argc, char *argv[])
         }
 
         /* Extract mountpoint and volumename from mount request */
-        if (outgoing_buffer[0] == AFP_SERVER_COMMAND_MOUNT && outgoing_len > 1) {
-            const struct afp_server_mount_request *req =
-                (const struct afp_server_mount_request *)(outgoing_buffer + 1);
+        if (outgoing_buffer[0] == AFPFSD_IPC_COMMAND_MOUNT && outgoing_len > 1) {
+            const struct afpfsd_ipc_mount_request *req =
+                (const struct afpfsd_ipc_mount_request *)(outgoing_buffer + 1);
             mountpoint = req->mountpoint;
             volumename = req->url.volumename;
         }
@@ -1151,15 +1151,15 @@ int main(int argc, char *argv[])
     /* Extract mountpoint and volumename for per-mount daemon routing;
        STATUS, SUSPEND, RESUME, EXIT go to manager, which forwards appropriately */
     if (mountpoint == NULL) {
-        if (outgoing_buffer[0] == AFP_SERVER_COMMAND_MOUNT && outgoing_len > 1) {
-            const struct afp_server_mount_request *req =
-                (const struct afp_server_mount_request *)(outgoing_buffer + 1);
+        if (outgoing_buffer[0] == AFPFSD_IPC_COMMAND_MOUNT && outgoing_len > 1) {
+            const struct afpfsd_ipc_mount_request *req =
+                (const struct afpfsd_ipc_mount_request *)(outgoing_buffer + 1);
             mountpoint = req->mountpoint;
             volumename = req->url.volumename;
-        } else if (outgoing_buffer[0] == AFP_SERVER_COMMAND_UNMOUNT
+        } else if (outgoing_buffer[0] == AFPFSD_IPC_COMMAND_UNMOUNT
                    && outgoing_len > 1) {
-            const struct afp_server_unmount_request *req =
-                (const struct afp_server_unmount_request *)(outgoing_buffer + 1);
+            const struct afpfsd_ipc_unmount_request *req =
+                (const struct afpfsd_ipc_unmount_request *)(outgoing_buffer + 1);
             mountpoint = req->mountpoint;
         }
     }
