@@ -1,5 +1,5 @@
-#ifndef AFP_SL_METADATA_INTERNAL_H_
-#define AFP_SL_METADATA_INTERNAL_H_
+#ifndef NETATALK_CLIENT_DAEMON_METADATA_H
+#define NETATALK_CLIENT_DAEMON_METADATA_H
 
 #include <stddef.h>
 #include <sys/types.h>

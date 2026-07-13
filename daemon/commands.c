@@ -39,7 +39,7 @@
 #include "commands.h"
 #include "daemon.h"
 #include "daemon_client.h"
-#include "server.h"
+#include "stateless_ipc.h"
 
 /* File handle table for mapping 32-bit IDs to 64-bit pointers */
 #define MAX_OPEN_FILES 1024

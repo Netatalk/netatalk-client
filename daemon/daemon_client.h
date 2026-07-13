@@ -1,9 +1,9 @@
-#ifndef __DAEMON_CLIENT_H_
-#define __DAEMON_CLIENT_H_
+#ifndef NETATALK_CLIENT_DAEMON_DAEMON_CLIENT_H
+#define NETATALK_CLIENT_DAEMON_DAEMON_CLIENT_H
 
 #include <pthread.h>
 
-#include "server.h"
+#include "stateless_ipc.h"
 
 #define AFP_CLIENT_INCOMING_BUF 8192
 

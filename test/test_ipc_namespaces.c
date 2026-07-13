@@ -1,7 +1,7 @@
 #include <stddef.h>
 
 #include "fuse/fuse_ipc.h"
-#include "daemon/server.h"
+#include "daemon/stateless_ipc.h"
 
 #ifdef AFP_SERVER_COMMAND_MOUNT
 #error "legacy shared IPC command namespace is still visible"
