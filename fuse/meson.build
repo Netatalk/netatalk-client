@@ -11,7 +11,7 @@ executable(
     install_rpath: install_runtime_path,
 )
 
-afpfsd_sources = ['commands.c', 'daemon.c', 'fuse_int.c', 'fuse_error.c']
+afpfsd_sources = ['commands.c', 'daemon.c', 'fuse_fs.c', 'fuse_error.c']
 
 executable(
     'afpfsd',

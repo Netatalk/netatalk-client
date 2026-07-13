@@ -1,6 +1,6 @@
 /*
 
-    fuse.c, FUSE interfaces for Netatalk Client
+    fuse_fs.c, FUSE interfaces for Netatalk Client
 
     Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
     Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
@@ -50,6 +50,7 @@
 #include "lib/xattr.h"
 
 #include "fuse_error.h"
+#include "fuse_fs.h"
 
 /* Define xattr constants if not provided by system headers */
 #ifndef XATTR_CREATE
@@ -1417,7 +1418,7 @@ static struct fuse_operations afp_oper = {
 };
 
 
-int afp_register_fuse(int fuseargc, char *fuseargv[], struct afp_volume * vol)
+int afp_fuse_main(int argc, char *argv[], struct afp_volume *volume)
 {
     int ret;
     struct fuse_operations oper = afp_oper;
@@ -1425,7 +1426,7 @@ int afp_register_fuse(int fuseargc, char *fuseargv[], struct afp_volume * vol)
      * when the AFP volume does not support generic extended attributes. */
 #ifndef __APPLE__
 
-    if (!(vol->attributes & kSupportsExtAttrs)) {
+    if (!(volume->attributes & kSupportsExtAttrs)) {
         oper.getxattr    = NULL;
         oper.setxattr    = NULL;
         oper.listxattr   = NULL;
@@ -1434,6 +1435,6 @@ int afp_register_fuse(int fuseargc, char *fuseargv[], struct afp_volume * vol)
 
 #endif
     fuse_capture_stderr_start();
-    ret = fuse_main(fuseargc, fuseargv, &oper, (void *) vol);
+    ret = fuse_main(argc, argv, &oper, (void *) volume);
     return ret;
 }

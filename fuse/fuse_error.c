@@ -18,7 +18,7 @@
 
 #include "lib/client.h"
 
-#include "fuse_internal.h"
+#include "fuse_error.h"
 
 /* Simple global capture state (not thread-safe, but adequate for mount startup) */
 static int captured_fd = -1;
@@ -29,7 +29,7 @@ static fpos_t pos;
 
 #define FUSE_ERROR_PREFIX "FUSE error: "
 
-void report_fuse_errors(struct fuse_client * c)
+void report_fuse_errors(void *log_context)
 {
     char buf[MAX_ERROR_LEN - sizeof(FUSE_ERROR_PREFIX)];
     char message[MAX_ERROR_LEN];
@@ -67,7 +67,7 @@ void report_fuse_errors(struct fuse_client * c)
         buf[len] = '\0';
         snprintf(message, sizeof(message),
                  "%s%s", FUSE_ERROR_PREFIX, buf);
-        (log_for_client)((void *)c, AFPFSD, LOG_ERR, message);
+        (log_for_client)(log_context, AFPFSD, LOG_ERR, message);
     }
 }
 
