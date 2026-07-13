@@ -56,7 +56,7 @@
 
 struct afpfsd_client {
     char incoming_string[AFPFSD_CLIENT_INCOMING_BUF];
-    int incoming_size;
+    size_t incoming_size;
     char client_string[AFPFSD_IPC_MAX_RESPONSE];
     int fd;
     struct afpfsd_client *next;
@@ -594,8 +594,7 @@ static unsigned char process_status(struct afpfsd_client * c)
     char text[40960];
     int len;
 
-    if (((unsigned long) c->incoming_size + 1) < sizeof(struct
-            afpfsd_ipc_status_request)) {
+    if (c->incoming_size < sizeof(struct afpfsd_ipc_status_request) + 1) {
         return AFPFSD_IPC_RESULT_ERROR;
     }
 
@@ -633,8 +632,7 @@ static int process_mount(struct afpfsd_client * c)
     int ret;
     struct stat lstat;
 
-    if (((unsigned long) c->incoming_size - 1) < sizeof(struct
-            afpfsd_ipc_mount_request)) {
+    if (c->incoming_size < sizeof(struct afpfsd_ipc_mount_request) + 1) {
         goto error;
     }
 
@@ -880,22 +878,23 @@ static void *process_command_thread(void * other)
 
 static int process_command(struct afpfsd_client * c)
 {
-    int ret;
+    ssize_t bytes_read;
     int fd;
 
     do {
-        ret = read(c->fd, &c->incoming_string, AFPFSD_CLIENT_INCOMING_BUF);
-    } while (ret < 0 && errno == EINTR);
+        bytes_read = read(c->fd, c->incoming_string,
+                          sizeof(c->incoming_string));
+    } while (bytes_read < 0 && errno == EINTR);
 
-    if (ret <= 0) {
-        if (ret < 0) {
+    if (bytes_read <= 0) {
+        if (bytes_read < 0) {
             perror("reading");
         }
 
         goto out;
     }
 
-    c->incoming_size = ret;
+    c->incoming_size = (size_t) bytes_read;
     pthread_t thread;
     pthread_create(&thread, NULL, process_command_thread, c);
     return 0;
