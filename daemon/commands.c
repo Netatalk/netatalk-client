@@ -261,12 +261,6 @@ done:
     return 0;
 }
 
-static unsigned char process_ping(struct daemon_client * c)
-{
-    log_for_client((void *) c, AFPFSD, LOG_INFO, "Ping!");
-    return AFP_SERVER_RESULT_OKAY;
-}
-
 static unsigned char process_exit(struct daemon_client * c)
 {
     struct afp_server_response_header response;
@@ -2464,10 +2458,6 @@ static void *process_command_thread(void * other)
 
     case AFP_SERVER_COMMAND_DETACH:
         ret = process_detach(c);
-        break;
-
-    case AFP_SERVER_COMMAND_PING:
-        ret = process_ping(c);
         break;
 
     case AFP_SERVER_COMMAND_GETVOLID:

@@ -20,7 +20,7 @@ executable(
         root_dependencies,
         pthread_dep,
     ],
-    link_with: [libafpclient],
+    link_with: [libafpclient, daemon_common],
     include_directories: incdir,
     c_args: cflags,
     install: true,

@@ -25,9 +25,9 @@
 
 #include "lib/afp_internal.h"
 #include "lib/compat.h"
-#include "lib/daemon_socket.h"
 #include "lib/dsi.h"
 #include "lib/utils.h"
+#include "common/daemon_socket.h"
 
 #include "commands.h"
 #include "daemon.h"

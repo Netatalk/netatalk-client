@@ -16,6 +16,23 @@ transport_api_test = executable(
 
 test('stateful transport public API', transport_api_test)
 
+daemon_socket_test = executable(
+    'test_daemon_socket',
+    sources: ['test_daemon_socket.c'],
+    include_directories: incdir,
+    link_with: daemon_common,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'daemon socket lifecycle',
+    daemon_socket_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
 metadata_test = executable(
     'test_metadata',
     sources: ['test_metadata.c'],
