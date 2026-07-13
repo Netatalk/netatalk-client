@@ -7,6 +7,49 @@ public_headers_test = executable(
 
 test('public headers compile standalone', public_headers_test)
 
+python = import('python').find_installation()
+
+test(
+    'source include boundaries',
+    python,
+    args: [files('check_include_boundaries.py'), meson.project_source_root()],
+)
+
+public_header_checks = {
+    'afpsl': 'netatalk-client/afpsl.h',
+    'transport': 'netatalk-client/transport.h',
+    'types': 'netatalk-client/types.h',
+    'url': 'netatalk-client/url.h',
+}
+
+private_header_checks = {
+    'fuse_ipc': 'fuse/fuse_ipc.h',
+    'stateless_ipc': 'daemon/stateless_ipc.h',
+}
+
+# Each target compiles one header in a fresh translation unit, preventing an
+# earlier include from accidentally supplying a declaration needed later.
+foreach name, header : public_header_checks + private_header_checks
+    executable(
+        'check_c_header_' + name,
+        sources: ['header_compile.c'],
+        include_directories: incdir,
+        c_args: cflags + ['-DTEST_HEADER=<' + header + '>'],
+    )
+endforeach
+
+if add_languages('cpp', native: false, required: false)
+    foreach name, header : public_header_checks
+        executable(
+            'check_cpp_header_' + name,
+            sources: ['header_compile.cpp'],
+            include_directories: incdir,
+            cpp_args: ['-DTEST_HEADER=<' + header + '>'],
+            override_options: ['cpp_std=c++11'],
+        )
+    endforeach
+endif
+
 ipc_namespaces_test = executable(
     'test_ipc_namespaces',
     sources: ['test_ipc_namespaces.c'],
