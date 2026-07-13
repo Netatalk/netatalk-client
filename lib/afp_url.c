@@ -153,7 +153,8 @@ static char *escape_strchr(const char * haystack, int c, const char * toescape)
  * afp://server-name/volume-name/path
  *
  */
-int afp_parse_url(struct afpc_url * url, const char * toparse)
+static int parse_url(struct afpc_url *url, const char *toparse,
+                     int log_messages)
 {
     char firstpart[AFP_HOSTNAME_LEN], secondpart[MAX_CLIENT_RESPONSE];
     char *p, *q;
@@ -168,7 +169,13 @@ int afp_parse_url(struct afpc_url * url, const char * toparse)
     url->password[0] = '\0';
     url->volumename[0] = '\0';
     url->path[0] = '\0';
-    log_for_client(NULL, AFPFSD, LOG_DEBUG, "Parsing AFP URL: %s", toparse);
+#define URL_LOG(level, ...) \
+    do { \
+        if (log_messages) { \
+            log_for_client(NULL, AFPFSD, level, __VA_ARGS__); \
+        } \
+    } while (0)
+    URL_LOG(LOG_DEBUG, "Parsing AFP URL: %s", toparse);
 
     /* if there is a ://, make sure it is preceeded by afp */
 
@@ -176,21 +183,18 @@ int afp_parse_url(struct afpc_url * url, const char * toparse)
         q = p - 3;
 
         if (p < toparse) {
-            log_for_client(NULL, AFPFSD, LOG_ERR,
-                           "URL does not start with afp://");
+            URL_LOG(LOG_ERR, "URL does not start with afp://");
             return -1;
         }
 
         if (strncmp(q, "afp", 3) != 0) {
-            log_for_client(NULL, AFPFSD, LOG_ERR,
-                           "URL does not start with afp://");
+            URL_LOG(LOG_ERR, "URL does not start with afp://");
             return -1;
         }
 
         p += 3;
     } else {
-        log_for_client(NULL, AFPFSD, LOG_ERR,
-                       "This isn't a URL at all");
+        URL_LOG(LOG_ERR, "This isn't a URL at all");
         return -1;
     }
 
@@ -249,21 +253,18 @@ int afp_parse_url(struct afpc_url * url, const char * toparse)
         }
 
         if ((url->port = atoi(q)) == 0) {
-            log_for_client(NULL, AFPFSD, LOG_ERR,
-                           "Port appears to be zero");
+            URL_LOG(LOG_ERR, "Port appears to be zero");
             return -1;
         }
     }
 
     if (strlcpy(url->servername, p,
                 sizeof(url->servername)) >= sizeof(url->servername)) {
-        log_for_client(NULL, AFPFSD, LOG_WARNING,
-                       "Warning: servername truncated");
+        URL_LOG(LOG_WARNING, "Warning: servername truncated");
     }
 
     if (check_servername(url->servername)) {
-        log_for_client(NULL, AFPFSD, LOG_ERR,
-                       "This isn't a valid servername");
+        URL_LOG(LOG_ERR, "This isn't a valid servername");
         return -1;
     }
 
@@ -293,8 +294,7 @@ int afp_parse_url(struct afpc_url * url, const char * toparse)
         q++;
 
         if (strlcpy(url->password, q, sizeof(url->password)) >= sizeof(url->password)) {
-            log_for_client(NULL, AFPFSD, LOG_WARNING,
-                           "Warning: password truncated");
+            URL_LOG(LOG_WARNING, "Warning: password truncated");
         }
     }
 
@@ -306,20 +306,18 @@ int afp_parse_url(struct afpc_url * url, const char * toparse)
         q += 6;
 
         if (strlcpy(url->uamname, q, sizeof(url->uamname)) >= sizeof(url->uamname)) {
-            log_for_client(NULL, AFPFSD, LOG_WARNING,
-                           "Warning: uamname truncated");
+            URL_LOG(LOG_WARNING, "Warning: uamname truncated");
         }
 
         if (check_uamname(url->uamname)) {
-            log_for_client(NULL, AFPFSD, LOG_ERR,
-                           "This isn't a valid uamname");
+            URL_LOG(LOG_ERR, "This isn't a valid uamname");
             return -1;
         }
     }
 
     if (*p != '\0'
             && strlcpy(url->username, p, sizeof(url->username)) >= sizeof(url->username)) {
-        log_for_client(NULL, AFPFSD, LOG_WARNING, "Warning: username truncated");
+        URL_LOG(LOG_WARNING, "Warning: username truncated");
     }
 
 parse_secondpart:
@@ -349,22 +347,30 @@ parse_secondpart:
 
     if (strlcpy(url->volumename, p,
                 sizeof(url->volumename)) >= sizeof(url->volumename)) {
-        log_for_client(NULL, AFPFSD, LOG_WARNING,
-                       "Warning: volumename truncated");
+        URL_LOG(LOG_WARNING, "Warning: volumename truncated");
     }
 
     if (q) {
         url->path[0] = '/';
 
         if (strlcpy(url->path + 1, q, sizeof(url->path) - 1) >= sizeof(url->path) - 1) {
-            log_for_client(NULL, AFPFSD, LOG_WARNING,
-                           "Warning: path truncated");
+            URL_LOG(LOG_WARNING, "Warning: path truncated");
         }
     }
 
 done:
     escape_url(url);
-    log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "Successful parsing of URL");
+    URL_LOG(LOG_DEBUG, "Successful parsing of URL");
+#undef URL_LOG
     return 0;
+}
+
+int afp_parse_url(struct afpc_url *url, const char *text)
+{
+    return parse_url(url, text, 1);
+}
+
+int afp_parse_url_quiet(struct afpc_url *url, const char *text)
+{
+    return parse_url(url, text, 0);
 }

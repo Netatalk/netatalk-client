@@ -116,6 +116,18 @@ unsigned int afp_sl_default_uams(void)
     return default_uams_mask();
 }
 
+unsigned int afp_sl_uam_by_name(const char *name)
+{
+    unsigned int supported_uams;
+
+    if (!name) {
+        return 0;
+    }
+
+    supported_uams = afp_sl_default_uams() | AFP_SL_UAM_NO_USER_AUTH;
+    return (unsigned int)uam_string_to_bitmap(name) & supported_uams;
+}
+
 void afp_sl_url_init(struct afpc_url *url)
 {
     afp_default_url(url);
@@ -123,7 +135,7 @@ void afp_sl_url_init(struct afpc_url *url)
 
 int afp_sl_url_parse(struct afpc_url *url, const char *text)
 {
-    return afp_parse_url(url, text);
+    return afp_parse_url_quiet(url, text);
 }
 
 int afp_sl_response_content_length(const char *response, size_t len,

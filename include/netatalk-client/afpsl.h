@@ -42,6 +42,11 @@ enum afp_sl_attach_status {
     AFP_SL_ATTACH_STATUS_PASSWORD_REQUIRED,
 };
 
+enum afp_sl_volume_option {
+    /* Disable AFP byte-range locking for the attached volume. */
+    AFP_SL_VOLUME_NO_LOCKING = 0x10,
+};
+
 enum afp_sl_password_change_status {
     AFP_SL_PASSWORD_CHANGE_STATUS_NONE,
     AFP_SL_PASSWORD_CHANGE_STATUS_ACCESS_DENIED,
@@ -92,6 +97,8 @@ typedef void (*afp_sl_log_callback)(void *user_data, int loglevel,
 
 void afp_sl_set_log_callback(afp_sl_log_callback callback, void *user_data);
 unsigned int afp_sl_default_uams(void);
+/* Resolve a full UAM name or afpcmd-style shorthand to one supported bit. */
+unsigned int afp_sl_uam_by_name(const char *name);
 
 /* Unless documented otherwise, libafpsl operations return zero on success and
  * negative errno on failure. Read-like metadata operations return a
@@ -106,7 +113,8 @@ int afp_sl_resume(struct afpc_url * url, unsigned int uam_mask,
 int afp_sl_disconnect(afpc_server_t *id);
 int afp_sl_getvolid(afpc_server_t serverid, struct afpc_url * url,
                     afpc_volume_t *volid);
-/* status is optional. On return it distinguishes a volume-password challenge
+/* volume_options is zero or a bitwise combination of afp_sl_volume_option.
+ * status is optional. On return it distinguishes a volume-password challenge
  * from other -EACCES failures. */
 int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
                   unsigned int volume_options, afpc_volume_t *volumeid,

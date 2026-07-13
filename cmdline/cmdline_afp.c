@@ -40,6 +40,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <sys/ioctl.h>
+#include <syslog.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -55,23 +56,16 @@
 
 #include "netatalk-client/afpsl.h"
 
-#include "lib/afp_internal.h"
-#include "lib/client.h"
-#include "lib/compat.h"
-#include "lib/mapping.h"
-#include "lib/utils.h"
-
-#include "daemon/server.h"
-
 #include "cmdline_afp.h"
-#include "cmdline_main.h"
 
-static char curdir[AFP_MAX_PATH];
+#define CMDLINE_ERROR_LEN 1024
+
+static char curdir[AFPC_MAX_PATH];
 static struct afpc_url url;
 static int cmdline_log_min_rank = 2; /* Default rank: notice */
 static int verbose_mode = 0;
-static char connect_servername[AFP_SERVER_NAME_UTF8_LEN];
-static char last_log_message[MAX_ERROR_LEN];
+static char connect_servername[AFPC_SERVER_NAME_UTF8_LEN];
+static char last_log_message[CMDLINE_ERROR_LEN];
 
 int full_url = 0;
 
@@ -85,6 +79,80 @@ enum directory_prompt_result {
     DIRECTORY_PROMPT_ERROR = -1,
 };
 
+static void cmdline_secure_clear(void *data, size_t size)
+{
+    volatile unsigned char *p = data;
+
+    while (size-- > 0) {
+        *p++ = 0;
+    }
+}
+
+static int cmdline_log_rank(int loglevel)
+{
+    switch (loglevel) {
+    case LOG_DEBUG:
+        return 0;
+
+    case LOG_INFO:
+        return 1;
+
+    case LOG_NOTICE:
+        return 2;
+
+    case LOG_WARNING:
+        return 3;
+
+    case LOG_ERR:
+        return 4;
+
+    default:
+        return 2;
+    }
+}
+
+static void cmdline_sanitize_text(const char *text, char *sanitized,
+                                  size_t size)
+{
+    static const char hex[] = "0123456789abcdef";
+    size_t pos = 0;
+
+    if (size == 0) {
+        return;
+    }
+
+    if (!text) {
+        sanitized[0] = '\0';
+        return;
+    }
+
+    while (*text && pos + 1 < size) {
+        unsigned char ch = (unsigned char) * text++;
+
+        if (ch == '\r' || ch == '\n' || ch == '\t') {
+            if (pos + 2 >= size) {
+                break;
+            }
+
+            sanitized[pos++] = '\\';
+            sanitized[pos++] = ch == '\r' ? 'r' : ch == '\n' ? 'n' : 't';
+        } else if (ch < 0x20 || ch == 0x7f) {
+            if (pos + 4 >= size) {
+                break;
+            }
+
+            sanitized[pos++] = '\\';
+            sanitized[pos++] = 'x';
+            sanitized[pos++] = hex[ch >> 4];
+            sanitized[pos++] = hex[ch & 0x0f];
+        } else {
+            sanitized[pos++] = (char)ch;
+        }
+    }
+
+    sanitized[pos] = '\0';
+}
+
 static afpc_volume_t vol_id = NULL;
 static afpc_server_t server_id = NULL;
 static int connected = 0;
@@ -95,7 +163,7 @@ static int write_all_fd(int fd, const void *data, size_t size);
 
 static const char *display_text(const char *text, char *buf, size_t size)
 {
-    sanitize_text(text, buf, size);
+    cmdline_sanitize_text(text, buf, size);
     return buf;
 }
 
@@ -151,15 +219,11 @@ static int attach_volume_with_password_prompt(afpc_server_t attach_server_id,
 
 static unsigned int get_uam_mask_for_url(void)
 {
-    unsigned int uam_mask;
-
     if (url.uamname[0] != '\0') {
-        uam_mask = find_uam_by_name(url.uamname);
-    } else {
-        uam_mask = default_uams_mask();
+        return afp_sl_uam_by_name(url.uamname);
     }
 
-    return uam_mask;
+    return afp_sl_default_uams();
 }
 
 static int is_recoverable_session_error(int ret)
@@ -169,7 +233,7 @@ static int is_recoverable_session_error(int ret)
 
 static int recover_session(int restore_volume, int restore_dir)
 {
-    char mesg[MAX_ERROR_LEN];
+    char mesg[CMDLINE_ERROR_LEN];
     unsigned int uam_mask;
     int ret;
     afpc_server_t new_server_id = NULL;
@@ -178,11 +242,11 @@ static int recover_session(int restore_volume, int restore_dir)
     afpc_volume_t old_vol_id;
     struct afpc_url reconnect_url;
     struct afpc_url resume_url;
-    char saved_volume[AFP_VOLUME_NAME_LEN];
-    char saved_dir[AFP_MAX_PATH];
+    char saved_volume[AFPC_VOLUME_NAME_UTF8_LEN];
+    char saved_dir[AFPC_MAX_PATH];
     int had_volume;
     int was_connected;
-    unsigned int volume_options = VOLUME_EXTRA_FLAGS_NO_LOCKING;
+    unsigned int volume_options = AFP_SL_VOLUME_NO_LOCKING;
 
     if (!connected) {
         return -1;
@@ -209,7 +273,7 @@ static int recover_session(int restore_volume, int restore_dir)
     }
 
     resume_url = reconnect_url;
-    explicit_bzero(resume_url.password, sizeof(resume_url.password));
+    cmdline_secure_clear(resume_url.password, sizeof(resume_url.password));
 
     /*
      * Prefer resuming the daemon's existing AFP session.  This mirrors the
@@ -270,9 +334,9 @@ static int escape_paths(char * outgoing1, char * outgoing2, char * incoming)
         goto error;
     }
 
-    incoming_len = strnlen(incoming, AFP_MAX_PATH);
+    incoming_len = strnlen(incoming, AFPC_MAX_PATH);
 
-    if (incoming_len >= AFP_MAX_PATH) {
+    if (incoming_len >= AFPC_MAX_PATH) {
         goto error;
     }
 
@@ -280,10 +344,10 @@ static int escape_paths(char * outgoing1, char * outgoing2, char * incoming)
         goto error;
     }
 
-    memset(outgoing1, 0, AFP_MAX_PATH);
+    memset(outgoing1, 0, AFPC_MAX_PATH);
 
     if (outgoing2) {
-        memset(outgoing2, 0, AFP_MAX_PATH);
+        memset(outgoing2, 0, AFPC_MAX_PATH);
     }
 
     for (p = incoming; p < incoming + incoming_len; p++) {
@@ -375,7 +439,7 @@ static int cmdline_getpass(void)
              && strcmp(url.username, "nobody") != 0
              && url.password[0] == '\0')) {
         passwd = getpass("Password:");
-        strlcpy(url.password, passwd, AFP_MAX_PASSWORD_LEN);
+        strlcpy(url.password, passwd, AFPC_MAX_PASSWORD_LEN);
     }
 
     return 0;
@@ -392,7 +456,7 @@ static int cmdline_get_volpass(void)
 
     strlcpy(url.volpassword, volpass, sizeof(url.volpassword));
     /* Clear the getpass() static buffer up to the max we could have used */
-    explicit_bzero(volpass, sizeof(url.volpassword) - 1);
+    cmdline_secure_clear(volpass, sizeof(url.volpassword) - 1);
     return 0;
 }
 
@@ -402,7 +466,7 @@ static int attach_volume_with_password_prompt(afpc_server_t attach_server_id,
     enum afp_sl_attach_status status;
     int ret;
     /* Clear any previous password to force a fresh prompt if needed */
-    explicit_bzero(url.volpassword, sizeof(url.volpassword));
+    cmdline_secure_clear(url.volpassword, sizeof(url.volpassword));
     /* First attempt */
     ret = afp_sl_attach(attach_server_id, &url, volume_options, vol_id_ptr,
                         &status);
@@ -432,21 +496,21 @@ static int get_server_path(char * filename, char * server_fullname)
 
     if (filename[0] != '/') {
         if (strcmp(curdir, "/") == 0) {
-            result = snprintf(server_fullname, AFP_MAX_PATH, "/%s", filename);
+            result = snprintf(server_fullname, AFPC_MAX_PATH, "/%s", filename);
         } else {
-            result = snprintf(server_fullname, AFP_MAX_PATH, "%s/%s", curdir, filename);
+            result = snprintf(server_fullname, AFPC_MAX_PATH, "%s/%s", curdir, filename);
         }
 
-        if (result >= AFP_MAX_PATH || result < 0) {
+        if (result >= AFPC_MAX_PATH || result < 0) {
             fprintf(stderr,
                     "Error: Path exceeds maximum length or other error occurred.\n");
             return -1;
         }
     } else {
-        result = snprintf(server_fullname, AFP_MAX_PATH, "%s", filename);
+        result = snprintf(server_fullname, AFPC_MAX_PATH, "%s", filename);
     }
 
-    if (result >= AFP_MAX_PATH || result < 0) {
+    if (result >= AFPC_MAX_PATH || result < 0) {
         return -1;
     }
 
@@ -923,8 +987,9 @@ static void list_volumes(void)
     free(vols);
 }
 
-int com_pass(char *unused _U_)
+int com_pass(char *unused)
 {
+    (void)unused;
     const char *old_password;
     const char *new_password;
     const char *new_password_confirm;
@@ -944,38 +1009,38 @@ int com_pass(char *unused _U_)
     }
 
     /* stash old_password since getpass uses a static buffer */
-    char old_pw_buf[AFP_MAX_PASSWORD_LEN];
+    char old_pw_buf[AFPC_MAX_PASSWORD_LEN];
     strlcpy(old_pw_buf, old_password, sizeof(old_pw_buf));
     new_password = getpass("New password: ");
 
     if (new_password == NULL || new_password[0] == '\0') {
         printf("Password change cancelled.\n");
-        explicit_bzero(old_pw_buf, sizeof(old_pw_buf));
+        cmdline_secure_clear(old_pw_buf, sizeof(old_pw_buf));
         return -1;
     }
 
     /* stash new_password since getpass uses a static buffer */
-    char new_pw_buf[AFP_MAX_PASSWORD_LEN];
+    char new_pw_buf[AFPC_MAX_PASSWORD_LEN];
     strlcpy(new_pw_buf, new_password, sizeof(new_pw_buf));
     new_password_confirm = getpass("Confirm new password: ");
 
     if (new_password_confirm == NULL) {
         printf("Password change cancelled.\n");
-        explicit_bzero(old_pw_buf, sizeof(old_pw_buf));
-        explicit_bzero(new_pw_buf, sizeof(new_pw_buf));
+        cmdline_secure_clear(old_pw_buf, sizeof(old_pw_buf));
+        cmdline_secure_clear(new_pw_buf, sizeof(new_pw_buf));
         return -1;
     }
 
     if (strcmp(new_pw_buf, new_password_confirm) != 0) {
         printf("Passwords do not match.\n");
-        explicit_bzero(old_pw_buf, sizeof(old_pw_buf));
-        explicit_bzero(new_pw_buf, sizeof(new_pw_buf));
+        cmdline_secure_clear(old_pw_buf, sizeof(old_pw_buf));
+        cmdline_secure_clear(new_pw_buf, sizeof(new_pw_buf));
         return -1;
     }
 
     ret = afp_sl_changepw(&url, old_pw_buf, new_pw_buf, &status);
-    explicit_bzero(old_pw_buf, sizeof(old_pw_buf));
-    explicit_bzero(new_pw_buf, sizeof(new_pw_buf));
+    cmdline_secure_clear(old_pw_buf, sizeof(old_pw_buf));
+    cmdline_secure_clear(new_pw_buf, sizeof(new_pw_buf));
 
     if (ret != 0) {
         switch (status) {
@@ -1042,8 +1107,8 @@ int com_dir(char * arg)
     int eod = 0;
     int ret = -1;
     int stop_listing = 0;
-    char path[AFP_MAX_PATH];
-    char dir_path[AFP_MAX_PATH];
+    char path[AFPC_MAX_PATH];
+    char dir_path[AFPC_MAX_PATH];
 
     if (!vol_id) {
         if (connected) {
@@ -1064,12 +1129,12 @@ int com_dir(char * arg)
 
         /* Handle "." as the current directory */
         if (strcmp(path, ".") == 0) {
-            strlcpy(dir_path, curdir, AFP_MAX_PATH);
+            strlcpy(dir_path, curdir, AFPC_MAX_PATH);
         } else {
             get_server_path(path, dir_path);
         }
     } else {
-        strlcpy(dir_path, curdir, AFP_MAX_PATH);
+        strlcpy(dir_path, curdir, AFPC_MAX_PATH);
     }
 
     while (!stop_listing) {
@@ -1203,8 +1268,8 @@ out:
 
 int com_touch(char * arg)
 {
-    char filename[AFP_MAX_PATH];
-    char server_fullname[AFP_MAX_PATH];
+    char filename[AFPC_MAX_PATH];
+    char server_fullname[AFPC_MAX_PATH];
     struct utimbuf times;
     int ret;
 
@@ -1258,7 +1323,7 @@ static int chmod_remote_tree(const char *server_path, mode_t mode)
 
     for (unsigned int i = 0; i < count; i++) {
         struct afpc_file_info *entry = &entries[i];
-        char child[AFP_MAX_PATH];
+        char child[AFPC_MAX_PATH];
 
         if (strcmp(entry->name, ".") == 0 || strcmp(entry->name, "..") == 0) {
             continue;
@@ -1268,8 +1333,8 @@ static int chmod_remote_tree(const char *server_path, mode_t mode)
                               server_path, entry->name);
 
         if (length < 0 || (size_t)length >= sizeof(child)) {
-            char display_server_path[AFP_MAX_PATH * 4];
-            char display_name[AFP_MAX_PATH * 4];
+            char display_server_path[AFPC_MAX_PATH * 4];
+            char display_name[AFPC_MAX_PATH * 4];
             printf("Path too long: %s/%s\n",
                    display_text(server_path, display_server_path,
                                 sizeof(display_server_path)),
@@ -1279,7 +1344,7 @@ static int chmod_remote_tree(const char *server_path, mode_t mode)
         }
 
         if (S_ISLNK(entry->unixprivs.permissions)) {
-            char display_child[AFP_MAX_PATH * 4];
+            char display_child[AFPC_MAX_PATH * 4];
             printf("Symlinks are not supported: %s\n",
                    display_text(child, display_child, sizeof(display_child)));
             ret = -1;
@@ -1289,7 +1354,7 @@ static int chmod_remote_tree(const char *server_path, mode_t mode)
         } else if (!S_ISDIR(entry->unixprivs.permissions)
                    && afp_sl_chmod(&vol_id, child, NULL, mode)
                    != 0) {
-            char display_child[AFP_MAX_PATH * 4];
+            char display_child[AFPC_MAX_PATH * 4];
             printf("Could not chmod %s\n",
                    display_text(child, display_child, sizeof(display_child)));
             ret = -1;
@@ -1300,7 +1365,7 @@ static int chmod_remote_tree(const char *server_path, mode_t mode)
 
     if (afp_sl_chmod(&vol_id, server_path, NULL, mode)
             != 0) {
-        char display_server_path[AFP_MAX_PATH * 4];
+        char display_server_path[AFPC_MAX_PATH * 4];
         printf("Could not chmod %s\n",
                display_text(server_path, display_server_path,
                             sizeof(display_server_path)));
@@ -1312,9 +1377,9 @@ static int chmod_remote_tree(const char *server_path, mode_t mode)
 
 int com_chmod(char * arg)
 {
-    char mode_str[AFP_MAX_PATH];
-    char filename[AFP_MAX_PATH];
-    char server_fullname[AFP_MAX_PATH];
+    char mode_str[AFPC_MAX_PATH];
+    char filename[AFPC_MAX_PATH];
+    char server_fullname[AFPC_MAX_PATH];
     mode_t mode;
     char *endptr;
     int ret;
@@ -1347,7 +1412,7 @@ int com_chmod(char * arg)
 
         if (afp_sl_stat(&vol_id, server_fullname, NULL, &st)
                 != 0) {
-            char display_filename[AFP_MAX_PATH * 4];
+            char display_filename[AFPC_MAX_PATH * 4];
             printf("File not found: %s\n",
                    display_text(filename, display_filename,
                                 sizeof(display_filename)));
@@ -1363,17 +1428,17 @@ int com_chmod(char * arg)
 
     if (ret != 0) {
         if (ret == -EACCES) {
-            char display_filename[AFP_MAX_PATH * 4];
+            char display_filename[AFPC_MAX_PATH * 4];
             printf("Permission denied changing mode for %s\n",
                    display_text(filename, display_filename,
                                 sizeof(display_filename)));
         } else if (ret == -ENOENT) {
-            char display_filename[AFP_MAX_PATH * 4];
+            char display_filename[AFPC_MAX_PATH * 4];
             printf("File not found: %s\n",
                    display_text(filename, display_filename,
                                 sizeof(display_filename)));
         } else {
-            char display_filename[AFP_MAX_PATH * 4];
+            char display_filename[AFPC_MAX_PATH * 4];
             printf("Could not chmod %s (result=%d)\n",
                    display_text(filename, display_filename,
                                 sizeof(display_filename)), ret);
@@ -1427,7 +1492,7 @@ static int upload_file(char *local_filename, char *server_fullname,
 
     if (verbose_mode) {
         char display_local[PATH_MAX * 4];
-        char display_remote[AFP_MAX_PATH * 4];
+        char display_remote[AFPC_MAX_PATH * 4];
         printf("    Uploading file %s to %s\n",
                display_text(local_filename, display_local, sizeof(display_local)),
                display_text(server_fullname, display_remote,
@@ -1449,7 +1514,7 @@ static int upload_file(char *local_filename, char *server_fullname,
             ret = afp_sl_truncate(&vol_id, server_fullname, NULL, 0);
 
             if (ret != 0) {
-                char display_remote[AFP_MAX_PATH * 4];
+                char display_remote[AFPC_MAX_PATH * 4];
                 printf("Could not truncate existing file \"%s\" (result=%d)\n",
                        display_text(server_fullname, display_remote,
                                     sizeof(display_remote)), ret);
@@ -1461,14 +1526,14 @@ static int upload_file(char *local_filename, char *server_fullname,
             ret = afp_sl_truncate(&vol_id, server_fullname, NULL, 0);
 
             if (ret != 0) {
-                char display_remote[AFP_MAX_PATH * 4];
+                char display_remote[AFPC_MAX_PATH * 4];
                 printf("Permission denied creating file \"%s\"\n",
                        display_text(server_fullname, display_remote,
                                     sizeof(display_remote)));
                 goto out;
             }
         } else {
-            char display_remote[AFP_MAX_PATH * 4];
+            char display_remote[AFPC_MAX_PATH * 4];
             printf("Could not create remote file \"%s\" (result=%d)\n",
                    display_text(server_fullname, display_remote,
                                 sizeof(display_remote)), ret);
@@ -1480,12 +1545,12 @@ static int upload_file(char *local_filename, char *server_fullname,
 
     if (ret) {
         if (ret == -EACCES) {
-            char display_remote[AFP_MAX_PATH * 4];
+            char display_remote[AFPC_MAX_PATH * 4];
             printf("Permission denied opening file \"%s\"\n",
                    display_text(server_fullname, display_remote,
                                 sizeof(display_remote)));
         } else if (ret == -ENOENT) {
-            char display_remote[AFP_MAX_PATH * 4];
+            char display_remote[AFPC_MAX_PATH * 4];
             printf("Permission denied creating file \"%s\"\n",
                    display_text(server_fullname, display_remote,
                                 sizeof(display_remote)));
@@ -1528,7 +1593,7 @@ static int upload_file(char *local_filename, char *server_fullname,
     fileid = 0;
 
     if (ret != 0) {
-        char display_remote[AFP_MAX_PATH * 4];
+        char display_remote[AFPC_MAX_PATH * 4];
         printf("Could not close remote file \"%s\" (result=%d)\n",
                display_text(server_fullname, display_remote,
                             sizeof(display_remote)), ret);
@@ -1588,7 +1653,7 @@ static int upload_directory(char *local_dirname, char *server_parent_path,
     DIR *dir;
     struct dirent *entry;
     char local_path[PATH_MAX];
-    char server_path[AFP_MAX_PATH];
+    char server_path[AFPC_MAX_PATH];
     struct stat st;
     struct stat dir_stat;
     int ret = 0;
@@ -1610,7 +1675,7 @@ static int upload_directory(char *local_dirname, char *server_parent_path,
                        dir_stat.st_mode & 0777);
 
     if (ret != 0 && ret != -EEXIST) {
-        char display_remote[AFP_MAX_PATH * 4];
+        char display_remote[AFPC_MAX_PATH * 4];
         printf("Failed to create remote directory %s (error: %d)\n",
                display_text(server_parent_path, display_remote,
                             sizeof(display_remote)), ret);
@@ -1701,8 +1766,8 @@ static int upload_directory(char *local_dirname, char *server_parent_path,
 
 int com_put(char *arg)
 {
-    char local_filename[AFP_MAX_PATH];
-    char server_fullname[AFP_MAX_PATH];
+    char local_filename[AFPC_MAX_PATH];
+    char server_fullname[AFPC_MAX_PATH];
     char *basename_ptr;
     struct stat st;
     int recursive = command_recursive_option(&arg);
@@ -1844,14 +1909,14 @@ static int download_directory(char *server_path, char *local_path,
     struct afpc_file_info *filebase = NULL;
     unsigned int numfiles = 0;
     int ret = 0;
-    char new_server_path[AFP_MAX_PATH];
+    char new_server_path[AFPC_MAX_PATH];
     char new_local_path[PATH_MAX];
     struct stat st;
     struct stat dir_stat;
     unsigned long long bytes = 0;
 
     if (afp_sl_stat(&vol_id, server_path, NULL, &dir_stat) != 0) {
-        char display_remote[AFP_MAX_PATH * 4];
+        char display_remote[AFPC_MAX_PATH * 4];
         printf("Could not stat directory %s\n",
                display_text(server_path, display_remote, sizeof(display_remote)));
         return -1;
@@ -1868,7 +1933,7 @@ static int download_directory(char *server_path, char *local_path,
     }
 
     if (remote_readdir_all(server_path, &filebase, &numfiles) != 0) {
-        char display_remote[AFP_MAX_PATH * 4];
+        char display_remote[AFPC_MAX_PATH * 4];
         printf("Could not read directory %s\n",
                display_text(server_path, display_remote, sizeof(display_remote)));
 
@@ -1891,8 +1956,8 @@ static int download_directory(char *server_path, char *local_path,
                                 p->name);
 
         if (path_len < 0 || (size_t)path_len >= sizeof(new_server_path)) {
-            char display_remote[AFP_MAX_PATH * 4];
-            char display_name[AFP_MAX_PATH * 4];
+            char display_remote[AFPC_MAX_PATH * 4];
+            char display_name[AFPC_MAX_PATH * 4];
             printf("Path too long: %s/%s\n",
                    display_text(server_path, display_remote,
                                 sizeof(display_remote)),
@@ -1905,7 +1970,7 @@ static int download_directory(char *server_path, char *local_path,
 
         if (path_len < 0 || (size_t)path_len >= sizeof(new_local_path)) {
             char display_local[PATH_MAX * 4];
-            char display_name[AFP_MAX_PATH * 4];
+            char display_name[AFPC_MAX_PATH * 4];
             printf("Local path too long: %s/%s\n",
                    display_text(local_path, display_local, sizeof(display_local)),
                    display_text(p->name, display_name, sizeof(display_name)));
@@ -1921,7 +1986,7 @@ static int download_directory(char *server_path, char *local_path,
                 bytes += subdir_bytes;
             }
         } else if (S_ISLNK(p->unixprivs.permissions)) {
-            char display_remote[AFP_MAX_PATH * 4];
+            char display_remote[AFPC_MAX_PATH * 4];
             printf("Symlinks are not supported: %s\n",
                    display_text(new_server_path, display_remote,
                                 sizeof(display_remote)));
@@ -1945,7 +2010,7 @@ static int download_directory(char *server_path, char *local_path,
             unsigned long long amount = 0;
 
             if (verbose_mode) {
-                char display_name[AFP_MAX_PATH * 4];
+                char display_name[AFPC_MAX_PATH * 4];
                 printf("    Downloading file %s\n",
                        display_text(p->name, display_name, sizeof(display_name)));
             }
@@ -1960,7 +2025,7 @@ static int download_directory(char *server_path, char *local_path,
 
             if (copy_remote_metadata_to_local(new_server_path, new_local_path,
                                               &st) < 0) {
-                char display_remote[AFP_MAX_PATH * 4];
+                char display_remote[AFPC_MAX_PATH * 4];
                 printf("Could not preserve metadata for %s\n",
                        display_text(new_server_path, display_remote,
                                     sizeof(display_remote)));
@@ -1974,7 +2039,7 @@ static int download_directory(char *server_path, char *local_path,
     }
 
     if (copy_remote_metadata_to_local(server_path, local_path, &dir_stat) < 0) {
-        char display_remote[AFP_MAX_PATH * 4];
+        char display_remote[AFPC_MAX_PATH * 4];
         printf("Could not preserve directory metadata for %s\n",
                display_text(server_path, display_remote, sizeof(display_remote)));
         ret = -1;
@@ -1992,8 +2057,8 @@ static int com_get_file(char * arg, unsigned long long *total)
     int fd;
     struct stat stat;
     const char *localfilename;
-    char filename[AFP_MAX_PATH];
-    char getattr_path[AFP_MAX_PATH];
+    char filename[AFPC_MAX_PATH];
+    char getattr_path[AFPC_MAX_PATH];
 
     if (!vol_id) {
         printf("You're not attached to a volume\n");
@@ -2008,7 +2073,7 @@ static int com_get_file(char * arg, unsigned long long *total)
     localfilename = basename(filename);
 
     if (verbose_mode) {
-        char display_filename[AFP_MAX_PATH * 4];
+        char display_filename[AFPC_MAX_PATH * 4];
         printf("    Downloading file %s\n",
                display_text(filename, display_filename, sizeof(display_filename)));
     }
@@ -2016,7 +2081,7 @@ static int com_get_file(char * arg, unsigned long long *total)
     get_server_path(filename, getattr_path);
 
     if (afp_sl_stat(&vol_id, getattr_path, NULL, &stat)) {
-        char display_filename[AFP_MAX_PATH * 4];
+        char display_filename[AFPC_MAX_PATH * 4];
         printf("Could not get attributes for file \"%s\"\n",
                display_text(filename, display_filename, sizeof(display_filename)));
         goto error;
@@ -2045,7 +2110,7 @@ static int com_get_file(char * arg, unsigned long long *total)
     close(fd);
 
     if (copy_remote_metadata_to_local(getattr_path, localfilename, &stat) < 0) {
-        char display_filename[AFP_MAX_PATH * 4];
+        char display_filename[AFPC_MAX_PATH * 4];
         printf("Could not preserve metadata for %s\n",
                display_text(filename, display_filename, sizeof(display_filename)));
         goto error;
@@ -2059,8 +2124,8 @@ error:
 int com_get(char *arg)
 {
     unsigned long long amount_written = 0;
-    char filename[AFP_MAX_PATH];
-    char server_path[AFP_MAX_PATH];
+    char filename[AFPC_MAX_PATH];
+    char server_path[AFPC_MAX_PATH];
     struct stat st;
     int recursive = command_recursive_option(&arg);
     int ret = -1;
@@ -2079,7 +2144,7 @@ int com_get(char *arg)
     get_server_path(filename, server_path);
 
     if (afp_sl_stat(&vol_id, server_path, NULL, &st) != 0) {
-        char display_filename[AFP_MAX_PATH * 4];
+        char display_filename[AFPC_MAX_PATH * 4];
         printf("File not found: %s\n",
                display_text(filename, display_filename, sizeof(display_filename)));
         goto error;
@@ -2091,7 +2156,7 @@ int com_get(char *arg)
             ret = download_directory(server_path, local_name, &amount_written);
             goto out;
         } else {
-            char display_filename[AFP_MAX_PATH * 4];
+            char display_filename[AFPC_MAX_PATH * 4];
             printf("%s is a directory (use get -r to download recursively)\n",
                    display_text(filename, display_filename,
                                 sizeof(display_filename)));
@@ -2100,7 +2165,7 @@ int com_get(char *arg)
     }
 
     if (S_ISLNK(st.st_mode)) {
-        char display_filename[AFP_MAX_PATH * 4];
+        char display_filename[AFPC_MAX_PATH * 4];
         printf("Symlinks are not supported: %s\n",
                display_text(filename, display_filename, sizeof(display_filename)));
         goto error;
@@ -2121,7 +2186,7 @@ error:
 int com_view(char * arg)
 {
     unsigned long long amount_written;
-    char filename[AFP_MAX_PATH];
+    char filename[AFPC_MAX_PATH];
     struct stat stat;
 
     if (!vol_id) {
@@ -2143,10 +2208,10 @@ error:
 
 int com_rename(char * arg)
 {
-    char oldpath[AFP_MAX_PATH];
-    char newpath[AFP_MAX_PATH];
-    char server_oldpath[AFP_MAX_PATH];
-    char server_newpath[AFP_MAX_PATH];
+    char oldpath[AFPC_MAX_PATH];
+    char newpath[AFPC_MAX_PATH];
+    char server_oldpath[AFPC_MAX_PATH];
+    char server_newpath[AFPC_MAX_PATH];
     int ret;
 
     if (!vol_id) {
@@ -2182,10 +2247,10 @@ int com_rename(char * arg)
 
     if (afp_sl_stat(&vol_id, server_newpath, NULL, &st) == 0
             && S_ISDIR(st.st_mode)) {
-        char oldpath_copy[AFP_MAX_PATH];
-        strlcpy(oldpath_copy, oldpath, AFP_MAX_PATH);
+        char oldpath_copy[AFPC_MAX_PATH];
+        strlcpy(oldpath_copy, oldpath, AFPC_MAX_PATH);
         const char *base = basename(oldpath_copy);
-        append_basename_to_path(newpath, base, AFP_MAX_PATH);
+        append_basename_to_path(newpath, base, AFPC_MAX_PATH);
         /* Silent failure is OK here for display purposes */
     }
 
@@ -2193,7 +2258,7 @@ int com_rename(char * arg)
 }
 
 static int parse_command_words(const char *input,
-                               char words[][AFP_MAX_PATH], int max_words)
+                               char words[][AFPC_MAX_PATH], int max_words)
 {
     int count = 0;
     const char *p = input;
@@ -2225,7 +2290,7 @@ static int parse_command_words(const char *input,
                 p++;
             }
 
-            if (length + 1 >= AFP_MAX_PATH) {
+            if (length + 1 >= AFPC_MAX_PATH) {
                 return -ENAMETOOLONG;
             }
 
@@ -2372,8 +2437,8 @@ static int metadata_command_error(const char *operation, int ret)
 
 int com_xattr(char *arg)
 {
-    char words[4][AFP_MAX_PATH] = {{0}};
-    char path[AFP_MAX_PATH];
+    char words[4][AFPC_MAX_PATH] = {{0}};
+    char path[AFPC_MAX_PATH];
     int argc = parse_command_words(arg, words, 4);
     int ret;
 
@@ -2451,8 +2516,8 @@ int com_xattr(char *arg)
 
 int com_finderinfo(char *arg)
 {
-    char words[3][AFP_MAX_PATH] = {{0}};
-    char path[AFP_MAX_PATH];
+    char words[3][AFPC_MAX_PATH] = {{0}};
+    char path[AFPC_MAX_PATH];
     unsigned char value[32];
     int argc = parse_command_words(arg, words, 3);
     int ret;
@@ -2510,8 +2575,8 @@ usage:
 
 int com_resourcefork(char *arg)
 {
-    char words[3][AFP_MAX_PATH] = {{0}};
-    char path[AFP_MAX_PATH];
+    char words[3][AFPC_MAX_PATH] = {{0}};
+    char path[AFPC_MAX_PATH];
     unsigned char buffer[AFP_SL_METADATA_CHUNK];
     int argc = parse_command_words(arg, words, 3);
     int ret;
@@ -2720,8 +2785,8 @@ static int copy_remote_tree(const char *source, const char *target,
 
     for (unsigned int i = 0; i < count; i++) {
         struct afpc_file_info *entry = &entries[i];
-        char child_source[AFP_MAX_PATH];
-        char child_target[AFP_MAX_PATH];
+        char child_source[AFPC_MAX_PATH];
+        char child_target[AFPC_MAX_PATH];
 
         if (strcmp(entry->name, ".") == 0 || strcmp(entry->name, "..") == 0) {
             continue;
@@ -2751,9 +2816,9 @@ static int copy_remote_tree(const char *source, const char *target,
                 ret = -1;
             }
         } else {
-            char quoted_source[2 * AFP_MAX_PATH + 3];
-            char quoted_target[2 * AFP_MAX_PATH + 3];
-            char arguments[4 * AFP_MAX_PATH + 7];
+            char quoted_source[2 * AFPC_MAX_PATH + 3];
+            char quoted_target[2 * AFPC_MAX_PATH + 3];
+            char arguments[4 * AFPC_MAX_PATH + 7];
 
             if (quote_copy_argument(quoted_source, sizeof(quoted_source),
                                     child_source) < 0
@@ -2791,9 +2856,9 @@ static int copy_remote_tree(const char *source, const char *target,
 
 static int path_is_same_or_descendant(const char *parent, const char *candidate)
 {
-    size_t parent_len = strnlen(parent, AFP_MAX_PATH);
+    size_t parent_len = strnlen(parent, AFPC_MAX_PATH);
 
-    if (parent_len == AFP_MAX_PATH) {
+    if (parent_len == AFPC_MAX_PATH) {
         return 0;
     }
 
@@ -2812,10 +2877,10 @@ static int path_is_same_or_descendant(const char *parent, const char *candidate)
 
 int com_copy(char * arg)
 {
-    char source_path[AFP_MAX_PATH];
-    char target_path[AFP_MAX_PATH];
-    char server_source[AFP_MAX_PATH];
-    char server_target[AFP_MAX_PATH];
+    char source_path[AFPC_MAX_PATH];
+    char target_path[AFPC_MAX_PATH];
+    char server_source[AFPC_MAX_PATH];
+    char server_target[AFPC_MAX_PATH];
     struct stat source_stat;
     struct stat target_stat;
     unsigned int source_fid = 0, target_fid = 0;
@@ -2870,7 +2935,7 @@ int com_copy(char * arg)
 
             const char *base = basename(source_path);
 
-            if (append_basename_to_path(server_target, base, AFP_MAX_PATH) < 0) {
+            if (append_basename_to_path(server_target, base, AFPC_MAX_PATH) < 0) {
                 printf("Target path too long\n");
                 goto out;
             }
@@ -2894,7 +2959,7 @@ int com_copy(char * arg)
                     &target_stat) == 0 && S_ISDIR(target_stat.st_mode)) {
         const char *base = basename(source_path);
 
-        if (append_basename_to_path(server_target, base, AFP_MAX_PATH) < 0) {
+        if (append_basename_to_path(server_target, base, AFPC_MAX_PATH) < 0) {
             printf("Target path too long\n");
             goto out;
         }
@@ -2990,7 +3055,7 @@ static int delete_directory(char *server_path)
     unsigned int numfiles = 0;
     int eod = 0;
     int ret = 0;
-    char new_server_path[AFP_MAX_PATH];
+    char new_server_path[AFPC_MAX_PATH];
 
     if (afp_sl_readdir(&vol_id, server_path, NULL, 0, 1000, &numfiles, &filebase,
                        &eod)) {
@@ -3046,8 +3111,8 @@ static int delete_directory(char *server_path)
 
 int com_delete(char *arg)
 {
-    char filename[AFP_MAX_PATH];
-    char server_fullname[AFP_MAX_PATH];
+    char filename[AFPC_MAX_PATH];
+    char server_fullname[AFPC_MAX_PATH];
     struct stat st;
     int ret;
     int recursive = command_recursive_option(&arg);
@@ -3107,8 +3172,8 @@ int com_delete(char *arg)
 
 int com_mkdir(char *arg)
 {
-    char dirname[AFP_MAX_PATH];
-    char server_fullname[AFP_MAX_PATH];
+    char dirname[AFPC_MAX_PATH];
+    char server_fullname[AFPC_MAX_PATH];
     int ret;
 
     if (!vol_id) {
@@ -3148,8 +3213,8 @@ int com_mkdir(char *arg)
 
 int com_rmdir(char *arg)
 {
-    char dirname[AFP_MAX_PATH];
-    char server_fullname[AFP_MAX_PATH];
+    char dirname[AFPC_MAX_PATH];
+    char server_fullname[AFPC_MAX_PATH];
     struct stat st;
     int ret;
 
@@ -3206,8 +3271,9 @@ int com_rmdir(char *arg)
     return 0;
 }
 
-int com_status(char *unused _U_)
+int com_status(char *unused)
 {
+    (void)unused;
     char text[40960];
     unsigned int len = sizeof(text);
     int ret;
@@ -3222,10 +3288,11 @@ int com_status(char *unused _U_)
     return 0;
 }
 
-int com_statvfs(char *unused _U_)
+int com_statvfs(char *unused)
 {
+    (void)unused;
     struct statvfs stat;
-    char server_path[AFP_MAX_PATH];
+    char server_path[AFPC_MAX_PATH];
     int ret;
     unsigned long long total_bytes, free_bytes;
     unsigned long long total_mb, free_mb;
@@ -3292,8 +3359,8 @@ int com_lcd(char * path)
 /* Change to the directory ARG, or attach to volume if not attached. */
 int com_cd(char *arg)
 {
-    char path[AFP_MAX_PATH];
-    char dir_path[AFP_MAX_PATH];
+    char path[AFPC_MAX_PATH];
+    char dir_path[AFPC_MAX_PATH];
     struct stat statbuf;
     size_t arg_len;
     int ret = -1;
@@ -3306,7 +3373,7 @@ int com_cd(char *arg)
 
     if (!arg) {
         if (vol_id) {
-            snprintf(curdir, AFP_MAX_PATH, "/");
+            snprintf(curdir, AFPC_MAX_PATH, "/");
             show_dir = 1;
         } else {
             list_volumes();
@@ -3315,16 +3382,16 @@ int com_cd(char *arg)
         goto out;
     }
 
-    arg_len = strnlen(arg, AFP_MAX_PATH);
+    arg_len = strnlen(arg, AFPC_MAX_PATH);
 
-    if (arg_len >= AFP_MAX_PATH) {
+    if (arg_len >= AFPC_MAX_PATH) {
         printf("Path too long\n");
         goto error;
     }
 
     if (arg_len == 0) {
         if (vol_id) {
-            snprintf(curdir, AFP_MAX_PATH, "/");
+            snprintf(curdir, AFPC_MAX_PATH, "/");
             show_dir = 1;
         } else {
             list_volumes();
@@ -3340,8 +3407,8 @@ int com_cd(char *arg)
 
     if (vol_id == NULL) {
         /* Not attached to a volume, treat arg as volume name */
-        strlcpy(url.volumename, path, AFP_VOLUME_NAME_LEN);
-        unsigned int volume_options = VOLUME_EXTRA_FLAGS_NO_LOCKING;
+        strlcpy(url.volumename, path, AFPC_VOLUME_NAME_UTF8_LEN);
+        unsigned int volume_options = AFP_SL_VOLUME_NO_LOCKING;
         ret = attach_volume_with_password_prompt(server_id, &vol_id,
               volume_options);
 
@@ -3367,7 +3434,7 @@ int com_cd(char *arg)
         }
 
         printf("Attached to volume %s\n", url.volumename);
-        snprintf(curdir, AFP_MAX_PATH, "/");
+        snprintf(curdir, AFPC_MAX_PATH, "/");
         goto out;
     }
 
@@ -3379,7 +3446,7 @@ int com_cd(char *arg)
         if (p && p != curdir) {
             *p = '\0';
         } else {
-            snprintf(curdir, AFP_MAX_PATH, "/");
+            snprintf(curdir, AFPC_MAX_PATH, "/");
         }
 
         show_dir = 1;
@@ -3391,17 +3458,17 @@ int com_cd(char *arg)
     }
 
     if (path[0] == '/') {
-        strlcpy(dir_path, path, AFP_MAX_PATH);
+        strlcpy(dir_path, path, AFPC_MAX_PATH);
     } else {
         int path_len;
 
         if (strcmp(curdir, "/") == 0) {
-            path_len = snprintf(dir_path, AFP_MAX_PATH, "/%s", path);
+            path_len = snprintf(dir_path, AFPC_MAX_PATH, "/%s", path);
         } else {
-            path_len = snprintf(dir_path, AFP_MAX_PATH, "%s/%s", curdir, path);
+            path_len = snprintf(dir_path, AFPC_MAX_PATH, "%s/%s", curdir, path);
         }
 
-        if (path_len < 0 || (size_t)path_len >= AFP_MAX_PATH) {
+        if (path_len < 0 || (size_t)path_len >= AFPC_MAX_PATH) {
             printf("Path too long\n");
             goto error;
         }
@@ -3424,7 +3491,7 @@ int com_cd(char *arg)
         goto error;
     }
 
-    strlcpy(curdir, dir_path, AFP_MAX_PATH);
+    strlcpy(curdir, dir_path, AFPC_MAX_PATH);
     show_dir = 1;
 out:
     ret = 0;
@@ -3439,8 +3506,10 @@ error:
 }
 
 /* Disconnect command - explicitly detach volume and terminate server connection */
-int com_disconnect(char *unused _U_)
+int com_disconnect(char *unused)
 {
+    (void)unused;
+
     if (!connected) {
         printf("You're not connected to a server\n");
         return -1;
@@ -3449,7 +3518,7 @@ int com_disconnect(char *unused _U_)
     if (vol_id) {
         afp_sl_detach(&vol_id, NULL);
         vol_id = NULL;
-        explicit_bzero(url.volpassword, sizeof(url.volpassword));
+        cmdline_secure_clear(url.volpassword, sizeof(url.volpassword));
     }
 
     if (server_id) {
@@ -3464,8 +3533,10 @@ int com_disconnect(char *unused _U_)
 }
 
 /* Exit command - detach from volume but remain connected */
-int com_exit(char *unused _U_)
+int com_exit(char *unused)
 {
+    (void)unused;
+
     if (!connected) {
         printf("You're not connected to a server\n");
         return -1;
@@ -3474,17 +3545,18 @@ int com_exit(char *unused _U_)
     if (vol_id) {
         afp_sl_detach(&vol_id, NULL);
         vol_id = NULL;
-        explicit_bzero(url.volpassword, sizeof(url.volpassword));
+        cmdline_secure_clear(url.volpassword, sizeof(url.volpassword));
         printf("Detached from volume\n");
     }
 
-    snprintf(curdir, AFP_MAX_PATH, "/");
+    snprintf(curdir, AFPC_MAX_PATH, "/");
     return 0;
 }
 
 /* Print out the current working directory locally. */
-int com_lpwd(char *unused _U_)
+int com_lpwd(char *unused)
 {
+    (void)unused;
     char dir[PATH_MAX];
 
     if (getcwd(dir, PATH_MAX) == NULL) {
@@ -3497,8 +3569,10 @@ int com_lpwd(char *unused _U_)
 }
 
 /* Print out the current working directory. */
-int com_pwd(char *unused _U_)
+int com_pwd(char *unused)
 {
+    (void)unused;
+
     if (!vol_id) {
         printf("You're not attached to a volume\n");
         return -1;
@@ -3510,7 +3584,7 @@ int com_pwd(char *unused _U_)
 
 void cmdline_set_log_level(int loglevel)
 {
-    cmdline_log_min_rank = loglevel_to_rank(loglevel);
+    cmdline_log_min_rank = cmdline_log_rank(loglevel);
 }
 
 void cmdline_set_verbose(int verbose)
@@ -3523,10 +3597,11 @@ int cmdline_set_metadata_mode(const char *mode)
     return afp_metadata_mode_parse(mode, &transfer_metadata_mode);
 }
 
-static void cmdline_log_for_client(void *priv _U_, enum logtypes logtype _U_,
-                                   int loglevel, const char *message)
+static void cmdline_stateless_log(void *user_data, int loglevel,
+                                  const char *message)
 {
-    int type_rank = loglevel_to_rank(loglevel);
+    (void)user_data;
+    int type_rank = cmdline_log_rank(loglevel);
 
     if (type_rank < cmdline_log_min_rank) {
         return; /* Filter out less-verbose messages */
@@ -3541,23 +3616,9 @@ static void cmdline_log_for_client(void *priv _U_, enum logtypes logtype _U_,
     syslog(loglevel, "%s", message);
 }
 
-static void cmdline_stateless_log(void *user_data _U_,
-                                  int loglevel, const char *message)
-{
-    cmdline_log_for_client(NULL, AFPFSD, loglevel, message);
-}
-
-static struct libafpclient afpclient = {
-    .unmount_volume = NULL,
-    .log_for_client = cmdline_log_for_client,
-    .forced_ending_hook = cmdline_forced_ending_hook,
-    .scan_extra_fds = NULL,
-    .loop_started = cmdline_loop_started,
-};
-
 static int cmdline_server_startup(int batch_mode)
 {
-    char mesg[MAX_ERROR_LEN];
+    char mesg[CMDLINE_ERROR_LEN];
     int ret;
     memset(mesg, 0, sizeof(mesg));
     unsigned int uam_mask;
@@ -3592,7 +3653,7 @@ static int cmdline_server_startup(int batch_mode)
     printf("Connected to server %s\n", url.servername);
 
     if (url.volumename[0] != '\0') {
-        unsigned int volume_options = VOLUME_EXTRA_FLAGS_NO_LOCKING;
+        unsigned int volume_options = AFP_SL_VOLUME_NO_LOCKING;
         ret = attach_volume_with_password_prompt(server_id, &vol_id,
               volume_options);
 
@@ -3610,9 +3671,9 @@ static int cmdline_server_startup(int batch_mode)
         }
 
         if (url.path[0] != '\0') {
-            snprintf(curdir, AFP_MAX_PATH, "%s", url.path);
+            snprintf(curdir, AFPC_MAX_PATH, "%s", url.path);
         } else {
-            snprintf(curdir, AFP_MAX_PATH, "/");
+            snprintf(curdir, AFPC_MAX_PATH, "/");
         }
 
         /* In non-batch mode, validate that the path (if provided) is a directory */
@@ -3669,7 +3730,7 @@ int cmdline_batch_transfer(char * local_path, int direction, int recursive)
     /* direction: 0 = GET (remote->local), 1 = PUT (local->remote) */
     if (direction == 0) {
         struct stat st;
-        char remote_path[AFP_MAX_PATH];
+        char remote_path[AFPC_MAX_PATH];
 
         if (url.path[0] == '\0' || url.path[1] == '\0') { /* Empty or just "/" */
             strlcpy(remote_path, "/", sizeof(remote_path));
@@ -3761,12 +3822,12 @@ int cmdline_batch_transfer(char * local_path, int direction, int recursive)
             goto error;
         }
 
-        char remote_base[AFP_MAX_PATH];
+        char remote_base[AFPC_MAX_PATH];
 
         if (url.path[0] == '\0') {
-            strlcpy(remote_base, "/", AFP_MAX_PATH);
+            strlcpy(remote_base, "/", AFPC_MAX_PATH);
         } else {
-            strlcpy(remote_base, url.path, AFP_MAX_PATH);
+            strlcpy(remote_base, url.path, AFPC_MAX_PATH);
         }
 
         if (S_ISDIR(st.st_mode)) {
@@ -3776,11 +3837,11 @@ int cmdline_batch_transfer(char * local_path, int direction, int recursive)
             }
 
             char *base = basename(local_path);
-            char dest_path[AFP_MAX_PATH];
+            char dest_path[AFPC_MAX_PATH];
 
             /* If local path is "." or equivalent, upload contents directly to remote_base */
             if (strcmp(base, ".") == 0) {
-                strlcpy(dest_path, remote_base, AFP_MAX_PATH);
+                strlcpy(dest_path, remote_base, AFPC_MAX_PATH);
             } else {
                 int path_len;
 
@@ -3800,7 +3861,7 @@ int cmdline_batch_transfer(char * local_path, int direction, int recursive)
             goto out;
         } else {
             char *base = basename(local_path);
-            char dest_path[AFP_MAX_PATH];
+            char dest_path[AFPC_MAX_PATH];
             struct stat remote_st;
             int is_dir = 0;
             int path_len;
@@ -3854,25 +3915,19 @@ void cmdline_afp_exit(void)
     connected = 0;
 }
 
-void cmdline_afp_setup_client(void)
+void cmdline_afp_setup_logging(void)
 {
     openlog("afpcmd", LOG_PID | LOG_CONS, LOG_USER);
     last_log_message[0] = '\0';
-    libafpclient_register(&afpclient);
     afp_sl_set_log_callback(cmdline_stateless_log, NULL);
 }
 
 
 int cmdline_afp_setup(int batch_mode, char * url_string)
 {
-    snprintf(curdir, AFP_MAX_PATH, "%s", DEFAULT_DIRECTORY);
+    snprintf(curdir, AFPC_MAX_PATH, "%s", DEFAULT_DIRECTORY);
     memset(connect_servername, 0, sizeof(connect_servername));
-
-    if (init_uams() < 0) {
-        return -1;
-    }
-
-    afp_default_url(&url);
+    afp_sl_url_init(&url);
 
     if (url_string) {
         size_t url_len = strnlen(url_string, MAX_INPUT_LEN);
@@ -3883,19 +3938,18 @@ int cmdline_afp_setup(int batch_mode, char * url_string)
         }
 
         if (url_len > 1) {
-            if (afp_parse_url(&url, url_string)) {
+            if (afp_sl_url_parse(&url, url_string)) {
                 printf("Could not parse url.\n");
                 return -1;
             }
 
             /* If no username was specified in URL, use AFP guest user */
             if (url.username[0] == '\0') {
-                strlcpy(url.username, "nobody", AFP_MAX_USERNAME_LEN);
+                strlcpy(url.username, "nobody", AFPC_MAX_USERNAME_LEN);
             }
 
             strlcpy(connect_servername, url.servername, sizeof(connect_servername));
             cmdline_getpass();
-            trigger_connected();
 
             if (cmdline_server_startup(batch_mode) != 0) {
                 return -1;
@@ -3914,9 +3968,9 @@ static char *escape_spaces(const char *str)
         return NULL;
     }
 
-    len = strnlen(str, AFP_MAX_PATH);
+    len = strnlen(str, AFPC_MAX_PATH);
 
-    if (len >= AFP_MAX_PATH) {
+    if (len >= AFPC_MAX_PATH) {
         return NULL;
     }
 
@@ -3971,9 +4025,9 @@ static char *unescape_spaces(const char *str)
         return NULL;
     }
 
-    size_t len = strnlen(str, AFP_MAX_PATH);
+    size_t len = strnlen(str, AFPC_MAX_PATH);
 
-    if (len >= AFP_MAX_PATH) {
+    if (len >= AFPC_MAX_PATH) {
         return NULL;
     }
 
@@ -4083,9 +4137,9 @@ char *afp_remote_file_generator(const char *text, int state)
                 return NULL;
             }
 
-            len = strnlen(basename_unescaped, AFP_MAX_PATH);
+            len = strnlen(basename_unescaped, AFPC_MAX_PATH);
 
-            if (len >= AFP_MAX_PATH) {
+            if (len >= AFPC_MAX_PATH) {
                 free(basename_unescaped);
                 basename_unescaped = NULL;
                 free(volbase);
@@ -4103,9 +4157,9 @@ char *afp_remote_file_generator(const char *text, int state)
                 return NULL;
             }
         } else {
-            char dir_path[AFP_MAX_PATH];
+            char dir_path[AFPC_MAX_PATH];
             const char *last_slash = strrchr(text, '/');
-            char prefix[AFP_MAX_PATH] = {0};
+            char prefix[AFPC_MAX_PATH] = {0};
 
             if (last_slash) {
                 size_t dir_len = (size_t)(last_slash - text);
@@ -4148,9 +4202,9 @@ char *afp_remote_file_generator(const char *text, int state)
                     return NULL;
                 }
 
-                len = strnlen(basename_unescaped, AFP_MAX_PATH);
+                len = strnlen(basename_unescaped, AFPC_MAX_PATH);
 
-                if (len >= AFP_MAX_PATH) {
+                if (len >= AFPC_MAX_PATH) {
                     free(basename_unescaped);
                     basename_unescaped = NULL;
                     return NULL;
@@ -4182,9 +4236,9 @@ char *afp_remote_file_generator(const char *text, int state)
 
                 if (true_start < readline_start) {
                     int raw_prefix_len = readline_start - true_start;
-                    char escaped_prefix[AFP_MAX_PATH];
+                    char escaped_prefix[AFPC_MAX_PATH];
 
-                    if (raw_prefix_len >= AFP_MAX_PATH) {
+                    if (raw_prefix_len >= AFPC_MAX_PATH) {
                         return NULL;
                     }
 
@@ -4203,13 +4257,13 @@ char *afp_remote_file_generator(const char *text, int state)
                         return NULL;
                     }
 
-                    size_t prefix_len = strnlen(unescaped_prefix, AFP_MAX_PATH);
+                    size_t prefix_len = strnlen(unescaped_prefix, AFPC_MAX_PATH);
                     size_t unescaped_text_len = strnlen(unescaped_text,
-                                                        AFP_MAX_PATH);
+                                                        AFPC_MAX_PATH);
 
-                    if (prefix_len >= AFP_MAX_PATH
-                            || unescaped_text_len >= AFP_MAX_PATH
-                            || prefix_len > AFP_MAX_PATH - 1U
+                    if (prefix_len >= AFPC_MAX_PATH
+                            || unescaped_text_len >= AFPC_MAX_PATH
+                            || prefix_len > AFPC_MAX_PATH - 1U
                             - unescaped_text_len) {
                         free(unescaped_prefix);
                         free(unescaped_text);
@@ -4240,9 +4294,9 @@ char *afp_remote_file_generator(const char *text, int state)
                     }
                 }
 
-                len = strnlen(basename_unescaped, AFP_MAX_PATH);
+                len = strnlen(basename_unescaped, AFPC_MAX_PATH);
 
-                if (len >= AFP_MAX_PATH) {
+                if (len >= AFPC_MAX_PATH) {
                     free(basename_unescaped);
                     basename_unescaped = NULL;
                     return NULL;
@@ -4284,9 +4338,9 @@ char *afp_remote_file_generator(const char *text, int state)
                 if (last_slash) {
                     size_t dir_len = (size_t)(last_slash - text) + 1U;
                     size_t escaped_len = strnlen(escaped_name,
-                                                 2U * AFP_MAX_PATH);
+                                                 2U * AFPC_MAX_PATH);
 
-                    if (escaped_len >= 2U * AFP_MAX_PATH
+                    if (escaped_len >= 2U * AFPC_MAX_PATH
                             || dir_len > SIZE_MAX - escaped_len - 1U) {
                         free(escaped_name);
                         return NULL;

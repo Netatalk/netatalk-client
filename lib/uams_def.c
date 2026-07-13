@@ -54,7 +54,7 @@ const char *resolve_uam_shorthand(const char *name)
     return name;
 }
 
-int uam_string_to_bitmap(char * name)
+int uam_string_to_bitmap(const char *name)
 {
     const char *resolved_name = resolve_uam_shorthand(name);
 

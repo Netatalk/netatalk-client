@@ -25,10 +25,10 @@
     59 Temple Place, Suite 330, Boston, MA 02111 USA.
 */
 
-#include <pthread.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <termios.h>
 #include <unistd.h>
 #ifdef HAVE_LIBREADLINE
@@ -41,23 +41,17 @@
 #include <getopt.h>
 #include <ctype.h>
 #include <signal.h>
+#include <syslog.h>
 
 #ifdef HAVE_LIBBSD
 #include <bsd/string.h>
 #endif
 
-#include "lib/afp_internal.h"
-#include "lib/client.h"
-#include "lib/compat.h"
-#include "lib/utils.h"
+#include "netatalk-client/url.h"
 
 #include "cmdline_afp.h"
 
 static int running = 1;
-static int loop_started = 0;
-
-static pthread_cond_t connected_condition;
-static pthread_cond_t loop_started_condition;
 
 extern int com_testafp(char * arg);
 
@@ -77,9 +71,34 @@ typedef struct {
     int thread;          /* whether to launch as a new thread */
 } COMMAND;
 
-void trigger_connected(void)
+static int cmdline_parse_log_level(const char *text, int *loglevel)
 {
-    pthread_cond_signal(&connected_condition);
+    if (!text || !loglevel) {
+        return -1;
+    }
+
+    if (strcasecmp(text, "debug") == 0
+            || strcasecmp(text, "LOG_DEBUG") == 0) {
+        *loglevel = LOG_DEBUG;
+    } else if (strcasecmp(text, "info") == 0
+               || strcasecmp(text, "LOG_INFO") == 0) {
+        *loglevel = LOG_INFO;
+    } else if (strcasecmp(text, "notice") == 0
+               || strcasecmp(text, "LOG_NOTICE") == 0) {
+        *loglevel = LOG_NOTICE;
+    } else if (strcasecmp(text, "warning") == 0
+               || strcasecmp(text, "warn") == 0
+               || strcasecmp(text, "LOG_WARNING") == 0) {
+        *loglevel = LOG_WARNING;
+    } else if (strcasecmp(text, "err") == 0
+               || strcasecmp(text, "error") == 0
+               || strcasecmp(text, "LOG_ERR") == 0) {
+        *loglevel = LOG_ERR;
+    } else {
+        return -1;
+    }
+
+    return 0;
 }
 
 static int tty_reset(int fd)
@@ -146,8 +165,9 @@ static int char_is_quoted(char *string, int eindex)
    in case we want to do some simple parsing.  Return the array of matches,
    or NULL if there aren't any. */
 static char **filename_completion(const char *text,
-                                  int start, int end _U_)
+                                  int start, int end)
 {
+    (void)end;
     char **matches = NULL;
 
     /* If this word is at the start of the line, then it is a command
@@ -207,16 +227,18 @@ static void initialize_readline(void)
 }
 
 /* The user wishes to quit using this program.  Just set DONE non-zero. */
-static int com_quit(char *arg _U_)
+static int com_quit(char *arg)
 {
+    (void)arg;
     cmdline_afp_exit();
     running = 0;
     return 0;
 }
 
 /* Explicitly detach volume and terminate server connection, then exit. */
-static int com_close(char *arg _U_)
+static int com_close(char *arg)
 {
+    (void)arg;
     com_disconnect(NULL);
     running = 0;
     return 0;
@@ -379,8 +401,9 @@ static int execute_line(char * line)
     return 0;
 }
 
-void *cmdline_ui(void * other _U_)
+void *cmdline_ui(void *other)
 {
+    (void)other;
     char *line;
     char *s, s2[ARG_LEN];
 
@@ -419,15 +442,11 @@ static void ending(void)
     exit(1);
 }
 
-void cmdline_forced_ending_hook(void)
-{
-    ending();
-}
-
 static volatile int interrupt_count = 0;
 
-void earlyexit_handler(int signum _U_)
+void earlyexit_handler(int signum)
 {
+    (void)signum;
     sigset_t mask;
 
     if (interrupt_count > 0) {
@@ -443,12 +462,6 @@ void earlyexit_handler(int signum _U_)
     sigaddset(&mask, SIGINT);
     sigprocmask(SIG_UNBLOCK, &mask, NULL);
     ending();
-}
-
-void cmdline_loop_started(void)
-{
-    loop_started = 1;
-    pthread_cond_signal(&loop_started_condition);
 }
 
 static void usage(void)
@@ -524,7 +537,7 @@ int main(int argc, char *argv[])
         case 'v': {
             int parsed_loglevel;
 
-            if (string_to_log_level(optarg, &parsed_loglevel) != 0) {
+            if (cmdline_parse_log_level(optarg, &parsed_loglevel) != 0) {
                 printf("Unknown log level %s\n", optarg);
                 usage();
                 return -1;
@@ -545,8 +558,7 @@ int main(int argc, char *argv[])
         exit(0);
     }
 
-    /* Setup client before parsing URLs to avoid segfault in logging */
-    cmdline_afp_setup_client();
+    cmdline_afp_setup_logging();
     cmdline_set_log_level(log_level);
     cmdline_set_verbose(verbose);
 
@@ -563,14 +575,14 @@ int main(int argc, char *argv[])
         char *arg2 = argv[optind + 1];
 
         /* Check if first arg is URL */
-        if (afp_parse_url(&tmp_url, arg1) == 0) {
+        if (afp_sl_url_parse(&tmp_url, arg1) == 0) {
             url = arg1;
             local_path = arg2;
             batch_mode = 1;
             direction = 0; /* GET */
         }
         /* Check if second arg is URL */
-        else if (afp_parse_url(&tmp_url, arg2) == 0) {
+        else if (afp_sl_url_parse(&tmp_url, arg2) == 0) {
             local_path = arg1;
             url = arg2;
             batch_mode = 1;

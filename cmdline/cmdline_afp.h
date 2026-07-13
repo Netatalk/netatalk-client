@@ -29,7 +29,7 @@ int com_exit(char *unused);
 
 void cmdline_afp_exit(void);
 int cmdline_afp_setup(int batch_mode, char * url_string);
-void cmdline_afp_setup_client(void);
+void cmdline_afp_setup_logging(void);
 void cmdline_set_log_level(int loglevel);
 void cmdline_set_verbose(int verbose);
 int cmdline_set_metadata_mode(const char *mode);

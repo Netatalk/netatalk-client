@@ -344,6 +344,7 @@ int afp_list_volnames(struct afp_server * server, char * names, int max);
 
 void afp_default_url(struct afpc_url *url);
 int afp_parse_url(struct afpc_url *url, const char *text);
+int afp_parse_url_quiet(struct afpc_url *url, const char *text);
 
 /* User mapping */
 int afp_detect_mapping(struct afp_volume * volume);
