@@ -32,7 +32,7 @@
 #include "commands.h"
 #include "daemon.h"
 #include "daemon_client.h"
-#include "server.h"
+#include "stateless_ipc.h"
 
 static struct daemon_client client_pool[DAEMON_NUM_CLIENTS];
 

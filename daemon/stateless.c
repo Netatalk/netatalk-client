@@ -36,7 +36,7 @@
 #include "lib/uam_registry.h"
 #include "lib/utils.h"
 
-#include "server.h"
+#include "stateless_ipc.h"
 #include "stateless_internal.h"
 
 #ifndef MSG_NOSIGNAL

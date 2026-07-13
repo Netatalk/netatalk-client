@@ -9,8 +9,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "daemon/ipc.h"
-#include "daemon/server.h"
+#include "daemon/stateless_ipc.h"
 #include "netatalk-client/afpsl.h"
 #include "stateless_internal.h"
 #include "tap.h"

@@ -31,7 +31,7 @@
 
 #include "commands.h"
 #include "daemon.h"
-#include "server.h"
+#include "stateless_ipc.h"
 
 #define MAX_ERROR_LEN 1024
 #define STATUS_LEN 1024

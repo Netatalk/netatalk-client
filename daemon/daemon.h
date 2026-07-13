@@ -1,5 +1,5 @@
-#ifndef __DAEMON_H_
-#define __DAEMON_H_
+#ifndef NETATALK_CLIENT_DAEMON_DAEMON_H
+#define NETATALK_CLIENT_DAEMON_DAEMON_H
 
 #include <sys/select.h>
 

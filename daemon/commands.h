@@ -1,5 +1,5 @@
-#ifndef __COMMANDS_H_
-#define __COMMANDS_H_
+#ifndef NETATALK_CLIENT_DAEMON_COMMANDS_H
+#define NETATALK_CLIENT_DAEMON_COMMANDS_H
 
 #include "daemon_client.h"
 
