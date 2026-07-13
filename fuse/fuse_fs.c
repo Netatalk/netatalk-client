@@ -538,12 +538,10 @@ static int fuse_fsyncdir(const char *path _U_,
 static int fuse_read(const char *path, char *buf, size_t size, off_t offset,
                      struct fuse_file_info *fi)
 {
-    struct afp_file_info * fp;
-    int ret = 0;
-    struct afp_volume * volume = fuse_get_context()->private_data;
-    int eof;
+    struct afp_file_info *fp;
+    struct afp_volume *volume = fuse_get_context()->private_data;
+    int eof = 0;
     size_t amount_read = 0;
-    off_t original_offset = offset;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** cache read \"%s\" offset=%llu size=%zu",
                    path, (unsigned long long)offset, size);
@@ -554,42 +552,35 @@ static int fuse_read(const char *path, char *buf, size_t size, off_t offset,
 
     fp = (void *) fi->fh;
 
-    while (1) {
-        ret = ml_read(volume, path, buf + amount_read, size, offset, fp, &eof);
+    while (amount_read < size) {
+        size_t remaining = size - amount_read;
+        off_t read_offset = offset + (off_t)amount_read;
+        int read_result;
+        read_result = ml_read(volume, path, buf + amount_read, remaining,
+                              read_offset, fp, &eof);
 
-        if (ret < 0) {
-            goto error;
+        if (read_result < 0) {
+            return read_result;
         }
 
-        if (ret == 0) {
+        if (read_result == 0) {
             log_for_client(NULL, AFPFSD, LOG_WARNING,
                            "*** read of %s made no progress at offset %llu, eof=%d",
-                           path, (unsigned long long)offset, eof);
-            goto out;
+                           path, (unsigned long long)read_offset, eof);
+            break;
         }
 
-        amount_read += ret;
+        amount_read += (size_t)read_result;
 
         if (eof) {
-            goto out;
+            break;
         }
-
-        size -= ret;
-
-        if (size == 0) {
-            goto out;
-        }
-
-        offset += ret;
     }
 
-out:
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** cache read \"%s\" offset=%llu returned=%zu eof=%d",
-                   path, (unsigned long long)original_offset, amount_read, eof);
-    return amount_read;
-error:
-    return ret;
+                   path, (unsigned long long)offset, amount_read, eof);
+    return (int)amount_read;
 }
 
 #ifdef __APPLE__
