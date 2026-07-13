@@ -98,6 +98,21 @@ static void finderinfo_set_flags(char finderinfo[32], uint16_t flags)
 }
 #endif
 
+/*
+ * Work around malformed paths that macFUSE occasionally supplies as
+ * <dir1>/<dir2>/(null) by truncating the path before "(null)".
+ */
+static void strip_null_path_component(const char *path)
+{
+    char *null_component;
+    null_component = strstr(path, "(null)");
+
+    if (null_component && null_component > path) {
+        *(null_component - 1) = '\0';
+    }
+}
+
+
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30
 /* Helper function to convert struct stat to struct fuse_darwin_attr on macOS */
 static void stat_to_darwin_attr(const struct stat *st,
@@ -1137,23 +1152,15 @@ static int fuse_setattr(const char *path, struct fuse_darwin_attr *attr,
 static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
                                struct fuse_file_info *fi _U_)
 {
-    char *c;
     struct stat stbuf;
     struct afp_volume * volume = fuse_get_context()->private_data;
     int ret;
-    /* Oddly, we sometimes get <dir1>/<dir2>/(null) for the path */
 
     if (!path) {
         return -EIO;
     }
 
-    if ((c = strstr(path, "(null)"))) {
-        /* We should fix this to make sure it is at the end */
-        if (c > path) {
-            *(c - 1) = '\0';
-        }
-    }
-
+    strip_null_path_component(path);
     ret = ml_getattr(volume, path, &stbuf);
 
     if (ret == 0) {
@@ -1188,24 +1195,15 @@ static int fuse_getattr(const char *path, struct stat *stbuf,
 static int fuse_getattr(const char *path, struct stat *stbuf)
 #endif
 {
-    char *c;
     struct afp_volume * volume = fuse_get_context()->private_data;
     int ret;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** getattr of \"%s\"", path);
-
-    /* Oddly, we sometimes get <dir1>/<dir2>/(null) for the path */
 
     if (!path) {
         return -EIO;
     }
 
-    if ((c = strstr(path, "(null)"))) {
-        /* We should fix this to make sure it is at the end */
-        if (c > path) {
-            *(c - 1) = '\0';
-        }
-    }
-
+    strip_null_path_component(path);
     ret = ml_getattr(volume, path, stbuf);
     return ret;
 }
