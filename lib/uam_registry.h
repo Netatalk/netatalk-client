@@ -14,7 +14,7 @@
 #define UAM_SRP 0x100
 
 const char *resolve_uam_shorthand(const char *name);
-int uam_string_to_bitmap(char * name);
+int uam_string_to_bitmap(const char *name);
 char *uam_bitmap_to_string(unsigned int bitmap);
 
 #endif
