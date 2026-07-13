@@ -126,9 +126,7 @@ static void stat_to_darwin_attr(const struct stat *st,
 static int fuse_readlink(const char * path, char *buf, size_t size)
 {
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** readlink of %s", path);
     ret = ml_readlink(volume, path, buf, size);
 
@@ -143,9 +141,7 @@ static int fuse_readlink(const char * path, char *buf, size_t size)
 static int fuse_rmdir(const char *path)
 {
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** rmdir of %s", path);
     ret = ml_rmdir(volume, path);
     return ret;
@@ -154,9 +150,7 @@ static int fuse_rmdir(const char *path)
 static int fuse_unlink(const char *path)
 {
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** unlink of %s", path);
     ret = ml_unlink(volume, path);
     return ret;
@@ -172,9 +166,7 @@ static int fuse_getxattr(const char *path, const char *name, char *value,
 #endif
 {
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
 #ifdef __APPLE__
 
     if (strcmp(name, AFP_XATTR_RESOURCEFORK) == 0) {
@@ -219,9 +211,7 @@ static int fuse_setxattr(const char *path, const char *name,
 {
     int ml_flags = 0;
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
 #ifdef XATTR_CREATE
 
     if (flags & XATTR_CREATE) {
@@ -272,9 +262,7 @@ static int fuse_setxattr(const char *path, const char *name,
 static int fuse_listxattr(const char *path, char *list, size_t size)
 {
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** listxattr %s (size=%zu)", path, size);
     ret = ml_listxattr(volume, path, list, size);
@@ -284,9 +272,7 @@ static int fuse_listxattr(const char *path, char *list, size_t size)
 static int fuse_removexattr(const char *path, const char *name)
 {
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** removexattr %s:%s", path, name);
 #ifdef __APPLE__
@@ -327,9 +313,7 @@ static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 {
     struct afp_file_info * filebase = NULL, *p;
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** readdir of %s", path);
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30 || (FUSE_USE_VERSION >= 30 && FUSE_NEW_API)
     filler(buf, ".", NULL, 0, 0);
@@ -362,8 +346,7 @@ static int fuse_mknod(const char *path, mode_t mode, dev_t dev _U_)
 {
     int ret = 0;
     struct fuse_context * context = fuse_get_context();
-    struct afp_volume * volume =
-        (struct afp_volume *) context->private_data;
+    struct afp_volume * volume = context->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** mknod of %s", path);
     ret = ml_creat(volume, path, mode);
     return ret;
@@ -373,9 +356,7 @@ static int fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
     struct afp_file_info * fp;
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** create of %s with mode 0%o, flags 0x%x", path, mode, fi->flags);
     /* Create the file */
@@ -415,9 +396,7 @@ static int fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 static int fuse_flush(const char *path, struct fuse_file_info *fi)
 {
     struct afp_file_info *fp = (struct afp_file_info *) fi->fh;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     int ret = 0;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** cache flush \"%s\" forkid=%d writable=%u resource=%u",
@@ -461,9 +440,7 @@ static int fuse_release(const char * path, struct fuse_file_info * fi)
 {
     struct afp_file_info * fp = (void *) fi->fh;
     int ret = 0;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** cache release \"%s\" forkid=%d writable=%u resource=%u",
                    path, fp ? fp->forkid : -1, fp ? fp->writable : 0,
@@ -478,9 +455,7 @@ static int fuse_open(const char *path, struct fuse_file_info *fi)
 {
     struct afp_file_info * fp ;
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     int flags = fi->flags;
     ret = ml_open(volume, path, flags, &fp);
 
@@ -504,7 +479,7 @@ static int fuse_write(const char * path, const char *data,
     struct afp_file_info *fp = (struct afp_file_info *) fi->fh;
     int ret;
     struct fuse_context * context = fuse_get_context();
-    struct afp_volume * volume = (void *) context->private_data;
+    struct afp_volume * volume = context->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** cache write \"%s\" offset=%llu size=%llu",
                    path, (unsigned long long) offset, (unsigned long long) size);
@@ -517,9 +492,7 @@ static int fuse_write(const char * path, const char *data,
 static int fuse_mkdir(const char * path, mode_t mode)
 {
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** mkdir of %s", path);
     ret = ml_mkdir(volume, path, mode);
     return ret;
@@ -530,8 +503,7 @@ static int fuse_opendir(const char *path, struct fuse_file_info *fi)
 {
     struct stat stbuf;
     int ret;
-    struct afp_volume *volume =
-        (struct afp_volume *)fuse_get_context()->private_data;
+    struct afp_volume *volume = fuse_get_context()->private_data;
     ret = ml_getattr(volume, path, &stbuf);
 
     if (ret < 0) {
@@ -568,9 +540,7 @@ static int fuse_read(const char *path, char *buf, size_t size, off_t offset,
 {
     struct afp_file_info * fp;
     int ret = 0;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     int eof;
     size_t amount_read = 0;
     off_t original_offset = offset;
@@ -627,7 +597,7 @@ static int fuse_access(const char *path, int mask)
 {
     struct stat stbuf;
     struct fuse_context *context = fuse_get_context();
-    struct afp_volume *volume = (struct afp_volume *)context->private_data;
+    struct afp_volume *volume = context->private_data;
     int ret;
     ret = ml_getattr(volume, path, &stbuf);
 
@@ -659,9 +629,7 @@ static int fuse_chown(const char * path, uid_t uid, gid_t gid)
 #endif
 {
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** chown %s to uid %d, gid %d",
                    path, (int)uid, (int)gid);
     ret = ml_chown(volume, path, uid, gid);
@@ -678,9 +646,7 @@ static int fuse_truncate(const char * path, off_t offset,
                          struct fuse_file_info *fi)
 {
     int ret = 0;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** truncate of %s to %lld, fi=%p, fh=%lu",
                    path, (long long)offset, (void*)fi, fi ? (unsigned long)fi->fh : 0UL);
@@ -723,9 +689,7 @@ static int fuse_truncate(const char * path, off_t offset,
 static int fuse_truncate(const char * path, off_t offset)
 {
     int ret = 0;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     ret = ml_truncate(volume, path, offset);
     return ret;
 }
@@ -740,9 +704,7 @@ static int fuse_chmod(const char * path, mode_t mode,
 static int fuse_chmod(const char * path, mode_t mode)
 #endif
 {
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     int ret;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "** chmod %s", path);
     ret = ml_chmod(volume, path, mode);
@@ -777,9 +739,7 @@ static int fuse_utimens(const char *path, const struct timespec tv[2])
 #endif
 {
     int ret = 0;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** utimens \"%s\"", path);
     struct utimbuf timebuf;
@@ -831,9 +791,7 @@ static int fuse_utimens(const char *path, const struct timespec tv[2])
 static int fuse_utime(const char * path, struct utimbuf * timebuf)
 {
     int ret = 0;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "** utime");
     ret = ml_utime(volume, path, timebuf);
@@ -844,9 +802,7 @@ static int fuse_utime(const char * path, struct utimbuf * timebuf)
 
 static void afp_destroy(void *ignore _U_)
 {
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
 
     if (!volume || !volume->server) {
         return;
@@ -881,9 +837,7 @@ static void afp_destroy(void *ignore _U_)
 
 static int fuse_symlink(const char * path1, const char * path2)
 {
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     int ret;
     ret = ml_symlink(volume, path1, path2);
 
@@ -900,9 +854,7 @@ static int fuse_rename(const char * path_from, const char * path_to,
                        unsigned int flags)
 {
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** rename %s -> %s flags=0x%x", path_from, path_to, flags);
 #ifdef __APPLE__
@@ -940,9 +892,7 @@ static int fuse_rename(const char * path_from, const char * path_to,
 static int fuse_rename(const char * path_from, const char * path_to)
 {
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** rename %s -> %s", path_from, path_to);
     ret = ml_rename(volume, path_from, path_to);
@@ -957,9 +907,7 @@ static int fuse_renamex(const char *path_from, const char *path_to,
 {
     int ret;
     struct stat stbuf;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** renamex %s -> %s flags=0x%x", path_from, path_to, flags);
 
@@ -988,9 +936,7 @@ static int fuse_exchange(const char *path_from, const char *path_to,
                          unsigned long options)
 {
     int ret;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** exchange %s <-> %s options=0x%lx",
                    path_from, path_to, options);
@@ -1006,9 +952,7 @@ static int fuse_statfs(const char *path, struct statfs *stat)
 static int fuse_statfs(const char *path, struct statvfs *stat)
 #endif
 {
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     int ret;
     struct statvfs vfsstat;
     ret = ml_statfs(volume, path, &vfsstat);
@@ -1034,9 +978,7 @@ static int fuse_statfs(const char *path, struct statvfs *stat)
 #else
 static int fuse_statfs(const char *path, struct statvfs *stat)
 {
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     int ret;
     ret = ml_statfs(volume, path, stat);
     return ret;
@@ -1094,9 +1036,7 @@ static int fuse_apply_chflags(struct afp_volume *volume, const char *path,
 static int fuse_setattr(const char *path, struct fuse_darwin_attr *attr,
                         int to_set, struct fuse_file_info *fi)
 {
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     int ret = 0;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** setattr \"%s\" to_set=0x%x", path, to_set);
@@ -1205,9 +1145,7 @@ static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
 {
     char *c;
     struct stat stbuf;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     int ret;
     /* Oddly, we sometimes get <dir1>/<dir2>/(null) for the path */
 
@@ -1257,9 +1195,7 @@ static int fuse_getattr(const char *path, struct stat *stbuf)
 #endif
 {
     char *c;
-    struct afp_volume * volume =
-        (struct afp_volume *)
-        ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     int ret;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** getattr of \"%s\"", path);
 
@@ -1286,8 +1222,7 @@ static int fuse_getattr(const char *path, struct stat *stbuf)
 #if FUSE_NEW_API
 static void *afp_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
-    struct afp_volume * vol = (struct afp_volume *)
-                              ((struct fuse_context *)(fuse_get_context()))->private_data;
+    struct afp_volume * vol = fuse_get_context()->private_data;
     struct fuse_context *ctx = fuse_get_context();
 #ifdef __APPLE__
 
@@ -1338,9 +1273,8 @@ static void *afp_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 #else
 static void *afp_init(struct fuse_conn_info * o _U_)
 {
-    struct afp_volume * vol = (struct afp_volume *)
-                              ((struct fuse_context *)(fuse_get_context()))->private_data;
-    vol->priv = (void *)((struct fuse_context *)(fuse_get_context()))->fuse;
+    struct afp_volume * vol = fuse_get_context()->private_data;
+    vol->priv = fuse_get_context()->fuse;
 
     /* Trigger the daemon that we've started */
     if (vol->priv) {
@@ -1358,8 +1292,7 @@ static int fuse_chflags(const char *path,
                         struct fuse_file_info *fi _U_,
                         unsigned int flags)
 {
-    struct afp_volume *volume =
-        (struct afp_volume *)fuse_get_context()->private_data;
+    struct afp_volume *volume = fuse_get_context()->private_data;
     return fuse_apply_chflags(volume, path, flags);
 }
 
