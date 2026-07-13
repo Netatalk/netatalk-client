@@ -82,6 +82,7 @@ int daemon_socket_create(const char *socket_path, int backlog)
     }
 
 bound:
+
     if (listen(command_fd, backlog) != 0) {
         perror("listen");
         unlink(socket_path);

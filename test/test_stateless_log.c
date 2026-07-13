@@ -15,7 +15,7 @@
 #include "stateless_internal.h"
 #include "tap.h"
 
-#ifdef AFP_SERVER_COMMAND_PING
+#ifdef AFPSL_IPC_COMMAND_PING
 #error "Ping must not be part of the stateless IPC protocol"
 #endif
 
@@ -35,9 +35,9 @@ static void capture_log(void *user_data, int loglevel, const char *message)
 
 static size_t make_response(char *response, size_t capacity)
 {
-    struct afp_server_response_header header = { 0 };
-    struct afp_server_log_footer footer = {
-        .magic = AFP_SERVER_LOG_MAGIC,
+    struct afpsl_ipc_response_header header = { 0 };
+    struct afpsl_ipc_log_footer footer = {
+        .magic = AFPSL_IPC_LOG_MAGIC,
         .log_len = 0,
     };
     size_t len = sizeof(header) + sizeof(footer);
@@ -54,13 +54,13 @@ static size_t make_response(char *response, size_t capacity)
 
 static int check_framed_read_errors(void)
 {
-    struct afp_server_response_header header = { 0 };
+    struct afpsl_ipc_response_header header = { 0 };
     char response[64];
     size_t response_len = 123;
     int sockets[2];
     int directory;
     CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
-    header.len = sizeof(header) + sizeof(struct afp_server_log_footer);
+    header.len = sizeof(header) + sizeof(struct afpsl_ipc_log_footer);
     CHECK(write(sockets[1], &header, sizeof(header))
           == (ssize_t) sizeof(header));
     close(sockets[1]);
@@ -155,14 +155,14 @@ int main(int argc, char **argv)
     const char payload[] = "DATA";
     const char message[] = "daemon\nwarning";
     const char expected_message[] = "daemon\\nwarning";
-    char response[sizeof(payload) - 1 + sizeof(struct afp_server_log_record) +
-                  sizeof(message) - 1 + sizeof(struct afp_server_log_footer)];
-    struct afp_server_log_record record = {
+    char response[sizeof(payload) - 1 + sizeof(struct afpsl_ipc_log_record) +
+                  sizeof(message) - 1 + sizeof(struct afpsl_ipc_log_footer)];
+    struct afpsl_ipc_log_record record = {
         .level = LOG_WARNING,
         .message_len = sizeof(message) - 1,
     };
-    struct afp_server_log_footer footer = {
-        .magic = AFP_SERVER_LOG_MAGIC,
+    struct afpsl_ipc_log_footer footer = {
+        .magic = AFPSL_IPC_LOG_MAGIC,
         .log_len = sizeof(record) + sizeof(message) - 1,
     };
     struct capture capture = { 0 };

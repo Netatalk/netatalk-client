@@ -247,8 +247,8 @@ int daemon_scan_extra_fds(int command_fd, fd_set * set, int *max_fd)
 
 int send_command(struct daemon_client *c, unsigned int len, const char *data)
 {
-    struct afp_server_response_header header;
-    struct afp_server_log_footer footer;
+    struct afpsl_ipc_response_header header;
+    struct afpsl_ipc_log_footer footer;
     size_t total = 0;
     size_t response_len;
     size_t log_len;
@@ -279,7 +279,7 @@ int send_command(struct daemon_client *c, unsigned int len, const char *data)
 
     memcpy(response, data, len);
     memcpy(response + len, c->outgoing_string, log_len);
-    footer.magic = AFP_SERVER_LOG_MAGIC;
+    footer.magic = AFPSL_IPC_LOG_MAGIC;
     footer.log_len = (uint32_t) log_len;
     memcpy(response + len + log_len, &footer, sizeof(footer));
     memcpy(&header, response, sizeof(header));

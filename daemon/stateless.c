@@ -49,7 +49,7 @@
 struct stateless_connection {
     int fd;
     unsigned int len;
-    char data[MAX_CLIENT_RESPONSE + AFP_SERVER_LOG_BUFFER_SIZE + 200];
+    char data[AFPSL_IPC_MAX_RESPONSE + AFPSL_IPC_LOG_BUFFER_SIZE + 200];
 };
 
 static struct stateless_connection connection = { .fd = -1 };
@@ -141,7 +141,7 @@ int afp_sl_url_parse(struct afpc_url *url, const char *text)
 int afp_sl_response_content_length(const char *response, size_t len,
                                    size_t *content_len)
 {
-    struct afp_server_log_footer footer;
+    struct afpsl_ipc_log_footer footer;
 
     if (len < sizeof(footer)) {
         return -1;
@@ -149,8 +149,8 @@ int afp_sl_response_content_length(const char *response, size_t len,
 
     memcpy(&footer, response + len - sizeof(footer), sizeof(footer));
 
-    if (footer.magic != AFP_SERVER_LOG_MAGIC
-            || footer.log_len > AFP_SERVER_LOG_BUFFER_SIZE
+    if (footer.magic != AFPSL_IPC_LOG_MAGIC
+            || footer.log_len > AFPSL_IPC_LOG_BUFFER_SIZE
             || footer.log_len > len - sizeof(footer)) {
         return -1;
     }
@@ -161,7 +161,7 @@ int afp_sl_response_content_length(const char *response, size_t len,
 
 int afp_sl_dispatch_response_logs(const char *response, size_t len)
 {
-    struct afp_server_log_footer footer;
+    struct afpsl_ipc_log_footer footer;
     size_t content_len;
     size_t pos;
 
@@ -175,8 +175,8 @@ int afp_sl_dispatch_response_logs(const char *response, size_t len)
     pos = content_len;
 
     while (pos < len - sizeof(footer)) {
-        struct afp_server_log_record record;
-        char message[AFP_SERVER_LOG_BUFFER_SIZE + 1];
+        struct afpsl_ipc_log_record record;
+        char message[AFPSL_IPC_LOG_BUFFER_SIZE + 1];
 
         if (len - sizeof(footer) - pos < sizeof(record)) {
             stateless_log_message(LOG_ERR,
@@ -187,7 +187,7 @@ int afp_sl_dispatch_response_logs(const char *response, size_t len)
         memcpy(&record, response + pos, sizeof(record));
         pos += sizeof(record);
 
-        if (record.message_len > AFP_SERVER_LOG_BUFFER_SIZE
+        if (record.message_len > AFPSL_IPC_LOG_BUFFER_SIZE
                 || record.message_len > len - sizeof(footer) - pos) {
             stateless_log_message(LOG_ERR,
                                   "Malformed log message from afpsld");
@@ -208,7 +208,7 @@ static int read_response_tail(unsigned int total_len, size_t prefix_len,
 {
     size_t tail_len;
 
-    if (total_len < prefix_len + sizeof(struct afp_server_log_footer)) {
+    if (total_len < prefix_len + sizeof(struct afpsl_ipc_log_footer)) {
         return -1;
     }
 
@@ -326,7 +326,7 @@ int daemon_connect(unsigned int daemon_uid)
     memset(&servaddr, 0, sizeof(servaddr));
     servaddr.sun_family = AF_UNIX;
     snprintf(servaddr.sun_path, sizeof(servaddr.sun_path), "%s-%d",
-             SERVER_SL_SOCKET_PATH, daemon_uid);
+             AFPSL_IPC_SOCKET_PATH, daemon_uid);
     /* Try to connect first */
     ret = connect(sock, (struct sockaddr*) &servaddr, sizeof(servaddr));
 
@@ -370,7 +370,7 @@ done:
 int afp_sl_read_framed_response(int fd, char *data, size_t capacity,
                                 size_t *response_len)
 {
-    struct afp_server_response_header header;
+    struct afpsl_ipc_response_header header;
     unsigned int expected_len = 0;
     size_t received = 0;
     ssize_t packetlen;
@@ -386,7 +386,7 @@ int afp_sl_read_framed_response(int fd, char *data, size_t capacity,
 
     if (!data || fd < 0 || fd >= FD_SETSIZE
             || capacity < sizeof(header)
-            + sizeof(struct afp_server_log_footer)) {
+            + sizeof(struct afpsl_ipc_log_footer)) {
         return -1;
     }
 
@@ -451,7 +451,7 @@ int afp_sl_read_framed_response(int fd, char *data, size_t capacity,
                 expected_len = header.len;
 
                 if (expected_len < sizeof(header)
-                        + sizeof(struct afp_server_log_footer)) {
+                        + sizeof(struct afpsl_ipc_log_footer)) {
                     stateless_log_message(
                         LOG_ERR, "Invalid response length from afpsld");
                     return -1;
@@ -481,7 +481,7 @@ int afp_sl_read_framed_response(int fd, char *data, size_t capacity,
 /* Read, validate, and dispatch one complete response from afpsld. */
 static int read_answer(void)
 {
-    struct afp_server_response_header header;
+    struct afpsl_ipc_response_header header;
     size_t response_len;
     connection.len = 0;
 
@@ -589,8 +589,8 @@ static int send_to_daemon(char * request, int req_len, char * reply,
         return -ECONNREFUSED;
     }
 
-    if (req_len >= (int)sizeof(struct afp_server_request_header)) {
-        command = ((struct afp_server_request_header *)request)->command;
+    if (req_len >= (int)sizeof(struct afpsl_ipc_request_header)) {
+        command = ((struct afpsl_ipc_request_header *)request)->command;
     }
 
     if (send_command(req_len, request, command) < 0) {
@@ -611,17 +611,17 @@ static int send_to_daemon(char * request, int req_len, char * reply,
 
 int afp_sl_exit(void)
 {
-    struct afp_server_exit_request req;
+    struct afpsl_ipc_exit_request req;
 
     if (ensure_daemon_connection()) {
         return -ECONNREFUSED;
     }
 
-    req.header.command = AFP_SERVER_COMMAND_EXIT;
+    req.header.command = AFPSL_IPC_COMMAND_EXIT;
     req.header.close = 1;
     req.header.len = sizeof(req);
 
-    if (send_command(sizeof(req), (char *) &req, AFP_SERVER_COMMAND_EXIT) < 0) {
+    if (send_command(sizeof(req), (char *) &req, AFPSL_IPC_COMMAND_EXIT) < 0) {
         return -ECONNRESET;
     }
 
@@ -632,13 +632,13 @@ int afp_sl_exit(void)
 /* afp_sl_status()
  *
  * Returns:
- * AFP_SERVER_RESULT_DAEMON_ERROR: could not connect to afpsld
+ * AFPSL_IPC_RESULT_DAEMON_ERROR: could not connect to afpsld
  */
 
 int afp_sl_status(const char *volumename, const char *servername, char *text,
                   unsigned int *remaining)
 {
-    struct afp_server_status_request req;
+    struct afpsl_ipc_status_request req;
     int ret;
 
     if (ensure_daemon_connection()) {
@@ -646,7 +646,7 @@ int afp_sl_status(const char *volumename, const char *servername, char *text,
     }
 
     memset(&req, 0, sizeof(req));
-    req.header.command = AFP_SERVER_COMMAND_STATUS;
+    req.header.command = AFPSL_IPC_COMMAND_STATUS;
     req.header.close = 0;
     req.header.len = sizeof(req);
 
@@ -658,7 +658,7 @@ int afp_sl_status(const char *volumename, const char *servername, char *text,
         snprintf(req.servername, AFP_SERVER_NAME_LEN, "%s", servername);
     }
 
-    if (send_command(sizeof(req), (char *)&req, AFP_SERVER_COMMAND_STATUS) < 0) {
+    if (send_command(sizeof(req), (char *)&req, AFPSL_IPC_COMMAND_STATUS) < 0) {
         return -ECONNRESET;
     }
 
@@ -674,7 +674,7 @@ int afp_sl_status(const char *volumename, const char *servername, char *text,
         return ret;
     }
 
-    strlcpy(text, connection.data + sizeof(struct afp_server_status_response),
+    strlcpy(text, connection.data + sizeof(struct afpsl_ipc_status_response),
             *remaining);
     return 0;
 }
@@ -682,16 +682,16 @@ int afp_sl_status(const char *volumename, const char *servername, char *text,
 /* afp_sl_getvolid()
  *
  * Result header returns:
- * AFP_SERVER_RESULT_DAEMON_ERROR
- * AFP_SERVER_RESULT_OKAY
+ * AFPSL_IPC_RESULT_DAEMON_ERROR
+ * AFPSL_IPC_RESULT_OK
  *
  */
 
 int afp_sl_getvolid(afpc_server_t serverid, struct afpc_url * url,
                     afpc_volume_t *volid)
 {
-    struct afp_server_getvolid_request req;
-    struct afp_server_getvolid_response response;
+    struct afpsl_ipc_getvolid_request req;
+    struct afpsl_ipc_getvolid_response response;
     int ret;
     int retries = 10;
 
@@ -713,8 +713,8 @@ int afp_sl_getvolid(afpc_server_t serverid, struct afpc_url * url,
 
     memset(&req, 0, sizeof(req));
     req.header.close = 0;
-    req.header.len = sizeof(struct afp_server_getvolid_request);
-    req.header.command = AFP_SERVER_COMMAND_GETVOLID;
+    req.header.len = sizeof(struct afpsl_ipc_getvolid_request);
+    req.header.command = AFPSL_IPC_COMMAND_GETVOLID;
     req.serverid = serverid;
     memcpy(&req.url, url, sizeof(*url));
 
@@ -728,7 +728,7 @@ int afp_sl_getvolid(afpc_server_t serverid, struct afpc_url * url,
 
         /* Volume exists but attach is still in progress from another client;
          * wait briefly and retry so callers don't see a spurious error. */
-        if (response.header.result == AFP_SERVER_RESULT_NOTATTACHED
+        if (response.header.result == AFPSL_IPC_RESULT_NOTATTACHED
                 && --retries > 0) {
             struct timespec ts = {0, 200000000}; /* 200ms */
             nanosleep(&ts, NULL);
@@ -738,7 +738,7 @@ int afp_sl_getvolid(afpc_server_t serverid, struct afpc_url * url,
         break;
     }
 
-    if (response.header.result == AFP_SERVER_RESULT_OKAY) {
+    if (response.header.result == AFPSL_IPC_RESULT_OK) {
         memcpy(volid, &response.volumeid, sizeof(afpc_volume_t));
     }
 
@@ -748,16 +748,16 @@ int afp_sl_getvolid(afpc_server_t serverid, struct afpc_url * url,
 int afp_sl_stat(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                 struct stat *stat)
 {
-    struct afp_server_stat_request request;
-    struct afp_server_stat_response response;
+    struct afpsl_ipc_stat_request request;
+    struct afpsl_ipc_stat_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
     int ret;
     memset(&request, 0, sizeof(request));
     request.header.close = 0;
-    request.header.len = sizeof(struct afp_server_stat_request);
-    request.header.command = AFP_SERVER_COMMAND_STAT;
+    request.header.len = sizeof(struct afpsl_ipc_stat_request);
+    request.header.command = AFPSL_IPC_COMMAND_STAT;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -791,16 +791,16 @@ int afp_sl_stat(afpc_volume_t *volid, const char *path, struct afpc_url *url,
 int afp_sl_open(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                 unsigned int *fileid, unsigned int mode)
 {
-    struct afp_server_open_request request;
-    struct afp_server_open_response response;
+    struct afpsl_ipc_open_request request;
+    struct afpsl_ipc_open_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
     int ret;
     memset(&request, 0, sizeof(request));
     request.header.close = 0;
-    request.header.len = sizeof(struct afp_server_open_request);
-    request.header.command = AFP_SERVER_COMMAND_OPEN;
+    request.header.len = sizeof(struct afpsl_ipc_open_request);
+    request.header.command = AFPSL_IPC_COMMAND_OPEN;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -839,8 +839,8 @@ int afp_sl_read(afpc_volume_t * volid, unsigned int fileid,
                 unsigned int length, unsigned int *received,
                 unsigned int *eof, char *data)
 {
-    struct afp_server_read_request request;
-    struct afp_server_read_response response;
+    struct afpsl_ipc_read_request request;
+    struct afpsl_ipc_read_response response;
     char *tail = NULL;
     size_t payload_size = 0;
     int ret;
@@ -850,8 +850,8 @@ int afp_sl_read(afpc_volume_t * volid, unsigned int fileid,
     }
 
     request.header.close = 0;
-    request.header.len = sizeof(struct afp_server_read_request);
-    request.header.command = AFP_SERVER_COMMAND_READ;
+    request.header.len = sizeof(struct afpsl_ipc_read_request);
+    request.header.command = AFPSL_IPC_COMMAND_READ;
     memcpy(&request.volumeid, volid, sizeof(afpc_volume_t));
     request.fileid = fileid;
     request.start = start;
@@ -859,7 +859,7 @@ int afp_sl_read(afpc_volume_t * volid, unsigned int fileid,
     request.resource = resource;
 
     if (send_command(sizeof(request), (char *)&request,
-                     AFP_SERVER_COMMAND_READ) < 0) {
+                     AFPSL_IPC_COMMAND_READ) < 0) {
         return -ECONNRESET;
     }
 
@@ -883,7 +883,7 @@ int afp_sl_read(afpc_volume_t * volid, unsigned int fileid,
         return -EPROTO;
     }
 
-    if (response.header.result != AFP_SERVER_RESULT_OKAY) {
+    if (response.header.result != AFPSL_IPC_RESULT_OK) {
         free(tail);
         *received = 0;
         *eof = 0;
@@ -907,8 +907,8 @@ int afp_sl_write(afpc_volume_t * volid, unsigned int fileid,
                  unsigned long long offset, unsigned int size,
                  unsigned int *written, const char *data)
 {
-    struct afp_server_write_request request;
-    struct afp_server_write_response response;
+    struct afpsl_ipc_write_request request;
+    struct afpsl_ipc_write_response response;
     char *tail = NULL;
     size_t payload_size = 0;
     int ret;
@@ -918,8 +918,8 @@ int afp_sl_write(afpc_volume_t * volid, unsigned int fileid,
     }
 
     request.header.close = 0;
-    request.header.len = sizeof(struct afp_server_write_request);
-    request.header.command = AFP_SERVER_COMMAND_WRITE;
+    request.header.len = sizeof(struct afpsl_ipc_write_request);
+    request.header.command = AFPSL_IPC_COMMAND_WRITE;
     memcpy(&request.volumeid, volid, sizeof(afpc_volume_t));
     request.fileid = fileid;
     request.offset = offset;
@@ -928,7 +928,7 @@ int afp_sl_write(afpc_volume_t * volid, unsigned int fileid,
 
     /* Send request header */
     if (send_command(sizeof(request), (char *)&request,
-                     AFP_SERVER_COMMAND_WRITE) < 0) {
+                     AFPSL_IPC_COMMAND_WRITE) < 0) {
         return -ECONNRESET;
     }
 
@@ -963,7 +963,7 @@ int afp_sl_write(afpc_volume_t * volid, unsigned int fileid,
 
     free(tail);
 
-    if (response.header.result != AFP_SERVER_RESULT_OKAY) {
+    if (response.header.result != AFPSL_IPC_RESULT_OK) {
         *written = 0;
         return server_result_to_errno(response.header.result);
     }
@@ -977,15 +977,15 @@ static int metadata_call(unsigned int command, afpc_volume_t *volid,
                          size_t size, unsigned long long offset, int flags,
                          int send_value)
 {
-    struct afp_server_metadata_request *request;
-    struct afp_server_metadata_response response;
-    size_t base = offsetof(struct afp_server_metadata_request, data);
+    struct afpsl_ipc_metadata_request *request;
+    struct afpsl_ipc_metadata_response response;
+    size_t base = offsetof(struct afpsl_ipc_metadata_request, data);
     size_t request_len = base + (send_value ? size : 0);
     int ret;
     size_t payload_size;
     size_t tail_content_size;
     size_t tail_size;
-    size_t payload_limit = command == AFP_SERVER_COMMAND_LISTXATTR
+    size_t payload_limit = command == AFPSL_IPC_COMMAND_LISTXATTR
                            ? AFP_SL_XATTR_LIST_MAX
                            : AFP_SL_METADATA_CHUNK;
     char *tail = NULL;
@@ -994,10 +994,10 @@ static int metadata_call(unsigned int command, afpc_volume_t *volid,
             || strnlen(path, sizeof(request->path)) >= sizeof(request->path)
             || size > payload_limit || (name
                                         && strnlen(name, sizeof(request->name)) >= sizeof(request->name))
-            || ((command == AFP_SERVER_COMMAND_GETXATTR
-                 || command == AFP_SERVER_COMMAND_SETXATTR
-                 || command == AFP_SERVER_COMMAND_REMOVEXATTR) && (!name || name[0] == '\0'))
-            || (command == AFP_SERVER_COMMAND_SETFINDERINFO && size != 32) || (!value
+            || ((command == AFPSL_IPC_COMMAND_GETXATTR
+                 || command == AFPSL_IPC_COMMAND_SETXATTR
+                 || command == AFPSL_IPC_COMMAND_REMOVEXATTR) && (!name || name[0] == '\0'))
+            || (command == AFPSL_IPC_COMMAND_SETFINDERINFO && size != 32) || (!value
                     && size > 0 && send_value)) {
         return -EINVAL;
     }
@@ -1045,9 +1045,9 @@ static int metadata_call(unsigned int command, afpc_volume_t *volid,
     }
 
     if (response.header.len < sizeof(response) + sizeof(struct
-            afp_server_log_footer)
+            afpsl_ipc_log_footer)
             || response.header.len > sizeof(response) + payload_limit +
-            AFP_SERVER_LOG_BUFFER_SIZE + sizeof(struct afp_server_log_footer)) {
+            AFPSL_IPC_LOG_BUFFER_SIZE + sizeof(struct afpsl_ipc_log_footer)) {
         close_connection();
         return -EPROTO;
     }
@@ -1092,7 +1092,7 @@ static int metadata_call(unsigned int command, afpc_volume_t *volid,
 int afp_sl_getxattr(afpc_volume_t *volid, const char *path, const char *name,
                     void *value, size_t size)
 {
-    return metadata_call(AFP_SERVER_COMMAND_GETXATTR, volid, path, name, value,
+    return metadata_call(AFPSL_IPC_COMMAND_GETXATTR, volid, path, name, value,
                          size, 0, 0, 0);
 }
 
@@ -1115,27 +1115,27 @@ int afp_sl_setxattr(afpc_volume_t *volid, const char *path, const char *name,
         wire_flags |= kXAttrReplace;
     }
 
-    return metadata_call(AFP_SERVER_COMMAND_SETXATTR, volid, path, name,
+    return metadata_call(AFPSL_IPC_COMMAND_SETXATTR, volid, path, name,
                          value, size, 0, wire_flags, 1);
 }
 
 int afp_sl_listxattr(afpc_volume_t *volid, const char *path, char *list,
                      size_t size)
 {
-    return metadata_call(AFP_SERVER_COMMAND_LISTXATTR, volid, path, NULL, list,
+    return metadata_call(AFPSL_IPC_COMMAND_LISTXATTR, volid, path, NULL, list,
                          size, 0, 0, 0);
 }
 
 int afp_sl_removexattr(afpc_volume_t *volid, const char *path, const char *name)
 {
-    return metadata_call(AFP_SERVER_COMMAND_REMOVEXATTR, volid, path, name, NULL,
+    return metadata_call(AFPSL_IPC_COMMAND_REMOVEXATTR, volid, path, name, NULL,
                          0, 0, 0, 0);
 }
 
 int afp_sl_getfinderinfo(afpc_volume_t *volid, const char *path, void *value,
                          size_t size)
 {
-    return metadata_call(AFP_SERVER_COMMAND_GETFINDERINFO, volid, path, NULL,
+    return metadata_call(AFPSL_IPC_COMMAND_GETFINDERINFO, volid, path, NULL,
                          value, size, 0, 0, 0);
 }
 
@@ -1143,20 +1143,20 @@ int afp_sl_setfinderinfo(afpc_volume_t *volid, const char *path,
                          const void *value,
                          size_t size)
 {
-    return metadata_call(AFP_SERVER_COMMAND_SETFINDERINFO, volid, path, NULL,
+    return metadata_call(AFPSL_IPC_COMMAND_SETFINDERINFO, volid, path, NULL,
                          (void *)value, size, 0, 0, 1);
 }
 
 int afp_sl_removefinderinfo(afpc_volume_t *volid, const char *path)
 {
-    return metadata_call(AFP_SERVER_COMMAND_REMOVEFINDERINFO, volid, path, NULL,
+    return metadata_call(AFPSL_IPC_COMMAND_REMOVEFINDERINFO, volid, path, NULL,
                          NULL, 0, 0, 0, 0);
 }
 
 int afp_sl_getresourcefork(afpc_volume_t *volid, const char *path, void *value,
                            size_t size, unsigned long long offset)
 {
-    return metadata_call(AFP_SERVER_COMMAND_GETRESOURCEFORK, volid, path, NULL,
+    return metadata_call(AFPSL_IPC_COMMAND_GETRESOURCEFORK, volid, path, NULL,
                          value, size, offset, 0, 0);
 }
 
@@ -1168,7 +1168,7 @@ int afp_sl_setresourcefork(afpc_volume_t *volid, const char *path,
         return -EFBIG;
     }
 
-    return metadata_call(AFP_SERVER_COMMAND_SETRESOURCEFORK, volid, path, NULL,
+    return metadata_call(AFPSL_IPC_COMMAND_SETRESOURCEFORK, volid, path, NULL,
                          (void *)value, size, offset, 0, 1);
 }
 
@@ -1179,13 +1179,13 @@ int afp_sl_truncateresourcefork(afpc_volume_t *volid, const char *path,
         return -EFBIG;
     }
 
-    return metadata_call(AFP_SERVER_COMMAND_TRUNCATERESOURCEFORK, volid, path,
+    return metadata_call(AFPSL_IPC_COMMAND_TRUNCATERESOURCEFORK, volid, path,
                          NULL, NULL, 0, size, 0, 0);
 }
 
 int afp_sl_removeresourcefork(afpc_volume_t *volid, const char *path)
 {
-    return metadata_call(AFP_SERVER_COMMAND_REMOVERESOURCEFORK, volid, path, NULL,
+    return metadata_call(AFPSL_IPC_COMMAND_REMOVERESOURCEFORK, volid, path, NULL,
                          NULL, 0, 0, 0, 0);
 }
 
@@ -1207,49 +1207,49 @@ enum afp_sl_recovery_action afp_sl_recovery_for_error(int result)
 static int server_result_to_errno(int result)
 {
     switch (result) {
-    case AFP_SERVER_RESULT_OKAY:
+    case AFPSL_IPC_RESULT_OK:
         return 0;
 
-    case AFP_SERVER_RESULT_ENOENT:
-    case AFP_SERVER_RESULT_MOUNTPOINT_NOEXIST:
+    case AFPSL_IPC_RESULT_ENOENT:
+    case AFPSL_IPC_RESULT_MOUNTPOINT_NOEXIST:
         return -ENOENT;
 
-    case AFP_SERVER_RESULT_NOTCONNECTED:
+    case AFPSL_IPC_RESULT_NOTCONNECTED:
         return -ENOTCONN;
 
-    case AFP_SERVER_RESULT_NOTATTACHED:
+    case AFPSL_IPC_RESULT_NOTATTACHED:
         return -ESTALE;
 
-    case AFP_SERVER_RESULT_NOVOLUME:
+    case AFPSL_IPC_RESULT_NOVOLUME:
         return -ENODEV;
 
-    case AFP_SERVER_RESULT_ALREADY_CONNECTED:
-    case AFP_SERVER_RESULT_ALREADY_ATTACHED:
-    case AFP_SERVER_RESULT_ALREADY_MOUNTED:
+    case AFPSL_IPC_RESULT_ALREADY_CONNECTED:
+    case AFPSL_IPC_RESULT_ALREADY_ATTACHED:
+    case AFPSL_IPC_RESULT_ALREADY_MOUNTED:
         return 0;
 
-    case AFP_SERVER_RESULT_NOAUTHENT:
-    case AFP_SERVER_RESULT_VOLPASS_NEEDED:
-    case AFP_SERVER_RESULT_ACCESS:
-    case AFP_SERVER_RESULT_MOUNTPOINT_PERM:
+    case AFPSL_IPC_RESULT_NOAUTHENT:
+    case AFPSL_IPC_RESULT_VOLPASS_NEEDED:
+    case AFPSL_IPC_RESULT_ACCESS:
+    case AFPSL_IPC_RESULT_MOUNTPOINT_PERM:
         return -EACCES;
 
-    case AFP_SERVER_RESULT_EXIST:
+    case AFPSL_IPC_RESULT_EXIST:
         return -EEXIST;
 
-    case AFP_SERVER_RESULT_ENOTEMPTY:
+    case AFPSL_IPC_RESULT_ENOTEMPTY:
         return -ENOTEMPTY;
 
-    case AFP_SERVER_RESULT_TIMEDOUT:
+    case AFPSL_IPC_RESULT_TIMEDOUT:
         return -ETIMEDOUT;
 
-    case AFP_SERVER_RESULT_DAEMON_ERROR:
+    case AFPSL_IPC_RESULT_DAEMON_ERROR:
         return -ECONNREFUSED;
 
-    case AFP_SERVER_RESULT_NOSERVER:
+    case AFPSL_IPC_RESULT_NOSERVER:
         return -EHOSTUNREACH;
 
-    case AFP_SERVER_RESULT_NOTSUPPORTED:
+    case AFPSL_IPC_RESULT_NOTSUPPORTED:
         return -ENOTSUP;
 
     default:
@@ -1260,16 +1260,16 @@ static int server_result_to_errno(int result)
 int afp_sl_creat(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                  mode_t mode)
 {
-    struct afp_server_creat_request request;
-    struct afp_server_creat_response response;
+    struct afpsl_ipc_creat_request request;
+    struct afpsl_ipc_creat_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
     int ret;
     memset(&request, 0, sizeof(request));
     request.header.close = 0;
-    request.header.len = sizeof(struct afp_server_creat_request);
-    request.header.command = AFP_SERVER_COMMAND_CREAT;
+    request.header.len = sizeof(struct afpsl_ipc_creat_request);
+    request.header.command = AFPSL_IPC_COMMAND_CREAT;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1298,16 +1298,16 @@ int afp_sl_creat(afpc_volume_t *volid, const char *path, struct afpc_url *url,
 int afp_sl_chmod(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                  mode_t mode)
 {
-    struct afp_server_chmod_request request;
-    struct afp_server_chmod_response response;
+    struct afpsl_ipc_chmod_request request;
+    struct afpsl_ipc_chmod_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
     int ret;
     memset(&request, 0, sizeof(request));
     request.header.close = 0;
-    request.header.len = sizeof(struct afp_server_chmod_request);
-    request.header.command = AFP_SERVER_COMMAND_CHMOD;
+    request.header.len = sizeof(struct afpsl_ipc_chmod_request);
+    request.header.command = AFPSL_IPC_COMMAND_CHMOD;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1337,15 +1337,15 @@ int afp_sl_rename(afpc_volume_t *volid, const char *path_from,
                   const char *path_to,
                   struct afpc_url *url)
 {
-    struct afp_server_rename_request request;
-    struct afp_server_rename_response response;
+    struct afpsl_ipc_rename_request request;
+    struct afpsl_ipc_rename_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     int ret;
     memset(&request, 0, sizeof(request));
     request.header.close = 0;
-    request.header.len = sizeof(struct afp_server_rename_request);
-    request.header.command = AFP_SERVER_COMMAND_RENAME;
+    request.header.len = sizeof(struct afpsl_ipc_rename_request);
+    request.header.command = AFPSL_IPC_COMMAND_RENAME;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1372,16 +1372,16 @@ int afp_sl_rename(afpc_volume_t *volid, const char *path_from,
 
 int afp_sl_unlink(afpc_volume_t *volid, const char *path, struct afpc_url *url)
 {
-    struct afp_server_unlink_request request;
-    struct afp_server_unlink_response response;
+    struct afpsl_ipc_unlink_request request;
+    struct afpsl_ipc_unlink_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
     int ret;
     memset(&request, 0, sizeof(request));
     request.header.close = 0;
-    request.header.len = sizeof(struct afp_server_unlink_request);
-    request.header.command = AFP_SERVER_COMMAND_UNLINK;
+    request.header.len = sizeof(struct afpsl_ipc_unlink_request);
+    request.header.command = AFPSL_IPC_COMMAND_UNLINK;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1410,16 +1410,16 @@ int afp_sl_truncate(afpc_volume_t *volid, const char *path,
                     struct afpc_url *url,
                     unsigned long long offset)
 {
-    struct afp_server_truncate_request request;
-    struct afp_server_truncate_response response;
+    struct afpsl_ipc_truncate_request request;
+    struct afpsl_ipc_truncate_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
     int ret;
     memset(&request, 0, sizeof(request));
     request.header.close = 0;
-    request.header.len = sizeof(struct afp_server_truncate_request);
-    request.header.command = AFP_SERVER_COMMAND_TRUNCATE;
+    request.header.len = sizeof(struct afpsl_ipc_truncate_request);
+    request.header.command = AFPSL_IPC_COMMAND_TRUNCATE;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1448,16 +1448,16 @@ int afp_sl_truncate(afpc_volume_t *volid, const char *path,
 int afp_sl_utime(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                  struct utimbuf *times)
 {
-    struct afp_server_utime_request request;
-    struct afp_server_utime_response response;
+    struct afpsl_ipc_utime_request request;
+    struct afpsl_ipc_utime_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
     int ret;
     memset(&request, 0, sizeof(request));
     request.header.close = 0;
-    request.header.len = sizeof(struct afp_server_utime_request);
-    request.header.command = AFP_SERVER_COMMAND_UTIME;
+    request.header.len = sizeof(struct afpsl_ipc_utime_request);
+    request.header.command = AFPSL_IPC_COMMAND_UTIME;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1486,16 +1486,16 @@ int afp_sl_utime(afpc_volume_t *volid, const char *path, struct afpc_url *url,
 int afp_sl_mkdir(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                  mode_t mode)
 {
-    struct afp_server_mkdir_request request;
-    struct afp_server_mkdir_response response;
+    struct afpsl_ipc_mkdir_request request;
+    struct afpsl_ipc_mkdir_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
     int ret;
     memset(&request, 0, sizeof(request));
     request.header.close = 0;
-    request.header.len = sizeof(struct afp_server_mkdir_request);
-    request.header.command = AFP_SERVER_COMMAND_MKDIR;
+    request.header.len = sizeof(struct afpsl_ipc_mkdir_request);
+    request.header.command = AFPSL_IPC_COMMAND_MKDIR;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1523,16 +1523,16 @@ int afp_sl_mkdir(afpc_volume_t *volid, const char *path, struct afpc_url *url,
 
 int afp_sl_rmdir(afpc_volume_t *volid, const char *path, struct afpc_url *url)
 {
-    struct afp_server_rmdir_request request;
-    struct afp_server_rmdir_response response;
+    struct afpsl_ipc_rmdir_request request;
+    struct afpsl_ipc_rmdir_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
     int ret;
     memset(&request, 0, sizeof(request));
     request.header.close = 0;
-    request.header.len = sizeof(struct afp_server_rmdir_request);
-    request.header.command = AFP_SERVER_COMMAND_RMDIR;
+    request.header.len = sizeof(struct afpsl_ipc_rmdir_request);
+    request.header.command = AFPSL_IPC_COMMAND_RMDIR;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1560,16 +1560,16 @@ int afp_sl_rmdir(afpc_volume_t *volid, const char *path, struct afpc_url *url)
 int afp_sl_statfs(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                   struct statvfs *stat)
 {
-    struct afp_server_statfs_request request;
-    struct afp_server_statfs_response response;
+    struct afpsl_ipc_statfs_request request;
+    struct afpsl_ipc_statfs_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
     int ret;
     memset(&request, 0, sizeof(request));
     request.header.close = 0;
-    request.header.len = sizeof(struct afp_server_statfs_request);
-    request.header.command = AFP_SERVER_COMMAND_STATFS;
+    request.header.len = sizeof(struct afpsl_ipc_statfs_request);
+    request.header.command = AFPSL_IPC_COMMAND_STATFS;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1596,7 +1596,7 @@ int afp_sl_statfs(afpc_volume_t *volid, const char *path, struct afpc_url *url,
         return ret;
     }
 
-    if (response.header.result == AFP_SERVER_RESULT_OKAY) {
+    if (response.header.result == AFPSL_IPC_RESULT_OK) {
         memcpy(stat, &response.stat, sizeof(struct statvfs));
     }
 
@@ -1605,12 +1605,12 @@ int afp_sl_statfs(afpc_volume_t *volid, const char *path, struct afpc_url *url,
 
 int afp_sl_close(afpc_volume_t *volid, unsigned int fileid)
 {
-    struct afp_server_close_request request;
-    struct afp_server_close_response response;
+    struct afpsl_ipc_close_request request;
+    struct afpsl_ipc_close_response response;
     int ret;
     request.header.close = 0; /* Keep connection open - just closing file */
-    request.header.len = sizeof(struct afp_server_close_request);
-    request.header.command = AFP_SERVER_COMMAND_CLOSE;
+    request.header.len = sizeof(struct afpsl_ipc_close_request);
+    request.header.command = AFPSL_IPC_COMMAND_CLOSE;
     memcpy(&request.volumeid, volid, sizeof(afpc_volume_t));
     request.fileid = fileid;
     ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
@@ -1628,8 +1628,8 @@ int afp_sl_readdir(afpc_volume_t * volid, const char * path,
                    int start, int count, unsigned int *numfiles,
                    struct afpc_file_info **data, int *eod)
 {
-    struct afp_server_readdir_request req;
-    struct afp_server_readdir_response * mainrep;
+    struct afpsl_ipc_readdir_request req;
+    struct afpsl_ipc_readdir_response * mainrep;
     int ret;
     const char *tmppath = path;
     unsigned int size;
@@ -1669,14 +1669,14 @@ int afp_sl_readdir(afpc_volume_t * volid, const char * path,
         unsigned int batch_count = requested_count - total_files;
         memset(&req, 0, sizeof(req));
         req.header.close = 0;
-        req.header.len = sizeof(struct afp_server_readdir_request);
-        req.header.command = AFP_SERVER_COMMAND_READDIR;
+        req.header.len = sizeof(struct afpsl_ipc_readdir_request);
+        req.header.command = AFPSL_IPC_COMMAND_READDIR;
         req.start = current_start;
         req.count = batch_count;
         memcpy(&req.volumeid, volid_p, sizeof(afpc_volume_t));
         strlcpy(req.path, tmppath, AFP_MAX_PATH);
 
-        if (send_command(sizeof(req), (char *)&req, AFP_SERVER_COMMAND_READDIR) < 0) {
+        if (send_command(sizeof(req), (char *)&req, AFPSL_IPC_COMMAND_READDIR) < 0) {
             if (buffer) {
                 free(buffer);
             }
@@ -1721,7 +1721,7 @@ int afp_sl_readdir(afpc_volume_t * volid, const char * path,
 
             buffer = new_buffer;
             /* Unpack variable length data */
-            const char *p = ((char *) mainrep) + sizeof(struct afp_server_readdir_response);
+            const char *p = ((char *) mainrep) + sizeof(struct afpsl_ipc_readdir_response);
             struct afpc_file_info *current_basic = buffer + total_files;
 
             for (unsigned int i = 0; i < batch_received; i++) {
@@ -1776,9 +1776,9 @@ int afp_sl_getvols(afpc_server_t serverid, struct afpc_url *url,
                    unsigned int start, unsigned int count, unsigned int *numvols,
                    struct afpc_volume_info *vols)
 {
-    struct afp_server_getvols_request req;
+    struct afpsl_ipc_getvols_request req;
     int ret;
-    struct afp_server_getvols_response * response;
+    struct afpsl_ipc_getvols_response * response;
 
     if (!serverid) {
         return -EINVAL;
@@ -1789,14 +1789,14 @@ int afp_sl_getvols(afpc_server_t serverid, struct afpc_url *url,
     }
 
     req.header.close = 0;
-    req.header.len = sizeof(struct afp_server_getvols_request);
-    req.header.command = AFP_SERVER_COMMAND_GETVOLS;
+    req.header.len = sizeof(struct afpsl_ipc_getvols_request);
+    req.header.command = AFPSL_IPC_COMMAND_GETVOLS;
     req.serverid = serverid;
     req.start = start;
     req.count = count;
     memcpy(&req.url, url, sizeof(*url));
 
-    if (send_command(sizeof(req), (char *) &req, AFP_SERVER_COMMAND_GETVOLS) < 0) {
+    if (send_command(sizeof(req), (char *) &req, AFPSL_IPC_COMMAND_GETVOLS) < 0) {
         return -ECONNRESET;
     }
 
@@ -1810,7 +1810,7 @@ int afp_sl_getvols(afpc_server_t serverid, struct afpc_url *url,
     ret = server_result_to_errno(response->header.result);
 
     if (ret == 0) {
-        memcpy(vols, ((char *) response) + sizeof(struct afp_server_getvols_response),
+        memcpy(vols, ((char *) response) + sizeof(struct afpsl_ipc_getvols_response),
                response->num * sizeof(struct afpc_volume_info));
         *numvols = response->num;
     }
@@ -1823,8 +1823,8 @@ static int afp_sl_connect_with_flags(struct afpc_url *url,
                                      unsigned int flags, afpc_server_t *id,
                                      char *loginmesg)
 {
-    struct afp_server_connect_request req;
-    const struct afp_server_connect_response *resp;
+    struct afpsl_ipc_connect_request req;
+    const struct afpsl_ipc_connect_response *resp;
     int ret;
 
     if (ensure_daemon_connection()) {
@@ -1832,13 +1832,13 @@ static int afp_sl_connect_with_flags(struct afpc_url *url,
     }
 
     req.header.close = 0;
-    req.header.len = sizeof(struct afp_server_connect_request);
-    req.header.command = AFP_SERVER_COMMAND_CONNECT;
+    req.header.len = sizeof(struct afpsl_ipc_connect_request);
+    req.header.command = AFPSL_IPC_COMMAND_CONNECT;
     memcpy(&req.url, url, sizeof(struct afpc_url));
     req.uam_mask = uam_mask;
     req.flags = flags;
 
-    if (send_command(sizeof(req), (char *)&req, AFP_SERVER_COMMAND_CONNECT) < 0) {
+    if (send_command(sizeof(req), (char *)&req, AFPSL_IPC_COMMAND_CONNECT) < 0) {
         return -ECONNRESET;
     }
 
@@ -1851,8 +1851,8 @@ static int afp_sl_connect_with_flags(struct afpc_url *url,
     resp = (void *) connection.data;
 
     /* Treat "already connected" as idempotent success. */
-    if (resp->header.result == AFP_SERVER_RESULT_OKAY
-            || resp->header.result == AFP_SERVER_RESULT_ALREADY_CONNECTED) {
+    if (resp->header.result == AFPSL_IPC_RESULT_OK
+            || resp->header.result == AFPSL_IPC_RESULT_ALREADY_CONNECTED) {
         if (id) {
             memcpy(id, &resp->serverid, sizeof(afpc_server_t));
         }
@@ -1884,7 +1884,7 @@ int afp_sl_resume(struct afpc_url *url, unsigned int uam_mask,
                   char *loginmesg)
 {
     return afp_sl_connect_with_flags(url, uam_mask,
-                                     AFP_SERVER_CONNECT_RESUME_EXISTING, id,
+                                     AFPSL_IPC_CONNECT_RESUME_EXISTING, id,
                                      loginmesg);
 }
 
@@ -1892,8 +1892,8 @@ int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
                   unsigned int volume_options, afpc_volume_t *volumeid,
                   enum afp_sl_attach_status *status)
 {
-    struct afp_server_attach_request req;
-    struct afp_server_attach_response * response;
+    struct afpsl_ipc_attach_request req;
+    struct afpsl_ipc_attach_response * response;
     int ret;
 
     if (status) {
@@ -1910,13 +1910,13 @@ int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
 
     response = (void *) connection.data;
     req.header.close = 0;
-    req.header.len = sizeof(struct afp_server_attach_request);
-    req.header.command = AFP_SERVER_COMMAND_ATTACH;
+    req.header.len = sizeof(struct afpsl_ipc_attach_request);
+    req.header.command = AFPSL_IPC_COMMAND_ATTACH;
     req.serverid = serverid;
     memcpy(&req.url, url, sizeof(struct afpc_url));
     req.volume_options = volume_options;
 
-    if (send_command(sizeof(req), (char *)&req, AFP_SERVER_COMMAND_ATTACH) < 0) {
+    if (send_command(sizeof(req), (char *)&req, AFPSL_IPC_COMMAND_ATTACH) < 0) {
         return -ECONNRESET;
     }
 
@@ -1926,13 +1926,13 @@ int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
         return -ECONNRESET;
     }
 
-    if (connection.len < sizeof(struct afp_server_attach_response)) {
+    if (connection.len < sizeof(struct afpsl_ipc_attach_response)) {
         return -EPROTO;
     }
 
     /* Treat "already attached" as success since we have a valid volumeid */
-    if (ret == AFP_SERVER_RESULT_OKAY
-            || ret == AFP_SERVER_RESULT_ALREADY_ATTACHED) {
+    if (ret == AFPSL_IPC_RESULT_OK
+            || ret == AFPSL_IPC_RESULT_ALREADY_ATTACHED) {
         if (volumeid) {
             memcpy(volumeid, &response->volumeid, sizeof(afpc_volume_t));
         }
@@ -1940,7 +1940,7 @@ int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
         return 0;
     }
 
-    if (ret == AFP_SERVER_RESULT_VOLPASS_NEEDED && status) {
+    if (ret == AFPSL_IPC_RESULT_VOLPASS_NEEDED && status) {
         *status = AFP_SL_ATTACH_STATUS_PASSWORD_REQUIRED;
     }
 
@@ -1949,7 +1949,7 @@ int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
 
 int afp_sl_detach(afpc_volume_t *volumeid, struct afpc_url * url)
 {
-    struct afp_server_detach_request req;
+    struct afpsl_ipc_detach_request req;
     int ret;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volumeid;
@@ -1969,11 +1969,11 @@ int afp_sl_detach(afpc_volume_t *volumeid, struct afpc_url * url)
     }
 
     req.header.close = 1;
-    req.header.len = sizeof(struct afp_server_detach_request);
-    req.header.command = AFP_SERVER_COMMAND_DETACH;
+    req.header.len = sizeof(struct afpsl_ipc_detach_request);
+    req.header.command = AFPSL_IPC_COMMAND_DETACH;
     memcpy(&req.volumeid, volid_p, sizeof(afpc_volume_t));
 
-    if (send_command(sizeof(req), (char *)&req, AFP_SERVER_COMMAND_DETACH) < 0) {
+    if (send_command(sizeof(req), (char *)&req, AFPSL_IPC_COMMAND_DETACH) < 0) {
         return -ECONNRESET;
     }
 
@@ -1993,8 +1993,8 @@ int afp_sl_changepw(struct afpc_url *url, const char *old_password,
                     const char *new_password,
                     enum afp_sl_password_change_status *status)
 {
-    struct afp_server_changepw_request req;
-    struct afp_server_changepw_response response;
+    struct afpsl_ipc_changepw_request req;
+    struct afpsl_ipc_changepw_response response;
     int ret;
 
     if (!url || !old_password || !new_password) {
@@ -2007,8 +2007,8 @@ int afp_sl_changepw(struct afpc_url *url, const char *old_password,
 
     memset(&req, 0, sizeof(req));
     req.header.close = 0;
-    req.header.len = sizeof(struct afp_server_changepw_request);
-    req.header.command = AFP_SERVER_COMMAND_CHANGEPW;
+    req.header.len = sizeof(struct afpsl_ipc_changepw_request);
+    req.header.command = AFPSL_IPC_COMMAND_CHANGEPW;
     memcpy(&req.url, url, sizeof(struct afpc_url));
     strlcpy(req.oldpasswd, old_password, AFP_MAX_PASSWORD_LEN);
     strlcpy(req.newpasswd, new_password, AFP_MAX_PASSWORD_LEN);
@@ -2019,11 +2019,11 @@ int afp_sl_changepw(struct afpc_url *url, const char *old_password,
         return ret;
     }
 
-    if (response.header.result == AFP_SERVER_RESULT_OKAY) {
+    if (response.header.result == AFPSL_IPC_RESULT_OK) {
         return 0;
     }
 
-    if (response.header.result != AFP_SERVER_RESULT_ERROR) {
+    if (response.header.result != AFPSL_IPC_RESULT_ERROR) {
         return server_result_to_errno(response.header.result);
     }
 
@@ -2097,12 +2097,12 @@ static int ensure_daemon_connection(void)
 
 int afp_sl_serverinfo(struct afpc_url * url, struct afpc_server_info * basic)
 {
-    struct afp_server_serverinfo_request req;
-    struct afp_server_serverinfo_response response;
+    struct afpsl_ipc_serverinfo_request req;
+    struct afpsl_ipc_serverinfo_response response;
     int ret;
     req.header.close = 0;
-    req.header.len = sizeof(struct afp_server_serverinfo_request);
-    req.header.command = AFP_SERVER_COMMAND_SERVERINFO;
+    req.header.len = sizeof(struct afpsl_ipc_serverinfo_request);
+    req.header.command = AFPSL_IPC_COMMAND_SERVERINFO;
     memcpy(&req.url, url, sizeof(struct afpc_url));
     ret = send_to_daemon((char *)&req, sizeof(req), (char *)&response,
                          sizeof(response));
@@ -2122,8 +2122,8 @@ int afp_sl_serverinfo(struct afpc_url * url, struct afpc_server_info * basic)
 
 int afp_sl_disconnect(afpc_server_t *id)
 {
-    struct afp_server_disconnect_request req;
-    struct afp_server_disconnect_response response;
+    struct afpsl_ipc_disconnect_request req;
+    struct afpsl_ipc_disconnect_response response;
     int ret;
 
     if (!id || !*id) {
@@ -2131,7 +2131,7 @@ int afp_sl_disconnect(afpc_server_t *id)
     }
 
     memset(&req, 0, sizeof(req));
-    req.header.command = AFP_SERVER_COMMAND_DISCONNECT;
+    req.header.command = AFPSL_IPC_COMMAND_DISCONNECT;
     req.header.len = sizeof(req);
     /* Close socket after this command */
     req.header.close = 1;

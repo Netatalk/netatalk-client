@@ -433,7 +433,7 @@ static int volopen(struct fuse_client * c, struct afp_volume * volume)
 
 static unsigned char process_suspend(struct fuse_client * c)
 {
-    struct afp_server_suspend_request req;
+    struct afpfsd_ipc_suspend_request req;
     struct afp_server * s;
     struct afp_volume * v = NULL;
     memcpy(&req, (void *)((uintptr_t)c->incoming_string + 1), sizeof(req));
@@ -451,12 +451,12 @@ static unsigned char process_suspend(struct fuse_client * c)
 
     log_for_client((void *) c, AFPFSD, LOG_ERR,
                    "No volume mounted at %s", req.mountpoint);
-    return AFP_SERVER_RESULT_ERROR;
+    return AFPFSD_IPC_RESULT_ERROR;
 found:
     s = v->server;
 
     if (afp_zzzzz(s)) {
-        return AFP_SERVER_RESULT_ERROR;
+        return AFPFSD_IPC_RESULT_ERROR;
     }
 
     afp_server_set_suspended(s, 1);
@@ -464,7 +464,7 @@ found:
     s->connect_state = SERVER_STATE_DISCONNECTED;
     log_for_client((void *) c, AFPFSD, LOG_NOTICE,
                    "Suspended connection for %s", req.mountpoint);
-    return AFP_SERVER_RESULT_OKAY;
+    return AFPFSD_IPC_RESULT_OK;
 }
 
 
@@ -487,7 +487,7 @@ static int afp_server_reconnect_loud(struct fuse_client * c,
 
 static unsigned char process_resume(struct fuse_client * c)
 {
-    struct afp_server_resume_request req;
+    struct afpfsd_ipc_resume_request req;
     struct afp_server * s;
     struct afp_volume * v = NULL;
     memcpy(&req, (void *)((uintptr_t)c->incoming_string + 1), sizeof(req));
@@ -505,7 +505,7 @@ static unsigned char process_resume(struct fuse_client * c)
 
     log_for_client((void *) c, AFPFSD, LOG_ERR,
                    "No volume mounted at %s", req.mountpoint);
-    return AFP_SERVER_RESULT_ERROR;
+    return AFPFSD_IPC_RESULT_ERROR;
 found:
     s = v->server;
     afp_server_set_suspended(s, 0);
@@ -514,17 +514,17 @@ found:
         afp_server_set_suspended(s, 1);
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Unable to reconnect for %s", req.mountpoint);
-        return AFP_SERVER_RESULT_ERROR;
+        return AFPFSD_IPC_RESULT_ERROR;
     }
 
     log_for_client((void *) c, AFPFSD, LOG_NOTICE,
                    "Resumed connection for %s", req.mountpoint);
-    return AFP_SERVER_RESULT_OKAY;
+    return AFPFSD_IPC_RESULT_OK;
 }
 
 static unsigned char process_unmount(struct fuse_client * c)
 {
-    struct afp_server_unmount_request req;
+    struct afpfsd_ipc_unmount_request req;
     struct afp_server * s;
     struct afp_volume * v;
     int j = 0;
@@ -546,48 +546,48 @@ found:
     if (v->mounted != AFP_VOLUME_MOUNTED) {
         log_for_client((void *) c, AFPFSD, LOG_NOTICE,
                        "%s was not mounted", v->mountpoint);
-        return AFP_SERVER_RESULT_ERROR;
+        return AFPFSD_IPC_RESULT_ERROR;
     }
 
     if (afp_unmount_volume(v) != 0) {
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Unmount failed for %s; try using 'umount' or 'fusermount -u'", v->mountpoint);
-        return AFP_SERVER_RESULT_ERROR;
+        return AFPFSD_IPC_RESULT_ERROR;
     }
 
     log_for_client((void *) c, AFPFSD, LOG_NOTICE,
                    "Volume %s unmounted", v->mountpoint);
-    return AFP_SERVER_RESULT_OKAY;
+    return AFPFSD_IPC_RESULT_OK;
 notfound:
     log_for_client((void *)c, AFPFSD, LOG_WARNING,
                    "Netatalk Client doesn't have anything mounted on %s", req.mountpoint);
-    return AFP_SERVER_RESULT_ERROR;
+    return AFPFSD_IPC_RESULT_ERROR;
 }
 
 static unsigned char process_ping(struct fuse_client * c)
 {
     log_for_client((void *)c, AFPFSD, LOG_INFO,
                    "Ping!");
-    return AFP_SERVER_RESULT_OKAY;
+    return AFPFSD_IPC_RESULT_OK;
 }
 
 static unsigned char process_exit(struct fuse_client * c)
 {
     log_for_client((void *)c, AFPFSD, LOG_INFO,
                    "Exiting");
-    return AFP_SERVER_RESULT_OKAY;
+    return AFPFSD_IPC_RESULT_OK;
 }
 
 static unsigned char process_status(struct fuse_client * c)
 {
     struct afp_server * s;
-    struct afp_server_status_request req;
+    struct afpfsd_ipc_status_request req;
     char text[40960];
     int len;
 
     if (((unsigned long) c->incoming_size + 1) < sizeof(struct
-            afp_server_status_request)) {
-        return AFP_SERVER_RESULT_ERROR;
+            afpfsd_ipc_status_request)) {
+        return AFPFSD_IPC_RESULT_ERROR;
     }
 
     /* Read the request to check if mountpoint was specified */
@@ -598,7 +598,7 @@ static unsigned char process_status(struct fuse_client * c)
         len = sizeof(text);
 
         if (afp_status_header(text, &len) < 0) {
-            return AFP_SERVER_RESULT_ERROR;
+            return AFPFSD_IPC_RESULT_ERROR;
         }
 
         fuse_client_append(c, text);
@@ -612,12 +612,12 @@ static unsigned char process_status(struct fuse_client * c)
         fuse_client_append(c, text);
     }
 
-    return AFP_SERVER_RESULT_OKAY;
+    return AFPFSD_IPC_RESULT_OK;
 }
 
 static int process_mount(struct fuse_client * c)
 {
-    struct afp_server_mount_request req;
+    struct afpfsd_ipc_mount_request req;
     struct afp_server * s = NULL;
     struct afp_volume * volume;
     struct afp_connection_request conn_req;
@@ -625,7 +625,7 @@ static int process_mount(struct fuse_client * c)
     struct stat lstat;
 
     if (((unsigned long) c->incoming_size - 1) < sizeof(struct
-            afp_server_mount_request)) {
+            afpfsd_ipc_mount_request)) {
         goto error;
     }
 
@@ -784,7 +784,7 @@ static int process_mount(struct fuse_client * c)
             goto error;
         }
     }
-    return AFP_SERVER_RESULT_OKAY;
+    return AFPFSD_IPC_RESULT_OK;
 error:
 
     if ((s) && (!something_is_mounted(s))) {
@@ -792,7 +792,7 @@ error:
     }
 
     signal_main_thread();
-    return AFP_SERVER_RESULT_ERROR;
+    return AFPFSD_IPC_RESULT_ERROR;
 }
 
 
@@ -800,36 +800,36 @@ static void *process_command_thread(void * other)
 {
     struct fuse_client * c = other;
     int ret = 0;
-    char tosend[sizeof(struct afp_server_response) + MAX_CLIENT_RESPONSE];
-    struct afp_server_response response;
+    char tosend[sizeof(struct afpfsd_ipc_response) + AFPFSD_IPC_MAX_RESPONSE];
+    struct afpfsd_ipc_response response;
     memset(c->client_string, 0, sizeof(c->client_string));
 
     switch (c->incoming_string[0]) {
-    case AFP_SERVER_COMMAND_MOUNT:
+    case AFPFSD_IPC_COMMAND_MOUNT:
         ret = process_mount(c);
         break;
 
-    case AFP_SERVER_COMMAND_STATUS:
+    case AFPFSD_IPC_COMMAND_STATUS:
         ret = process_status(c);
         break;
 
-    case AFP_SERVER_COMMAND_UNMOUNT:
+    case AFPFSD_IPC_COMMAND_UNMOUNT:
         ret = process_unmount(c);
         break;
 
-    case AFP_SERVER_COMMAND_SUSPEND:
+    case AFPFSD_IPC_COMMAND_SUSPEND:
         ret = process_suspend(c);
         break;
 
-    case AFP_SERVER_COMMAND_RESUME:
+    case AFPFSD_IPC_COMMAND_RESUME:
         ret = process_resume(c);
         break;
 
-    case AFP_SERVER_COMMAND_PING:
+    case AFPFSD_IPC_COMMAND_PING:
         ret = process_ping(c);
         break;
 
-    case AFP_SERVER_COMMAND_EXIT:
+    case AFPFSD_IPC_COMMAND_EXIT:
         ret = process_exit(c);
         break;
 
@@ -850,9 +850,9 @@ static void *process_command_thread(void * other)
         perror("Writing");
     }
 
-    if (command_result == AFP_SERVER_RESULT_OKAY
-            && (command == AFP_SERVER_COMMAND_EXIT ||
-                (command == AFP_SERVER_COMMAND_UNMOUNT &&
+    if (command_result == AFPFSD_IPC_RESULT_OK
+            && (command == AFPFSD_IPC_COMMAND_EXIT ||
+                (command == AFPFSD_IPC_COMMAND_UNMOUNT &&
                  afp_get_auto_shutdown_on_unmount() &&
                  get_server_base() == NULL))) {
         trigger_exit();

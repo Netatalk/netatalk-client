@@ -50,30 +50,24 @@ int main(int argc, char **argv)
     struct stat path_stat;
     int fd;
     int second_fd;
-
     test_tap_init(argc, argv);
     CHECK(mkdtemp(temporary) != NULL);
     CHECK(snprintf(path, sizeof(path), "%s/socket", temporary)
           < (int)sizeof(path));
-
     CHECK(daemon_socket_cleanup_stale(path) == 0);
     fd = daemon_socket_create(path, 2);
     CHECK(fd >= 0);
     CHECK(lstat(path, &path_stat) == 0 && S_ISSOCK(path_stat.st_mode));
-
     CHECK(daemon_socket_cleanup_stale(path) == -1);
     second_fd = daemon_socket_create(path, 2);
     CHECK(second_fd == -1);
     CHECK(lstat(path, &path_stat) == 0 && S_ISSOCK(path_stat.st_mode));
-
     daemon_socket_close(fd, path);
     CHECK(lstat(path, &path_stat) != 0 && errno == ENOENT);
-
     CHECK(create_stale_socket(path) == 0);
     CHECK(lstat(path, &path_stat) == 0 && S_ISSOCK(path_stat.st_mode));
     CHECK(daemon_socket_cleanup_stale(path) == 0);
     CHECK(lstat(path, &path_stat) != 0 && errno == ENOENT);
-
     fd = open(path, O_CREAT | O_WRONLY, 0600);
     CHECK(fd >= 0);
     CHECK(close(fd) == 0);

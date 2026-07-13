@@ -71,7 +71,7 @@ static void daemon_log_for_client(void * priv,
     }
 
     if (c) {
-        struct afp_server_log_record record;
+        struct afpsl_ipc_log_record record;
         size_t message_len = strlen(message);
         /* Thread-safe access to outgoing_string */
         pthread_mutex_lock(&c->command_string_mutex);
@@ -264,7 +264,7 @@ int main(int argc, char *argv[])
     daemon_set_log_method(new_log_method);
     daemon_set_log_level(log_level);
     snprintf(commandfilename, sizeof(commandfilename), "%s-%d",
-             SERVER_SL_SOCKET_PATH, geteuid());
+             AFPSL_IPC_SOCKET_PATH, geteuid());
 
     if ((!dofork) || (fork() == 0)) {
         if (dofork) {

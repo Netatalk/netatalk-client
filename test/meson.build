@@ -7,6 +7,15 @@ public_headers_test = executable(
 
 test('public headers compile standalone', public_headers_test)
 
+ipc_namespaces_test = executable(
+    'test_ipc_namespaces',
+    sources: ['test_ipc_namespaces.c'],
+    include_directories: incdir,
+    c_args: cflags,
+)
+
+test('IPC namespaces and wire compatibility', ipc_namespaces_test)
+
 transport_api_test = executable(
     'test_transport_api',
     sources: ['test_transport_api.c'],
