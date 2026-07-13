@@ -716,6 +716,9 @@ static int fuse_chmod(const char * path, mode_t mode)
                        "We don't support these permission bits on this server");
         ret = 0;
         break;
+
+    default:
+        break;
     }
 
     return ret;
