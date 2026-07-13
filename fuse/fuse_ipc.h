@@ -10,6 +10,7 @@
 #define SERVER_FUSE_SOCKET_PATH "/tmp/afp_server"
 
 /* Internal command for FUSE manager daemon */
+#define AFP_SERVER_COMMAND_PING 11
 #define AFP_SERVER_COMMAND_SPAWN_MOUNT 100
 
 struct afp_server_resume_request {

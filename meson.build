@@ -233,6 +233,7 @@ if not with_afpcmd and not with_fuse
     )
 endif
 
+subdir('common')
 subdir('lib')
 subdir('daemon')
 subdir('cmdline')

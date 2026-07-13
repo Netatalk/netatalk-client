@@ -15,6 +15,10 @@
 #include "stateless_internal.h"
 #include "tap.h"
 
+#ifdef AFP_SERVER_COMMAND_PING
+#error "Ping must not be part of the stateless IPC protocol"
+#endif
+
 struct capture {
     int calls;
     int level;
