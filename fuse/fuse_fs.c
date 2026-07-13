@@ -311,7 +311,7 @@ static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
                         off_t offset _U_, struct fuse_file_info *fi _U_)
 #endif
 {
-    struct afp_file_info * filebase = NULL, *p;
+    struct afp_file_info * filebase = NULL;
     int ret;
     struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** readdir of %s", path);
@@ -328,7 +328,7 @@ static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         goto error;
     }
 
-    for (p = filebase; p; p = p->next) {
+    for (struct afp_file_info *p = filebase; p; p = p->next) {
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30 || (FUSE_USE_VERSION >= 30 && FUSE_NEW_API)
         filler(buf, p->name, NULL, 0, 0);
 #else
@@ -395,7 +395,7 @@ static int fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 
 static int fuse_flush(const char *path, struct fuse_file_info *fi)
 {
-    struct afp_file_info *fp = (struct afp_file_info *) fi->fh;
+    const struct afp_file_info *fp = (struct afp_file_info *) fi->fh;
     struct afp_volume * volume = fuse_get_context()->private_data;
     int ret = 0;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
