@@ -43,8 +43,7 @@
 
 #include "daemon.h"
 #include "fuse_error.h"
-#include "fuse_int.h"
-#include "fuse_internal.h"
+#include "fuse_fs.h"
 #include "fuse_ipc.h"
 
 #if defined(__APPLE__)
@@ -53,16 +52,26 @@
 #define FUSE_DEVICE "/dev/fuse"
 #endif
 
+#define AFPFSD_CLIENT_INCOMING_BUF (2048 + 256)
+
+struct afpfsd_client {
+    char incoming_string[AFPFSD_CLIENT_INCOMING_BUF];
+    int incoming_size;
+    char client_string[AFPFSD_IPC_MAX_RESPONSE];
+    int fd;
+    struct afpfsd_client *next;
+};
+
 static int fuse_log_method = LOG_METHOD_SYSLOG;
 static int fuse_log_min_rank = 2; /* Default rank: notice */
-static struct fuse_client *client_base = NULL;
+static struct afpfsd_client *client_base = NULL;
 
-static int volopen(struct fuse_client * c, struct afp_volume * volume);
-static int process_command(struct fuse_client * c);
-static struct afp_volume *mount_volume(struct fuse_client * c,
+static int volopen(struct afpfsd_client * c, struct afp_volume * volume);
+static int process_command(struct afpfsd_client * c);
+static struct afp_volume *mount_volume(struct afpfsd_client * c,
                                        struct afp_server * server, char *volname, char *volpassword) ;
 
-static unsigned int fuse_client_response_len(struct fuse_client *c)
+static unsigned int fuse_client_response_len(struct afpfsd_client *c)
 {
     size_t len = strnlen(c->client_string, sizeof(c->client_string));
 
@@ -74,7 +83,7 @@ static unsigned int fuse_client_response_len(struct fuse_client *c)
     return (unsigned int)len;
 }
 
-static void fuse_client_append(struct fuse_client *c, const char *text)
+static void fuse_client_append(struct afpfsd_client *c, const char *text)
 {
     size_t len = fuse_client_response_len(c);
     size_t remaining;
@@ -90,7 +99,7 @@ static void fuse_client_append(struct fuse_client *c, const char *text)
     c->client_string[len + text_len] = '\0';
 }
 
-static void fuse_client_append_line(struct fuse_client *c, const char *text)
+static void fuse_client_append_line(struct afpfsd_client *c, const char *text)
 {
     size_t len;
     fuse_client_append(c, text);
@@ -115,9 +124,9 @@ void fuse_set_log_level(int loglevel)
 }
 
 
-static int remove_client(struct fuse_client * toremove)
+static int remove_client(struct afpfsd_client * toremove)
 {
-    struct fuse_client * c, *prev = NULL;
+    struct afpfsd_client * c, *prev = NULL;
 
     for (c = client_base; c; c = c->next) {
         if (c == toremove) {
@@ -140,7 +149,7 @@ static int remove_client(struct fuse_client * toremove)
 
 static int fuse_add_client(int fd)
 {
-    struct fuse_client * c, *newc;
+    struct afpfsd_client * c, *newc;
 
     if ((newc = malloc(sizeof(*newc))) == NULL) {
         goto error;
@@ -165,7 +174,7 @@ error:
 
 static int fuse_process_client_fds(fd_set *set, int max_fd _U_)
 {
-    struct fuse_client * c;
+    struct afpfsd_client * c;
 
     for (c = client_base; c; c = c->next) {
         if (FD_ISSET(c->fd, set)) {
@@ -230,7 +239,7 @@ static void fuse_log_for_client(void * priv,
                                 enum logtypes logtype _U_,
                                 int loglevel, const char *message)
 {
-    struct fuse_client * c = priv;
+    struct afpfsd_client * c = priv;
     int type_rank = loglevel_to_rank(loglevel);
 
     if (type_rank < fuse_log_min_rank) {
@@ -252,7 +261,7 @@ static void fuse_log_for_client(void * priv,
 
 struct start_fuse_thread_arg {
     struct afp_volume *volume;
-    struct fuse_client *client;
+    struct afpfsd_client *client;
     int wait;
     int fuse_result;
     int fuse_errno;
@@ -398,7 +407,7 @@ static void *start_fuse_thread(void * other)
     /* NULL-terminate the argument array for FUSE 3 compatibility */
     fuseargv[fuseargc] = NULL;
     arg->fuse_result =
-        afp_register_fuse(fuseargc, (char **) fuseargv, volume);
+        afp_fuse_main(fuseargc, (char **) fuseargv, volume);
     arg->fuse_errno = errno;
     arg->wait = 0;
     pthread_cond_signal(&volume->startup_condition_cond);
@@ -416,7 +425,7 @@ static void *start_fuse_thread(void * other)
     return NULL;
 }
 
-static int volopen(struct fuse_client * c, struct afp_volume * volume)
+static int volopen(struct afpfsd_client * c, struct afp_volume * volume)
 {
     char mesg[MAX_ERROR_LEN];
     unsigned int l = 0;
@@ -431,7 +440,7 @@ static int volopen(struct fuse_client * c, struct afp_volume * volume)
 }
 
 
-static unsigned char process_suspend(struct fuse_client * c)
+static unsigned char process_suspend(struct afpfsd_client * c)
 {
     struct afpfsd_ipc_suspend_request req;
     struct afp_server * s;
@@ -468,7 +477,7 @@ found:
 }
 
 
-static int afp_server_reconnect_loud(struct fuse_client * c,
+static int afp_server_reconnect_loud(struct afpfsd_client * c,
                                      struct afp_server * s)
 {
     char mesg[MAX_ERROR_LEN];
@@ -485,7 +494,7 @@ static int afp_server_reconnect_loud(struct fuse_client * c,
 }
 
 
-static unsigned char process_resume(struct fuse_client * c)
+static unsigned char process_resume(struct afpfsd_client * c)
 {
     struct afpfsd_ipc_resume_request req;
     struct afp_server * s;
@@ -522,7 +531,7 @@ found:
     return AFPFSD_IPC_RESULT_OK;
 }
 
-static unsigned char process_unmount(struct fuse_client * c)
+static unsigned char process_unmount(struct afpfsd_client * c)
 {
     struct afpfsd_ipc_unmount_request req;
     struct afp_server * s;
@@ -564,21 +573,21 @@ notfound:
     return AFPFSD_IPC_RESULT_ERROR;
 }
 
-static unsigned char process_ping(struct fuse_client * c)
+static unsigned char process_ping(struct afpfsd_client * c)
 {
     log_for_client((void *)c, AFPFSD, LOG_INFO,
                    "Ping!");
     return AFPFSD_IPC_RESULT_OK;
 }
 
-static unsigned char process_exit(struct fuse_client * c)
+static unsigned char process_exit(struct afpfsd_client * c)
 {
     log_for_client((void *)c, AFPFSD, LOG_INFO,
                    "Exiting");
     return AFPFSD_IPC_RESULT_OK;
 }
 
-static unsigned char process_status(struct fuse_client * c)
+static unsigned char process_status(struct afpfsd_client * c)
 {
     struct afp_server * s;
     struct afpfsd_ipc_status_request req;
@@ -615,7 +624,7 @@ static unsigned char process_status(struct fuse_client * c)
     return AFPFSD_IPC_RESULT_OK;
 }
 
-static int process_mount(struct fuse_client * c)
+static int process_mount(struct afpfsd_client * c)
 {
     struct afpfsd_ipc_mount_request req;
     struct afp_server * s = NULL;
@@ -798,7 +807,7 @@ error:
 
 static void *process_command_thread(void * other)
 {
-    struct fuse_client * c = other;
+    struct afpfsd_client * c = other;
     int ret = 0;
     char tosend[sizeof(struct afpfsd_ipc_response) + AFPFSD_IPC_MAX_RESPONSE];
     struct afpfsd_ipc_response response;
@@ -869,13 +878,13 @@ static void *process_command_thread(void * other)
     return NULL;
 }
 
-static int process_command(struct fuse_client * c)
+static int process_command(struct afpfsd_client * c)
 {
     int ret;
     int fd;
 
     do {
-        ret = read(c->fd, &c->incoming_string, AFP_CLIENT_INCOMING_BUF);
+        ret = read(c->fd, &c->incoming_string, AFPFSD_CLIENT_INCOMING_BUF);
     } while (ret < 0 && errno == EINTR);
 
     if (ret <= 0) {
@@ -900,7 +909,7 @@ out:
 }
 
 
-static struct afp_volume *mount_volume(struct fuse_client *c,
+static struct afp_volume *mount_volume(struct afpfsd_client *c,
                                        struct afp_server *server,
                                        char *volname,
                                        char *volpassword)
