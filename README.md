@@ -25,6 +25,22 @@ other applications that need to browse AFP shares.
 
 ### FUSE
 
+Discover AFP servers advertised on the local network with Zeroconf:
+
+    % afp_client discover
+    NAME                           TARGET                                PORT   MODEL
+    Time Capsule                   Time-Capsule.local                     548   TimeCapsule8,119
+    afpserver                      afpserver.local                        548   Macmini
+
+Mount an advertised service by its exact instance name. This is
+non-interactive; use `afpcmd --browse` when you want a live picker:
+
+    % afp_client mount --service "Office File Server" --user myuser \
+        --volume "File Sharing" /home/myuser/fusemount
+
+Omit `--volume` to authenticate and list the volumes available to that user.
+The trailing mountpoint may also be omitted because no filesystem is mounted.
+
 Mount the *File Sharing* volume from afpserver.local on /home/myuser/fusemount
 authenticated as user *myuser* (you will be prompted for the password):
 
@@ -52,9 +68,25 @@ colons, or other special characters are present.
 ### Command line client
 
 The *afpcmd* command line client allows you to interactively access AFP shares.
-In the most basic use case, it takes an AFP URL as argument.
+With `--browse`, it shows a live list of AFP services advertised through
+Bonjour/DNS-SD or Avahi. Select a service number to connect, or `q` to quit.
+The picker lists services only; pass an AFP URL directly when connecting to
+a host that is not advertised.
 
-Open volume File Sharing on afpserver.local:
+    $ afpcmd --browse
+    Discovered AFP servers
+
+      1  Office File Server
+      2  Time Capsule
+
+      q  Quit
+
+    Server: 1
+
+After selection, `afpcmd` prompts for a username and password.
+
+You can also invoke it with an AFP URL directly, this example connects to
+the *File Sharing* volume on *afpserver.local* as user *myuser*:
 
     $ afpcmd "afp://myuser@afpserver.local/File Sharing"
     Password: [input hidden]
@@ -65,8 +97,13 @@ Connect anonymously to afpserver.local, list all volumes available to guest user
 
     $ afpcmd "afp://afpserver.local"
     Connected to server afpserver
-    Not attached to a volume. Run the 'ls' command to list available volumes
-    afpcmd: cd Dropbox
+    Available volumes on afpserver:
+
+      1  Dropbox
+
+      q  Quit
+
+    afpcmd: 1
     Attached to volume Dropbox
     afpcmd: ls
     -rw-r--r--   6148 2025-07-11 14:09 .DS_Store
@@ -106,9 +143,10 @@ library APIs, behavior, and supported features nevertheless exist.
 - To accommodate the above, the Stateless client controller daemon has been renamed to *afpsld*,
   reserving *afpfsd* for the FUSE controller daemon
 - *mount_afp* has been renamed to *mount_afpfs* to avoid namespace conflict with the macOS *mount_afp* command
-- The *afpcmd* TUI client has to be invoked with an AFP URL, and the interactive **connect** command has been
-  removed; Conversely, when you execute the **disconnect** command the server session will be
-  terminated and *afpcmd* will shut down
+- The *afpcmd* TUI client can browse Zeroconf-advertised AFP services.
+  The interactive **connect** command has been removed; conversely,
+  when you execute **disconnect**, the server session is terminated
+  and *afpcmd* shuts down rather than returning to the connect prompt
 - The *afpfsd* FUSE controller daemon has been rewritten to have one process per FUSE mount,
   with a manager process to handle mount requests and manage the afpfsd processes
   This allows for better isolation and stability of FUSE mounts compared to a single process handling all mounts.

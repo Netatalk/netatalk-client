@@ -133,6 +133,88 @@ with_afpcmd = readline_dep.found() or editline_dep.found()
 with_fuse = get_option('enable-fuse') and fuse_dep.found()
 with_crypt = gcrypt_dep.found()
 
+# Check for optional Zeroconf discovery support. DNS-SD is part of libSystem
+# on macOS, while other implementations commonly provide libdns_sd.
+zeroconf_option = get_option('zeroconf')
+zeroconf_backend_option = get_option('zeroconf-backend')
+avahi_dep = dependency('avahi-client', required: false)
+dnssd_lib = cc.find_library('dns_sd', required: false)
+dnssd_dependencies = []
+
+if dnssd_lib.found()
+    dnssd_dependencies += dnssd_lib
+endif
+
+have_dnssd = (
+    cc.has_header('dns_sd.h')
+    and cc.has_function(
+        'DNSServiceBrowse',
+        prefix: '#include <dns_sd.h>',
+        dependencies: dnssd_dependencies,
+    )
+)
+
+have_dnssd_getaddrinfo = (
+    have_dnssd
+    and cc.has_function(
+        'DNSServiceGetAddrInfo',
+        prefix: '#include <dns_sd.h>',
+        dependencies: dnssd_dependencies,
+    )
+)
+
+zeroconf_backend = 'stub'
+zeroconf_dependencies = []
+zeroconf_cargs = []
+
+if not zeroconf_option.disabled()
+    if zeroconf_backend_option == 'avahi'
+        if avahi_dep.found()
+            zeroconf_backend = 'avahi'
+            zeroconf_dependencies += avahi_dep
+        elif zeroconf_option.enabled()
+            error(
+                'Avahi Zeroconf backend requested but avahi-client was not found',
+            )
+        endif
+    elif zeroconf_backend_option == 'dnssd'
+        if have_dnssd
+            zeroconf_backend = 'dnssd'
+            zeroconf_dependencies += dnssd_dependencies
+        elif zeroconf_option.enabled()
+            error(
+                'DNS-SD Zeroconf backend requested but dns_sd.h or DNSServiceBrowse was not found',
+            )
+        endif
+    elif host_os == 'darwin'
+        if have_dnssd
+            zeroconf_backend = 'dnssd'
+            zeroconf_dependencies += dnssd_dependencies
+        elif avahi_dep.found()
+            zeroconf_backend = 'avahi'
+            zeroconf_dependencies += avahi_dep
+        endif
+    else
+        if avahi_dep.found()
+            zeroconf_backend = 'avahi'
+            zeroconf_dependencies += avahi_dep
+        elif have_dnssd
+            zeroconf_backend = 'dnssd'
+            zeroconf_dependencies += dnssd_dependencies
+        endif
+    endif
+endif
+
+with_zeroconf = zeroconf_backend != 'stub'
+
+if zeroconf_backend == 'dnssd' and have_dnssd_getaddrinfo
+    zeroconf_cargs += '-DHAVE_DNSSD_GETADDRINFO'
+endif
+
+if zeroconf_option.enabled() and not with_zeroconf
+    error('Zeroconf discovery enabled but neither Avahi nor DNS-SD is available')
+endif
+
 # Check for extended attribute headers (platform-dependent)
 if cc.has_header('sys/xattr.h')
     cflags += '-DHAVE_SYS_XATTR_H'
@@ -234,6 +316,7 @@ if not with_afpcmd and not with_fuse
 endif
 
 subdir('common')
+subdir('discovery')
 subdir('lib')
 subdir('daemon')
 subdir('cmdline')
@@ -281,5 +364,7 @@ summary_info = {
     'AFP command line client': with_afpcmd,
     'AFP FUSE client': with_fuse,
     'Encrypted UAMs': with_crypt,
+    'Zeroconf discovery': with_zeroconf,
+    'Zeroconf backend': zeroconf_backend,
 }
 summary(summary_info, bool_yn: true, section: 'Options:')

@@ -156,6 +156,7 @@ static void cmdline_sanitize_text(const char *text, char *sanitized,
 static afpc_volume_t vol_id = NULL;
 static afpc_server_t server_id = NULL;
 static int connected = 0;
+static int quit_requested = 0;
 static enum afp_metadata_mode transfer_metadata_mode = AFP_METADATA_AUTO;
 static int metadata_warning_emitted = 0;
 
@@ -438,8 +439,23 @@ static int cmdline_getpass(void)
             (url.username[0] != '\0'
              && strcmp(url.username, "nobody") != 0
              && url.password[0] == '\0')) {
-        passwd = getpass("Password:");
-        strlcpy(url.password, passwd, AFPC_MAX_PASSWORD_LEN);
+        size_t password_len;
+        passwd = getpass("Password: ");
+
+        if (!passwd) {
+            return -1;
+        }
+
+        password_len = strlen(passwd);
+
+        if (password_len >= sizeof(url.password)) {
+            cmdline_secure_clear(passwd, password_len);
+            fprintf(stderr, "Password is too long.\n");
+            return -1;
+        }
+
+        memcpy(url.password, passwd, password_len + 1);
+        cmdline_secure_clear(passwd, password_len);
     }
 
     return 0;
@@ -953,7 +969,91 @@ static unsigned int directory_entries_per_screen(void)
     return (unsigned int)ws.ws_row - 1U;
 }
 
-static void list_volumes(void)
+static int attach_named_volume(const char *volume_name)
+{
+    unsigned int volume_options = AFP_SL_VOLUME_NO_LOCKING;
+    int ret;
+
+    if (strlcpy(url.volumename, volume_name, sizeof(url.volumename))
+            >= sizeof(url.volumename)) {
+        printf("Volume name is too long\n");
+        return -1;
+    }
+
+    ret = attach_volume_with_password_prompt(server_id, &vol_id,
+          volume_options);
+
+    if (ret != 0
+            && is_recoverable_session_error(ret)
+            && recover_session(0, 0) == 0) {
+        ret = attach_volume_with_password_prompt(server_id, &vol_id,
+              volume_options);
+    }
+
+    if (ret != 0) {
+        if (ret == -EACCES) {
+            printf("Could not attach to volume %s: authentication failed\n",
+                   url.volumename);
+        } else if (ret == -ENODEV) {
+            printf("Volume %s does not exist on this server\n",
+                   url.volumename);
+        } else {
+            printf("Could not attach to volume %s\n", url.volumename);
+        }
+
+        url.volumename[0] = '\0';
+        return -1;
+    }
+
+    printf("Attached to volume %s\n", url.volumename);
+    snprintf(curdir, sizeof(curdir), "/");
+    return 0;
+}
+
+static int parse_volume_slot(const char *line, unsigned int numvols,
+                             unsigned int *index)
+{
+    char *end;
+    const char *start = line;
+    unsigned long slot;
+
+    while (isspace((unsigned char) * start)) {
+        start++;
+    }
+
+    if (!isdigit((unsigned char) * start)) {
+        return -EINVAL;
+    }
+
+    errno = 0;
+    slot = strtoul(start, &end, 10);
+
+    while (isspace((unsigned char) * end)) {
+        end++;
+    }
+
+    if (errno != 0 || end == start || *end != '\0'
+            || slot == 0 || slot > numvols) {
+        return -EINVAL;
+    }
+
+    *index = (unsigned int)slot - 1;
+    return 0;
+}
+
+static void render_volume_picker(const struct afpc_volume_info *vols,
+                                 unsigned int numvols)
+{
+    printf("\nAvailable volumes on %s:\n\n", url.servername);
+
+    for (unsigned int i = 0; i < numvols; i++) {
+        printf("  %u  %s\n", i + 1, vols[i].volume_name_printable);
+    }
+
+    puts("\n  q  Quit\n");
+}
+
+static int pick_volume(void)
 {
     unsigned int numvols = 0;
     struct afpc_volume_info *vols;
@@ -963,7 +1063,7 @@ static void list_volumes(void)
 
     if (!vols) {
         printf("Out of memory\n");
-        return;
+        return -1;
     }
 
     ret = afp_sl_getvols(server_id, &url, 0, count, &numvols, vols);
@@ -974,17 +1074,50 @@ static void list_volumes(void)
         ret = afp_sl_getvols(server_id, &url, 0, count, &numvols, vols);
     }
 
-    if (ret == 0) {
-        printf("Available volumes on %s:\n", url.servername);
-
-        for (unsigned int i = 0; i < numvols; i++) {
-            printf("  %s\n", vols[i].volume_name_printable);
-        }
-    } else {
+    if (ret != 0) {
         printf("Could not list volumes\n");
+        free(vols);
+        return -1;
+    }
+
+    if (numvols == 0) {
+        printf("\nAvailable volumes on %s:\n\n", url.servername);
+        puts("  No volumes available.");
+        free(vols);
+        return 0;
+    }
+
+    for (;;) {
+        char *line;
+        unsigned int index;
+        render_volume_picker(vols, numvols);
+        line = readline("afpcmd: ");
+
+        if (!line || strcmp(line, "q") == 0) {
+            free(line);
+            quit_requested = 1;
+            cmdline_afp_exit();
+            ret = 0;
+            break;
+        }
+
+        if (parse_volume_slot(line, numvols, &index) != 0) {
+            fputs("Choose a listed volume number, or q to quit.\n",
+                  stderr);
+            free(line);
+            continue;
+        }
+
+        free(line);
+        ret = attach_named_volume(vols[index].volume_name_printable);
+
+        if (ret == 0) {
+            break;
+        }
     }
 
     free(vols);
+    return ret;
 }
 
 int com_pass(char *unused)
@@ -1112,7 +1245,7 @@ int com_dir(char * arg)
 
     if (!vol_id) {
         if (connected) {
-            list_volumes();
+            pick_volume();
             return 0;
         }
 
@@ -3376,7 +3509,7 @@ int com_cd(char *arg)
             snprintf(curdir, AFPC_MAX_PATH, "/");
             show_dir = 1;
         } else {
-            list_volumes();
+            pick_volume();
         }
 
         goto out;
@@ -3394,7 +3527,7 @@ int com_cd(char *arg)
             snprintf(curdir, AFPC_MAX_PATH, "/");
             show_dir = 1;
         } else {
-            list_volumes();
+            pick_volume();
         }
 
         goto out;
@@ -3407,34 +3540,12 @@ int com_cd(char *arg)
 
     if (vol_id == NULL) {
         /* Not attached to a volume, treat arg as volume name */
-        strlcpy(url.volumename, path, AFPC_VOLUME_NAME_UTF8_LEN);
-        unsigned int volume_options = AFP_SL_VOLUME_NO_LOCKING;
-        ret = attach_volume_with_password_prompt(server_id, &vol_id,
-              volume_options);
-
-        if (ret != 0
-                && is_recoverable_session_error(ret) && recover_session(0, 0) == 0) {
-            ret = attach_volume_with_password_prompt(server_id, &vol_id,
-                  volume_options);
-        }
+        ret = attach_named_volume(path);
 
         if (ret != 0) {
-            if (ret == -EACCES) {
-                printf("Could not attach to volume %s: authentication failed\n",
-                       url.volumename);
-            } else if (ret == -ENODEV) {
-                printf("Volume %s does not exist on this server\n", path);
-            } else {
-                printf("Could not attach to volume %s\n", url.volumename);
-            }
-
-            url.volumename[0] = '\0';
-            ret = -1;
             goto error;
         }
 
-        printf("Attached to volume %s\n", url.volumename);
-        snprintf(curdir, AFPC_MAX_PATH, "/");
         goto out;
     }
 
@@ -3550,7 +3661,7 @@ int com_exit(char *unused)
     }
 
     snprintf(curdir, AFPC_MAX_PATH, "/");
-    return 0;
+    return pick_volume();
 }
 
 /* Print out the current working directory locally. */
@@ -3690,8 +3801,8 @@ static int cmdline_server_startup(int batch_mode)
                 return -1;
             }
         }
-    } else {
-        printf("Use 'ls' to list available volumes, 'cd' to attach to a volume\n");
+    } else if (!batch_mode && pick_volume() != 0) {
+        return -1;
     }
 
     return 0;
@@ -3915,6 +4026,11 @@ void cmdline_afp_exit(void)
     connected = 0;
 }
 
+int cmdline_afp_quit_requested(void)
+{
+    return quit_requested;
+}
+
 void cmdline_afp_setup_logging(void)
 {
     openlog("afpcmd", LOG_PID | LOG_CONS, LOG_USER);
@@ -3923,7 +4039,8 @@ void cmdline_afp_setup_logging(void)
 }
 
 
-int cmdline_afp_setup(int batch_mode, char * url_string)
+int cmdline_afp_setup(int batch_mode, char *url_string,
+                      const char *username_override)
 {
     snprintf(curdir, AFPC_MAX_PATH, "%s", DEFAULT_DIRECTORY);
     memset(connect_servername, 0, sizeof(connect_servername));
@@ -3943,13 +4060,23 @@ int cmdline_afp_setup(int batch_mode, char * url_string)
                 return -1;
             }
 
+            if (username_override
+                    && strlcpy(url.username, username_override,
+                               sizeof(url.username)) >= sizeof(url.username)) {
+                fprintf(stderr, "Username is too long.\n");
+                return -1;
+            }
+
             /* If no username was specified in URL, use AFP guest user */
             if (url.username[0] == '\0') {
                 strlcpy(url.username, "nobody", AFPC_MAX_USERNAME_LEN);
             }
 
             strlcpy(connect_servername, url.servername, sizeof(connect_servername));
-            cmdline_getpass();
+
+            if (cmdline_getpass() != 0) {
+                return -1;
+            }
 
             if (cmdline_server_startup(batch_mode) != 0) {
                 return -1;

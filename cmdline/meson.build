@@ -12,15 +12,20 @@ executable(
 if with_afpcmd
     afpcmd_incdir = include_directories(['.', '../include', include_dirs])
 
-    executable(
+    afpcmd_exe = executable(
         'afpcmd',
         sources: [
             'cmdline_afp.c',
             'cmdline_main.c',
+            'discover.c',
         ],
         include_directories: afpcmd_incdir,
         link_with: libafpsl,
-        dependencies: [root_dependencies, cmdline_dependencies],
+        dependencies: [
+            root_dependencies,
+            cmdline_dependencies,
+            discovery_dep,
+        ],
         c_args: cflags,
         install: true,
         install_rpath: install_runtime_path,

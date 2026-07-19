@@ -28,7 +28,9 @@ int com_disconnect(char *unused);
 int com_exit(char *unused);
 
 void cmdline_afp_exit(void);
-int cmdline_afp_setup(int batch_mode, char * url_string);
+int cmdline_afp_quit_requested(void);
+int cmdline_afp_setup(int batch_mode, char *url_string,
+                      const char *username_override);
 void cmdline_afp_setup_logging(void);
 void cmdline_set_log_level(int loglevel);
 void cmdline_set_verbose(int verbose);

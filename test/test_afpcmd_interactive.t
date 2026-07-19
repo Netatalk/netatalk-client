@@ -366,17 +366,47 @@ sub pagination_setup_commands {
 }
 
 # -----------------------------------------------------------------------
-# test_exit_reconnect: exit detaches volume; ls lists volumes; cd reattaches
+# test_exit_reconnect: exit detaches volume and opens the picker automatically
 # -----------------------------------------------------------------------
 {
     my $out = afpcmd_pipe($AFP_URL,
         'exit',
-        'ls',
-        "cd $AFP_VOL",
+        '1',
         'quit');
     like($out, qr/Detached from volume/, 'test_exit_reconnect: exit detaches');
-    like($out, qr/Available volumes on/, 'test_exit_reconnect: ls shows volumes');
-    like($out, qr/Attached to volume/,   'test_exit_reconnect: cd reattaches');
+    like($out, qr/Available volumes on/, 'test_exit_reconnect: picker opens');
+    like($out, qr/\s1\s+\Q$AFP_VOL\E/, 'test_exit_reconnect: picker numbers volume');
+    like($out, qr/Attached to volume/, 'test_exit_reconnect: number reattaches');
+}
+
+# -----------------------------------------------------------------------
+# test_initial_volume_picker: a URL without a volume opens the picker
+# -----------------------------------------------------------------------
+{
+    my $server_url = "afp://${AFP_USER}:${AFP_PASS}\@${AFP_HOST}";
+    my $out = afpcmd_pipe($server_url, '1', 'quit');
+    like($out, qr/Available volumes on/, 'test_initial_volume_picker: picker opens');
+    like($out, qr/\s1\s+\Q$AFP_VOL\E/, 'test_initial_volume_picker: volume numbered');
+    like($out, qr/q\s+Quit/, 'test_initial_volume_picker: quit action labeled');
+    like($out, qr/Attached to volume/, 'test_initial_volume_picker: number attaches');
+    unlike($out, qr/Use 'ls' to list available volumes/,
+        'test_initial_volume_picker: no obsolete help text');
+}
+
+# -----------------------------------------------------------------------
+# test_volume_picker_quit: only a selection number or exact q is accepted
+# -----------------------------------------------------------------------
+{
+    my $server_url = "afp://${AFP_USER}:${AFP_PASS}\@${AFP_HOST}";
+    my $out = afpcmd_pipe($server_url, '+1', 'Q', 'not-a-number', 'q', 'pwd');
+    my @errors = ($out =~ /Choose a listed volume number, or q to quit\./g);
+    like($out, qr/Choose a listed volume number, or q to quit\./,
+        'test_volume_picker_quit: other input rejected');
+    is(scalar @errors, 3,
+        'test_volume_picker_quit: signed, uppercase, and command input rejected');
+    like($out, qr/q\s+Quit/, 'test_volume_picker_quit: quit action labeled');
+    unlike($out, qr/You're not attached to a volume/,
+        'test_volume_picker_quit: q exits before later commands');
 }
 
 # -----------------------------------------------------------------------

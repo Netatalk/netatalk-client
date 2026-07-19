@@ -39,6 +39,7 @@
 #include "lib/uam_registry.h"
 #include "lib/utils.h"
 
+#include "discovery/client/discover.h"
 #include "fuse_ipc.h"
 
 #define default_uam "Cleartxt Passwrd"
@@ -56,6 +57,7 @@ static int changeuid = 0;
 static int changegid = 0;
 static char *thisbin;
 static int client_log_min_rank = 2; /* Default to LOG_NOTICE */
+static int list_volumes_only = 0;
 
 /* Log handler that filters by log level */
 static void client_log_for_client(void *priv _U_,
@@ -341,8 +343,14 @@ static void usage(void)
 {
     printf(
         "afp_client <command> [options]\n"
+        "    discover [--verbose | --json] [--timeout milliseconds]\n"
+        "                           : list Zeroconf AFP services\n"
         "    mount [mountopts] <server>:<volume> <mountpoint>\n"
+        "    mount --service <name> [mountopts] [--volume <volume>] [mountpoint]\n"
         "         mount options:\n"
+        "         -s, --service <name>      : resolve an advertised AFP service\n"
+        "             --volume <volume>     : mount this volume from the service\n"
+        "                                      If omitted, list available volumes\n"
         "         -u, --user <username>      : log in as user <username>\n"
         "         -p, --pass <password>      : use <password>\n"
         "                                      If password is '-', you get prompted for it\n"
@@ -615,7 +623,11 @@ static int do_mount(int argc, char ** argv)
     int option_index = 0;
     struct afpfsd_ipc_mount_request request = {0};
     int optnum = 0;
+    int port_override = 0;
     unsigned int uam_mask = default_uams_mask();
+    const char *service_name = NULL;
+    const char *volume_name = NULL;
+    enum { OPT_VOLUME = 256 };
     struct option long_options[] = {
         {"afpversion", 1, 0, 'v'},
         {"volpass", 1, 0, 'P'},
@@ -625,10 +637,12 @@ static int do_mount(int argc, char ** argv)
         {"uam", 1, 0, 'a'},
         {"map", 1, 0, 'm'},
         {"options", 1, 0, 'O'},
+        {"service", 1, 0, 's'},
+        {"volume", 1, 0, OPT_VOLUME},
         {0, 0, 0, 0},
     };
 
-    if (argc < 4) {
+    if (argc < 3) {
         usage();
         return -1;
     }
@@ -641,13 +655,18 @@ static int do_mount(int argc, char ** argv)
 
     while (1) {
         optnum++;
-        c = getopt_long(argc, argv, "a:m:O:o:P:p:u:v:", long_options, &option_index);
+        c = getopt_long(argc, argv, "a:m:O:o:P:p:s:u:v:", long_options,
+                        &option_index);
 
         if (c == -1) {
             break;
         }
 
         switch (c) {
+        case OPT_VOLUME:
+            volume_name = optarg;
+            break;
+
         case 'a':
             uam_mask = uam_string_to_bitmap(optarg);
             break;
@@ -673,6 +692,7 @@ static int do_mount(int argc, char ** argv)
 
         case 'o':
             request.url.port = strtol(optarg, NULL, 10);
+            port_override = 1;
             break;
 
         case 'P':
@@ -681,6 +701,10 @@ static int do_mount(int argc, char ** argv)
 
         case 'p':
             snprintf(request.url.password, AFP_MAX_PASSWORD_LEN, "%s", optarg);
+            break;
+
+        case 's':
+            service_name = optarg;
             break;
 
         case 'u':
@@ -710,6 +734,95 @@ static int do_mount(int argc, char ** argv)
         }
     }
 
+    optnum = optind;
+
+    if (service_name) {
+        uint16_t service_port;
+        int ret;
+
+        if (volume_name) {
+            if (argc - optnum != 1) {
+                fprintf(stderr,
+                        "A mount point is required when --volume is specified.\n");
+                return -1;
+            }
+
+            if (snprintf(request.url.volumename,
+                         sizeof(request.url.volumename), "%s", volume_name)
+                    >= (int)sizeof(request.url.volumename)) {
+                fprintf(stderr, "AFP volume name is too long.\n");
+                return -1;
+            }
+        } else {
+            if (argc - optnum > 1) {
+                fprintf(stderr,
+                        "Use --volume <volume> <mountpoint> to mount an AFP service.\n");
+                return -1;
+            }
+
+            list_volumes_only = 1;
+        }
+
+        ret = afpc_discover_resolve_service(service_name,
+                                            request.url.servername,
+                                            sizeof(request.url.servername),
+                                            &service_port, 1500);
+
+        if (ret == -ENOENT) {
+            fprintf(stderr, "No AFP service named '%s' was found.\n",
+                    service_name);
+            return -1;
+        }
+
+        if (ret == -EEXIST) {
+            fprintf(stderr,
+                    "AFP service name '%s' is ambiguous; use afp_client "
+                    "discover to inspect its domains and interfaces.\n",
+                    service_name);
+            return -1;
+        }
+
+        if (ret != 0) {
+            fprintf(stderr, "Could not resolve AFP service '%s': %s\n",
+                    service_name, strerror(-ret));
+            return -1;
+        }
+
+        if (!port_override) {
+            request.url.port = service_port;
+        }
+    } else {
+        if (volume_name) {
+            fprintf(stderr, "--volume can only be used with --service.\n");
+            return -1;
+        }
+
+        if (argc - optnum != 2) {
+            fprintf(stderr, "A server:volume and mount point are required.\n");
+            return -1;
+        }
+
+        if (sscanf(argv[optnum++], "%[^':']:%[^':']",
+                   request.url.servername, request.url.volumename) != 2) {
+            printf("Incorrect server:volume specification\n");
+            return -1;
+        }
+    }
+
+    if (uam_mask == 0) {
+        printf("Unknown UAM\n");
+        return -1;
+    }
+
+    request.uam_mask = uam_mask;
+    request.volume_options = DEFAULT_MOUNT_FLAGS;
+
+    if (!list_volumes_only
+            && resolve_mountpoint(argv[optnum], request.mountpoint, 255) < 0) {
+        printf("Failed to resolve mount point\n");
+        return -1;
+    }
+
     /* Handle password prompts - also prompt when username is given
      * but password is empty (without username, guest auth is used) */
     if (strcmp(request.url.password, "-") == 0 ||
@@ -732,7 +845,7 @@ static int do_mount(int argc, char ** argv)
         explicit_bzero(p, AFP_MAX_PASSWORD_LEN + 1);
     }
 
-    if (strcmp(request.url.volpassword, "-") == 0) {
+    if (!list_volumes_only && strcmp(request.url.volpassword, "-") == 0) {
         char *p = get_password("Volume password:");
 
         if (p == NULL ||
@@ -749,38 +862,51 @@ static int do_mount(int argc, char ** argv)
         explicit_bzero(p, AFP_MAX_PASSWORD_LEN + 1);
     }
 
-    optnum = optind + 1;
-
-    if (optnum >= argc) {
-        printf("No volume or mount point specified\n");
-        return -1;
-    }
-
-    if (sscanf(argv[optnum++], "%[^':']:%[^':']",
-               request.url.servername, request.url.volumename) != 2) {
-        printf("Incorrect server:volume specification\n");
-        return -1;
-    }
-
-    if (uam_mask == 0) {
-        printf("Unknown UAM\n");
-        return -1;
-    }
-
-    request.uam_mask = uam_mask;
-    request.volume_options = DEFAULT_MOUNT_FLAGS;
-
-    if (optnum >= argc) {
-        printf("No mount point specified\n");
-        return -1;
-    }
-
-    if (resolve_mountpoint(argv[optnum], request.mountpoint, 255) < 0) {
-        printf("Failed to resolve mount point\n");
-        return -1;
-    }
-
     memcpy(outgoing_buffer + 1, &request, sizeof(request));
+    return 0;
+}
+
+static int list_authenticated_volumes(
+    const struct afpfsd_ipc_mount_request *request)
+{
+    struct afp_connection_request connection_request;
+    struct afp_server *server;
+    memset(&connection_request, 0, sizeof(connection_request));
+    connection_request.url = request->url;
+    connection_request.uam_mask = request->uam_mask;
+
+    if (afp_main_quick_startup(NULL) != 0) {
+        fprintf(stderr, "Could not start the AFP client loop.\n");
+        return -1;
+    }
+
+    afp_wait_for_started_loop();
+
+    if (init_uams() < 0) {
+        fprintf(stderr, "Could not initialize AFP authentication methods.\n");
+        return -1;
+    }
+
+    server = afp_server_full_connect(NULL, &connection_request);
+
+    if (server == NULL) {
+        fprintf(stderr, "Could not authenticate with AFP service %s.\n",
+                request->url.servername);
+        return -1;
+    }
+
+    printf("Available volumes on %s:\n", request->url.servername);
+
+    if (server->num_volumes == 0) {
+        printf("  (none)\n");
+    } else {
+        for (int i = 0; i < server->num_volumes; i++) {
+            printf("  %s\n", server->volumes[i].volume_name_printable);
+        }
+    }
+
+    afp_logout(server, 1);
+    afp_server_remove(server);
     return 0;
 }
 
@@ -993,7 +1119,7 @@ static int prepare_buffer(int argc, char * argv[])
     }
 
     if (strncmp(argv[1], "mount", 5) == 0) {
-        return do_mount(argc, argv);
+        return do_mount(argc - 1, argv + 1);
     } else if (strncmp(argv[1], "resume", 6) == 0) {
         return do_resume(argc, argv);
     } else if (strncmp(argv[1], "suspend", 7) == 0) {
@@ -1129,6 +1255,12 @@ int main(int argc, char *argv[])
     const char *volumename = NULL;
     thisbin = argv[0];
     uid = ((unsigned int) geteuid());
+
+    if (!strstr(argv[0], "mount_afpfs") && argc > 1
+            && strcmp(argv[1], "discover") == 0) {
+        return afpc_discover_command(argc - 1, argv + 1);
+    }
+
     /* Register logging handler to filter debug messages */
     libafpclient_register(&client);
 
@@ -1146,6 +1278,12 @@ int main(int argc, char *argv[])
         }
     } else if (prepare_buffer(argc, argv) < 0) {
         return -1;
+    }
+
+    if (list_volumes_only) {
+        const struct afpfsd_ipc_mount_request *req =
+            (const struct afpfsd_ipc_mount_request *)(outgoing_buffer + 1);
+        return list_authenticated_volumes(req);
     }
 
     /* Extract mountpoint and volumename for per-mount daemon routing;

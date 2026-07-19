@@ -42,6 +42,7 @@ jobs:
       - name: Install dependencies
         run: |
           apk add --no-cache \
+            avahi-dev \
             build-base \
             fuse-dev \
             libedit-dev \
@@ -75,6 +76,7 @@ jobs:
       - name: Install dependencies
         run: |
           apk add --no-cache \
+            avahi-dev \
             build-base \
             fuse3-dev \
             libedit-dev \
@@ -108,6 +110,7 @@ jobs:
       - name: Install dependencies
         run: |
           dnf --setopt=install_weak_deps=False --assumeyes install \
+            avahi-devel \
             fuse-devel \
             gcc \
             libgcrypt-devel \
@@ -141,6 +144,7 @@ jobs:
       - name: Install dependencies
         run: |
           dnf --setopt=install_weak_deps=False --assumeyes install \
+            avahi-devel \
             fuse3-devel \
             gcc \
             libgcrypt-devel \
@@ -174,6 +178,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --assume-yes --no-install-recommends \
             gcc \
+            libavahi-core-dev \
             libbsd-dev \
             libgcrypt-dev \
             libfuse-dev \
@@ -209,6 +214,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --assume-yes --no-install-recommends \
             gcc \
+            libavahi-core-dev \
             libgcrypt-dev \
             libfuse3-dev \
             libreadline-dev \
@@ -310,6 +316,7 @@ jobs:
           prepare: |
             pkg remove -y fusefs-libs3
             pkg install -y \
+              avahi \
               fusefs-libs \
               libedit \
               libgcrypt \
@@ -346,6 +353,7 @@ jobs:
           sync: sshfs
           prepare: |
             pkg install -y \
+              avahi \
               fusefs-libs3 \
               libedit \
               libgcrypt \
@@ -411,6 +419,7 @@ jobs:
           sync: sshfs
           prepare: |
             pkg_add -I \
+              avahi \
               libgcrypt \
               meson
           run: |
@@ -453,6 +462,7 @@ jobs:
             tar -zxpf bootstrap.tar.gz -C /
             export PATH=/opt/local/sbin:/opt/local/bin:/usr/gnu/bin:/usr/bin:/usr/sbin:/sbin:$PATH
             pkgin -y install \
+              avahi \
               meson \
               libgcrypt
           run: |

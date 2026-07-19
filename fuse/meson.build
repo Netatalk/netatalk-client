@@ -1,12 +1,10 @@
-mount_afpfs_sources = ['client.c']
-
 executable(
     'mount_afpfs',
-    sources: mount_afpfs_sources,
+    sources: 'client.c',
     include_directories: incdir,
     link_with: libafpclient,
     c_args: cflags,
-    dependencies: [root_dependencies],
+    dependencies: [root_dependencies, discovery_client_dep],
     install: true,
     install_rpath: install_runtime_path,
 )

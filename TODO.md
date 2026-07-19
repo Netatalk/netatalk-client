@@ -1,12 +1,6 @@
 Netatalk Client Improvements
 =====================
 
-General client shortcomings
----------------------------
-
-* integration with avahi/bonjour
-* shutting down notices aren't honoured
-
 FUSE client
 -----------
 
