@@ -7,6 +7,7 @@ INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^">]+)[">]')
 
 RULES = {
     "cmdline": ("daemon/",),
+    "discovery": ("daemon/", "fuse/", "lib/"),
     "fuse": ("daemon/",),
     "daemon": ("fuse/",),
     "lib": ("daemon/",),

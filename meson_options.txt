@@ -26,3 +26,16 @@ option(
     value: false,
     description: 'Force FUSE v2 compatibility mode (if FUSE v3 is detected)',
 )
+option(
+    'zeroconf',
+    type: 'feature',
+    value: 'auto',
+    description: 'Enable Zeroconf AFP service discovery',
+)
+option(
+    'zeroconf-backend',
+    type: 'combo',
+    choices: ['auto', 'avahi', 'dnssd'],
+    value: 'auto',
+    description: 'Select the Zeroconf discovery provider',
+)

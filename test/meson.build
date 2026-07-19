@@ -23,6 +23,9 @@ public_header_checks = {
 }
 
 private_header_checks = {
+    'discovery': 'discovery/discovery.h',
+    'discovery_backend': 'discovery/backend.h',
+    'discovery_client': 'discovery/client/discover.h',
     'fuse_ipc': 'fuse/fuse_ipc.h',
     'stateless_ipc': 'daemon/stateless_ipc.h',
 }
@@ -80,6 +83,89 @@ daemon_socket_test = executable(
 test(
     'daemon socket lifecycle',
     daemon_socket_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+discovery_test = executable(
+    'test_discovery',
+    sources: discovery_core_sources
+    + files(
+        'discovery_fake_backend.c',
+        'test_discovery.c',
+    ),
+    include_directories: incdir,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'Zeroconf discovery core',
+    discovery_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+discover_command_test = executable(
+    'test_discover_command',
+    sources: discovery_core_sources
+    + files(
+        'discovery_command_fake_backend.c',
+        'test_discover_command.c',
+    ),
+    include_directories: incdir,
+    link_with: discovery_client_lib,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'afp_client discover output',
+    discover_command_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+resolve_service_test = executable(
+    'test_resolve_service',
+    sources: discovery_core_sources
+    + files(
+        'discovery_service_fake_backend.c',
+        'test_resolve_service.c',
+    ),
+    include_directories: incdir,
+    link_with: discovery_client_lib,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'afp_client service resolution',
+    resolve_service_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+cmdline_discover_test = executable(
+    'test_cmdline_discover',
+    sources: discovery_core_sources
+    + files(
+        '../cmdline/discover.c',
+        'discovery_command_fake_backend.c',
+        'test_cmdline_discover.c',
+    ),
+    include_directories: incdir,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'afpcmd service picker',
+    cmdline_discover_test,
     args: ['--tap'],
     protocol: 'tap',
     verbose: true,

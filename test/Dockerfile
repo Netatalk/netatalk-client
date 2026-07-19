@@ -30,6 +30,7 @@ WORKDIR /netatalk-client-code
 COPY cmdline/ ./cmdline/
 COPY common/ ./common/
 COPY daemon/ ./daemon/
+COPY discovery/ ./discovery/
 COPY fuse/ ./fuse/
 COPY include/ ./include/
 COPY lib/ ./lib/

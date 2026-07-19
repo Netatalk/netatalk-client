@@ -485,6 +485,57 @@ streaming operations, including reads, writes, metadata calls, and directory lis
 
 ----
 
+## Zeroconf Discovery Architecture
+
+Zeroconf browsing is a frontend concern implemented by two layered internal
+static libraries in `discovery/`. `libafpc-discovery` normalizes the provider
+API and is used by every discovery frontend. `libafpc-client-discovery` builds
+the bounded discovery command and exact service resolver once from
+`discovery/client/discover.c`. Discovery happens before an AFP session
+or mount request exists.
+
+    afpcmd                        afp_client / mount_afpfs
+      |                                      |
+      +---------- afpc-discovery ------------+
+                      |
+              +-------+---------+
+              | normalized core |
+              +-------+---------+
+                Avahi or DNS-SD
+                      |
+              selected endpoint
+                      |
+          existing afpsld / afpfsd
+                      |
+           authenticate -> volumes
+
+The public-to-the-tree API in `discovery/discovery.h` normalizes service add,
+update, remove, resolve, and snapshot operations. Native providers live behind
+`discovery/backend.h`: DNS-SD is preferred on macOS, Avahi is preferred on
+other supported Unix systems, and a stub preserves normal builds when neither
+provider is available. Service identity is the instance, registration type,
+domain, and interface tuple. Resolved targets, advertised ports, address
+families, IPv6 scope, and raw TXT data remain separate endpoint data.
+The default provider session listens for both `_afpovertcp._tcp` and
+`_device-info._tcp`; the bounded discovery frontend correlates matching
+instance/domain/interface tuples and extracts the companion `model` TXT value.
+
+The frontends deliberately have different UX responsibilities:
+
+- `afpcmd --browse` maintains the live interactive service list and
+  consolidates advertisements sharing an instance, type, and domain.
+  Selection resolves every active interface member and prefers a
+  non-loopback endpoint before using the existing stateless connection flow.
+- `afp_client discover` provides bounded human, verbose, and JSON snapshots
+  from the client-discovery archive. The normal table provides human-readable
+  information, while verbose and JSON output retain per-interface diagnostics.
+  Verbose output also retains every device-info advertisement as an
+  independent diagnostic entry.
+
+Fake providers in `test/` make event ordering, output, interface selection, and
+ambiguity handling deterministic without requiring multicast networking in
+the unit test suite.
+
 ## afpcmd Implementation Using Stateless Library
 
 ### Overview

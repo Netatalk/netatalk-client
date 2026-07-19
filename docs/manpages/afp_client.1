@@ -1,4 +1,4 @@
-.Dd January 25, 2026
+.Dd July 19, 2026
 .Dt AFP_CLIENT 1
 .Os Netatalk Client
 .Sh NAME
@@ -6,15 +6,16 @@
 .Nd Mount, unmount and control AFP sessions using the FUSE infrastructure
 .Sh SYNOPSIS
 .Nm
-.Cm mount Ns | Ns Cm status Ns | Ns Cm unmount Ns | Ns Cm suspend Ns | Ns Cm resume Ns | Ns Cm exit
+.Cm discover Ns | Ns Cm mount Ns | Ns Cm status Ns | Ns Cm unmount Ns | Ns Cm suspend Ns | Ns Cm resume Ns | Ns Cm exit
 .Op Ar options
 .Sh DESCRIPTION
 The
 .Nm
-command is the user-facing control utility for AFP (Apple Filing Protocol) volumes
-mounted through the Netatalk Client FUSE infrastructure.
-It mounts AFP volumes, unmounts them, reports mount status, suspends and
-resumes server connections, and shuts down the per-user mount manager.
+command is the user-facing control utility for AFP (Apple Filing Protocol)
+volumes mounted through the Netatalk Client FUSE infrastructure.
+It discovers AFP servers, mounts AFP volumes, unmounts them, reports mount
+status, suspends and resumes server connections, and shuts down the per-user
+mount manager.
 .Pp
 Each mount request talks to a per-user manager daemon, which spawns a
 per-mount
@@ -46,6 +47,41 @@ that can also be used for batch file transfers.
 Both of them use the Netatalk Client libraries.
 .Sh COMMANDS
 .Bl -tag -width Ds
+.It Cm discover Oo Fl -verbose | Fl -json Oc Op Fl -timeout Ar milliseconds
+Browse for AFP services advertised through Bonjour/DNS-SD or Avahi.
+The default output shows each service instance, device model, resolved target,
+and advertised port, and consolidates identical target/port advertisements
+received on multiple interfaces.
+The device model is the value of the
+.Dq model
+TXT item from a matching
+.Sy _device-info._tcp
+advertisement, or
+.Dq -
+when no matching item exists.
+For readability, the target is displayed without its trailing DNS root dot.
+.Pp
+The
+.Fl -verbose
+option additionally shows the service type, correlated device type, domain,
+interface, resolved addresses, and the DNS-SD TXT record encoded as
+hexadecimal.
+It also shows each
+.Sy _device-info._tcp
+advertisement as a separate entry, including advertisements that could not be
+associated with an AFP service.
+The
+.Fl -json
+option emits machine-readable JSON containing the provider name and resolved
+service data, including the correlated
+.Dq device_type
+value.
+These two output options cannot be combined.
+.Pp
+By default, discovery collects advertisements for 1500 milliseconds.
+The
+.Fl -timeout
+option accepts a value from 0 through 60000 milliseconds.
 .It Cm mount Oo Ar mount options Oc Ar server:volume Ar mountpoint
 Using the authentication and server information provided with the mount
 options, mount the remote filesystem on mountpoint.
@@ -57,6 +93,28 @@ If you would prefer to use
 the AFP URL syntax, see
 .Xr mount_afpfs 1
 for more information.
+.It Cm mount Fl -service Ar name Oo Ar mount options Oc Op Fl -volume Ar volume Op Ar mountpoint
+Resolve an advertised AFP service by its exact instance name and authenticate
+using the resolved address and advertised port.
+With
+.Fl -volume ,
+mount the named volume on
+.Ar mountpoint .
+Without
+.Fl -volume ,
+list the volumes available to the authenticated user and exit without starting
+the mount daemon. The trailing
+.Ar mountpoint
+is accepted but may be omitted in this mode.
+Advertisements for the same
+instance, domain, target, and port on multiple interfaces are treated as one
+logical service.
+Conflicting domains or endpoints are reported as ambiguous.
+Use
+.Cm discover
+to inspect available names.
+This command is non-interactive and does not
+provide a browse mode.
 .It Cm unmount Ar mountpoint
 Remove the AFP mount that is currently connected to
 .Ar mountpoint .
@@ -144,6 +202,18 @@ instead of the default, 548.
 Password to authenticate with the AFP server. If not given, or if you specify a
 .Sq -
 as the password, you will be prompted for it. This is the more secure option.
+.It Fl s , Fl -service Ar name
+Resolve the exact DNS-SD instance
+.Ar name
+before mounting.
+The advertised port is used unless
+.Fl -port
+is also supplied explicitly.
+.It Fl -volume Ar volume
+Select the volume to mount when
+.Fl -service
+is used.
+If this option is omitted, authenticate and list the available volumes instead.
 .It Fl P , Fl -volpass Ar password
 Use this if the volume you're accessing uses a volume password (a very
 weak form of protection as it is transferred as clear text).
@@ -160,6 +230,26 @@ the client and server.
 Netatalk Client supports AFP 2.0 up to 3.4.
 .El
 .Sh EXAMPLES
+Discover AFP servers on the local network:
+.Pp
+.Dl afp_client discover
+.Pp
+Emit detailed machine-readable discovery results:
+.Pp
+.Dl afp_client discover --json --timeout 2000
+.Pp
+Mount an advertised service by its instance name without an interactive
+picker:
+.Bd -literal -offset indent
+mkdir -p /mnt/shared
+afp_client mount --service "Office File Server" --user user123 \
+    --volume "File Sharing" /mnt/shared
+.Ed
+.Pp
+List the volumes available to the authenticated user without mounting:
+.Pp
+.Dl afp_client mount --service "Office File Server" --user user123
+.Pp
 Mount the AFP volume
 .Li sharedDocs
 from

@@ -1,10 +1,15 @@
-.Dd June 12, 2026
+.Dd July 18, 2026
 .Dt AFPCMD 1
 .Os Netatalk Client
 .Sh NAME
 .Nm afpcmd
 .Nd Command-line AFP client for browsing and transferring files over the network
 .Sh SYNOPSIS
+.Nm
+.Op Fl V
+.Op Fl v Ar loglevel
+.Op Fl M Ar mode
+.Fl b
 .Nm
 .Op Fl V
 .Op Fl v Ar loglevel
@@ -44,6 +49,11 @@ AFP Stateless Client Daemon running in the background to manage the AFP connecti
 and commands. If not already running, afpcmd will attempt to start it.
 .Sh OPTIONS
 .Bl -tag -width Ds
+.It Fl b , Fl -browse
+Browses AFP services advertised on the local network using DNS-SD or Avahi.
+The live picker lists service names and accepts a service number or
+.Cm q
+to quit. It does not prompt for a host or address.
 .It Fl h , Fl -help
 Shows the help message.
 .It Fl r , Fl -recursive
@@ -135,6 +145,19 @@ If a URL is provided on the command line,
 connects and enters the
 volume and directory specified.
 .Pp
+If
+.Fl b
+is used,
+.Nm
+shows a live list of advertised AFP services. Selecting a service resolves its
+target, advertised port, and interface-scoped address before entering the same
+interactive client.
+.Nm
+then prompts for a username; leaving it blank requests guest access, while a
+non-empty username is followed by a hidden password prompt.
+To connect to a host that is not advertised, pass its AFP URL directly on the
+command line.
+.Pp
 Standard readline keystrokes are enabled.
 Command line completion (using
 tab) and history (using up and down arrows) is provided.
@@ -143,7 +166,11 @@ completion is enabled.
 .Ss Most common commands
 .Bl -tag -width Ds
 .It Cm ls
-Show files in current directory
+Show files in the current directory. If no volume is attached, show a numbered
+volume picker; selecting a number attaches that volume, while
+.Cm q
+quits
+.Nm .
 .It Cm cd
 Change directories on the server
 .It Cm get Oo Fl r Oc Ar filename

@@ -19,6 +19,26 @@ details, run it with the '--debug' option to see detailed debug info.
 Note that if afpfsd is not running, afp_client or mount_afpfs will start it
 automatically, so in most cases you don't need to start it manually.
 
+List AFP servers advertised on the local network through Zeroconf:
+
+    % afp_client discover
+
+Use `--verbose` to include resolved addresses, raw TXT data, and separate
+`_device-info._tcp` entries, or `--json` for machine-readable output. The
+normal output shows the DNS-SD instance name, device model from a matching
+`_device-info._tcp` advertisement, resolved target, and advertised port.
+
+Mount a discovered service by its exact instance name with `--service`. The
+mount command resolves the address and advertised port non-interactively; use
+`afpcmd --browse` for a live picker.
+
+    % afp_client mount --service "Office File Server" --user myuser \
+        --volume "File Sharing" /home/myuser/fusemount
+
+If `--volume` is omitted, the command authenticates with the service, prints
+the volumes available to that user, and exits without starting `afpfsd`. A
+trailing mountpoint is accepted but is not required in this mode.
+
 Mount the _File Sharing_ volume from afpserver.local on /home/myuser/fusemount
 authenticated as user _myuser_ (you will be prompted for the password):
 
@@ -68,7 +88,19 @@ Just run:
 
     afpcmd "afp://username@servername/volumename"
 
-If you enter no volumename, it shows which ones are available.
+To browse AFP services advertised on the local network, use `--browse`, then
+select a service number:
+
+    afpcmd --browse
+
+The picker lists advertised services and quit; it does not ask for a manual
+host or address. After selection, enter a username and hidden password, or
+leave the username blank to request guest access. Pass a known server in an AFP
+URL as shown above.
+
+If you enter no volumename, `afpcmd` opens a numbered volume picker after
+connecting. Selecting a number attaches that volume; `q` returns to the
+operating-system prompt by quitting `afpcmd`.
 You can put a password after the username - "username:password" - but it's usually better
 to let it prompt you for the password so it doesn't end up in your shell history.
 

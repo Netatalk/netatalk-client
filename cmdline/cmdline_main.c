@@ -25,6 +25,7 @@
     59 Temple Place, Suite 330, Boston, MA 02111 USA.
 */
 
+#include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -50,6 +51,7 @@
 #include "netatalk-client/url.h"
 
 #include "cmdline_afp.h"
+#include "discover.h"
 
 static int running = 1;
 
@@ -407,7 +409,7 @@ void *cmdline_ui(void *other)
     char *line;
     char *s, s2[ARG_LEN];
 
-    while (running)  {
+    while (running && !cmdline_afp_quit_requested()) {
         line = readline("afpcmd: ");
 
         if (!line) {
@@ -468,9 +470,12 @@ static void usage(void)
 {
     printf(
         "Netatalk Client %s - AFP command-line client\n"
-        "afpcmd [-h] [-V] [-v loglevel] [-M mode] <afp url>\n"
+        "afpcmd [-V] [-v loglevel] [-M mode] --browse\n"
+        "afpcmd [-V] [-v loglevel] [-M mode] <afp url>\n"
+        "afpcmd -h\n"
         "Options:\n"
         "\t-h:          show this help message and exit\n"
+        "\t-b, --browse: browse and select an advertised AFP service\n"
         "\t-M mode:     preserve metadata using auto, netatalk, xattr, macos, or none\n"
         "\t-r:          recursively transfer directories in batch mode\n"
         "\t-V:          verbose mode (show detailed transfer messages)\n"
@@ -493,10 +498,13 @@ int main(int argc, char *argv[])
     int c;
     int recursive = 0;
     int verbose = 0;
+    int browse = 0;
+    int discovered = 0;
     int show_usage = 0;
     int log_level = LOG_NOTICE;
     const char *metadata_mode = "auto";
     struct option long_options[] = {
+        {"browse", 0, 0, 'b'},
         {"help", 0, 0, 'h'},
         {"metadata", 1, 0, 'M'},
         {"recursive", 0, 0, 'r'},
@@ -505,12 +513,14 @@ int main(int argc, char *argv[])
         {NULL, 0, NULL, 0},
     };
     char *url = NULL;
+    char discovered_url[AFPC_MAX_PATH];
+    char *discovered_username = NULL;
     char *local_path = NULL;
     int batch_mode = 0;
     int direction = 0; /* 0 = GET (remote->local), 1 = PUT (local->remote) */
 
     while (1) {
-        c = getopt_long(argc, argv, "hM:rVv:",
+        c = getopt_long(argc, argv, "bhM:rVv:",
                         long_options, &option_index);
 
         if (c == -1) {
@@ -518,6 +528,10 @@ int main(int argc, char *argv[])
         }
 
         switch (c) {
+        case 'b':
+            browse = 1;
+            break;
+
         case 'h':
             show_usage = 1;
             break;
@@ -568,8 +582,14 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    if (browse && optind < argc) {
+        printf("--browse cannot be combined with an AFP URL or batch arguments.\n");
+        usage();
+        exit(1);
+    }
+
     /* Check arguments for batch mode */
-    if (argc - optind == 2) {
+    if (!browse && argc - optind == 2) {
         struct afpc_url tmp_url;
         char *arg1 = argv[optind];
         char *arg2 = argv[optind + 1];
@@ -592,13 +612,36 @@ int main(int argc, char *argv[])
             usage();
             exit(1);
         }
-    } else if (optind < argc) {
+    } else if (!browse && optind < argc) {
         url = argv[optind];
     }
 
     if (!url) {
-        usage();
-        exit(1);
+        if (!browse) {
+            usage();
+            exit(1);
+        }
+
+        int discover_ret = cmdline_discover_url(discovered_url,
+                                                sizeof(discovered_url));
+
+        if (discover_ret > 0) {
+            exit(0);
+        }
+
+        if (discover_ret < 0) {
+            if (discover_ret == -ENOTSUP) {
+                fputs("Zeroconf discovery support was not built.\n", stderr);
+            } else {
+                fprintf(stderr, "Could not browse AFP services: %s\n",
+                        strerror(-discover_ret));
+            }
+
+            exit(1);
+        }
+
+        url = discovered_url;
+        discovered = 1;
     }
 
     if (recursive && !batch_mode) {
@@ -611,12 +654,31 @@ int main(int argc, char *argv[])
     tcgetattr(STDIN_FILENO, &save_termios);
     initialize_readline();
 
-    if (cmdline_afp_setup(batch_mode, url) != 0) {
+    if (discovered) {
+        discovered_username = readline("Username (blank for guest): ");
+
+        if (!discovered_username) {
+            tty_reset(STDIN_FILENO);
+            exit(0);
+        }
+
+        if (strnlen(discovered_username, AFPC_MAX_USERNAME_LEN)
+                >= AFPC_MAX_USERNAME_LEN) {
+            fprintf(stderr, "Username is too long.\n");
+            free(discovered_username);
+            tty_reset(STDIN_FILENO);
+            exit(1);
+        }
+    }
+
+    if (cmdline_afp_setup(batch_mode, url, discovered_username) != 0) {
+        free(discovered_username);
         cmdline_afp_exit();
         tty_reset(STDIN_FILENO);
         exit(1);
     }
 
+    free(discovered_username);
     signal(SIGINT, earlyexit_handler);
 
     if (batch_mode) {
