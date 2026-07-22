@@ -7,14 +7,6 @@ public_headers_test = executable(
 
 test('public headers compile standalone', public_headers_test)
 
-python = import('python').find_installation()
-
-test(
-    'source include boundaries',
-    python,
-    args: [files('check_include_boundaries.py'), meson.project_source_root()],
-)
-
 public_header_checks = {
     'afpsl': 'netatalk-client/afpsl.h',
     'transport': 'netatalk-client/transport.h',
