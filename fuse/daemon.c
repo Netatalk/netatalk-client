@@ -820,7 +820,7 @@ static int handle_manager_command(int client_fd)
                 }
 
                 append_text(text, sizeof(text), &pos,
-                            "\nRun 'afp_client status [mountpoint]' for details");
+                            "\nRun 'afpc fs status [mountpoint]' for details");
             }
 
             append_text(text, sizeof(text), &pos, "\n");

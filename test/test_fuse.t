@@ -104,7 +104,7 @@ sub unmount_or_bail {
     my ($description) = @_;
     my @cmd = $^O eq 'darwin'
         ? ('/sbin/umount', $mnt_dir)
-        : ('afp_client', 'unmount', $mnt_dir);
+        : ('afpc', 'fs', 'unmount', $mnt_dir);
     my $rc = system(@cmd);
 
     is($rc, 0, $description);
@@ -142,21 +142,21 @@ like($content, qr/^You should read this back$/m,
 # -----------------------------------------------------------------------
 # fuse_resume: authenticated suspend/resume keeps mounted volume usable
 # -----------------------------------------------------------------------
-is(system('afp_client', 'suspend', $mnt_dir), 0,
+is(system('afpc', 'fs', 'suspend', $mnt_dir), 0,
     'fuse_resume: authenticated suspend succeeds');
 
-open(my $status_fh, '-|', 'afp_client', 'status', $mnt_dir)
-    or BAIL_OUT("Cannot run afp_client status: $!");
+open(my $status_fh, '-|', 'afpc', 'fs', 'status', $mnt_dir)
+    or BAIL_OUT("Cannot run afpc fs status: $!");
 my $status = do { local $/; <$status_fh> };
 my $status_close_ok = close $status_fh;
 my $status_rc = $?;
 ok($status_close_ok, 'fuse_resume: status command exits successfully')
-    or diag('afp_client status exited with '
+    or diag('afpc fs status exited with '
         . ($status_rc == -1 ? "close error: $!" : 'status ' . ($status_rc >> 8)));
 like($status, qr/connection: .*disconnected/,
     'fuse_resume: status reports disconnected server after suspend');
 
-is(system('afp_client', 'resume', $mnt_dir), 0,
+is(system('afpc', 'fs', 'resume', $mnt_dir), 0,
     'fuse_resume: authenticated resume succeeds without new password');
 
 open(my $resume_rfh, '<', "$mnt_dir/sample.txt")

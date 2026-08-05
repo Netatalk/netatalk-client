@@ -35,7 +35,7 @@ struct resolved_service {
 
 static void discover_usage(FILE *stream)
 {
-    fputs("Usage: afp_client discover [--verbose | --json] "
+    fputs("Usage: afpc discover [--verbose | --json] "
           "[--timeout milliseconds]\n",
           stream);
 }

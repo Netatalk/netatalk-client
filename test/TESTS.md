@@ -45,7 +45,7 @@ podman run --rm netatalk-client-test
 
 ### Prerequisites
 
-- Netatalk Client built and installed (`afpcmd`, `afpfsd`, `mount_afpfs`, `afp_client` on `PATH`)
+- Netatalk Client built and installed (`afpc`, `afpcmd`, `afpfsd`, `mount_afpfs` on `PATH`)
 - netatalk installed and configured (see Manual environment prep below)
 - Perl (any recent version; all modules used are in core)
 
@@ -126,7 +126,7 @@ The test creates an `afpfs_mnt/` directory in the current working directory and 
 If a run is interrupted mid-test, unmount manually before re-running:
 
 ```sh
-afp_client unmount ./afpfs_mnt
+afpc fs unmount ./afpfs_mnt
 ```
 
 On macOS with macFUSE, use:

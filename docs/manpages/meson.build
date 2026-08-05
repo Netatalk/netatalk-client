@@ -9,7 +9,7 @@ endif
 
 if with_fuse
     manfiles += [
-        'afp_client.1',
+        'afpc.1',
         'afpfsd.1',
         'mount_afpfs.1',
     ]

@@ -66,7 +66,7 @@ int main(int argc, char **argv)
     char *human_argv[] = {
         "discover", "--timeout", "5", NULL,
     };
-    char *afp_client_help_argv[] = {
+    char *afpc_help_argv[] = {
         "discover", "--help", NULL,
     };
     test_tap_init(argc, argv);
@@ -101,9 +101,9 @@ int main(int argc, char **argv)
     CHECK(count_text(output, "Office \"Mac\"") == 1);
     CHECK(strstr(output, "office.local ") != NULL);
     CHECK(strstr(output, "office.local.") == NULL);
-    CHECK(capture_command(2, afp_client_help_argv, output,
+    CHECK(capture_command(2, afpc_help_argv, output,
                           sizeof(output)) == 0);
-    CHECK(strstr(output, "Usage: afp_client discover ") != NULL);
+    CHECK(strstr(output, "Usage: afpc discover ") != NULL);
     CHECK(afpc_discover_resolve_service("Office \"Mac\"", host,
                                         sizeof(host), &port, 5) == 0);
     CHECK(strcmp(host, "192.0.2.10") == 0);

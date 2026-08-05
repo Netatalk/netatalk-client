@@ -17,7 +17,7 @@
 is the daemon used by the AFP (Apple Filing Protocol) FUSE client.
 It is typically not run directly by users; rather,
 it is started automatically by
-.Xr afp_client 1
+.Xr afpc 1
 or
 .Xr mount_afpfs 1
 if not already running.
@@ -36,7 +36,7 @@ listens on a shared socket, and spawns mount-specific daemons.
 owns a single FUSE mount.
 .El
 .Pp
-.Xr afp_client 1
+.Xr afpc 1
 talks to the manager; the manager spawns per-mount
 daemons as needed.
 Management commands (status, unmount, exit) go to the
@@ -65,7 +65,7 @@ Puts the daemon in the foreground, sets log level to debug, and dumps logs to st
 .It Fl m , Fl -manager
 Run in manager mode (per user).
 This is started automatically by
-.Xr afp_client 1
+.Xr afpc 1
 if not already running.
 .It Fl s , Fl -socket-id Ar socket_name
 Specifies the Unix domain socket filename to listen on.
@@ -74,9 +74,9 @@ The manager listens on
 Each mount daemon uses a unique socket derived from the mountpoint hash, e.g.\&
 .Pa /tmp/afp_server- Ns Aq Ar uid Ns - Ns Aq Ar hash .
 This option is primarily used internally by
-.Xr afp_client 1 .
+.Xr afpc 1 .
 .El
 .Sh SEE ALSO
-.Xr afp_client 1 ,
+.Xr afpc 1 ,
 .Xr afpsld 1,
 .Xr mount_afpfs 1

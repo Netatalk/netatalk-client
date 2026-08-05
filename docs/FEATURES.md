@@ -26,7 +26,7 @@ There are basic facilities to receive and send session keys, but these are not
 used.
 
 Server disconnect and reconnect can be done with the FUSE client,
-with the afp_client suspend and resume commands.
+with the afpc fs suspend and resume commands.
 
 The client doesn't recover if the server goes down partway through a transaction.
 
@@ -60,8 +60,8 @@ not implemented.
 This is where a file is read that translates client and server ids.  This is
 not implemented.
 
-Netatalk Client attempts to detect the mapping type automatically; do 'afp_client
-status' (for FUSE monts) or 'status' within afpcmd to see what it guessed.
+Netatalk Client attempts to detect the mapping type automatically; do 'afpc fs
+status' (for FUSE mounts) or 'status' within afpcmd to see what it guessed.
 
 ## D. Meta information
 
@@ -206,7 +206,7 @@ Appletalk: There is no support for Appletalk.
 There's no concept of multiple protocols, eg. doing getstatus with one protocol,
 then connecting with another, which is what some Apple clients do.
 
-`afp_client discover` browses `_afpovertcp._tcp` and companion
+`afpc discover` browses `_afpovertcp._tcp` and companion
 `_device-info._tcp` services advertised through Bonjour/DNS-SD or Avahi. It
 associates matching advertisements, extracts the device model, and resolves the
 AFP target host, port, interface, and addresses. Human-readable, verbose, and
@@ -216,7 +216,7 @@ JSON output modes are available.
 The picker contains advertised services and quit only; a known host
 is supplied as an AFP URL on the command line. After service selection,
 `afpcmd` prompts for a username and hidden password; an empty username requests
-guest access. FUSE mounts can use an exact advertised name with `afp_client
+guest access. FUSE mounts can use an exact advertised name with `afpc fs
 mount --service`; `--volume` selects a volume to mount, while omitting it lists
 the volumes available after authentication. Service lookup is non-interactive
 and there is no mount browser.

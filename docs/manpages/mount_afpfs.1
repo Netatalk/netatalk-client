@@ -20,7 +20,7 @@ at the designated
 .Ar mountpoint .
 .Pp
 This command is a symlink to the
-.Xr afp_client 1
+.Xr afpc 1
 executable, which is a full implementation to mount AFP volumes using
 the FUSE infrastructure.
 It communicates with
@@ -28,7 +28,7 @@ It communicates with
 , a daemon that manages AFP sessions.
 .Pp
 In order to mount multiple AFP volumes simultaneously, the
-.Xr afp_client 1
+.Xr afpc 1
 talks to a per-user manager daemon (afpfsd in manager mode), which
 spawns a dedicated afpfsd daemon for each mount request.
 .Pp
@@ -107,5 +107,5 @@ mount_afpfs afp://john.doe:p@@ssw0rd!@datahub.local/fileshare/ /mnt/files
 .Sh EXIT STATUS
 .Ex -std
 .Sh SEE ALSO
-.Xr afp_client 1 ,
+.Xr afpc 1 ,
 .Xr afpfsd 1

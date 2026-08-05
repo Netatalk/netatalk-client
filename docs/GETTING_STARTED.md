@@ -16,12 +16,12 @@ by running:
 This should fork off.  You should see messages in /var/log/messages.  For more
 details, run it with the '--debug' option to see detailed debug info.
 
-Note that if afpfsd is not running, afp_client or mount_afpfs will start it
+Note that if afpfsd is not running, afpc fs commands or mount_afpfs will start it
 automatically, so in most cases you don't need to start it manually.
 
 List AFP servers advertised on the local network through Zeroconf:
 
-    % afp_client discover
+    % afpc discover
 
 Use `--verbose` to include resolved addresses, raw TXT data, and separate
 `_device-info._tcp` entries, or `--json` for machine-readable output. The
@@ -32,7 +32,7 @@ Mount a discovered service by its exact instance name with `--service`. The
 mount command resolves the address and advertised port non-interactively; use
 `afpcmd --browse` for a live picker.
 
-    % afp_client mount --service "Office File Server" --user myuser \
+    % afpc fs mount --service "Office File Server" --user myuser \
         --volume "File Sharing" /home/myuser/fusemount
 
 If `--volume` is omitted, the command authenticates with the service, prints
@@ -54,8 +54,8 @@ The same, but forcing the UAM of your choice with the _AUTH_ parameter (usually 
 
     % mount_afpfs "afp://myuser;AUTH=dhx:-@afpserver.local/File Sharing" /home/myuser/fusemount
 
-You can see status by running 'afp_client status'.  See afpfsd(1),
-mount_afpfs(1) and afp_client(1) for more info.
+You can see FUSE status by running 'afpc fs status'. See afpfsd(1),
+mount_afpfs(1) and afpc(1) for more info.
 
 ### Mounting on boot
 

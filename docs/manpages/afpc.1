@@ -1,0 +1,74 @@
+.Dd August 5, 2026
+.Dt AFPC 1
+.Os Netatalk Client
+.Sh NAME
+.Nm afpc
+.Nd control AFP discovery, FUSE mounts, and the stateless controller
+.Sh SYNOPSIS
+.Nm afpc discover
+.Op Fl -verbose | Fl -json
+.Op Fl -timeout Ar milliseconds
+.Nm afpc sl status | exit
+.Nm afpc fs mount
+.Op Ar mount-options
+.Ar server : volume Ar mountpoint
+.Nm afpc fs mount
+.Fl -service Ar name
+.Op Ar mount-options
+.Op Fl -volume Ar volume
+.Op Ar mountpoint
+.Nm afpc fs unmount | suspend | resume Ar mountpoint
+.Nm afpc fs status
+.Op Ar mountpoint
+.Nm afpc fs exit
+.Sh DESCRIPTION
+.Nm
+is the client-control command. Commands that address a controller always use
+an explicit namespace, preventing a command from silently selecting the wrong
+controller in installations with both FUSE and stateless AFP operations.
+.Pp
+.Cm discover
+does not contact either controller and is available in every build.
+.Pp
+.Cm sl
+uses the public libafpsl API to communicate with
+.Xr afpsld 1 .
+It accepts only
+.Cm status
+and
+.Cm exit .
+.Pp
+.Cm fs
+communicates with
+.Xr afpfsd 1
+and is present only when FUSE support was built. It provides structured
+mounting and FUSE mount lifecycle commands. The mount options are the same as
+the former AFP client mount command: use
+.Fl -service
+to resolve an advertised service, and use
+.Fl -volume
+to select a volume when mounting a service.
+.Pp
+Unqualified controller commands such as
+.Dq afpc status
+or
+.Dq afpc mount
+are invalid. Use the appropriate
+.Cm fs
+or
+.Cm sl
+namespace.
+.Sh COMPATIBILITY
+When FUSE support is built,
+.Xr mount_afpfs 1
+is installed as a symlink to
+.Nm .
+Its exact program name selects the AFP-URL mount syntax; it does not accept
+.Nm
+subcommands.
+.Sh EXIT STATUS
+.Ex -std
+.Sh SEE ALSO
+.Xr afpfsd 1 ,
+.Xr afpsld 1 ,
+.Xr mount_afpfs 1

@@ -29,6 +29,7 @@ RUN apt-get update \
 WORKDIR /netatalk-client-code
 COPY cmdline/ ./cmdline/
 COPY common/ ./common/
+COPY control/ ./control/
 COPY daemon/ ./daemon/
 COPY discovery/ ./discovery/
 COPY fuse/ ./fuse/
