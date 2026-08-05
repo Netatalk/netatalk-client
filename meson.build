@@ -309,22 +309,18 @@ if with_crypt
     add_project_arguments('-DHAVE_LIBGCRYPT', language: 'c')
 endif
 
-if not with_afpcmd and not with_fuse
-    message(
-        'neither afpcmd nor the FUSE client will be built.',
-    )
-endif
-
 subdir('common')
 subdir('discovery')
 subdir('lib')
 subdir('daemon')
-subdir('cmdline')
-subdir('test')
 
 if with_fuse
     subdir('fuse')
 endif
+
+subdir('control')
+subdir('cmdline')
+subdir('test')
 
 subdir('include')
 
@@ -361,6 +357,7 @@ summary_info = {
 summary(summary_info, bool_yn: true, section: 'Compilation:')
 
 summary_info = {
+    'AFP control client': true,
     'AFP command line client': with_afpcmd,
     'AFP FUSE client': with_fuse,
     'Encrypted UAMs': with_crypt,

@@ -2,8 +2,9 @@
 
 ## Description
 
-**Netatalk Client** is a file sharing client written in C
-which can be used to access AFP shares exposed by multiple devices,
+**Netatalk Client** is a suite of file sharing clients and libraries for AFP
+(Apple Filing Protocol)
+which can be used to access remote shares exposed by multiple devices,
 notably personal file sharing on older Mac OS X and Classic Mac OS computers,
 [Netatalk](https://netatalk.io/) servers hosted on Linux/*BSD/Solaris/macOS,
 Apple AirPort and Time Capsule products as well as other AFP enabled NAS devices from various vendors.
@@ -27,7 +28,7 @@ other applications that need to browse AFP shares.
 
 Discover AFP servers advertised on the local network with Zeroconf:
 
-    % afp_client discover
+    % afpc discover
     NAME                           TARGET                                PORT   MODEL
     Time Capsule                   Time-Capsule.local                     548   TimeCapsule8,119
     afpserver                      afpserver.local                        548   Macmini
@@ -35,7 +36,7 @@ Discover AFP servers advertised on the local network with Zeroconf:
 Mount an advertised service by its exact instance name. This is
 non-interactive; use `afpcmd --browse` when you want a live picker:
 
-    % afp_client mount --service "Office File Server" --user myuser \
+    % afpc fs mount --service "Office File Server" --user myuser \
         --volume "File Sharing" /home/myuser/fusemount
 
 Omit `--volume` to authenticate and list the volumes available to that user.
@@ -44,19 +45,19 @@ The trailing mountpoint may also be omitted because no filesystem is mounted.
 Mount the *File Sharing* volume from afpserver.local on /home/myuser/fusemount
 authenticated as user *myuser* (you will be prompted for the password):
 
-    % afp_client mount --user myuser "afpserver.local:File Sharing" /home/myuser/fusemount
+    % afpc fs mount --user myuser "afpserver.local:File Sharing" /home/myuser/fusemount
 
 Get status information about all AFP volumes mounted by the current user:
 
-    % afp_client status
+    % afpc fs status
 
 Unmount the volume when you are done:
 
-    % afp_client unmount /home/myuser/fusemount
+    % afpc fs unmount /home/myuser/fusemount
 
 Shut down the FUSE management daemon (*afpfsd*) when no FUSE mounts are active:
 
-    % afp_client exit
+    % afpc fs exit
 
 There is also an alternative command *mount_afpfs* included for mounting by AFP URL:
 
@@ -147,10 +148,11 @@ library APIs, behavior, and supported features nevertheless exist.
   The interactive **connect** command has been removed; conversely,
   when you execute **disconnect**, the server session is terminated
   and *afpcmd* shuts down rather than returning to the connect prompt
-- The *afpfsd* FUSE controller daemon has been rewritten to have one process per FUSE mount,
+- The *afpfsd* FUSE controller daemon has been rearchitectured to have one process per FUSE mount,
   with a manager process to handle mount requests and manage the afpfsd processes
   This allows for better isolation and stability of FUSE mounts compared to a single process handling all mounts.
-- The FUSE client has been rewritten for FUSE v3 and macFUSE
+- The FUSE client has been adapted for libfuse v3 and macFUSE,
+  leaving a legacy libfuse v2.9 compatibility layer for older systems
 
 We have also introduced numerous new options and features, which will not be listed in full here.
 Refer to the documentation and command line help text.

@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifdef HAVE_LIBBSD
@@ -41,6 +42,7 @@
 
 #include "discovery/client/discover.h"
 #include "fuse_ipc.h"
+#include "controller_fs.h"
 
 #define default_uam "Cleartxt Passwrd"
 
@@ -58,6 +60,52 @@ static int changegid = 0;
 static char *thisbin;
 static int client_log_min_rank = 2; /* Default to LOG_NOTICE */
 static int list_volumes_only = 0;
+
+static int wait_readable(int sock);
+
+static int write_all(int fd, const void *buffer, size_t length)
+{
+    const char *cursor = buffer;
+
+    while (length != 0) {
+        ssize_t written = write(fd, cursor, length);
+
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+
+        if (written <= 0) {
+            return -1;
+        }
+
+        cursor += written;
+        length -= (size_t)written;
+    }
+
+    return 0;
+}
+
+static int read_all(int fd, void *buffer, size_t length)
+{
+    char *cursor = buffer;
+
+    while (length != 0) {
+        ssize_t received = read(fd, cursor, length);
+
+        if (received < 0 && errno == EINTR) {
+            continue;
+        }
+
+        if (received <= 0) {
+            return -1;
+        }
+
+        cursor += received;
+        length -= (size_t)received;
+    }
+
+    return 0;
+}
 
 /* Log handler that filters by log level */
 static void client_log_for_client(void *priv _U_,
@@ -153,10 +201,20 @@ static int start_manager_daemon(void)
 
         if (execvp(filename, argv)) {
             if (errno == ENOENT) {
-                /* Try the path of afp_client */
+                /* Try the directory containing afpc. */
                 char newpath[PATH_MAX];
-                snprintf(newpath, PATH_MAX, "%s/%s",
-                         (char *)basename(thisbin), AFPFSD_FILENAME);
+                char binary_path[PATH_MAX];
+                char *directory;
+
+                if (strlcpy(binary_path, thisbin, sizeof(binary_path))
+                        >= sizeof(binary_path)) {
+                    perror("Starting up afpfsd manager");
+                    _exit(1);
+                }
+
+                directory = dirname(binary_path);
+                snprintf(newpath, sizeof(newpath), "%s/%s", directory,
+                         AFPFSD_FILENAME);
 
                 if (execvp(newpath, argv)) {
                     perror("Starting up afpfsd manager");
@@ -239,18 +297,19 @@ static int start_afpfsd(const char *mountpoint, const char *volumename)
     snprintf(req.volumename, sizeof(req.volumename), "%s",
              volumename ? volumename : "");
 
-    if (write(sock, &command, 1) != 1) {
+    if (write_all(sock, &command, sizeof(command)) != 0) {
         close(sock);
         return -1;
     }
 
-    if (write(sock, &req, sizeof(req)) != sizeof(req)) {
+    if (write_all(sock, &req, sizeof(req)) != 0) {
         close(sock);
         return -1;
     }
 
     /* Wait for response */
-    if (read(sock, &result, 1) != 1) {
+    if (wait_readable(sock) != 0
+            || read_all(sock, &result, sizeof(result)) != 0) {
         close(sock);
         return -1;
     }
@@ -333,6 +392,7 @@ static int daemon_connect(const char *mountpoint, const char *volumename)
 
 error:
     perror("Trying to startup afpfsd");
+    close(sock);
     return -1;
 done:
     return sock;
@@ -342,9 +402,7 @@ done:
 static void usage(void)
 {
     printf(
-        "afp_client <command> [options]\n"
-        "    discover [--verbose | --json] [--timeout milliseconds]\n"
-        "                           : list Zeroconf AFP services\n"
+        "afpc fs <command> [options]\n"
         "    mount [mountopts] <server>:<volume> <mountpoint>\n"
         "    mount --service <name> [mountopts] [--volume <volume>] [mountpoint]\n"
         "         mount options:\n"
@@ -457,7 +515,7 @@ static int copy_secret(char *dst, size_t dstlen, const char *src,
 
 static int send_command(int sock, char * msg, int len)
 {
-    return write(sock, msg, len);
+    return write_all(sock, msg, (size_t)len);
 }
 
 static int do_exit(int argc _U_, char **argv _U_)
@@ -776,7 +834,7 @@ static int do_mount(int argc, char ** argv)
 
         if (ret == -EEXIST) {
             fprintf(stderr,
-                    "AFP service name '%s' is ambiguous; use afp_client "
+                    "AFP service name '%s' is ambiguous; use afpc "
                     "discover to inspect its domains and interfaces.\n",
                     service_name);
             return -1;
@@ -930,12 +988,22 @@ static int handle_mount_afpfs(int argc, char * argv[])
     int ret = -1;
     char *temp_url = NULL;
 
+    if (argc > 1 && (strcmp(argv[1], "discover") == 0
+                     || strcmp(argv[1], "fs") == 0
+                     || strcmp(argv[1], "sl") == 0
+                     || strcmp(argv[1], "help") == 0
+                     || strcmp(argv[1], "version") == 0)) {
+        fprintf(stderr,
+                "mount_afpfs: use 'afpc %s' for afpc commands\n", argv[1]);
+        return -1;
+    }
+
     if (argc < 2) {
         mount_afpfs_usage();
         return -1;
     }
 
-    if (strncmp(argv[1], "-o", 2) == 0) {
+    if (strcmp(argv[1], "-o") == 0) {
         char *p, *q;
         char command[256];
         struct passwd * passwd;
@@ -1118,17 +1186,17 @@ static int prepare_buffer(int argc, char * argv[])
         return -1;
     }
 
-    if (strncmp(argv[1], "mount", 5) == 0) {
+    if (strcmp(argv[1], "mount") == 0) {
         return do_mount(argc - 1, argv + 1);
-    } else if (strncmp(argv[1], "resume", 6) == 0) {
+    } else if (strcmp(argv[1], "resume") == 0) {
         return do_resume(argc, argv);
-    } else if (strncmp(argv[1], "suspend", 7) == 0) {
+    } else if (strcmp(argv[1], "suspend") == 0) {
         return do_suspend(argc, argv);
-    } else if (strncmp(argv[1], "status", 6) == 0) {
+    } else if (strcmp(argv[1], "status") == 0) {
         return do_status(argc, argv);
-    } else if (strncmp(argv[1], "unmount", 7) == 0) {
+    } else if (strcmp(argv[1], "unmount") == 0) {
         return do_unmount(argc, argv);
-    } else if (strncmp(argv[1], "exit", 4) == 0) {
+    } else if (strcmp(argv[1], "exit") == 0) {
         return do_exit(argc, argv);
     } else {
         usage();
@@ -1137,117 +1205,121 @@ static int prepare_buffer(int argc, char * argv[])
 }
 
 
-int read_answer(int sock)
+static int wait_readable(int sock)
 {
-    int len = 0, expected_len = 0, packetlen;
-    char *incoming_buffer = NULL;
-    int buffer_size = AFPFSD_IPC_MAX_RESPONSE;
-    struct timeval tv;
-    fd_set rds, ords;
-    int ret;
-    const struct afpfsd_ipc_response * answer;
-    incoming_buffer = malloc(buffer_size);
+    struct timespec deadline;
 
-    if (!incoming_buffer) {
-        printf("Out of memory\n");
+    if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
+        perror("Getting monotonic time");
         return -1;
     }
 
-    answer = (void *) incoming_buffer;
-    memset(incoming_buffer, 0, buffer_size);
-    FD_ZERO(&rds);
-    FD_SET(sock, &rds);
+    deadline.tv_sec += 30;
 
-    while (1) {
-        tv.tv_sec = 30;
-        tv.tv_usec = 0;
-        ords = rds;
+    for (;;) {
+        fd_set fds;
+        struct timespec now;
+        struct timeval timeout;
+        int ret;
 
-        do {
-            ret = select(sock + 1, &ords, NULL, NULL, &tv);
-        } while (ret < 0 && errno == EINTR);
-
-        if (ret == 0) {
-            printf("No response from server\n");
-            free(incoming_buffer);
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+            perror("Getting monotonic time");
             return -1;
         }
 
-        if (FD_ISSET(sock, &ords)) {
-            if (len == 0) {
-                /* Read header first */
-                do {
-                    packetlen = read(sock, incoming_buffer + len,
-                                     sizeof(struct afpfsd_ipc_response));
-                } while (packetlen < 0 && errno == EINTR);
+        timeout.tv_sec = deadline.tv_sec - now.tv_sec;
+        timeout.tv_usec = (deadline.tv_nsec - now.tv_nsec) / 1000;
 
-                if (packetlen <= 0) {
-                    /* If the outgoing command was UNMOUNT, treat EOF as success */
-                    extern char outgoing_buffer[];
-
-                    if (outgoing_buffer[0] == AFPFSD_IPC_COMMAND_UNMOUNT) {
-                        free(incoming_buffer);
-                        return 0;
-                    }
-
-                    printf("Failed to read response header\n");
-                    free(incoming_buffer);
-                    return -1;
-                }
-
-                len += packetlen;
-                expected_len = answer->len;
-
-                /* Grow buffer if needed */
-                if (expected_len + sizeof(struct afpfsd_ipc_response) > (size_t)buffer_size) {
-                    buffer_size = expected_len + sizeof(struct afpfsd_ipc_response) + 1;
-                    char *new_buffer = realloc(incoming_buffer, buffer_size);
-
-                    if (!new_buffer) {
-                        printf("Out of memory\n");
-                        free(incoming_buffer);
-                        return -1;
-                    }
-
-                    incoming_buffer = new_buffer;
-                    answer = (void *) incoming_buffer;
-                }
-            } else {
-                do {
-                    packetlen = read(sock, incoming_buffer + len, buffer_size - len);
-                } while (packetlen < 0 && errno == EINTR);
-
-                if (packetlen == 0) {
-                    printf("Connection closed\n");
-                    goto done;
-                }
-
-                if (packetlen < 0) {
-                    goto error;
-                }
-
-                len += packetlen;
-            }
-
-            if ((unsigned long) len >= expected_len + sizeof(struct afpfsd_ipc_response)) {
-                goto done;
-            }
+        if (timeout.tv_usec < 0) {
+            timeout.tv_sec--;
+            timeout.tv_usec += 1000000;
         }
-    }
 
-done:
-    /* Print the entire message (null-terminate first for safety) */
-    incoming_buffer[len] = '\0';
-    printf("%s", incoming_buffer + sizeof(*answer));
-    ret = answer->result;
-    free(incoming_buffer);
-    return ret;
-error:
-    free(incoming_buffer);
-    return -1;
+        if (timeout.tv_sec < 0
+                || (timeout.tv_sec == 0 && timeout.tv_usec == 0)) {
+            fputs("No response from server\n", stderr);
+            return -1;
+        }
+
+        FD_ZERO(&fds);
+        FD_SET(sock, &fds);
+        ret = select(sock + 1, &fds, NULL, NULL, &timeout);
+
+        if (ret < 0 && errno == EINTR) {
+            continue;
+        }
+
+        if (ret == 0) {
+            fputs("No response from server\n", stderr);
+            return -1;
+        }
+
+        if (ret < 0) {
+            perror("Waiting for afpfsd response");
+            return -1;
+        }
+
+        return 0;
+    }
 }
 
-int main(int argc, char *argv[])
+static int read_response_bytes(int sock, void *buffer, size_t length)
+{
+    char *cursor = buffer;
+
+    while (length != 0) {
+        ssize_t received;
+
+        if (wait_readable(sock) != 0) {
+            return -1;
+        }
+
+        do {
+            received = read(sock, cursor, length);
+        } while (received < 0 && errno == EINTR);
+
+        if (received <= 0) {
+            return -1;
+        }
+
+        cursor += received;
+        length -= (size_t)received;
+    }
+
+    return 0;
+}
+
+static int read_response(int sock)
+{
+    struct afpfsd_ipc_response answer;
+    char response[AFPFSD_IPC_MAX_RESPONSE + 1];
+
+    if (read_response_bytes(sock, &answer, sizeof(answer)) != 0) {
+        /* afpfsd can close the mount socket as it completes an unmount. */
+        if (outgoing_buffer[0] == AFPFSD_IPC_COMMAND_UNMOUNT) {
+            return 0;
+        }
+
+        fputs("Failed to read response header\n", stderr);
+        return -1;
+    }
+
+    if (answer.len > AFPFSD_IPC_MAX_RESPONSE) {
+        fputs("Invalid oversized response from afpfsd\n", stderr);
+        return -1;
+    }
+
+    if (answer.len != 0 && read_response_bytes(sock, response, answer.len) != 0) {
+        fputs("Failed to read response body\n", stderr);
+        return -1;
+    }
+
+    response[answer.len] = '\0';
+    fputs(response, stdout);
+    return answer.result;
+}
+
+static int afpc_fs_run(int argc, char *argv[], int url_mode)
 {
     int sock;
     int ret;
@@ -1255,18 +1327,12 @@ int main(int argc, char *argv[])
     const char *volumename = NULL;
     thisbin = argv[0];
     uid = ((unsigned int) geteuid());
-
-    if (!strstr(argv[0], "mount_afpfs") && argc > 1
-            && strcmp(argv[1], "discover") == 0) {
-        return afpc_discover_command(argc - 1, argv + 1);
-    }
-
     /* Register logging handler to filter debug messages */
     libafpclient_register(&client);
 
-    if (strstr(argv[0], "mount_afpfs")) {
+    if (url_mode) {
         if (handle_mount_afpfs(argc, argv) < 0) {
-            return -1;
+            return 2;
         }
 
         /* Extract mountpoint and volumename from mount request */
@@ -1277,7 +1343,7 @@ int main(int argc, char *argv[])
             volumename = req->url.volumename;
         }
     } else if (prepare_buffer(argc, argv) < 0) {
-        return -1;
+        return 2;
     }
 
     if (list_volumes_only) {
@@ -1306,7 +1372,30 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    send_command(sock, outgoing_buffer, outgoing_len);
-    ret = read_answer(sock);
+    if (send_command(sock, outgoing_buffer, outgoing_len) != 0) {
+        perror("Sending command to afpfsd");
+        close(sock);
+        return -1;
+    }
+
+    ret = read_response(sock);
+    close(sock);
     return ret;
+}
+
+int afpc_fs_command(char *program_path, int argc, char **argv)
+{
+    char *client_argv[argc + 1];
+    client_argv[0] = program_path;
+
+    for (int i = 0; i < argc; i++) {
+        client_argv[i + 1] = argv[i];
+    }
+
+    return afpc_fs_run(argc + 1, client_argv, 0);
+}
+
+int afpc_mount_url_command(int argc, char **argv)
+{
+    return afpc_fs_run(argc, argv, 1);
 }

@@ -43,7 +43,7 @@ or from a regular local path?"
     ┌──────────────────────────────────────────────────────────────┐
     │                    Client Applications                       │
     ├─────────────────────────────┬────────────────────────────────┤
-    │   afpcmd, GUI clients       │   afp_client, mount_afpfs      │
+    │   afpcmd, GUI clients       │   afpc fs, mount_afpfs         │
     └───────┬─────────────────────┴─────────┬──────────────────────┘
             │                               │
             │ libafpsl.so (afpsl.h)         │ (direct spawn/mount)
@@ -284,7 +284,7 @@ Compared to a single shared daemon with per-mount multi threading or multiplexin
 
 ### Coordinated Shutdown
 
-    afp_client exit
+    afpc fs exit
 
 1. Client connects to manager socket `afpfsd-501` (NULL mountpoint)
 2. Sends `AFP_SERVER_COMMAND_EXIT`
@@ -494,7 +494,7 @@ the bounded discovery command and exact service resolver once from
 `discovery/client/discover.c`. Discovery happens before an AFP session
 or mount request exists.
 
-    afpcmd                        afp_client / mount_afpfs
+    afpcmd                        afpc / mount_afpfs
       |                                      |
       +---------- afpc-discovery ------------+
                       |
@@ -526,7 +526,7 @@ The frontends deliberately have different UX responsibilities:
   consolidates advertisements sharing an instance, type, and domain.
   Selection resolves every active interface member and prefers a
   non-loopback endpoint before using the existing stateless connection flow.
-- `afp_client discover` provides bounded human, verbose, and JSON snapshots
+- `afpc discover` provides bounded human, verbose, and JSON snapshots
   from the client-discovery archive. The normal table provides human-readable
   information, while verbose and JSON output retain per-interface diagnostics.
   Verbose output also retains every device-info advertisement as an

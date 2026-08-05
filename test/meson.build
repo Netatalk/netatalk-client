@@ -54,6 +54,14 @@ ipc_namespaces_test = executable(
 
 test('IPC namespaces and wire compatibility', ipc_namespaces_test)
 
+afpc_parser_test = files('check_afpc.py')
+test(
+    'afpc parser and invocation dispatch',
+    find_program('python3'),
+    args: [afpc_parser_test, afpc_exe.full_path(), with_fuse ? 'fuse' : 'no-fuse'],
+    depends: afpc_exe,
+)
+
 transport_api_test = executable(
     'test_transport_api',
     sources: ['test_transport_api.c'],
@@ -114,7 +122,7 @@ discover_command_test = executable(
 )
 
 test(
-    'afp_client discover output',
+    'afpc discover output',
     discover_command_test,
     args: ['--tap'],
     protocol: 'tap',
@@ -135,7 +143,7 @@ resolve_service_test = executable(
 )
 
 test(
-    'afp_client service resolution',
+    'afpc service resolution',
     resolve_service_test,
     args: ['--tap'],
     protocol: 'tap',

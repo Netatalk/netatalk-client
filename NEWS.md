@@ -41,11 +41,15 @@ and (partial) compatibility.
 
 ### FUSE Client Improvements
 
+- Replace the `afp_client` compatibility command with `afpc`. FUSE controller
+  operations now require the `afpc fs` namespace, while `afpc sl` controls
+  afpsld. `mount_afpfs` remains the FUSE-only AFP-URL compatibility command.
+
 - Better macOS Finder compatibility through ResourceFork, FinderInfo, and generic extended attribute operations in
   macFUSE.
 - Support Darwin rename and exchange callbacks, including safer Finder-style save operations that preserve stable file
   IDs where the server supports AFP file exchange.
-- Restore reconnection after _afp_client_ suspend and _afp_client_ resume; suspended mounts now stay suspended until an
+- Restore reconnection after _afpc fs_ suspend and _afpc fs_ resume; suspended mounts now stay suspended until an
   explicit resume command.
 - Avoid daemon termination during FUSE wakeups and unmount handling on platforms where SIGPIPE could otherwise arrive
   before libfuse installs its own handler.

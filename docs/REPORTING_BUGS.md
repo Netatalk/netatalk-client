@@ -56,7 +56,7 @@ lingering.
 The most graceful way to stop it is to run:
 
     fusermount -u /path/to/mountpoint
-    afp_client exit
+    afpc fs exit
 
 If this doesn't work, try:
 
@@ -83,13 +83,13 @@ window.
 ### Setup the mount
 
 How you setup the mount is dependent on your environment.  Run your
-'afp_client mount ...' command and copy it into a file called my_command.txt
+'afpc fs mount ...' command and copy it into a file called my_command.txt
 
 ### Grab the status output
 
 Get the status with:
 
-    afp_client status > my_status
+    afpc fs status > my_status
 
 This will exit quickly.
 
