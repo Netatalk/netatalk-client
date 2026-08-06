@@ -284,6 +284,14 @@ int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
         memset(mesg, 0, sizeof(mesg));
 
         if (afp_server_reconnect(server, mesg, &l, MAX_ERROR_LEN) != 0) {
+            if (mesg[0] != '\0') {
+                log_for_client(NULL, AFPFSD, LOG_WARNING, "%s", mesg);
+            } else {
+                log_for_client(NULL, AFPFSD, LOG_WARNING,
+                               "Could not reconnect to %s",
+                               server->server_name_printable);
+            }
+
             return -EIO;
         }
     }

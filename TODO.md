@@ -1,12 +1,6 @@
 Netatalk Client Improvements
 =====================
 
-FUSE client
------------
-
-* do correct address/signature matching; right now we don't actually use
-  the signature.
-
 AFP 3.x
 -------
 

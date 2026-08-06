@@ -168,6 +168,10 @@ struct afp_server {
     char server_name[AFP_SERVER_NAME_LEN];
     char server_name_utf8[AFP_SERVER_NAME_UTF8_LEN];
     char server_name_printable[AFP_SERVER_NAME_UTF8_LEN];
+    /* Authority supplied by the client when this session was created.  This
+     * is distinct from the name advertised by FPGetSrvrInfo. */
+    char requested_hostname[AFP_SERVER_NAME_UTF8_LEN];
+    int requested_port;
 
     char machine_type[17];
     char icon[AFP_SERVER_ICON_LEN];
@@ -393,6 +397,20 @@ int afp_server_destroy(struct afp_server *s) ;
 int afp_server_reconnect(struct afp_server * s, char * mesg,
                          unsigned int *l, unsigned int max);
 int afp_server_connect(struct afp_server *s, int full);
+/* A server identity is usable for session reuse only when FPGetSrvrInfo
+ * supplies a nonzero 16-byte signature.  Some deployed servers omit
+ * kSrvrSig despite supplying a configured signature. */
+int afp_server_has_valid_signature(const struct afp_server *server);
+
+/* Query a peer's FPGetSrvrInfo identity without logging in.  The caller
+ * retains ownership of address. */
+int afp_server_probe_signature(struct addrinfo *address,
+                               char signature[AFP_SIGNATURE_LEN]);
+
+/* Replace the address list used for future connections.  address ownership
+ * transfers to server. */
+void afp_server_replace_address(struct afp_server *server,
+                                struct addrinfo *address);
 
 struct afp_server *afp_server_complete_connection(
     void *priv,

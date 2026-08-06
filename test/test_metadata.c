@@ -120,6 +120,7 @@ int main(int argc, char **argv)
     CHECK(afp_sl_recovery_for_error(-ECONNREFUSED)
           == AFP_SL_RECOVERY_RECONNECT);
     CHECK(afp_sl_recovery_for_error(-ESTALE) == AFP_SL_RECOVERY_REATTACH);
+    CHECK(afp_sl_recovery_for_error(-EPROTO) == AFP_SL_RECOVERY_NONE);
     CHECK(afp_sl_recovery_for_error(-ENOATTR) == AFP_SL_RECOVERY_NONE);
     CHECK(mkdtemp(temporary) != NULL);
     CHECK(join_suffix(file, sizeof(file), temporary, "/file") == 0);

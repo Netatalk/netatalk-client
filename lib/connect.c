@@ -109,6 +109,13 @@ struct afp_server *afp_server_full_connect(void * priv,
         goto error;
     }
 
+    /* AFP's advertised server name is not the authority the client used to
+     * reach it.  Keep that authority so reconnect can recognize a changed
+     * DNS endpoint without confusing it with an unrelated saved session. */
+    strlcpy(s->requested_hostname, req->url.servername,
+            sizeof(s->requested_hostname));
+    s->requested_port = req->url.port;
+
     if ((ret = afp_server_connect(s, 0)) != 0) {
         int connect_error = -ret;
         log_for_client(priv, AFPFSD, LOG_INFO,

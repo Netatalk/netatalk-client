@@ -54,6 +54,14 @@ static int afp_blank_reply(struct afp_server *server, char * buf,
 static int connect_with_timeout(int fd, const struct sockaddr *addr,
                                 socklen_t addrlen, int timeout);
 
+static void format_server_signature(const char signature[AFP_SIGNATURE_LEN],
+                                    char text[AFP_SIGNATURE_LEN * 2 + 1])
+{
+    for (size_t i = 0; i < AFP_SIGNATURE_LEN; i++) {
+        snprintf(text + (i * 2), 3, "%02x", (unsigned char)signature[i]);
+    }
+}
+
 int (*afp_replies[])(struct afp_server * server, char * buf, unsigned int len,
                      void *other) = {
     NULL, afp_byterangelock_reply, afp_blank_reply, NULL,
@@ -353,6 +361,77 @@ struct afp_server *find_server_by_address(struct addrinfo *address)
     }
 
     return NULL;
+}
+
+int afp_server_has_valid_signature(const struct afp_server *server)
+{
+    static const char zero_signature[AFP_SIGNATURE_LEN] = {0};
+    return server != NULL && memcmp(server->signature, zero_signature,
+                                    sizeof(zero_signature)) != 0;
+}
+
+int afp_server_probe_signature(struct addrinfo *address,
+                               char signature[AFP_SIGNATURE_LEN])
+{
+    struct afp_server *probe;
+    int ret;
+
+    if (!address || !signature) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    probe = afp_server_init(address);
+
+    if (!probe) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    ret = afp_server_connect(probe, 1);
+
+    if (ret == 0 && afp_server_has_valid_signature(probe)) {
+        memcpy(signature, probe->signature, AFP_SIGNATURE_LEN);
+        /* The caller retains address ownership; loop_disconnect() does not
+         * need it while removing this short-lived status connection. */
+        probe->address = NULL;
+
+        if (afp_server_remove(probe) != 0) {
+            afp_free_server(&probe);
+        }
+
+        return 0;
+    }
+
+    if (ret == 0) {
+        errno = EPROTO;
+    } else if (errno == 0) {
+        errno = ECONNRESET;
+    }
+
+    if (afp_server_remove(probe) != 0) {
+        afp_free_server(&probe);
+    }
+
+    return -1;
+}
+
+void afp_server_replace_address(struct afp_server *server,
+                                struct addrinfo *address)
+{
+    if (!server || !address) {
+        return;
+    }
+
+    if (server->address != address) {
+        if (server->address) {
+            freeaddrinfo(server->address);
+        }
+
+        server->address = address;
+    }
+
+    server->used_address = NULL;
 }
 
 void afp_server_hold(struct afp_server *s)
@@ -934,6 +1013,10 @@ int afp_server_reconnect(struct afp_server * s, char * mesg,
     int i;
     int ret = 0;
     struct afp_volume * v;
+    char expected_signature[AFP_SIGNATURE_LEN];
+    char peer_signature[AFP_SIGNATURE_LEN];
+    char expected_signature_text[AFP_SIGNATURE_LEN * 2 + 1];
+    char peer_signature_text[AFP_SIGNATURE_LEN * 2 + 1];
 
     if (!afp_server_reconnect_try_begin(s)) {
         return 1;
@@ -941,6 +1024,61 @@ int afp_server_reconnect(struct afp_server * s, char * mesg,
 
     /* Flush pending requests before reconnecting to avoid late reply confusion */
     afpc_dsi_flush_request_queue(s);
+
+    /* ServerSignature is optional in AFP, but a nonzero value is mandatory
+     * for automatic session reuse.  FPGetSrvrInfo is performed before login
+     * so a changed endpoint cannot receive the saved credentials. */
+    if (!afp_server_has_valid_signature(s)) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Refusing to reconnect to %s: saved AFP ServerSignature is zero or unavailable",
+                       s->server_name_printable);
+        *l += snprintf(mesg + *l, max - *l,
+                       "Refusing to resume %s without a valid server signature\n",
+                       s->server_name_printable);
+        errno = EPROTO;
+        goto error;
+    }
+
+    memcpy(expected_signature, s->signature, sizeof(expected_signature));
+    format_server_signature(expected_signature, expected_signature_text);
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "Verifying AFP ServerSignature before reconnecting to %s (expected %s)",
+                   s->server_name_printable, expected_signature_text);
+
+    /* DSIGetStatus is a one-shot connection on common AFP servers.  Probe it
+     * on a temporary socket, then open a separate socket for the AFP session. */
+    if (afp_server_probe_signature(s->address, peer_signature) != 0) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Could not read AFP ServerSignature while reconnecting to %s: %s",
+                       s->server_name_printable, strerror(errno));
+        *l += snprintf(mesg + *l, max - *l,
+                       "Could not verify server signature for %s\n",
+                       s->server_name_printable);
+
+        if (errno == 0) {
+            errno = ECONNRESET;
+        }
+
+        goto error;
+    }
+
+    format_server_signature(peer_signature, peer_signature_text);
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "AFP ServerSignature for %s is %s",
+                   s->server_name_printable, peer_signature_text);
+
+    if (memcmp(peer_signature, expected_signature,
+               sizeof(expected_signature)) != 0) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Refusing to reconnect to %s: AFP ServerSignature mismatch (expected %s, got %s)",
+                       s->server_name_printable, expected_signature_text,
+                       peer_signature_text);
+        *l += snprintf(mesg + *l, max - *l,
+                       "Refusing to resume %s: server signature changed or is invalid\n",
+                       s->server_name_printable);
+        errno = EPROTO;
+        goto error;
+    }
 
     if (afp_server_connect(s, 0))  {
         *l += snprintf(mesg, max - *l, "Error resuming connection to %s\n",

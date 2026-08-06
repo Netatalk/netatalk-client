@@ -232,6 +232,12 @@ static int is_recoverable_session_error(int ret)
     return afp_sl_recovery_for_error(ret) != AFP_SL_RECOVERY_NONE;
 }
 
+static void report_reconnect_identity_failure(void)
+{
+    printf("Reconnect refused: AFP server identity could not be verified "
+           "(ServerSignature changed or is unavailable).\n");
+}
+
 static int recover_session(int restore_volume, int restore_dir)
 {
     char mesg[CMDLINE_ERROR_LEN];
@@ -275,15 +281,32 @@ static int recover_session(int restore_volume, int restore_dir)
 
     resume_url = reconnect_url;
     cmdline_secure_clear(resume_url.password, sizeof(resume_url.password));
-
     /*
      * Prefer resuming the daemon's existing AFP session.  This mirrors the
      * manual recovery path of detaching to the volume list, and avoids tearing
      * down a server connection that may still be usable after an idle timeout.
      */
-    if (afp_sl_resume(&resume_url, uam_mask, &new_server_id, mesg) != 0
-            && afp_sl_connect(&reconnect_url, uam_mask, &new_server_id, mesg) != 0) {
-        return -1;
+    ret = afp_sl_resume(&resume_url, uam_mask, &new_server_id, mesg);
+
+    if (ret != 0) {
+        /* A signature mismatch means the daemon found the old session but
+         * refused to reuse it.  Do not silently turn that into a fresh login
+         * to a different AFP server. */
+        if (ret == -EPROTO) {
+            report_reconnect_identity_failure();
+            return -1;
+        }
+
+        ret = afp_sl_connect(&reconnect_url, uam_mask, &new_server_id,
+                             mesg);
+
+        if (ret != 0) {
+            if (ret == -EPROTO) {
+                report_reconnect_identity_failure();
+            }
+
+            return -1;
+        }
     }
 
     if ((restore_volume || had_volume) && saved_volume[0] != '\0') {
