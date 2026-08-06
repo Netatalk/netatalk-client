@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
@@ -1986,14 +1987,6 @@ done:
     return 0;
 }
 
-static int server_name_matches_url(struct afp_server *server,
-                                   const struct afpc_url *url)
-{
-    return strcmp(server->server_name_utf8, url->servername) == 0
-           || strcmp(server->server_name, url->servername) == 0
-           || strcmp(server->server_name_printable, url->servername) == 0;
-}
-
 static int server_address_matches(struct afp_server *server,
                                   struct addrinfo *address)
 {
@@ -2010,28 +2003,6 @@ static int server_address_matches(struct afp_server *server,
     }
 
     return 0;
-}
-
-static int server_auth_matches_resume(struct afp_server *server,
-                                      const struct afpc_url *url,
-                                      unsigned int uam_mask)
-{
-    /*
-     * Resume is not AFP reauthentication. A password-less resume proves only
-     * that the caller can access this daemon's existing session state; it may
-     * omit username/UAM and match by host when exactly one live session exists.
-     */
-    if (url->username[0] != '\0'
-            && strcmp(server->username, url->username) != 0) {
-        return 0;
-    }
-
-    if (uam_mask != 0 && server->using_uam != 0
-            && (server->using_uam & uam_mask) == 0) {
-        return 0;
-    }
-
-    return 1;
 }
 
 static int server_auth_matches_reconnect(struct afp_server *server,
@@ -2055,6 +2026,7 @@ static struct afp_server *find_resumable_server_hold(void *priv,
     struct afp_server *match = NULL;
     struct addrinfo *address = NULL;
     int matches = 0;
+    int invalid_identity = 0;
 
     if (error) {
         *error = ENOTCONN;
@@ -2068,12 +2040,25 @@ static struct afp_server *find_resumable_server_hold(void *priv,
             continue;
         }
 
-        if (!server_name_matches_url(s, url)
-                && !server_address_matches(s, address)) {
+        /* A server name is only a resolver input, not an identity.  A live
+         * session may be reused only for its currently resolved endpoint. */
+        if (!server_address_matches(s, address)) {
             continue;
         }
 
-        if (!server_auth_matches_resume(s, url, uam_mask)) {
+        /* Resume is not AFP reauthentication. A password-less resume proves
+         * only that the caller can access this daemon's existing session
+         * state; it may omit username/UAM and match by host when exactly one
+         * live session exists. */
+        if ((url->username[0] != '\0'
+                && strcmp(s->username, url->username) != 0)
+                || (uam_mask != 0 && s->using_uam != 0
+                    && (s->using_uam & uam_mask) == 0)) {
+            continue;
+        }
+
+        if (!afp_server_has_valid_signature(s)) {
+            invalid_identity = 1;
             continue;
         }
 
@@ -2090,8 +2075,9 @@ static struct afp_server *find_resumable_server_hold(void *priv,
     } else {
         match = NULL;
 
-        if (error && matches > 1) {
-            *error = EEXIST;
+        if (error) {
+            *error = matches > 1 ? EEXIST
+                     : invalid_identity ? EPROTO : ENOTCONN;
         }
     }
 
@@ -2105,17 +2091,57 @@ static struct afp_server *find_resumable_server_hold(void *priv,
 }
 
 static struct afp_server *find_disconnected_server_hold(void *priv,
-        const struct afpc_url *url, unsigned int uam_mask, int *error)
+        const struct afpc_url *url, unsigned int uam_mask,
+        struct addrinfo **resolved_address, int *error)
 {
     struct afp_server *match = NULL;
     struct addrinfo *address = NULL;
+    char signature[AFP_SIGNATURE_LEN];
     int matches = 0;
+    int possible = 0;
+    int identity_mismatch = 0;
 
     if (error) {
         *error = ENOTCONN;
     }
 
+    if (resolved_address) {
+        *resolved_address = NULL;
+    }
+
     address = afp_get_address(priv, url->servername, url->port);
+
+    if (!address) {
+        goto done;
+    }
+
+    afp_lock_server_list();
+
+    /* Do not turn every new connect into a GetStatus probe.  Authentication
+     * narrows the search; the signature below is the actual identity match
+     * and permits a server to have moved to a new address. */
+    for (struct afp_server *s = get_server_base(); s; s = s->next) {
+        if (s->connect_state == SERVER_STATE_DISCONNECTED && s->fd < 0
+                && server_auth_matches_reconnect(s, url, uam_mask)) {
+            possible = 1;
+            break;
+        }
+    }
+
+    afp_unlock_server_list();
+
+    if (!possible) {
+        goto done;
+    }
+
+    if (afp_server_probe_signature(address, signature) != 0) {
+        if (error && errno == EPROTO) {
+            *error = EPROTO;
+        }
+
+        goto done;
+    }
+
     afp_lock_server_list();
 
     for (struct afp_server *s = get_server_base(); s; s = s->next) {
@@ -2123,12 +2149,22 @@ static struct afp_server *find_disconnected_server_hold(void *priv,
             continue;
         }
 
-        if (!server_name_matches_url(s, url)
-                && !server_address_matches(s, address)) {
+        if (!server_auth_matches_reconnect(s, url, uam_mask)) {
             continue;
         }
 
-        if (!server_auth_matches_reconnect(s, url, uam_mask)) {
+        if (!afp_server_has_valid_signature(s)
+                || memcmp(s->signature, signature, sizeof(signature)) != 0) {
+            /* This only associates a reconnect request with a saved session
+             * after the signature probe. AFP's advertised name is not a URL
+             * authority, so it cannot be used here. */
+            if (server_address_matches(s, address)
+                    || (s->requested_port == url->port
+                        && strcasecmp(s->requested_hostname,
+                                      url->servername) == 0)) {
+                identity_mismatch = 1;
+            }
+
             continue;
         }
 
@@ -2142,15 +2178,22 @@ static struct afp_server *find_disconnected_server_hold(void *priv,
 
     if (matches == 1) {
         afp_server_hold(match);
+
+        if (resolved_address) {
+            *resolved_address = address;
+            address = NULL;
+        }
     } else {
         match = NULL;
 
-        if (error && matches > 1) {
-            *error = EEXIST;
+        if (error) {
+            *error = matches > 1 ? EEXIST
+                     : identity_mismatch ? EPROTO : ENOTCONN;
         }
     }
 
     afp_unlock_server_list();
+done:
 
     if (address) {
         freeaddrinfo(address);
@@ -2160,12 +2203,13 @@ static struct afp_server *find_disconnected_server_hold(void *priv,
 }
 
 static int reconnect_disconnected_server(void *priv, struct afp_server *server,
-        const struct afpc_url *url)
+        const struct afpc_url *url, struct addrinfo *address)
 {
     char mesg[MAX_ERROR_LEN];
     unsigned int len = 0;
     int ret;
     memset(mesg, 0, sizeof(mesg));
+    afp_server_replace_address(server, address);
     strlcpy(server->password, url->password, sizeof(server->password));
     errno = 0;
     ret = afp_server_reconnect(server, mesg, &len, sizeof(mesg));
@@ -2189,6 +2233,7 @@ static int process_connect(struct daemon_client * c)
     int error = 0;
     char loginmesg_copy[AFP_LOGINMESG_LEN];
     struct afp_server *server_copy = NULL;
+    struct addrinfo *reconnect_address = NULL;
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
             afpsl_ipc_connect_request)) {
@@ -2234,14 +2279,17 @@ static int process_connect(struct daemon_client * c)
         goto done;
     }
 
-    s = find_disconnected_server_hold(c, &req->url, req->uam_mask, &error);
+    s = find_disconnected_server_hold(c, &req->url, req->uam_mask,
+                                      &reconnect_address, &error);
 
     if (s) {
         log_for_client((void *) c, AFPFSD, LOG_INFO,
                        "Recovering disconnected session for server %s",
                        req->url.servername);
 
-        if (reconnect_disconnected_server(c, s, &req->url) == 0) {
+        if (reconnect_disconnected_server(c, s, &req->url,
+                                          reconnect_address) == 0) {
+            reconnect_address = NULL;
             response_result = AFPSL_IPC_RESULT_OK;
             server_copy = s;
             memcpy(loginmesg_copy, s->loginmesg, AFP_LOGINMESG_LEN);
@@ -2252,7 +2300,9 @@ static int process_connect(struct daemon_client * c)
         error = errno ? errno : ECONNRESET;
         afp_server_release(s);
         s = NULL;
-    } else if (error == EEXIST) {
+        reconnect_address = NULL;
+        goto error;
+    } else if (error == EEXIST || error == EPROTO) {
         goto error;
     }
 
@@ -2329,6 +2379,11 @@ error:
 
     ret = 0;
 done:
+
+    if (reconnect_address) {
+        freeaddrinfo(reconnect_address);
+    }
+
     memset(&response, 0, sizeof(response));
     /* Use copied data instead of potentially freed server pointer */
     memcpy(response.loginmesg, loginmesg_copy, AFP_LOGINMESG_LEN);

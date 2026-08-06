@@ -27,6 +27,7 @@ int main(int argc, char **argv)
     uint32_t written32 = 99;
     uint64_t written64 = 99;
     struct afp_extattr_info xattr_info;
+    struct afp_server server;
     struct {
         struct dsi_header header __attribute__((__packed__));
         uint16_t bitmap;
@@ -34,6 +35,14 @@ int main(int argc, char **argv)
         char data[4];
     } __attribute__((__packed__)) xattr_reply;
     test_tap_init(argc, argv);
+    memset(&server, 0, sizeof(server));
+    CHECK(!afp_server_has_valid_signature(&server));
+    server.flags = kSrvrSig;
+    CHECK(!afp_server_has_valid_signature(&server));
+    server.signature[0] = 1;
+    CHECK(afp_server_has_valid_signature(&server));
+    server.flags = 0;
+    CHECK(afp_server_has_valid_signature(&server));
     memset(reply, 0, sizeof(reply));
     wire32 = htonl(1234);
     memcpy(reply + sizeof(reply) - sizeof(wire32), &wire32, sizeof(wire32));
