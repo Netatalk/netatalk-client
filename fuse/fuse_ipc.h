@@ -38,6 +38,8 @@ struct afpfsd_ipc_unmount_request {
 };
 
 struct afpfsd_ipc_mount_request {
+    /* This is a raw process-to-process message.  url.path is always NULL on
+     * the wire: FUSE mounts address a volume, not a URL subdirectory. */
     struct afpc_url url;
     unsigned int uam_mask;
     char mountpoint[AFPFSD_IPC_MOUNTPOINT_LEN];

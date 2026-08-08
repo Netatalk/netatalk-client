@@ -19,10 +19,51 @@
 #include "unicode.h"
 #include "utils.h"
 
-int convert_utf8dec_to_utf8pre(char *src, int src_len,
+int convert_utf8dec_to_utf8pre(const char *src, int src_len,
                                char *dest, int dest_len);
-int convert_utf8pre_to_utf8dec(char * src, int src_len,
+int convert_utf8pre_to_utf8dec(const char * src, int src_len,
                                char *dest, int dest_len);
+
+/* The legacy normalizer operates on UCS-2 and therefore cannot represent
+ * supplementary-plane UTF-8 sequences.  AFP's UTF-8 path type does allow
+ * them.  Retain an input containing such sequences verbatim instead of
+ * replacing each scalar with '~'.  This is deliberately conservative: it
+ * avoids corrupting a valid name until the normalizer is upgraded to UTF-16. */
+static int contains_supplementary_utf8(const char *src, size_t src_len)
+{
+    for (size_t i = 0; i < src_len; i++) {
+        unsigned char c = (unsigned char)src[i];
+
+        if (c >= 0xf0 && c <= 0xf4 && i + 3U < src_len
+                && (((unsigned char)src[i + 1U] & 0xc0U) == 0x80U)
+                && (((unsigned char)src[i + 2U] & 0xc0U) == 0x80U)
+                && (((unsigned char)src[i + 3U] & 0xc0U) == 0x80U)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int copy_if_supplementary_utf8(const char *src, size_t src_len,
+                                      char *dest, size_t dest_len)
+{
+    if (!contains_supplementary_utf8(src, src_len)) {
+        return 0;
+    }
+
+    if (src_len >= dest_len) {
+        if (dest_len) {
+            dest[0] = '\0';
+        }
+
+        return -1;
+    }
+
+    memcpy(dest, src, src_len);
+    dest[src_len] = '\0';
+    return 1;
+}
 
 /*
  * convert_mac_roman_to_utf8()
@@ -156,7 +197,14 @@ static int convert_utf8_to_mac_roman(const char *src, int src_len,
             dest[out++] = (char)c;
         } else {
             unsigned char mr = unicode_to_mac_roman(c);
-            dest[out++] = mr ? (char)mr : '?';
+
+            if (!mr) {
+                free(ucs2);
+                dest[0] = '\0';
+                return -1;
+            }
+
+            dest[out++] = (char)mr;
         }
     }
 
@@ -176,16 +224,26 @@ int convert_path_to_unix(char encoding, char * dest,
                          char *src, int dest_len)
 {
     char *p;
+    int src_len;
 
     if (!src || !dest || dest_len <= 0) {
         return -1;
     }
 
     memset(dest, 0, dest_len);
+    src_len = (int)strnlen(src, (size_t)dest_len);
 
     switch (encoding) {
     case kFPUTF8Name:
-        convert_utf8dec_to_utf8pre(src, strnlen(src, dest_len), dest, dest_len);
+        if (copy_if_supplementary_utf8(src, src_len, dest,
+                                       (size_t)dest_len) < 0) {
+            return -1;
+        }
+
+        if (!dest[0] && src_len > 0) {
+            convert_utf8dec_to_utf8pre(src, src_len, dest, dest_len);
+        }
+
         break;
 
     case kFPLongName:
@@ -221,21 +279,43 @@ int convert_path_to_unix(char encoding, char * dest,
  */
 
 int convert_path_to_afp(char encoding, char * dest,
-                        char *src, int dest_len)
+                        const char *src, int dest_len)
 {
+    int src_len;
+
     if (!src || !dest || dest_len <= 0) {
         return -1;
     }
 
     memset(dest, 0, dest_len);
+    src_len = (int)strnlen(src, (size_t)dest_len);
 
     switch (encoding) {
     case kFPUTF8Name:
-        convert_utf8pre_to_utf8dec(src, strnlen(src, dest_len), dest, dest_len);
+        if (copy_if_supplementary_utf8(src, src_len, dest,
+                                       (size_t)dest_len) < 0) {
+            return -1;
+        }
+
+        if (!dest[0] && src_len > 0) {
+            convert_utf8pre_to_utf8dec(src, src_len, dest, dest_len);
+        }
+
         break;
 
     case kFPLongName:
-        convert_utf8_to_mac_roman(src, strnlen(src, dest_len), dest, dest_len);
+        if (contains_supplementary_utf8(src, src_len)
+                || convert_utf8_to_mac_roman(src, src_len, dest, dest_len) < 0) {
+            return -1;
+        }
+
+        /* kFPLongName has an 8-bit byte-length field.  The limit applies to
+         * the converted AFP pathname, not the source UTF-8 representation. */
+        if (strnlen(dest, (size_t)dest_len) > UINT8_MAX) {
+            dest[0] = '\0';
+            return -1;
+        }
+
         break;
 
     default:
@@ -253,7 +333,7 @@ int convert_path_to_afp(char encoding, char * dest,
  * This is for converting *from* UTF-8-MAC
  */
 
-int convert_utf8dec_to_utf8pre(char *src, int src_len,
+int convert_utf8dec_to_utf8pre(const char *src, int src_len,
                                char *dest, int dest_len)
 {
     char16 *path16dec, c, prev, *p16dec, *p16pre;
@@ -349,7 +429,7 @@ static void decompose_char(char16 c, char16 **dest)
  *
  */
 
-int convert_utf8pre_to_utf8dec(char *src, int src_len,
+int convert_utf8pre_to_utf8dec(const char *src, int src_len,
                                char *dest, int dest_len)
 {
     char16 *path16pre;

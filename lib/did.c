@@ -20,7 +20,7 @@ static unsigned short timeout = 10;
 
 struct did_cache_entry {
     /* For the example /foo/bar/baz */
-    char dirname[AFP_MAX_PATH];  /* full name, eg. /foo/bar/     */
+    char *dirname;                            /* full name, eg. /foo/bar/     */
     unsigned int did;            /*            eg  2323          */
     struct timeval time;
     struct did_cache_entry *next;
@@ -35,6 +35,7 @@ int free_entire_did_cache(struct afp_volume * volume)
     for (d = volume->did_cache_base; d; d = p) {
         p2 = p;
         p = d->next;
+        free(p2->dirname);
         free(p2);
     }
 
@@ -57,6 +58,7 @@ int remove_did_entry(struct afp_volume * volume, const char * name)
             }
 
             volume->did_cache_stats.force_removed++;
+            free(d->dirname);
             free(d);
             break;
         } else {
@@ -70,7 +72,7 @@ int remove_did_entry(struct afp_volume * volume, const char * name)
 
 
 static int add_did_cache_entry(struct afp_volume * volume,
-                               unsigned int new_did, char *path)
+                               unsigned int new_did, const char *path)
 {
     struct did_cache_entry * new, *old_base;
 #ifdef DID_CACHE_DISABLE
@@ -82,8 +84,14 @@ static int add_did_cache_entry(struct afp_volume * volume,
     }
 
     memset(new, 0, sizeof(*new));
+    new->dirname = strdup(path);
+
+    if (!new->dirname) {
+        free(new);
+        return -1;
+    }
+
     new->did = new_did;
-    memcpy(new->dirname, path, AFP_MAX_PATH);
     gettimeofday(&new->time, NULL);
     pthread_mutex_lock(&volume->did_cache_mutex);
     old_base = volume->did_cache_base;
@@ -143,12 +151,14 @@ static unsigned int find_dirid_by_fullname(struct afp_volume * volume,
              * We remove it and return 0 (not found). */
             if (strcmp(p->dirname, path) == 0) {
                 *prev_ptr = next;
+                free(p->dirname);
                 free(p);
                 goto out;
             }
 
             /* Remove expired entry */
             *prev_ptr = next;
+            free(p->dirname);
             free(p);
             p = next;
             continue;
@@ -175,91 +185,115 @@ out:
 int get_dirid(struct afp_volume * volume, const char * path,
               char *basename, unsigned int *dirid)
 {
-    char *p;
-    char *p2;
+    const char *last_slash;
+    const char *component;
+    char *slash;
+    char *parent;
+    char *known_parent;
+    char *name;
+    char *full_parent;
+    size_t basename_len;
+    size_t known_parent_len = 0;
     int ret = 0;
     struct afp_file_info fi;
     unsigned int filebitmap, dirbitmap;
     unsigned int newdid;
     unsigned int parent_did = AFP_ROOT_DID;
-    char copy[AFP_MAX_PATH];
 
-    if (((p = strrchr(path, '/'))) == NULL) {
+    if (!path || !dirid || !(last_slash = strrchr(path, '/'))) {
         return -1;
     }
 
-    /* Calculate the basename, leave copy with just the parent */
+    basename_len = strlen(last_slash + 1U);
+
+    if (basename_len >= AFPC_MAX_NAME_BYTES) {
+        return -ENAMETOOLONG;
+    }
+
     if (basename) {
-        memset(basename, 0, AFP_MAX_PATH);
-        memcpy(basename, p + 1, strlen(path) - (p - path) -1);
+        memcpy(basename, last_slash + 1U, basename_len + 1U);
     }
 
-    /* p now points to the last '/' */
-
-    if (p - path == 0) {
+    if (last_slash == path) {
         *dirid = AFP_ROOT_DID;
-        goto out;
+        return 0;
     }
 
-    memcpy(copy, path, p - path + 1);
+    parent = strndup(path, (size_t)(last_slash - path));
 
-    if (copy[p - path] == '/') {
-        copy[p - path] = '\0';    /* Lop off the last '/' */
+    if (!parent) {
+        return -ENOMEM;
     }
 
-    /* See if the parent's fullname is in the cache */
-
-    if ((newdid = find_dirid_by_fullname(volume, copy))) {
+    if ((newdid = find_dirid_by_fullname(volume, parent))) {
         *dirid = newdid;
-        goto out;
+        free(parent);
+        return 0;
     }
 
-    /* No?  Work your way back to the start from the end looking
-       for a parent */
+    known_parent = parent;
 
-    while ((p = strrchr(copy, '/'))) {
-        if (p == copy) {
-            /* Okay, we're done since we're at the start*/
+    while ((slash = strrchr(known_parent, '/'))) {
+        if (slash == known_parent) {
             parent_did = AFP_ROOT_DID;
+            known_parent_len = 1;
             break;
         }
 
-        *p = '\0';
+        *slash = '\0';
 
-        if ((parent_did = find_dirid_by_fullname(volume, copy))) {
+        if ((parent_did = find_dirid_by_fullname(volume, known_parent))) {
+            known_parent_len = strlen(known_parent);
             break;
         }
     }
 
-    /* Okay, now we have the topmost cached parent */
-    /* Move forward now from the last parentid */
     filebitmap = kFPNodeIDBit ;
     dirbitmap = kFPNodeIDBit ;
-    /* Go to the end of last known entry */
-    p = (char *)path + (p - copy);
-    p2 = p;
+    component = path + known_parent_len;
 
-    while ((p = strchr(p + 1, '/'))) {
-        memset(copy, 0, AFP_MAX_PATH);
-        memcpy(copy, p2, p - p2);
+    if (*component == '/') {
+        component++;
+    }
+
+    while ((slash = strchr(component, '/'))) {
+        size_t component_len = (size_t)(slash - component);
+        name = strndup(component, component_len);
+
+        if (!name) {
+            ret = -ENOMEM;
+            goto out;
+        }
+
         volume->did_cache_stats.misses++;
         ret = afp_getfiledirparms(volume, parent_did,
-                                  filebitmap, dirbitmap, copy, &fi);
+                                  filebitmap, dirbitmap, name, &fi);
+        free(name);
+
+        if (ret) {
+            goto out;
+        }
 
         if (fi.isdir) {
-            /* Add it to the cache */
-            memset(copy, 0, AFP_MAX_PATH);
-            memcpy(copy, path, p - path);
-            add_did_cache_entry(volume, fi.fileid, copy);
+            full_parent = strndup(path, (size_t)(slash - path));
+
+            if (!full_parent) {
+                ret = -ENOMEM;
+                goto out;
+            }
+
+            (void)add_did_cache_entry(volume, fi.fileid, full_parent);
+            free(full_parent);
         } else {
             break;
         }
 
         parent_did = fi.fileid;
-        p2 = p;
+        component = slash + 1U;
     }
 
     *dirid = parent_did;
 out:
+    free(parent);
     return ret;
 }

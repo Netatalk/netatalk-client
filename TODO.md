@@ -4,7 +4,6 @@ Netatalk Client Improvements
 AFP 3.x
 -------
 
-* filenames have a maximum length of 255, but AFP 3.x allows for much more
 * ACL support
 
 AFP 2.x

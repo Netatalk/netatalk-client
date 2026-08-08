@@ -495,7 +495,7 @@ int appledouble_truncate(struct afp_volume * volume, const char * path,
     struct afp_file_info fp;
     int ret;
     unsigned int dirid;
-    char basename[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
 
     switch (resource) {
     case AFP_META_RESOURCE:
@@ -688,7 +688,7 @@ int appledouble_getattr(struct afp_volume * volume,
 
     case AFP_META_COMMENT: {
         unsigned int did;
-        char basename[AFP_MAX_PATH];
+        char basename[AFPC_MAX_NAME_BYTES];
         ret = ll_getattr(volume, newpath, stbuf, 0);
 
         if (ret < 0) {

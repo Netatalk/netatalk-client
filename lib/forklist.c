@@ -19,7 +19,7 @@ struct dirty_fork_record {
     unsigned short forkid;
     unsigned int did;
     unsigned int resource;
-    char basename[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
 };
 
 void add_opened_fork(struct afp_volume * volume, struct afp_file_info * fp)
