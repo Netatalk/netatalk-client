@@ -407,7 +407,7 @@ void *cmdline_ui(void *other)
 {
     (void)other;
     char *line;
-    char *s, s2[ARG_LEN];
+    char *s;
 
     while (running && !cmdline_afp_quit_requested()) {
         line = readline("afpcmd: ");
@@ -420,11 +420,10 @@ void *cmdline_ui(void *other)
         Then, if there is anything left, add it to the history list
         and execute it. */
         s = stripwhite(line);
-        strlcpy(s2, s, ARG_LEN);
 
         if (*s) {
             add_history(s);
-            execute_line(s2);
+            execute_line(s);
         }
 
         free(line);
@@ -513,7 +512,7 @@ int main(int argc, char *argv[])
         {NULL, 0, NULL, 0},
     };
     char *url = NULL;
-    char discovered_url[AFPC_MAX_PATH];
+    char *discovered_url = NULL;
     char *discovered_username = NULL;
     char *local_path = NULL;
     int batch_mode = 0;
@@ -593,9 +592,11 @@ int main(int argc, char *argv[])
         struct afpc_url tmp_url;
         char *arg1 = argv[optind];
         char *arg2 = argv[optind + 1];
+        afp_sl_url_init(&tmp_url);
 
         /* Check if first arg is URL */
         if (afp_sl_url_parse(&tmp_url, arg1) == 0) {
+            afp_sl_url_clear(&tmp_url);
             url = arg1;
             local_path = arg2;
             batch_mode = 1;
@@ -603,11 +604,13 @@ int main(int argc, char *argv[])
         }
         /* Check if second arg is URL */
         else if (afp_sl_url_parse(&tmp_url, arg2) == 0) {
+            afp_sl_url_clear(&tmp_url);
             local_path = arg1;
             url = arg2;
             batch_mode = 1;
             direction = 1; /* PUT */
         } else {
+            afp_sl_url_clear(&tmp_url);
             printf("Neither argument appears to be a valid AFP URL.\n");
             usage();
             exit(1);
@@ -622,8 +625,7 @@ int main(int argc, char *argv[])
             exit(1);
         }
 
-        int discover_ret = cmdline_discover_url(discovered_url,
-                                                sizeof(discovered_url));
+        int discover_ret = cmdline_discover_url(&discovered_url);
 
         if (discover_ret > 0) {
             exit(0);
@@ -672,12 +674,14 @@ int main(int argc, char *argv[])
     }
 
     if (cmdline_afp_setup(batch_mode, url, discovered_username) != 0) {
+        free(discovered_url);
         free(discovered_username);
         cmdline_afp_exit();
         tty_reset(STDIN_FILENO);
         exit(1);
     }
 
+    free(discovered_url);
     free(discovered_username);
     signal(SIGINT, earlyexit_handler);
 

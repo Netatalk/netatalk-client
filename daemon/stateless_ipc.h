@@ -8,6 +8,9 @@
 #include "lib/afp_protocol.h"
 
 #define AFPSL_IPC_MAX_RESPONSE 16384
+#define AFPSL_IPC_PROTOCOL_MAGIC UINT32_C(0x41465053)
+#define AFPSL_IPC_PROTOCOL_MAJOR 2U
+#define AFPSL_IPC_PROTOCOL_MINOR 0U
 
 /* Unix socket shared by afpsld and libafpsl. */
 #define AFPSL_IPC_SOCKET_PATH "/tmp/afp_sl"
@@ -64,6 +67,7 @@ struct afpsl_ipc_log_footer {
 #define AFPSL_IPC_COMMAND_SETRESOURCEFORK 47
 #define AFPSL_IPC_COMMAND_REMOVERESOURCEFORK 48
 #define AFPSL_IPC_COMMAND_TRUNCATERESOURCEFORK 49
+#define AFPSL_IPC_COMMAND_HELLO 50
 
 /* Stateless IPC result codes. */
 #define AFPSL_IPC_RESULT_OK 0
@@ -99,6 +103,22 @@ struct afpsl_ipc_request_header {
     char command;
     unsigned int len;
     unsigned int close;
+};
+
+struct afpsl_ipc_hello_request {
+    struct afpsl_ipc_request_header header;
+    uint32_t magic;
+    uint16_t major;
+    uint16_t minor;
+    uint32_t features;
+};
+
+struct afpsl_ipc_hello_response {
+    struct afpsl_ipc_response_header header;
+    uint32_t magic;
+    uint16_t major;
+    uint16_t minor;
+    uint32_t features;
 };
 
 #define AFPSL_IPC_CONNECT_RESUME_EXISTING 0x1U
@@ -162,9 +182,10 @@ struct afpsl_ipc_getvolid_response {
 struct afpsl_ipc_readdir_request {
     struct afpsl_ipc_request_header header;
     afpc_volume_t volumeid;
-    char path[AFP_MAX_PATH];
     int start;
     int count;
+    uint32_t path_len;
+    char path[];
 };
 
 struct afpsl_ipc_readdir_response {
@@ -190,7 +211,8 @@ struct afpsl_ipc_getvols_response {
 struct afpsl_ipc_stat_request {
     struct afpsl_ipc_request_header header;
     afpc_volume_t volumeid;
-    char path[AFP_MAX_PATH];
+    uint32_t path_len;
+    char path[];
 };
 
 struct afpsl_ipc_stat_response {
@@ -201,8 +223,9 @@ struct afpsl_ipc_stat_response {
 struct afpsl_ipc_open_request {
     struct afpsl_ipc_request_header header;
     afpc_volume_t volumeid;
-    char path[AFP_MAX_PATH];
     int mode;
+    uint32_t path_len;
+    char path[];
 };
 
 struct afpsl_ipc_open_response {
@@ -252,8 +275,9 @@ struct afpsl_ipc_close_response {
 struct afpsl_ipc_creat_request {
     struct afpsl_ipc_request_header header;
     afpc_volume_t volumeid;
-    char path[AFP_MAX_PATH];
     mode_t mode;
+    uint32_t path_len;
+    char path[];
 };
 
 struct afpsl_ipc_creat_response {
@@ -263,8 +287,9 @@ struct afpsl_ipc_creat_response {
 struct afpsl_ipc_chmod_request {
     struct afpsl_ipc_request_header header;
     afpc_volume_t volumeid;
-    char path[AFP_MAX_PATH];
     mode_t mode;
+    uint32_t path_len;
+    char path[];
 };
 
 struct afpsl_ipc_chmod_response {
@@ -274,8 +299,9 @@ struct afpsl_ipc_chmod_response {
 struct afpsl_ipc_rename_request {
     struct afpsl_ipc_request_header header;
     afpc_volume_t volumeid;
-    char path_from[AFP_MAX_PATH];
-    char path_to[AFP_MAX_PATH];
+    uint32_t path_from_len;
+    uint32_t path_to_len;
+    char paths[];
 };
 
 struct afpsl_ipc_rename_response {
@@ -285,7 +311,8 @@ struct afpsl_ipc_rename_response {
 struct afpsl_ipc_unlink_request {
     struct afpsl_ipc_request_header header;
     afpc_volume_t volumeid;
-    char path[AFP_MAX_PATH];
+    uint32_t path_len;
+    char path[];
 };
 
 struct afpsl_ipc_unlink_response {
@@ -295,8 +322,9 @@ struct afpsl_ipc_unlink_response {
 struct afpsl_ipc_truncate_request {
     struct afpsl_ipc_request_header header;
     afpc_volume_t volumeid;
-    char path[AFP_MAX_PATH];
     unsigned long long offset;
+    uint32_t path_len;
+    char path[];
 };
 
 struct afpsl_ipc_truncate_response {
@@ -306,8 +334,9 @@ struct afpsl_ipc_truncate_response {
 struct afpsl_ipc_mkdir_request {
     struct afpsl_ipc_request_header header;
     afpc_volume_t volumeid;
-    char path[AFP_MAX_PATH];
     mode_t mode;
+    uint32_t path_len;
+    char path[];
 };
 
 struct afpsl_ipc_mkdir_response {
@@ -317,7 +346,8 @@ struct afpsl_ipc_mkdir_response {
 struct afpsl_ipc_rmdir_request {
     struct afpsl_ipc_request_header header;
     afpc_volume_t volumeid;
-    char path[AFP_MAX_PATH];
+    uint32_t path_len;
+    char path[];
 };
 
 struct afpsl_ipc_rmdir_response {
@@ -327,7 +357,8 @@ struct afpsl_ipc_rmdir_response {
 struct afpsl_ipc_statfs_request {
     struct afpsl_ipc_request_header header;
     afpc_volume_t volumeid;
-    char path[AFP_MAX_PATH];
+    uint32_t path_len;
+    char path[];
 };
 
 struct afpsl_ipc_statfs_response {
@@ -338,8 +369,9 @@ struct afpsl_ipc_statfs_response {
 struct afpsl_ipc_utime_request {
     struct afpsl_ipc_request_header header;
     afpc_volume_t volumeid;
-    char path[AFP_MAX_PATH];
     struct utimbuf times;
+    uint32_t path_len;
+    char path[];
 };
 
 struct afpsl_ipc_utime_response {
@@ -386,11 +418,11 @@ struct afpsl_ipc_changepw_response {
 struct afpsl_ipc_metadata_request {
     struct afpsl_ipc_request_header header;
     afpc_volume_t volumeid;
-    char path[AFP_MAX_PATH];
-    char name[256];
     unsigned long long offset;
     unsigned int size;
     int flags;
+    uint32_t path_len;
+    uint32_t name_len;
     char data[];
 };
 

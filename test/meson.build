@@ -11,6 +11,7 @@ public_header_checks = {
     'afpsl': 'netatalk-client/afpsl.h',
     'transport': 'netatalk-client/transport.h',
     'types': 'netatalk-client/types.h',
+    'path': 'netatalk-client/path.h',
     'url': 'netatalk-client/url.h',
 }
 
@@ -200,6 +201,23 @@ protocol_replies_test = executable(
 test(
     'AFP protocol reply parsing',
     protocol_replies_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+filename_validation_test = executable(
+    'test_filename_validation',
+    sources: ['test_filename_validation.c'],
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'AFP filename validation',
+    filename_validation_test,
     args: ['--tap'],
     protocol: 'tap',
     verbose: true,

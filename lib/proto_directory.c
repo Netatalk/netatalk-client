@@ -69,8 +69,8 @@ int afp_exchangefiles(struct afp_volume *volume,
     char *p;
     char *msg;
     struct afp_server * server = volume->server;
-    size_t slen = src_path ? strnlen(src_path, AFP_MAX_PATH) : 0;
-    size_t dlen = dst_path ? strnlen(dst_path, AFP_MAX_PATH) : 0;
+    size_t slen = src_path ? strnlen(src_path, AFP_MAX_UTF8_PATH_STORAGE) : 0;
+    size_t dlen = dst_path ? strnlen(dst_path, AFP_MAX_UTF8_PATH_STORAGE) : 0;
     unsigned short header_len = sizeof_path_header(server);
     size_t len = sizeof(*request_packet) + (2 * header_len) + slen + dlen;
     int ret;

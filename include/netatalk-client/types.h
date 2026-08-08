@@ -1,6 +1,7 @@
 #ifndef NETATALK_CLIENT_TYPES_H
 #define NETATALK_CLIENT_TYPES_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #define AFPC_SERVER_NAME_UTF8_LEN 255
@@ -11,8 +12,20 @@
 #define AFPC_MAX_USERNAME_LEN 127
 #define AFPC_MAX_PASSWORD_LEN 127
 #define AFPC_ZONE_LEN 32
-#define AFPC_MAX_PATH 768
+/* AFP 3.x UTF-8 names are limited to 255 Unicode characters per component.
+ * A scalar value needs at most four UTF-8 bytes. */
+#define AFPC_MAX_NAME_BYTES (255U * 4U + 1U)
+/* The AFP UTF-8 pathname header carries a 16-bit byte length.  This is an
+ * operational wire limit; callers should use owned storage for full paths. */
+#define AFPC_MAX_UTF8_PATH_BYTES UINT16_MAX
+#define AFPC_MAX_UTF8_PATH_STORAGE (AFPC_MAX_UTF8_PATH_BYTES + 1U)
 #define AFPC_MAX_VERSIONS 10
+
+/* NUL-terminated path storage owned by its containing object. */
+struct afpc_path {
+    char *data;
+    size_t len;
+};
 
 enum afpc_network_transport {
     AFPC_TRANSPORT_TCPIP,
@@ -27,7 +40,7 @@ struct afpc_url {
     char servername[AFPC_SERVER_NAME_UTF8_LEN];
     int port;
     char volumename[AFPC_VOLUME_NAME_UTF8_LEN];
-    char path[AFPC_MAX_PATH];
+    struct afpc_path path;
     int requested_version;
     char zone[AFPC_ZONE_LEN];
     char volpassword[9];
@@ -61,7 +74,7 @@ struct afpc_unix_privileges {
 };
 
 struct afpc_file_info {
-    char name[AFPC_MAX_PATH];
+    char name[AFPC_MAX_NAME_BYTES];
     unsigned int creation_date;
     unsigned int modification_date;
     struct afpc_unix_privileges unixprivs;

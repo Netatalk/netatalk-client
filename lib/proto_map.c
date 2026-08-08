@@ -129,7 +129,7 @@ int afp_mapid_reply(struct afp_server *server _U_,
         struct dsi_header header __attribute__((__packed__));
         char *name ;
     }  __attribute__((__packed__)) * reply = (void *) buf;
-    static char name[AFP_MAX_PATH];
+    static char name[AFPC_MAX_NAME_BYTES];
     char *name_ptr = other;
 
     /* RJVB: there should be at least 2 bytes after the dsi_header */
@@ -141,11 +141,11 @@ int afp_mapid_reply(struct afp_server *server _U_,
         return -1;
     }
 
-    memset(name, 0, AFP_MAX_PATH);
+    memset(name, 0, sizeof(name));
     copy_from_pascal_two(name, reply->name, sizeof(name));
 
     if (name_ptr != NULL) {
-        memcpy(name_ptr, name, AFP_MAX_PATH);
+        memcpy(name_ptr, name, sizeof(name));
     }
 
     return 0;
@@ -201,4 +201,3 @@ int afp_mapname_reply(struct afp_server *server _U_,
     *id = ntohl(reply->id);
     return 0;
 }
-

@@ -63,6 +63,23 @@ static int list_volumes_only = 0;
 
 static int wait_readable(int sock);
 
+/* struct afpc_url owns path storage, but the FUSE mount request is written
+ * verbatim to another process.  A mount never consumes a URL subdirectory,
+ * so release it before serializing the request rather than sending a pointer
+ * that is meaningful only in this process. */
+static void clear_outgoing_mount_url_path(void)
+{
+    struct afpfsd_ipc_mount_request *request;
+
+    if (outgoing_buffer[0] != AFPFSD_IPC_COMMAND_MOUNT
+            || outgoing_len < (int)(sizeof(*request) + 1U)) {
+        return;
+    }
+
+    request = (struct afpfsd_ipc_mount_request *)(outgoing_buffer + 1);
+    afpc_path_clear(&request->url.path);
+}
+
 static int write_all(int fd, const void *buffer, size_t length)
 {
     const char *cursor = buffer;
@@ -1168,6 +1185,10 @@ static int handle_mount_afpfs(int argc, char * argv[])
     ret = 0;
 cleanup:
 
+    if (ret != 0) {
+        clear_outgoing_mount_url_path();
+    }
+
     if (temp_url) {
         free(temp_url);
     }
@@ -1349,7 +1370,9 @@ static int afpc_fs_run(int argc, char *argv[], int url_mode)
     if (list_volumes_only) {
         const struct afpfsd_ipc_mount_request *req =
             (const struct afpfsd_ipc_mount_request *)(outgoing_buffer + 1);
-        return list_authenticated_volumes(req);
+        ret = list_authenticated_volumes(req);
+        clear_outgoing_mount_url_path();
+        return ret;
     }
 
     /* Extract mountpoint and volumename for per-mount daemon routing;
@@ -1369,8 +1392,11 @@ static int afpc_fs_run(int argc, char *argv[], int url_mode)
     }
 
     if ((sock = daemon_connect(mountpoint, volumename)) < 0) {
+        clear_outgoing_mount_url_path();
         return -1;
     }
+
+    clear_outgoing_mount_url_path();
 
     if (send_command(sock, outgoing_buffer, outgoing_len) != 0) {
         perror("Sending command to afpfsd");

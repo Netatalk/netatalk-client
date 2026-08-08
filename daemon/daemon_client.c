@@ -39,6 +39,18 @@ static struct daemon_client client_pool[DAEMON_NUM_CLIENTS];
 /* Used to protect the pool searching, creation and deletion */
 pthread_mutex_t client_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static void reset_client_request(struct daemon_client *c)
+{
+    if (!c) {
+        return;
+    }
+
+    free(c->complete_packet);
+    c->complete_packet = NULL;
+    c->completed_packet_size = 0;
+    c->incoming_header_size = 0;
+}
+
 int remove_client(struct daemon_client ** toremove)
 {
     int ret = 0;
@@ -55,6 +67,7 @@ int remove_client(struct daemon_client ** toremove)
             /* Destroy mutexes before marking as unused */
             pthread_mutex_destroy(&client_pool[i].command_string_mutex);
             pthread_mutex_destroy(&client_pool[i].processing_mutex);
+            reset_client_request(&client_pool[i]);
             client_pool[i].used = 0;
             /* Note: processing_thread is created DETACHED (PTHREAD_CREATE_DETACHED)
              * in process_command(), so we cannot and should not try to join it.
@@ -77,6 +90,7 @@ void remove_all_clients(void)
         if (client_pool[i].used) {
             pthread_mutex_destroy(&client_pool[i].command_string_mutex);
             pthread_mutex_destroy(&client_pool[i].processing_mutex);
+            reset_client_request(&client_pool[i]);
         }
 
         client_pool[i].used = 0;
@@ -94,20 +108,18 @@ int continue_client_connection(struct daemon_client * c)
         return 0;
     }
 
-    c->incoming_size = 0;
+    reset_client_request(c);
     add_fd_and_signal(c->fd);
     return 0;
 }
 
 int close_client_connection(struct daemon_client * c)
 {
-    c->a = &c->incoming_string[0];
-    c->incoming_size = 0;
-
     if ((!c) || (c->fd == 0)) {
         return -1;
     }
 
+    reset_client_request(c);
     rm_fd_and_signal(c->fd);
     close(c->fd);
     remove_client(&c);
@@ -134,8 +146,6 @@ found:
     pthread_mutex_init(&c->command_string_mutex, NULL);
     pthread_mutex_init(&c->processing_mutex, NULL);
     c->fd = fd;
-    c->a = &c->incoming_string[0];
-    c->incoming_size = 0;
     c->used = 1;
     pthread_mutex_unlock(&client_pool_mutex);
     return 0;

@@ -5,17 +5,18 @@
 
 #include "stateless_ipc.h"
 
-#define AFP_CLIENT_INCOMING_BUF 8192
+/* Rename carries two paths; the remainder covers fixed fields and metadata
+ * payloads.  This is an admission limit, not a per-client buffer size. */
+#define AFPSL_IPC_MAX_REQUEST (2U * AFP_MAX_UTF8_PATH_STORAGE + 4096U)
 
 #define DAEMON_NUM_CLIENTS 32
 
 struct daemon_client {
-    char incoming_string[AFP_CLIENT_INCOMING_BUF];
-    int incoming_size;
-    char *a;
-
-    char complete_packet[AFP_CLIENT_INCOMING_BUF];
+    char incoming_header[sizeof(struct afpsl_ipc_request_header)];
+    size_t incoming_header_size;
+    char *complete_packet;
     int completed_packet_size;
+    int ipc_ready;
     pthread_mutex_t command_string_mutex;
 
     char outgoing_string[AFPSL_IPC_LOG_BUFFER_SIZE];

@@ -63,6 +63,33 @@ static void finish_response(struct daemon_client *c, int send_result,
     }
 }
 
+static int process_hello(struct daemon_client *c)
+{
+    const struct afpsl_ipc_hello_request *request = (const void *)
+        c->complete_packet;
+    struct afpsl_ipc_hello_response response;
+    int compatible;
+
+    if ((size_t)c->completed_packet_size != sizeof(*request)) {
+        return -1;
+    }
+
+    compatible = request->magic == AFPSL_IPC_PROTOCOL_MAGIC
+                 && request->major == AFPSL_IPC_PROTOCOL_MAJOR;
+    memset(&response, 0, sizeof(response));
+    response.header.result = compatible ? AFPSL_IPC_RESULT_OK
+                             : AFPSL_IPC_RESULT_ERROR;
+    response.header.len = sizeof(response);
+    response.magic = AFPSL_IPC_PROTOCOL_MAGIC;
+    response.major = AFPSL_IPC_PROTOCOL_MAJOR;
+    response.minor = AFPSL_IPC_PROTOCOL_MINOR;
+    c->ipc_ready = compatible;
+    finish_response(c, send_command(c, sizeof(response), (char *)&response),
+                    !compatible);
+    /* finish_response() already closes an incompatible connection. */
+    return 0;
+}
+
 static void *alloc_response(size_t len, size_t fixed_len)
 {
     void *response = malloc(len);
@@ -407,7 +434,6 @@ static unsigned char process_getvolid(struct daemon_client * c)
     req->url.password[AFP_MAX_PASSWORD_LEN - 1] = '\0';
     req->url.servername[AFP_SERVER_NAME_UTF8_LEN - 1] = '\0';
     req->url.volumename[AFP_VOLUME_NAME_UTF8_LEN - 1] = '\0';
-    req->url.path[AFP_MAX_PATH - 1] = '\0';
     req->url.zone[AFP_ZONE_LEN - 1] = '\0';
     req->url.volpassword[AFP_VOLPASS_LEN] = '\0';
     s = find_server_by_pointer((struct afp_server *)req->serverid);
@@ -462,7 +488,6 @@ static unsigned char process_serverinfo(struct daemon_client * c)
     req->url.password[AFP_MAX_PASSWORD_LEN - 1] = '\0';
     req->url.servername[AFP_SERVER_NAME_UTF8_LEN - 1] = '\0';
     req->url.volumename[AFP_VOLUME_NAME_UTF8_LEN - 1] = '\0';
-    req->url.path[AFP_MAX_PATH - 1] = '\0';
     req->url.zone[AFP_ZONE_LEN - 1] = '\0';
     req->url.volpassword[AFP_VOLPASS_LEN] = '\0';
 
@@ -541,7 +566,6 @@ static unsigned char process_getvols(struct daemon_client * c)
     request->url.password[AFP_MAX_PASSWORD_LEN - 1] = '\0';
     request->url.servername[AFP_SERVER_NAME_UTF8_LEN - 1] = '\0';
     request->url.volumename[AFP_VOLUME_NAME_UTF8_LEN - 1] = '\0';
-    request->url.path[AFP_MAX_PATH - 1] = '\0';
     request->url.zone[AFP_ZONE_LEN - 1] = '\0';
     request->url.volpassword[AFP_VOLPASS_LEN] = '\0';
     server = find_server_by_pointer((struct afp_server *)request->serverid);
@@ -619,18 +643,28 @@ static unsigned char process_open(struct daemon_client * c)
     struct afpsl_ipc_open_response response;
     struct afpsl_ipc_open_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
+    const char *path;
+    size_t request_len;
     int ret;
     int result = AFPSL_IPC_RESULT_OK;
     struct afp_file_info * fp;
 
-    if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afpsl_ipc_open_request)) {
+    if ((size_t)c->completed_packet_size < sizeof(*request)) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    /* Force null-termination of path field from untrusted client data */
-    request->path[AFP_MAX_PATH - 1] = '\0';
+    request_len = sizeof(*request) + (size_t)request->path_len + 1U;
+
+    if (request->path_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request_len != (size_t)c->completed_packet_size
+            || request->header.len != request_len
+            || request->path[request->path_len] != '\0') {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    path = request->path;
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
         result = AFPSL_IPC_RESULT_NOTATTACHED;
@@ -643,8 +677,8 @@ static unsigned char process_open(struct daemon_client * c)
     }
 
     log_for_client((void *) c, AFPFSD, LOG_DEBUG, "Opening file '%s' mode=%d",
-                   request->path, request->mode);
-    ret = ml_open(v, request->path, request->mode, &fp);
+                   path, request->mode);
+    ret = ml_open(v, path, request->mode, &fp);
 
     if (ret) {
         if (ret == -ENOENT) {
@@ -657,7 +691,7 @@ static unsigned char process_open(struct daemon_client * c)
 
         log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                        "process_open: Failed to open file %s: %d (%s)",
-                       request->path, ret, strerror(-ret));
+                       path, ret, strerror(-ret));
         goto done;
     }
 
@@ -827,24 +861,6 @@ static unsigned char process_write(struct daemon_client * c)
                    "Writing %u bytes at offset %llu, fileid=%u", request->size,
                    request->offset, request->fileid);
 
-    /* Consume any data already read into the incoming buffer
-     * by process_command */
-    if (c->incoming_size > 0) {
-        int to_copy = min(bytes_remaining, c->incoming_size);
-        memcpy(data + bytes_read, c->incoming_string, to_copy);
-
-        /* Shift remaining data in buffer if any */
-        if (c->incoming_size > to_copy) {
-            memmove(c->incoming_string, c->incoming_string + to_copy,
-                    c->incoming_size - to_copy);
-        }
-
-        c->incoming_size -= to_copy;
-        c->a = c->incoming_string + c->incoming_size;
-        bytes_read += to_copy;
-        bytes_remaining -= to_copy;
-    }
-
     while (bytes_remaining > 0) {
         ret = read(c->fd, data + bytes_read, bytes_remaining);
 
@@ -899,17 +915,27 @@ static unsigned char process_creat(struct daemon_client * c)
     struct afpsl_ipc_creat_response response;
     struct afpsl_ipc_creat_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
+    const char *path;
+    size_t request_len;
     int ret;
     int result = AFPSL_IPC_RESULT_OK;
 
-    if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afpsl_ipc_creat_request)) {
+    if ((size_t)c->completed_packet_size < sizeof(*request)) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    /* Force null-termination of path field from untrusted client data */
-    request->path[AFP_MAX_PATH - 1] = '\0';
+    request_len = sizeof(*request) + (size_t)request->path_len + 1U;
+
+    if (request->path_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request_len != (size_t)c->completed_packet_size
+            || request->header.len != request_len
+            || request->path[request->path_len] != '\0') {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    path = request->path;
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
         result = AFPSL_IPC_RESULT_NOTATTACHED;
@@ -922,24 +948,24 @@ static unsigned char process_creat(struct daemon_client * c)
     }
 
     log_for_client((void *) c, AFPFSD, LOG_DEBUG, "Creating file '%s' mode=%04o",
-                   request->path, request->mode);
-    ret = ml_creat(v, request->path, request->mode);
+                   path, request->mode);
+    ret = ml_creat(v, path, request->mode);
 
     if (ret < 0) {
         if (ret == -EEXIST) {
             result = AFPSL_IPC_RESULT_EXIST;
             log_for_client((void *) c, AFPFSD, LOG_DEBUG,
-                           "process_creat: File %s exists (EEXIST)", request->path);
+                           "process_creat: File %s exists (EEXIST)", path);
         } else if (ret == -EACCES) {
             result = AFPSL_IPC_RESULT_ACCESS;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_creat: Permission denied creating %s (EACCES)",
-                           request->path);
+                           path);
         } else {
             result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_creat: Failed to create file %s: %d (%s)",
-                           request->path, ret, strerror(-ret));
+                           path, ret, strerror(-ret));
         }
     }
 
@@ -961,17 +987,27 @@ static unsigned char process_chmod(struct daemon_client * c)
     struct afpsl_ipc_chmod_response response;
     struct afpsl_ipc_chmod_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
+    const char *path;
+    size_t request_len;
     int ret;
     int result = AFPSL_IPC_RESULT_OK;
 
-    if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afpsl_ipc_chmod_request)) {
+    if ((size_t)c->completed_packet_size < sizeof(*request)) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    /* Force null-termination of path field from untrusted client data */
-    request->path[AFP_MAX_PATH - 1] = '\0';
+    request_len = sizeof(*request) + (size_t)request->path_len + 1U;
+
+    if (request->path_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request_len != (size_t)c->completed_packet_size
+            || request->header.len != request_len
+            || request->path[request->path_len] != '\0') {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    path = request->path;
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
         result = AFPSL_IPC_RESULT_NOTATTACHED;
@@ -983,7 +1019,7 @@ static unsigned char process_chmod(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_chmod(v, request->path, request->mode);
+    ret = ml_chmod(v, path, request->mode);
 
     if (ret < 0) {
         if (ret == -ENOENT) {
@@ -995,7 +1031,7 @@ static unsigned char process_chmod(struct daemon_client * c)
         }
 
         log_for_client((void *) c, AFPFSD, LOG_ERR,
-                       "Failed to chmod file %s: %d (%s)", request->path, ret,
+                       "Failed to chmod file %s: %d (%s)", path, ret,
                        strerror(-ret));
     }
 
@@ -1017,18 +1053,33 @@ static unsigned char process_rename(struct daemon_client * c)
     struct afpsl_ipc_rename_response response;
     struct afpsl_ipc_rename_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
+    const char *path_from;
+    const char *path_to;
+    size_t request_len;
     int ret;
     int result = AFPSL_IPC_RESULT_OK;
 
-    if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afpsl_ipc_rename_request)) {
+    if ((size_t)c->completed_packet_size < sizeof(*request)) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    /* Force null-termination of path fields from untrusted client data */
-    request->path_from[AFP_MAX_PATH - 1] = '\0';
-    request->path_to[AFP_MAX_PATH - 1] = '\0';
+    request_len = sizeof(*request) + (size_t)request->path_from_len + 1U
+                  + (size_t)request->path_to_len + 1U;
+
+    if (request->path_from_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request->path_to_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request_len != (size_t)c->completed_packet_size
+            || request->header.len != request_len
+            || request->paths[request->path_from_len] != '\0'
+            || request->paths[request->path_from_len + 1U
+                              + request->path_to_len] != '\0') {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    path_from = request->paths;
+    path_to = request->paths + request->path_from_len + 1U;
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
         result = AFPSL_IPC_RESULT_NOTATTACHED;
@@ -1040,13 +1091,13 @@ static unsigned char process_rename(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_rename(v, request->path_from, request->path_to);
+    ret = ml_rename(v, path_from, path_to);
 
     if (ret < 0) {
         result = AFPSL_IPC_RESULT_ERROR;
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Failed to rename file from %s to %s: %d",
-                       request->path_from, request->path_to, ret);
+                       path_from, path_to, ret);
     }
 
 done:
@@ -1067,17 +1118,27 @@ static unsigned char process_unlink(struct daemon_client * c)
     struct afpsl_ipc_unlink_response response;
     struct afpsl_ipc_unlink_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
+    const char *path;
+    size_t request_len;
     int ret;
     int result = AFPSL_IPC_RESULT_OK;
 
-    if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afpsl_ipc_unlink_request)) {
+    if ((size_t)c->completed_packet_size < sizeof(*request)) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    /* Force null-termination of path field from untrusted client data */
-    request->path[AFP_MAX_PATH - 1] = '\0';
+    request_len = sizeof(*request) + (size_t)request->path_len + 1U;
+
+    if (request->path_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request_len != (size_t)c->completed_packet_size
+            || request->header.len != request_len
+            || request->path[request->path_len] != '\0') {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    path = request->path;
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
         result = AFPSL_IPC_RESULT_NOTATTACHED;
@@ -1089,23 +1150,23 @@ static unsigned char process_unlink(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_unlink(v, request->path);
+    ret = ml_unlink(v, path);
 
     if (ret < 0) {
         if (ret == -ENOENT) {
             result = AFPSL_IPC_RESULT_ENOENT;
             log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                            "process_unlink: File %s not found (ENOENT)",
-                           request->path);
+                           path);
         } else if (ret == -EACCES || ret == -EPERM) {
             result = AFPSL_IPC_RESULT_ACCESS;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_unlink: Permission denied for %s (EACCES/EPERM)",
-                           request->path);
+                           path);
         } else {
             result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
-                           "Failed to unlink file %s: %d (%s)", request->path, ret,
+                           "Failed to unlink file %s: %d (%s)", path, ret,
                            strerror(-ret));
         }
     }
@@ -1128,17 +1189,27 @@ static unsigned char process_truncate(struct daemon_client * c)
     struct afpsl_ipc_truncate_response response;
     struct afpsl_ipc_truncate_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
+    const char *path;
+    size_t request_len;
     int ret;
     int result = AFPSL_IPC_RESULT_OK;
 
-    if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afpsl_ipc_truncate_request)) {
+    if ((size_t)c->completed_packet_size < sizeof(*request)) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    /* Force null-termination of path field from untrusted client data */
-    request->path[AFP_MAX_PATH - 1] = '\0';
+    request_len = sizeof(*request) + (size_t)request->path_len + 1U;
+
+    if (request->path_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request_len != (size_t)c->completed_packet_size
+            || request->header.len != request_len
+            || request->path[request->path_len] != '\0') {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    path = request->path;
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
         result = AFPSL_IPC_RESULT_NOTATTACHED;
@@ -1150,23 +1221,23 @@ static unsigned char process_truncate(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_truncate(v, request->path, request->offset);
+    ret = ml_truncate(v, path, request->offset);
 
     if (ret < 0) {
         if (ret == -ENOENT) {
             result = AFPSL_IPC_RESULT_ENOENT;
             log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                            "process_truncate: File %s not found (ENOENT)",
-                           request->path);
+                           path);
         } else if (ret == -EACCES) {
             result = AFPSL_IPC_RESULT_ACCESS;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_truncate: Permission denied for %s (EACCES)",
-                           request->path);
+                           path);
         } else {
             result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
-                           "Failed to truncate file %s: %d (%s)", request->path, ret,
+                           "Failed to truncate file %s: %d (%s)", path, ret,
                            strerror(-ret));
         }
     }
@@ -1189,17 +1260,27 @@ static unsigned char process_utime(struct daemon_client * c)
     struct afpsl_ipc_utime_response response;
     struct afpsl_ipc_utime_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
+    const char *path;
+    size_t request_len;
     int ret;
     int result = AFPSL_IPC_RESULT_OK;
 
-    if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afpsl_ipc_utime_request)) {
+    if ((size_t)c->completed_packet_size < sizeof(*request)) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    /* Force null-termination of path field from untrusted client data */
-    request->path[AFP_MAX_PATH - 1] = '\0';
+    request_len = sizeof(*request) + (size_t)request->path_len + 1U;
+
+    if (request->path_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request_len != (size_t)c->completed_packet_size
+            || request->header.len != request_len
+            || request->path[request->path_len] != '\0') {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    path = request->path;
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
         result = AFPSL_IPC_RESULT_NOTATTACHED;
@@ -1211,7 +1292,7 @@ static unsigned char process_utime(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_utime(v, request->path, &request->times);
+    ret = ml_utime(v, path, &request->times);
 
     if (ret < 0) {
         if (ret == -ENOENT) {
@@ -1223,7 +1304,7 @@ static unsigned char process_utime(struct daemon_client * c)
         }
 
         log_for_client((void *) c, AFPFSD, LOG_ERR, "Failed to utime file %s: %d",
-                       request->path, ret);
+                       path, ret);
     }
 
 done:
@@ -1244,17 +1325,27 @@ static unsigned char process_mkdir(struct daemon_client * c)
     struct afpsl_ipc_mkdir_response response;
     struct afpsl_ipc_mkdir_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
+    const char *path;
+    size_t request_len;
     int ret;
     int result = AFPSL_IPC_RESULT_OK;
 
-    if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afpsl_ipc_mkdir_request)) {
+    if ((size_t)c->completed_packet_size < sizeof(*request)) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    /* Force null-termination of path field from untrusted client data */
-    request->path[AFP_MAX_PATH - 1] = '\0';
+    request_len = sizeof(*request) + (size_t)request->path_len + 1U;
+
+    if (request->path_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request_len != (size_t)c->completed_packet_size
+            || request->header.len != request_len
+            || request->path[request->path_len] != '\0') {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    path = request->path;
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
         result = AFPSL_IPC_RESULT_NOTATTACHED;
@@ -1266,29 +1357,29 @@ static unsigned char process_mkdir(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_mkdir(v, request->path, request->mode);
+    ret = ml_mkdir(v, path, request->mode);
 
     if (ret < 0) {
         if (ret == -EEXIST) {
             result = AFPSL_IPC_RESULT_EXIST;
             log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                            "process_mkdir: Directory %s already exists (EEXIST)",
-                           request->path);
+                           path);
         } else if (ret == -EACCES) {
             result = AFPSL_IPC_RESULT_ACCESS;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_mkdir: Permission denied creating %s (EACCES)",
-                           request->path);
+                           path);
         } else if (ret == -ENOENT) {
             result = AFPSL_IPC_RESULT_ENOENT;
             log_for_client(
                 (void *) c, AFPFSD, LOG_ERR,
                 "process_mkdir: Parent directory not found for %s (ENOENT)",
-                request->path);
+                path);
         } else {
             result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
-                           "Failed to create directory %s: %d (%s)", request->path,
+                           "Failed to create directory %s: %d (%s)", path,
                            ret, strerror(-ret));
         }
     }
@@ -1311,17 +1402,27 @@ static unsigned char process_rmdir(struct daemon_client * c)
     struct afpsl_ipc_rmdir_response response;
     struct afpsl_ipc_rmdir_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
+    const char *path;
+    size_t request_len;
     int ret;
     int result = AFPSL_IPC_RESULT_OK;
 
-    if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afpsl_ipc_rmdir_request)) {
+    if ((size_t)c->completed_packet_size < sizeof(*request)) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    /* Force null-termination of path field from untrusted client data */
-    request->path[AFP_MAX_PATH - 1] = '\0';
+    request_len = sizeof(*request) + (size_t)request->path_len + 1U;
+
+    if (request->path_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request_len != (size_t)c->completed_packet_size
+            || request->header.len != request_len
+            || request->path[request->path_len] != '\0') {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    path = request->path;
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
         result = AFPSL_IPC_RESULT_NOTATTACHED;
@@ -1333,28 +1434,28 @@ static unsigned char process_rmdir(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_rmdir(v, request->path);
+    ret = ml_rmdir(v, path);
 
     if (ret < 0) {
         if (ret == -ENOENT) {
             result = AFPSL_IPC_RESULT_ENOENT;
             log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                            "process_rmdir: Directory %s not found (ENOENT)",
-                           request->path);
+                           path);
         } else if (ret == -EACCES) {
             result = AFPSL_IPC_RESULT_ACCESS;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_rmdir: Permission denied for %s (EACCES)",
-                           request->path);
+                           path);
         } else if (ret == -ENOTEMPTY) {
             result = AFPSL_IPC_RESULT_ENOTEMPTY;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_rmdir: Directory %s is not empty (ENOTEMPTY)",
-                           request->path);
+                           path);
         } else {
             result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
-                           "Failed to remove directory %s: %d (%s)", request->path,
+                           "Failed to remove directory %s: %d (%s)", path,
                            ret, strerror(-ret));
         }
     }
@@ -1377,18 +1478,28 @@ static unsigned char process_statfs(struct daemon_client * c)
     struct afpsl_ipc_statfs_response response;
     struct afpsl_ipc_statfs_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
+    const char *path;
+    size_t request_len;
     int ret;
     int result = AFPSL_IPC_RESULT_OK;
     memset(&response.stat, 0, sizeof(struct statvfs));
 
-    if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afpsl_ipc_statfs_request)) {
+    if ((size_t)c->completed_packet_size < sizeof(*request)) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    /* Force null-termination of path field from untrusted client data */
-    request->path[AFP_MAX_PATH - 1] = '\0';
+    request_len = sizeof(*request) + (size_t)request->path_len + 1U;
+
+    if (request->path_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request_len != (size_t)c->completed_packet_size
+            || request->header.len != request_len
+            || request->path[request->path_len] != '\0') {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    path = request->path;
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
         result = AFPSL_IPC_RESULT_NOTATTACHED;
@@ -1401,25 +1512,25 @@ static unsigned char process_statfs(struct daemon_client * c)
     }
 
     log_for_client((void *) c, AFPFSD, LOG_DEBUG,
-                   "Querying filesystem stats for path '%s'", request->path);
-    ret = ml_statfs(v, request->path, &response.stat);
+                   "Querying filesystem stats for path '%s'", path);
+    ret = ml_statfs(v, path, &response.stat);
 
     if (ret < 0) {
         if (ret == -ENOENT) {
             result = AFPSL_IPC_RESULT_ENOENT;
             log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                            "process_statfs: Path %s not found (ENOENT)",
-                           request->path);
+                           path);
         } else if (ret == -EACCES) {
             result = AFPSL_IPC_RESULT_ACCESS;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_statfs: Permission denied for %s (EACCES)",
-                           request->path);
+                           path);
         } else {
             result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "Failed to get filesystem stats for %s: %d (%s)",
-                           request->path, ret, strerror(-ret));
+                           path, ret, strerror(-ret));
         }
     } else {
         log_for_client((void *) c, AFPFSD, LOG_DEBUG,
@@ -1493,19 +1604,29 @@ static unsigned char process_stat(struct daemon_client * c)
     struct afpsl_ipc_stat_response response;
     struct afpsl_ipc_stat_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
+    const char *path;
+    size_t request_len;
     int ret;
     int result = AFPSL_IPC_RESULT_OK;
-    log_for_client((void *) c, AFPFSD, LOG_DEBUG,
-                   "Getting attributes for path '%s'", request->path);
 
-    if ((size_t)(c->completed_packet_size) < sizeof(struct
-            afpsl_ipc_stat_request)) {
+    if ((size_t)c->completed_packet_size < sizeof(*request)) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    /* Force null-termination of path field from untrusted client data */
-    request->path[AFP_MAX_PATH - 1] = '\0';
+    request_len = sizeof(*request) + (size_t)request->path_len + 1U;
+
+    if (request->path_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request_len != (size_t)c->completed_packet_size
+            || request->header.len != request_len
+            || request->path[request->path_len] != '\0') {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    path = request->path;
+    log_for_client((void *) c, AFPFSD, LOG_DEBUG,
+                   "Getting attributes for path '%s'", path);
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
         result = AFPSL_IPC_RESULT_NOTATTACHED;
@@ -1517,11 +1638,11 @@ static unsigned char process_stat(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_getattr(v, request->path, &response.stat);
+    ret = ml_getattr(v, path, &response.stat);
 
     if (ret < 0) {
         log_for_client((void *) c, AFPFSD, LOG_DEBUG,
-                       "ml_getattr error for '%s': %d (%s)", request->path, ret,
+                       "ml_getattr error for '%s': %d (%s)", path, ret,
                        strerror(-ret));
     }
 
@@ -1578,6 +1699,9 @@ static unsigned char process_metadata(struct daemon_client *c)
     struct afpsl_ipc_metadata_request *request = (void *)c->complete_packet;
     struct afp_volume *volume = NULL;
     size_t base = offsetof(struct afpsl_ipc_metadata_request, data);
+    const char *path;
+    const char *name;
+    const char *request_data;
     char data[AFP_SL_METADATA_CHUNK];
     const char *response_data = data;
     char *allocated_data = NULL;
@@ -1599,7 +1723,15 @@ static unsigned char process_metadata(struct daemon_client *c)
     request_limit = request->header.command == AFPSL_IPC_COMMAND_LISTXATTR
                     ? AFP_SL_XATTR_LIST_MAX
                     : AFP_SL_METADATA_CHUNK;
-    expected_len = base;
+
+    if (request->path_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request->name_len >= 256) {
+        send_metadata_response(c, -EINVAL, NULL, 0, 0);
+        return 0;
+    }
+
+    expected_len = base + (size_t)request->path_len + 1U
+                   + (size_t)request->name_len + 1U;
 
     if (sends_data) {
         expected_len += request->size;
@@ -1612,8 +1744,12 @@ static unsigned char process_metadata(struct daemon_client *c)
         return 0;
     }
 
-    if (!memchr(request->path, '\0', sizeof(request->path))
-            || !memchr(request->name, '\0', sizeof(request->name))) {
+    path = request->data;
+    name = path + request->path_len + 1U;
+    request_data = name + request->name_len + 1U;
+
+    if (path[request->path_len] != '\0'
+            || name[request->name_len] != '\0') {
         send_metadata_response(c, -EINVAL, NULL, 0, 0);
         return 0;
     }
@@ -1621,7 +1757,7 @@ static unsigned char process_metadata(struct daemon_client *c)
     if ((request->header.command == AFPSL_IPC_COMMAND_GETXATTR
             || request->header.command == AFPSL_IPC_COMMAND_SETXATTR
             || request->header.command == AFPSL_IPC_COMMAND_REMOVEXATTR)
-            && request->name[0] == '\0') {
+            && name[0] == '\0') {
         send_metadata_response(c, -EINVAL, NULL, 0, 0);
         return 0;
     }
@@ -1674,7 +1810,7 @@ static unsigned char process_metadata(struct daemon_client *c)
             xattr_data = data;
         }
 
-        ret = ml_getxattr(volume, request->path, request->name, xattr_data,
+        ret = ml_getxattr(volume, path, name, xattr_data,
                           request->size);
     }
     break;
@@ -1694,7 +1830,7 @@ static unsigned char process_metadata(struct daemon_client *c)
             response_data = allocated_data;
         }
 
-        ret = ml_listxattr(volume, request->path, listxattr_data, request->size);
+        ret = ml_listxattr(volume, path, listxattr_data, request->size);
     }
     break;
 
@@ -1705,7 +1841,7 @@ static unsigned char process_metadata(struct daemon_client *c)
             finderinfo_data = data;
         }
 
-        ret = ml_getfinderinfo(volume, request->path, finderinfo_data, request->size);
+        ret = ml_getfinderinfo(volume, path, finderinfo_data, request->size);
     }
     break;
 
@@ -1713,7 +1849,7 @@ static unsigned char process_metadata(struct daemon_client *c)
         if (request->offset > (unsigned long long)INT64_MAX) {
             ret = -EOVERFLOW;
         } else {
-            ret = ml_getresourcefork(volume, request->path,
+            ret = ml_getresourcefork(volume, path,
                                      request->size ? data : NULL,
                                      request->size, (off_t)request->offset);
         }
@@ -1721,39 +1857,38 @@ static unsigned char process_metadata(struct daemon_client *c)
         break;
 
     case AFPSL_IPC_COMMAND_SETXATTR:
-        ret = ml_setxattr(volume, request->path, request->name,
-                          request->data, request->size, request->flags);
+        ret = ml_setxattr(volume, path, name, request_data, request->size,
+                          request->flags);
         break;
 
     case AFPSL_IPC_COMMAND_SETFINDERINFO:
-        ret = ml_setfinderinfo(volume, request->path,
-                               request->data, request->size);
+        ret = ml_setfinderinfo(volume, path, request_data, request->size);
         break;
 
     case AFPSL_IPC_COMMAND_SETRESOURCEFORK:
         if (request->offset > (unsigned long long)INT64_MAX) {
             ret = -EOVERFLOW;
         } else {
-            ret = ml_setresourcefork(volume, request->path, request->data,
+            ret = ml_setresourcefork(volume, path, request_data,
                                      request->size, (off_t)request->offset);
         }
 
         break;
 
     case AFPSL_IPC_COMMAND_TRUNCATERESOURCEFORK:
-        ret = ml_truncateresourcefork(volume, request->path, request->offset);
+        ret = ml_truncateresourcefork(volume, path, request->offset);
         break;
 
     case AFPSL_IPC_COMMAND_REMOVEXATTR:
-        ret = ml_removexattr(volume, request->path, request->name);
+        ret = ml_removexattr(volume, path, name);
         break;
 
     case AFPSL_IPC_COMMAND_REMOVEFINDERINFO:
-        ret = ml_removefinderinfo(volume, request->path);
+        ret = ml_removefinderinfo(volume, path);
         break;
 
     case AFPSL_IPC_COMMAND_REMOVERESOURCEFORK:
-        ret = ml_removeresourcefork(volume, request->path);
+        ret = ml_removeresourcefork(volume, path);
         break;
 
     default:
@@ -1804,23 +1939,33 @@ static unsigned char process_readdir(struct daemon_client * c)
     unsigned int len = sizeof(struct afpsl_ipc_readdir_response);
     unsigned int result;
     struct afp_volume * v = NULL;
+    const char *path;
+    size_t request_len;
     char *data, *p;
     struct afp_file_info *filebase, *fp;
     unsigned int numfiles = 0;
     int i;
     int ret;
-    log_for_client((void *) c, AFPFSD, LOG_DEBUG,
-                   "Reading directory '%s' (start=%d, count=%d)", req->path,
-                   req->start, req->count);
 
-    if (((size_t)(c->completed_packet_size) < sizeof(struct
-            afpsl_ipc_readdir_request)) || (req->start < 0)) {
+    if ((size_t)c->completed_packet_size < sizeof(*req) || req->start < 0) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto error;
     }
 
-    /* Force null-termination of path field from untrusted client data */
-    req->path[AFP_MAX_PATH - 1] = '\0';
+    request_len = sizeof(*req) + (size_t)req->path_len + 1U;
+
+    if (req->path_len >= AFP_MAX_UTF8_PATH_STORAGE
+            || request_len != (size_t)c->completed_packet_size
+            || req->header.len != request_len
+            || req->path[req->path_len] != '\0') {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto error;
+    }
+
+    path = req->path;
+    log_for_client((void *) c, AFPFSD, LOG_DEBUG,
+                   "Reading directory '%s' (start=%d, count=%d)", path,
+                   req->start, req->count);
 
     if ((v = afp_volume_find_by_pointer_hold(req->volumeid)) == NULL) {
         result = AFPSL_IPC_RESULT_ENOENT;
@@ -1832,7 +1977,7 @@ static unsigned char process_readdir(struct daemon_client * c)
         goto error;
     }
 
-    ret = ml_readdir(v, req->path, &filebase);
+    ret = ml_readdir(v, path, &filebase);
 
     if (ret) {
         result = AFPSL_IPC_RESULT_ERROR;
@@ -2247,7 +2392,6 @@ static int process_connect(struct daemon_client * c)
     req->url.password[AFP_MAX_PASSWORD_LEN - 1] = '\0';
     req->url.servername[AFP_SERVER_NAME_UTF8_LEN - 1] = '\0';
     req->url.volumename[AFP_VOLUME_NAME_UTF8_LEN - 1] = '\0';
-    req->url.path[AFP_MAX_PATH - 1] = '\0';
     req->url.zone[AFP_ZONE_LEN - 1] = '\0';
     req->url.volpassword[AFP_VOLPASS_LEN] = '\0';
     memset(loginmesg_copy, 0, AFP_LOGINMESG_LEN);
@@ -2415,7 +2559,6 @@ static int process_attach(struct daemon_client * c)
     req->url.password[AFP_MAX_PASSWORD_LEN - 1] = '\0';
     req->url.servername[AFP_SERVER_NAME_UTF8_LEN - 1] = '\0';
     req->url.volumename[AFP_VOLUME_NAME_UTF8_LEN - 1] = '\0';
-    req->url.path[AFP_MAX_PATH - 1] = '\0';
     req->url.zone[AFP_ZONE_LEN - 1] = '\0';
     req->url.volpassword[AFP_VOLPASS_LEN] = '\0';
     log_for_client((void *) c, AFPFSD, LOG_INFO,
@@ -2498,131 +2641,139 @@ static void *process_command_thread(void * other)
                    "******* processing command %d", req->command);
     pthread_mutex_lock(&server_op_mutex);
 
-    switch (req->command) {
-    case AFPSL_IPC_COMMAND_SERVERINFO:
-        ret = process_serverinfo(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_CONNECT:
-        ret = process_connect(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_ATTACH:
-        ret = process_attach(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_DETACH:
-        ret = process_detach(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_GETVOLID:
-        ret = process_getvolid(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_READDIR:
-        ret = process_readdir(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_GETVOLS:
-        ret = process_getvols(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_STAT:
-        ret = process_stat(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_OPEN:
-        ret = process_open(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_READ:
-        ret = process_read(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_WRITE:
-        ret = process_write(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_CREAT:
-        ret = process_creat(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_CHMOD:
-        ret = process_chmod(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_RENAME:
-        ret = process_rename(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_UNLINK:
-        ret = process_unlink(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_TRUNCATE:
-        ret = process_truncate(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_UTIME:
-        ret = process_utime(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_MKDIR:
-        ret = process_mkdir(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_RMDIR:
-        ret = process_rmdir(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_STATFS:
-        ret = process_statfs(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_CLOSE:
-        ret = process_close(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_EXIT:
-        ret = process_exit(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_STATUS:
-        ret = process_status(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_DISCONNECT:
-        ret = process_disconnect(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_CHANGEPW:
-        ret = process_changepw(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_GETXATTR:
-    case AFPSL_IPC_COMMAND_SETXATTR:
-    case AFPSL_IPC_COMMAND_LISTXATTR:
-    case AFPSL_IPC_COMMAND_REMOVEXATTR:
-    case AFPSL_IPC_COMMAND_GETFINDERINFO:
-    case AFPSL_IPC_COMMAND_SETFINDERINFO:
-    case AFPSL_IPC_COMMAND_REMOVEFINDERINFO:
-    case AFPSL_IPC_COMMAND_GETRESOURCEFORK:
-    case AFPSL_IPC_COMMAND_SETRESOURCEFORK:
-    case AFPSL_IPC_COMMAND_TRUNCATERESOURCEFORK:
-    case AFPSL_IPC_COMMAND_REMOVERESOURCEFORK:
-        ret = process_metadata(c);
-        break;
-
-    case AFPSL_IPC_COMMAND_GET_MOUNTPOINT:
+    if (!c->ipc_ready && req->command != AFPSL_IPC_COMMAND_HELLO) {
         log_for_client((void *)c, AFPFSD, LOG_ERR,
-                       "Command %d not supported by afpsld", req->command);
-        ret = AFPSL_IPC_RESULT_NOTSUPPORTED;
-        break;
+                       "Client did not negotiate the afpsld IPC protocol");
+        ret = -1;
+    } else switch (req->command) {
+        case AFPSL_IPC_COMMAND_HELLO:
+            ret = process_hello(c);
+            break;
 
-    default:
-        log_for_client((void *)c, AFPFSD, LOG_ERR, "Unknown command %d", req->command);
-        ret = AFPSL_IPC_RESULT_ERROR;
-    }
+        case AFPSL_IPC_COMMAND_SERVERINFO:
+            ret = process_serverinfo(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_CONNECT:
+            ret = process_connect(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_ATTACH:
+            ret = process_attach(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_DETACH:
+            ret = process_detach(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_GETVOLID:
+            ret = process_getvolid(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_READDIR:
+            ret = process_readdir(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_GETVOLS:
+            ret = process_getvols(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_STAT:
+            ret = process_stat(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_OPEN:
+            ret = process_open(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_READ:
+            ret = process_read(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_WRITE:
+            ret = process_write(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_CREAT:
+            ret = process_creat(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_CHMOD:
+            ret = process_chmod(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_RENAME:
+            ret = process_rename(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_UNLINK:
+            ret = process_unlink(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_TRUNCATE:
+            ret = process_truncate(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_UTIME:
+            ret = process_utime(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_MKDIR:
+            ret = process_mkdir(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_RMDIR:
+            ret = process_rmdir(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_STATFS:
+            ret = process_statfs(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_CLOSE:
+            ret = process_close(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_EXIT:
+            ret = process_exit(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_STATUS:
+            ret = process_status(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_DISCONNECT:
+            ret = process_disconnect(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_CHANGEPW:
+            ret = process_changepw(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_GETXATTR:
+        case AFPSL_IPC_COMMAND_SETXATTR:
+        case AFPSL_IPC_COMMAND_LISTXATTR:
+        case AFPSL_IPC_COMMAND_REMOVEXATTR:
+        case AFPSL_IPC_COMMAND_GETFINDERINFO:
+        case AFPSL_IPC_COMMAND_SETFINDERINFO:
+        case AFPSL_IPC_COMMAND_REMOVEFINDERINFO:
+        case AFPSL_IPC_COMMAND_GETRESOURCEFORK:
+        case AFPSL_IPC_COMMAND_SETRESOURCEFORK:
+        case AFPSL_IPC_COMMAND_TRUNCATERESOURCEFORK:
+        case AFPSL_IPC_COMMAND_REMOVERESOURCEFORK:
+            ret = process_metadata(c);
+            break;
+
+        case AFPSL_IPC_COMMAND_GET_MOUNTPOINT:
+            log_for_client((void *)c, AFPFSD, LOG_ERR,
+                           "Command %d not supported by afpsld", req->command);
+            ret = AFPSL_IPC_RESULT_NOTSUPPORTED;
+            break;
+
+        default:
+            log_for_client((void *)c, AFPFSD, LOG_ERR, "Unknown command %d", req->command);
+            ret = AFPSL_IPC_RESULT_ERROR;
+        }
 
     /* Shift back */
     if (ret != 0) {
@@ -2641,88 +2792,78 @@ int process_command(struct daemon_client * c)
     const struct afpsl_ipc_request_header * header;
     pthread_attr_t attr;
 
-    if (c->incoming_size == 0) {
-        /* We're at the start of the packet */
-        c->a = c->incoming_string;
-        ret = read(c->fd, c->incoming_string,
-                   sizeof(struct afpsl_ipc_request_header));
+    if (!c->complete_packet) {
+        ret = read(c->fd, c->incoming_header + c->incoming_header_size,
+                   sizeof(c->incoming_header) - c->incoming_header_size);
 
         if (ret == 0) {
             return -1;
         }
 
         if (ret < 0) {
-            perror("error reading command");
+            if (errno == EINTR || errno == EAGAIN) {
+                return 2;
+            }
+
+            perror("error reading command header");
             return -1;
         }
 
-        c->incoming_size += (int) ret;
-        c->a += (size_t) ret;
+        c->incoming_header_size += (size_t)ret;
 
-        if ((size_t)ret < sizeof(struct afpsl_ipc_request_header)) {
-            /* incomplete header, continue to read */
+        if (c->incoming_header_size < sizeof(c->incoming_header)) {
             return 2;
         }
 
-        header = (const struct afpsl_ipc_request_header *) c->incoming_string;
+        header = (const struct afpsl_ipc_request_header *)c->incoming_header;
 
         if (header->len < sizeof(*header)
-                || header->len > sizeof(c->incoming_string)) {
-            log_for_client((void *) c, AFPFSD, LOG_ERR,
+                || header->len > AFPSL_IPC_MAX_REQUEST) {
+            log_for_client((void *)c, AFPFSD, LOG_ERR,
                            "Invalid command length %u", header->len);
             return -1;
         }
 
-        if ((unsigned int)c->incoming_size == header->len) {
-            goto havefullone;
+        c->complete_packet = malloc(header->len);
+
+        if (!c->complete_packet) {
+            log_for_client((void *)c, AFPFSD, LOG_ERR,
+                           "Out of memory allocating command of %u bytes",
+                           header->len);
+            return -1;
         }
 
-        /* incomplete header, continue to read */
-        return 2;
+        memcpy(c->complete_packet, c->incoming_header,
+               sizeof(c->incoming_header));
+        c->completed_packet_size = (int)sizeof(c->incoming_header);
     }
 
-    /* Okay, we're continuing to read */
-    ret = read(c->fd, c->a, AFP_CLIENT_INCOMING_BUF - c->incoming_size);
+    header = (const struct afpsl_ipc_request_header *)c->complete_packet;
 
-    if (ret <= 0) {
-        perror("reading command 2");
-        return -1;
+    if ((unsigned int)c->completed_packet_size < header->len) {
+        ret = read(c->fd, c->complete_packet + c->completed_packet_size,
+                   header->len - (unsigned int)c->completed_packet_size);
+
+        if (ret == 0) {
+            return -1;
+        }
+
+        if (ret < 0) {
+            if (errno == EINTR || errno == EAGAIN) {
+                return 2;
+            }
+
+            perror("error reading command body");
+            return -1;
+        }
+
+        c->completed_packet_size += (int)ret;
+
+        if ((unsigned int)c->completed_packet_size < header->len) {
+            return 2;
+        }
     }
 
-    c->a += (size_t) ret;
-    c->incoming_size += (int) ret;
-
-    if ((size_t)c->incoming_size < sizeof(*header)) {
-        /* incomplete header, continue to read */
-        return 0;
-    }
-
-    header = (const struct afpsl_ipc_request_header *) c->incoming_string;
-
-    if (header->len < sizeof(*header)
-            || header->len > sizeof(c->incoming_string)) {
-        log_for_client((void *) c, AFPFSD, LOG_ERR,
-                       "Invalid command length %u", header->len);
-        return -1;
-    }
-
-    if ((unsigned int)c->incoming_size < header->len) {
-        return 0;
-    }
-
-havefullone:
-    /* Okay, so we have a full one.  Copy the buffer. */
-    header = (const struct afpsl_ipc_request_header *) c->incoming_string;
-    /* do the copy */
-    c->completed_packet_size = header->len;
-    memcpy(c->complete_packet, c->incoming_string, c->completed_packet_size);
-    /* shift things back */
-    c->a -= c->completed_packet_size;
-    memmove(c->incoming_string, c->incoming_string + c->completed_packet_size,
-            c->incoming_size - c->completed_packet_size);
-    c->incoming_size -= c->completed_packet_size;
-    memset(c->incoming_string + c->incoming_size, 0,
-           AFP_CLIENT_INCOMING_BUF - c->incoming_size);
     rm_fd_and_signal(c->fd);
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);

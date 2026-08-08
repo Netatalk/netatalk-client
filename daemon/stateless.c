@@ -75,6 +75,25 @@ static void *log_callback_data;
 static int read_bytes_with_timeout(int fd, char *buf, size_t len);
 static int server_result_to_errno(int result);
 static int ensure_daemon_connection(void);
+static int send_command(unsigned int len, char *data, unsigned int num);
+static int read_answer(void);
+static int ipc_handshake(void);
+
+static int wire_path_length(const char *path, size_t *len)
+{
+    return afpc_path_validate(path, AFPC_MAX_UTF8_PATH_BYTES, len);
+}
+
+/* struct afpc_url owns its path.  Stateless IPC is process-to-process, so an
+ * in-memory path pointer must never cross this boundary.  None of the URL
+ * carrying control requests consumes a path; path-bearing operations encode
+ * their path in their own request instead. */
+static void copy_url_for_ipc(struct afpc_url *dest, const struct afpc_url *src)
+{
+    memcpy(dest, src, sizeof(*dest));
+    dest->path.data = NULL;
+    dest->path.len = 0;
+}
 
 static void stateless_log_message(int loglevel, const char *message)
 {
@@ -131,6 +150,49 @@ unsigned int afp_sl_uam_by_name(const char *name)
 void afp_sl_url_init(struct afpc_url *url)
 {
     afp_default_url(url);
+}
+
+void afp_sl_url_clear(struct afpc_url *url)
+{
+    if (!url) {
+        return;
+    }
+
+    afpc_path_clear(&url->path);
+    memset(url, 0, sizeof(*url));
+}
+
+int afp_sl_url_set_path(struct afpc_url *url, const char *path)
+{
+    if (!url) {
+        return -EINVAL;
+    }
+
+    return afpc_path_set(&url->path, path, AFPC_MAX_UTF8_PATH_BYTES);
+}
+
+int afp_sl_url_copy(struct afpc_url *dest, const struct afpc_url *src)
+{
+    struct afpc_url copy;
+    int ret;
+
+    if (!dest || !src) {
+        return -EINVAL;
+    }
+
+    copy = *src;
+    copy.path.data = NULL;
+    copy.path.len = 0;
+    ret = afpc_path_copy(&copy.path, &src->path,
+                         AFPC_MAX_UTF8_PATH_BYTES);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    afp_sl_url_clear(dest);
+    *dest = copy;
+    return 0;
 }
 
 int afp_sl_url_parse(struct afpc_url *url, const char *text)
@@ -363,6 +425,12 @@ int daemon_connect(unsigned int daemon_uid)
     return -1;
 done:
     connection.fd = sock;
+
+    if (ipc_handshake() < 0) {
+        close_connection();
+        return -1;
+    }
+
     return 0;
 }
 
@@ -509,6 +577,36 @@ error:
     return -1;
 }
 
+static int ipc_handshake(void)
+{
+    struct afpsl_ipc_hello_request request;
+    const struct afpsl_ipc_hello_response *response;
+    memset(&request, 0, sizeof(request));
+    request.header.command = AFPSL_IPC_COMMAND_HELLO;
+    request.header.len = sizeof(request);
+    request.magic = AFPSL_IPC_PROTOCOL_MAGIC;
+    request.major = AFPSL_IPC_PROTOCOL_MAJOR;
+    request.minor = AFPSL_IPC_PROTOCOL_MINOR;
+
+    if (send_command(sizeof(request), (char *)&request,
+                     AFPSL_IPC_COMMAND_HELLO) < 0 || read_answer() < 0
+            || connection.len < sizeof(*response)) {
+        stateless_log_message(LOG_ERR, "afpsld IPC protocol is incompatible");
+        return -EPROTO;
+    }
+
+    response = (const void *)connection.data;
+
+    if (response->header.result != AFPSL_IPC_RESULT_OK
+            || response->magic != AFPSL_IPC_PROTOCOL_MAGIC
+            || response->major != AFPSL_IPC_PROTOCOL_MAJOR) {
+        stateless_log_message(LOG_ERR, "afpsld IPC protocol major version mismatch");
+        return -EPROTO;
+    }
+
+    return 0;
+}
+
 /* Helper to write exactly len bytes */
 static int write_bytes(int fd, const char *buf, size_t len)
 {
@@ -584,9 +682,10 @@ static int send_to_daemon(char * request, int req_len, char * reply,
 {
     int ret;
     unsigned int command = 0;
+    ret = ensure_daemon_connection();
 
-    if (ensure_daemon_connection()) {
-        return -ECONNREFUSED;
+    if (ret) {
+        return ret;
     }
 
     if (req_len >= (int)sizeof(struct afpsl_ipc_request_header)) {
@@ -612,9 +711,11 @@ static int send_to_daemon(char * request, int req_len, char * reply,
 int afp_sl_exit(void)
 {
     struct afpsl_ipc_exit_request req;
+    int ret;
+    ret = ensure_daemon_connection();
 
-    if (ensure_daemon_connection()) {
-        return -ECONNREFUSED;
+    if (ret) {
+        return ret;
     }
 
     req.header.command = AFPSL_IPC_COMMAND_EXIT;
@@ -625,7 +726,7 @@ int afp_sl_exit(void)
         return -ECONNRESET;
     }
 
-    int ret = read_answer();
+    ret = read_answer();
     return ret < 0 ? -ECONNRESET : server_result_to_errno(ret);
 }
 
@@ -640,9 +741,10 @@ int afp_sl_status(const char *volumename, const char *servername, char *text,
 {
     struct afpsl_ipc_status_request req;
     int ret;
+    ret = ensure_daemon_connection();
 
-    if (ensure_daemon_connection()) {
-        return -ECONNREFUSED;
+    if (ret) {
+        return ret;
     }
 
     memset(&req, 0, sizeof(req));
@@ -716,7 +818,7 @@ int afp_sl_getvolid(afpc_server_t serverid, struct afpc_url * url,
     req.header.len = sizeof(struct afpsl_ipc_getvolid_request);
     req.header.command = AFPSL_IPC_COMMAND_GETVOLID;
     req.serverid = serverid;
-    memcpy(&req.url, url, sizeof(*url));
+    copy_url_for_ipc(&req.url, url);
 
     while (1) {
         ret = send_to_daemon((char *)&req, sizeof(req), (char *)&response,
@@ -748,16 +850,14 @@ int afp_sl_getvolid(afpc_server_t serverid, struct afpc_url * url,
 int afp_sl_stat(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                 struct stat *stat)
 {
-    struct afpsl_ipc_stat_request request;
+    struct afpsl_ipc_stat_request *request;
     struct afpsl_ipc_stat_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
+    size_t path_len;
+    size_t request_len;
     int ret;
-    memset(&request, 0, sizeof(request));
-    request.header.close = 0;
-    request.header.len = sizeof(struct afpsl_ipc_stat_request);
-    request.header.command = AFPSL_IPC_COMMAND_STAT;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -766,14 +866,36 @@ int afp_sl_stat(afpc_volume_t *volid, const char *path, struct afpc_url *url,
             return ret;
         }
 
-        tmppath = url->path;
+        tmppath = url->path.data;
         volid_p = &tmpvolid;
     }
 
-    memcpy(&request.volumeid, volid_p, sizeof(afpc_volume_t));
-    strlcpy(request.path, tmppath, AFP_MAX_PATH);
-    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+    if (!tmppath) {
+        return -EINVAL;
+    }
+
+    ret = wire_path_length(tmppath, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*request) + path_len + 1U;
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.close = 0;
+    request->header.len = (unsigned int)request_len;
+    request->header.command = AFPSL_IPC_COMMAND_STAT;
+    memcpy(&request->volumeid, volid_p, sizeof(afpc_volume_t));
+    request->path_len = (uint32_t)path_len;
+    memcpy(request->path, tmppath, path_len + 1U);
+    ret = send_to_daemon((char *)request, (int)request_len, (char *)&response,
                          sizeof(response));
+    free(request);
 
     if (ret != 0) {
         return ret;
@@ -791,16 +913,14 @@ int afp_sl_stat(afpc_volume_t *volid, const char *path, struct afpc_url *url,
 int afp_sl_open(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                 unsigned int *fileid, unsigned int mode)
 {
-    struct afpsl_ipc_open_request request;
+    struct afpsl_ipc_open_request *request;
     struct afpsl_ipc_open_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
+    size_t path_len;
+    size_t request_len;
     int ret;
-    memset(&request, 0, sizeof(request));
-    request.header.close = 0;
-    request.header.len = sizeof(struct afpsl_ipc_open_request);
-    request.header.command = AFPSL_IPC_COMMAND_OPEN;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -809,15 +929,37 @@ int afp_sl_open(afpc_volume_t *volid, const char *path, struct afpc_url *url,
             return ret;
         }
 
-        tmppath = url->path;
+        tmppath = url->path.data;
         volid_p = &tmpvolid;
     }
 
-    memcpy(&request.volumeid, volid_p, sizeof(afpc_volume_t));
-    strlcpy(request.path, tmppath, AFP_MAX_PATH);
-    request.mode = mode;
-    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+    if (!tmppath) {
+        return -EINVAL;
+    }
+
+    ret = wire_path_length(tmppath, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*request) + path_len + 1U;
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.close = 0;
+    request->header.len = (unsigned int)request_len;
+    request->header.command = AFPSL_IPC_COMMAND_OPEN;
+    memcpy(&request->volumeid, volid_p, sizeof(afpc_volume_t));
+    request->mode = mode;
+    request->path_len = (uint32_t)path_len;
+    memcpy(request->path, tmppath, path_len + 1U);
+    ret = send_to_daemon((char *)request, (int)request_len, (char *)&response,
                          sizeof(response));
+    free(request);
 
     if (ret != 0) {
         return ret;
@@ -844,9 +986,10 @@ int afp_sl_read(afpc_volume_t * volid, unsigned int fileid,
     char *tail = NULL;
     size_t payload_size = 0;
     int ret;
+    ret = ensure_daemon_connection();
 
-    if (ensure_daemon_connection()) {
-        return -ECONNREFUSED;
+    if (ret) {
+        return ret;
     }
 
     request.header.close = 0;
@@ -912,9 +1055,10 @@ int afp_sl_write(afpc_volume_t * volid, unsigned int fileid,
     char *tail = NULL;
     size_t payload_size = 0;
     int ret;
+    ret = ensure_daemon_connection();
 
-    if (ensure_daemon_connection()) {
-        return -ECONNREFUSED;
+    if (ret) {
+        return ret;
     }
 
     request.header.close = 0;
@@ -980,7 +1124,9 @@ static int metadata_call(unsigned int command, afpc_volume_t *volid,
     struct afpsl_ipc_metadata_request *request;
     struct afpsl_ipc_metadata_response response;
     size_t base = offsetof(struct afpsl_ipc_metadata_request, data);
-    size_t request_len = base + (send_value ? size : 0);
+    size_t path_len;
+    size_t name_len;
+    size_t request_len;
     int ret;
     size_t payload_size;
     size_t tail_content_size;
@@ -990,10 +1136,7 @@ static int metadata_call(unsigned int command, afpc_volume_t *volid,
                            : AFP_SL_METADATA_CHUNK;
     char *tail = NULL;
 
-    if (!volid || !path
-            || strnlen(path, sizeof(request->path)) >= sizeof(request->path)
-            || size > payload_limit || (name
-                                        && strnlen(name, sizeof(request->name)) >= sizeof(request->name))
+    if (!volid || !path || size > payload_limit
             || ((command == AFPSL_IPC_COMMAND_GETXATTR
                  || command == AFPSL_IPC_COMMAND_SETXATTR
                  || command == AFPSL_IPC_COMMAND_REMOVEXATTR) && (!name || name[0] == '\0'))
@@ -1002,8 +1145,28 @@ static int metadata_call(unsigned int command, afpc_volume_t *volid,
         return -EINVAL;
     }
 
-    if (ensure_daemon_connection()) {
-        return -ECONNREFUSED;
+    ret = wire_path_length(path, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    name_len = name ? strnlen(name, 256) : 0;
+
+    if (name_len >= 256) {
+        return -ENAMETOOLONG;
+    }
+
+    request_len = base + path_len + 1U + name_len + 1U;
+
+    if (send_value) {
+        request_len += size;
+    }
+
+    ret = ensure_daemon_connection();
+
+    if (ret) {
+        return ret;
     }
 
     request = calloc(1, request_len);
@@ -1015,18 +1178,16 @@ static int metadata_call(unsigned int command, afpc_volume_t *volid,
     request->header.command = (char)command;
     request->header.len = (unsigned int)request_len;
     memcpy(&request->volumeid, volid, sizeof(afpc_volume_t));
-    strlcpy(request->path, path, sizeof(request->path));
-
-    if (name) {
-        strlcpy(request->name, name, sizeof(request->name));
-    }
-
     request->offset = offset;
     request->size = (unsigned int)size;
     request->flags = flags;
+    request->path_len = (uint32_t)path_len;
+    request->name_len = (uint32_t)name_len;
+    memcpy(request->data, path, path_len + 1U);
+    memcpy(request->data + path_len + 1U, name ? name : "", name_len + 1U);
 
     if (send_value && size > 0) {
-        memcpy(request->data, value, size);
+        memcpy(request->data + path_len + 1U + name_len + 1U, value, size);
     }
 
     ret = send_command((unsigned int)request_len, (char *)request, command);
@@ -1260,16 +1421,14 @@ static int server_result_to_errno(int result)
 int afp_sl_creat(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                  mode_t mode)
 {
-    struct afpsl_ipc_creat_request request;
+    struct afpsl_ipc_creat_request *request;
     struct afpsl_ipc_creat_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
+    size_t path_len;
+    size_t request_len;
     int ret;
-    memset(&request, 0, sizeof(request));
-    request.header.close = 0;
-    request.header.len = sizeof(struct afpsl_ipc_creat_request);
-    request.header.command = AFPSL_IPC_COMMAND_CREAT;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1278,15 +1437,37 @@ int afp_sl_creat(afpc_volume_t *volid, const char *path, struct afpc_url *url,
             return ret;
         }
 
-        tmppath = url->path;
+        tmppath = url->path.data;
         volid_p = &tmpvolid;
     }
 
-    memcpy(&request.volumeid, volid_p, sizeof(afpc_volume_t));
-    strlcpy(request.path, tmppath, AFP_MAX_PATH);
-    request.mode = mode;
-    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+    if (!tmppath) {
+        return -EINVAL;
+    }
+
+    ret = wire_path_length(tmppath, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*request) + path_len + 1U;
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.close = 0;
+    request->header.len = (unsigned int)request_len;
+    request->header.command = AFPSL_IPC_COMMAND_CREAT;
+    memcpy(&request->volumeid, volid_p, sizeof(afpc_volume_t));
+    request->mode = mode;
+    request->path_len = (uint32_t)path_len;
+    memcpy(request->path, tmppath, path_len + 1U);
+    ret = send_to_daemon((char *)request, (int)request_len, (char *)&response,
                          sizeof(response));
+    free(request);
 
     if (ret != 0) {
         return ret;
@@ -1298,16 +1479,14 @@ int afp_sl_creat(afpc_volume_t *volid, const char *path, struct afpc_url *url,
 int afp_sl_chmod(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                  mode_t mode)
 {
-    struct afpsl_ipc_chmod_request request;
+    struct afpsl_ipc_chmod_request *request;
     struct afpsl_ipc_chmod_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
+    size_t path_len;
+    size_t request_len;
     int ret;
-    memset(&request, 0, sizeof(request));
-    request.header.close = 0;
-    request.header.len = sizeof(struct afpsl_ipc_chmod_request);
-    request.header.command = AFPSL_IPC_COMMAND_CHMOD;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1316,15 +1495,37 @@ int afp_sl_chmod(afpc_volume_t *volid, const char *path, struct afpc_url *url,
             return ret;
         }
 
-        tmppath = url->path;
+        tmppath = url->path.data;
         volid_p = &tmpvolid;
     }
 
-    memcpy(&request.volumeid, volid_p, sizeof(afpc_volume_t));
-    strlcpy(request.path, tmppath, AFP_MAX_PATH);
-    request.mode = mode;
-    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+    if (!tmppath) {
+        return -EINVAL;
+    }
+
+    ret = wire_path_length(tmppath, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*request) + path_len + 1U;
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.close = 0;
+    request->header.len = (unsigned int)request_len;
+    request->header.command = AFPSL_IPC_COMMAND_CHMOD;
+    memcpy(&request->volumeid, volid_p, sizeof(afpc_volume_t));
+    request->mode = mode;
+    request->path_len = (uint32_t)path_len;
+    memcpy(request->path, tmppath, path_len + 1U);
+    ret = send_to_daemon((char *)request, (int)request_len, (char *)&response,
                          sizeof(response));
+    free(request);
 
     if (ret != 0) {
         return ret;
@@ -1337,15 +1538,14 @@ int afp_sl_rename(afpc_volume_t *volid, const char *path_from,
                   const char *path_to,
                   struct afpc_url *url)
 {
-    struct afpsl_ipc_rename_request request;
+    struct afpsl_ipc_rename_request *request;
     struct afpsl_ipc_rename_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
+    size_t path_from_len;
+    size_t path_to_len;
+    size_t request_len;
     int ret;
-    memset(&request, 0, sizeof(request));
-    request.header.close = 0;
-    request.header.len = sizeof(struct afpsl_ipc_rename_request);
-    request.header.command = AFPSL_IPC_COMMAND_RENAME;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1357,11 +1557,40 @@ int afp_sl_rename(afpc_volume_t *volid, const char *path_from,
         volid_p = &tmpvolid;
     }
 
-    memcpy(&request.volumeid, volid_p, sizeof(afpc_volume_t));
-    strlcpy(request.path_from, path_from, AFP_MAX_PATH);
-    strlcpy(request.path_to, path_to, AFP_MAX_PATH);
-    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+    if (!path_from || !path_to) {
+        return -EINVAL;
+    }
+
+    ret = wire_path_length(path_from, &path_from_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    ret = wire_path_length(path_to, &path_to_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*request) + path_from_len + 1U + path_to_len + 1U;
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.close = 0;
+    request->header.len = (unsigned int)request_len;
+    request->header.command = AFPSL_IPC_COMMAND_RENAME;
+    memcpy(&request->volumeid, volid_p, sizeof(afpc_volume_t));
+    request->path_from_len = (uint32_t)path_from_len;
+    request->path_to_len = (uint32_t)path_to_len;
+    memcpy(request->paths, path_from, path_from_len + 1U);
+    memcpy(request->paths + path_from_len + 1U, path_to, path_to_len + 1U);
+    ret = send_to_daemon((char *)request, (int)request_len, (char *)&response,
                          sizeof(response));
+    free(request);
 
     if (ret != 0) {
         return ret;
@@ -1372,16 +1601,14 @@ int afp_sl_rename(afpc_volume_t *volid, const char *path_from,
 
 int afp_sl_unlink(afpc_volume_t *volid, const char *path, struct afpc_url *url)
 {
-    struct afpsl_ipc_unlink_request request;
+    struct afpsl_ipc_unlink_request *request;
     struct afpsl_ipc_unlink_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
+    size_t path_len;
+    size_t request_len;
     int ret;
-    memset(&request, 0, sizeof(request));
-    request.header.close = 0;
-    request.header.len = sizeof(struct afpsl_ipc_unlink_request);
-    request.header.command = AFPSL_IPC_COMMAND_UNLINK;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1390,14 +1617,36 @@ int afp_sl_unlink(afpc_volume_t *volid, const char *path, struct afpc_url *url)
             return ret;
         }
 
-        tmppath = url->path;
+        tmppath = url->path.data;
         volid_p = &tmpvolid;
     }
 
-    memcpy(&request.volumeid, volid_p, sizeof(afpc_volume_t));
-    strlcpy(request.path, tmppath, AFP_MAX_PATH);
-    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+    if (!tmppath) {
+        return -EINVAL;
+    }
+
+    ret = wire_path_length(tmppath, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*request) + path_len + 1U;
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.close = 0;
+    request->header.len = (unsigned int)request_len;
+    request->header.command = AFPSL_IPC_COMMAND_UNLINK;
+    memcpy(&request->volumeid, volid_p, sizeof(afpc_volume_t));
+    request->path_len = (uint32_t)path_len;
+    memcpy(request->path, tmppath, path_len + 1U);
+    ret = send_to_daemon((char *)request, (int)request_len, (char *)&response,
                          sizeof(response));
+    free(request);
 
     if (ret != 0) {
         return ret;
@@ -1410,16 +1659,14 @@ int afp_sl_truncate(afpc_volume_t *volid, const char *path,
                     struct afpc_url *url,
                     unsigned long long offset)
 {
-    struct afpsl_ipc_truncate_request request;
+    struct afpsl_ipc_truncate_request *request;
     struct afpsl_ipc_truncate_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
+    size_t path_len;
+    size_t request_len;
     int ret;
-    memset(&request, 0, sizeof(request));
-    request.header.close = 0;
-    request.header.len = sizeof(struct afpsl_ipc_truncate_request);
-    request.header.command = AFPSL_IPC_COMMAND_TRUNCATE;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1428,15 +1675,37 @@ int afp_sl_truncate(afpc_volume_t *volid, const char *path,
             return ret;
         }
 
-        tmppath = url->path;
+        tmppath = url->path.data;
         volid_p = &tmpvolid;
     }
 
-    memcpy(&request.volumeid, volid_p, sizeof(afpc_volume_t));
-    strlcpy(request.path, tmppath, AFP_MAX_PATH);
-    request.offset = offset;
-    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+    if (!tmppath) {
+        return -EINVAL;
+    }
+
+    ret = wire_path_length(tmppath, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*request) + path_len + 1U;
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.close = 0;
+    request->header.len = (unsigned int)request_len;
+    request->header.command = AFPSL_IPC_COMMAND_TRUNCATE;
+    memcpy(&request->volumeid, volid_p, sizeof(afpc_volume_t));
+    request->offset = offset;
+    request->path_len = (uint32_t)path_len;
+    memcpy(request->path, tmppath, path_len + 1U);
+    ret = send_to_daemon((char *)request, (int)request_len, (char *)&response,
                          sizeof(response));
+    free(request);
 
     if (ret != 0) {
         return ret;
@@ -1448,16 +1717,14 @@ int afp_sl_truncate(afpc_volume_t *volid, const char *path,
 int afp_sl_utime(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                  struct utimbuf *times)
 {
-    struct afpsl_ipc_utime_request request;
+    struct afpsl_ipc_utime_request *request;
     struct afpsl_ipc_utime_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
+    size_t path_len;
+    size_t request_len;
     int ret;
-    memset(&request, 0, sizeof(request));
-    request.header.close = 0;
-    request.header.len = sizeof(struct afpsl_ipc_utime_request);
-    request.header.command = AFPSL_IPC_COMMAND_UTIME;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1466,15 +1733,37 @@ int afp_sl_utime(afpc_volume_t *volid, const char *path, struct afpc_url *url,
             return ret;
         }
 
-        tmppath = url->path;
+        tmppath = url->path.data;
         volid_p = &tmpvolid;
     }
 
-    memcpy(&request.volumeid, volid_p, sizeof(afpc_volume_t));
-    strlcpy(request.path, tmppath, AFP_MAX_PATH);
-    memcpy(&request.times, times, sizeof(struct utimbuf));
-    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+    if (!tmppath || !times) {
+        return -EINVAL;
+    }
+
+    ret = wire_path_length(tmppath, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*request) + path_len + 1U;
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.close = 0;
+    request->header.len = (unsigned int)request_len;
+    request->header.command = AFPSL_IPC_COMMAND_UTIME;
+    memcpy(&request->volumeid, volid_p, sizeof(afpc_volume_t));
+    memcpy(&request->times, times, sizeof(request->times));
+    request->path_len = (uint32_t)path_len;
+    memcpy(request->path, tmppath, path_len + 1U);
+    ret = send_to_daemon((char *)request, (int)request_len, (char *)&response,
                          sizeof(response));
+    free(request);
 
     if (ret != 0) {
         return ret;
@@ -1486,16 +1775,14 @@ int afp_sl_utime(afpc_volume_t *volid, const char *path, struct afpc_url *url,
 int afp_sl_mkdir(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                  mode_t mode)
 {
-    struct afpsl_ipc_mkdir_request request;
+    struct afpsl_ipc_mkdir_request *request;
     struct afpsl_ipc_mkdir_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
+    size_t path_len;
+    size_t request_len;
     int ret;
-    memset(&request, 0, sizeof(request));
-    request.header.close = 0;
-    request.header.len = sizeof(struct afpsl_ipc_mkdir_request);
-    request.header.command = AFPSL_IPC_COMMAND_MKDIR;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1504,15 +1791,37 @@ int afp_sl_mkdir(afpc_volume_t *volid, const char *path, struct afpc_url *url,
             return ret;
         }
 
-        tmppath = url->path;
+        tmppath = url->path.data;
         volid_p = &tmpvolid;
     }
 
-    memcpy(&request.volumeid, volid_p, sizeof(afpc_volume_t));
-    strlcpy(request.path, tmppath, AFP_MAX_PATH);
-    request.mode = mode;
-    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+    if (!tmppath) {
+        return -EINVAL;
+    }
+
+    ret = wire_path_length(tmppath, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*request) + path_len + 1U;
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.close = 0;
+    request->header.len = (unsigned int)request_len;
+    request->header.command = AFPSL_IPC_COMMAND_MKDIR;
+    memcpy(&request->volumeid, volid_p, sizeof(afpc_volume_t));
+    request->mode = mode;
+    request->path_len = (uint32_t)path_len;
+    memcpy(request->path, tmppath, path_len + 1U);
+    ret = send_to_daemon((char *)request, (int)request_len, (char *)&response,
                          sizeof(response));
+    free(request);
 
     if (ret != 0) {
         return ret;
@@ -1523,16 +1832,14 @@ int afp_sl_mkdir(afpc_volume_t *volid, const char *path, struct afpc_url *url,
 
 int afp_sl_rmdir(afpc_volume_t *volid, const char *path, struct afpc_url *url)
 {
-    struct afpsl_ipc_rmdir_request request;
+    struct afpsl_ipc_rmdir_request *request;
     struct afpsl_ipc_rmdir_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
+    size_t path_len;
+    size_t request_len;
     int ret;
-    memset(&request, 0, sizeof(request));
-    request.header.close = 0;
-    request.header.len = sizeof(struct afpsl_ipc_rmdir_request);
-    request.header.command = AFPSL_IPC_COMMAND_RMDIR;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1541,14 +1848,36 @@ int afp_sl_rmdir(afpc_volume_t *volid, const char *path, struct afpc_url *url)
             return ret;
         }
 
-        tmppath = url->path;
+        tmppath = url->path.data;
         volid_p = &tmpvolid;
     }
 
-    memcpy(&request.volumeid, volid_p, sizeof(afpc_volume_t));
-    strlcpy(request.path, tmppath, AFP_MAX_PATH);
-    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+    if (!tmppath) {
+        return -EINVAL;
+    }
+
+    ret = wire_path_length(tmppath, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*request) + path_len + 1U;
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.close = 0;
+    request->header.len = (unsigned int)request_len;
+    request->header.command = AFPSL_IPC_COMMAND_RMDIR;
+    memcpy(&request->volumeid, volid_p, sizeof(afpc_volume_t));
+    request->path_len = (uint32_t)path_len;
+    memcpy(request->path, tmppath, path_len + 1U);
+    ret = send_to_daemon((char *)request, (int)request_len, (char *)&response,
                          sizeof(response));
+    free(request);
 
     if (ret != 0) {
         return ret;
@@ -1560,16 +1889,14 @@ int afp_sl_rmdir(afpc_volume_t *volid, const char *path, struct afpc_url *url)
 int afp_sl_statfs(afpc_volume_t *volid, const char *path, struct afpc_url *url,
                   struct statvfs *stat)
 {
-    struct afpsl_ipc_statfs_request request;
+    struct afpsl_ipc_statfs_request *request;
     struct afpsl_ipc_statfs_response response;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volid;
     const char *tmppath = path;
+    size_t path_len;
+    size_t request_len;
     int ret;
-    memset(&request, 0, sizeof(request));
-    request.header.close = 0;
-    request.header.len = sizeof(struct afpsl_ipc_statfs_request);
-    request.header.command = AFPSL_IPC_COMMAND_STATFS;
 
     if (volid == NULL) {
         ret = afp_sl_getvolid(NULL, url, &tmpvolid);
@@ -1578,7 +1905,7 @@ int afp_sl_statfs(afpc_volume_t *volid, const char *path, struct afpc_url *url,
             return ret;
         }
 
-        tmppath = url->path;
+        tmppath = url->path.data;
         volid_p = &tmpvolid;
     }
 
@@ -1587,10 +1914,28 @@ int afp_sl_statfs(afpc_volume_t *volid, const char *path, struct afpc_url *url,
         tmppath = "/";
     }
 
-    memcpy(&request.volumeid, volid_p, sizeof(afpc_volume_t));
-    strlcpy(request.path, tmppath, AFP_MAX_PATH);
-    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+    ret = wire_path_length(tmppath, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*request) + path_len + 1U;
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.close = 0;
+    request->header.len = (unsigned int)request_len;
+    request->header.command = AFPSL_IPC_COMMAND_STATFS;
+    memcpy(&request->volumeid, volid_p, sizeof(afpc_volume_t));
+    request->path_len = (uint32_t)path_len;
+    memcpy(request->path, tmppath, path_len + 1U);
+    ret = send_to_daemon((char *)request, (int)request_len, (char *)&response,
                          sizeof(response));
+    free(request);
 
     if (ret != 0) {
         return ret;
@@ -1628,11 +1973,11 @@ int afp_sl_readdir(afpc_volume_t * volid, const char * path,
                    int start, int count, unsigned int *numfiles,
                    struct afpc_file_info **data, int *eod)
 {
-    struct afpsl_ipc_readdir_request req;
-    struct afpsl_ipc_readdir_response * mainrep;
+    struct afpsl_ipc_readdir_request *req;
+    const struct afpsl_ipc_readdir_response * mainrep;
     int ret;
     const char *tmppath = path;
-    unsigned int size;
+    size_t size;
     afpc_volume_t *volid_p = volid;
     afpc_volume_t tmpvolid;
     unsigned int total_files = 0;
@@ -1640,9 +1985,14 @@ int afp_sl_readdir(afpc_volume_t * volid, const char * path,
     struct afpc_file_info *buffer = NULL;
     int current_start = start;
     int eod_flag = 0;
+    size_t path_len;
+    size_t request_len;
+    size_t content_len;
+    size_t response_size;
+    ret = ensure_daemon_connection();
 
-    if (ensure_daemon_connection()) {
-        return -ECONNREFUSED;
+    if (ret) {
+        return ret;
     }
 
     if (volid == NULL) {
@@ -1652,7 +2002,7 @@ int afp_sl_readdir(afpc_volume_t * volid, const char * path,
             return ret;
         }
 
-        tmppath = url->path;
+        tmppath = url->path.data;
         volid_p = &tmpvolid;
     }
 
@@ -1660,6 +2010,25 @@ int afp_sl_readdir(afpc_volume_t * volid, const char * path,
         tmppath = "/";
     }
 
+    ret = wire_path_length(tmppath, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*req) + path_len + 1U;
+    req = calloc(1, request_len);
+
+    if (!req) {
+        return -ENOMEM;
+    }
+
+    req->header.close = 0;
+    req->header.len = (unsigned int)request_len;
+    req->header.command = AFPSL_IPC_COMMAND_READDIR;
+    memcpy(&req->volumeid, volid_p, sizeof(afpc_volume_t));
+    req->path_len = (uint32_t)path_len;
+    memcpy(req->path, tmppath, path_len + 1U);
     /* Ensure we request at least 256 files
      * if the user asks for fewer (but > 0) */
     requested_count = (count > 0 && count < 256) ? 256 : count;
@@ -1667,20 +2036,16 @@ int afp_sl_readdir(afpc_volume_t * volid, const char * path,
     /* Loop to fetch all requested files or until EOD */
     while (total_files < requested_count && !eod_flag) {
         unsigned int batch_count = requested_count - total_files;
-        memset(&req, 0, sizeof(req));
-        req.header.close = 0;
-        req.header.len = sizeof(struct afpsl_ipc_readdir_request);
-        req.header.command = AFPSL_IPC_COMMAND_READDIR;
-        req.start = current_start;
-        req.count = batch_count;
-        memcpy(&req.volumeid, volid_p, sizeof(afpc_volume_t));
-        strlcpy(req.path, tmppath, AFP_MAX_PATH);
+        req->start = current_start;
+        req->count = batch_count;
 
-        if (send_command(sizeof(req), (char *)&req, AFPSL_IPC_COMMAND_READDIR) < 0) {
+        if (send_command((unsigned int)request_len, (char *)req,
+                         AFPSL_IPC_COMMAND_READDIR) < 0) {
             if (buffer) {
                 free(buffer);
             }
 
+            free(req);
             return -ECONNRESET;
         }
 
@@ -1691,24 +2056,74 @@ int afp_sl_readdir(afpc_volume_t * volid, const char * path,
                 free(buffer);
             }
 
+            free(req);
             return -ECONNRESET;
         }
 
         mainrep = (void *) connection.data;
+
+        if (afp_sl_response_content_length(connection.data, connection.len,
+                                           &content_len) < 0
+                || content_len < sizeof(*mainrep)) {
+            goto malformed_response;
+        }
 
         if (mainrep->header.result) {
             if (buffer) {
                 free(buffer);
             }
 
+            free(req);
             return server_result_to_errno(mainrep->header.result);
         }
 
         unsigned int batch_received = mainrep->numfiles;
 
+        if (batch_received > batch_count
+                || batch_received > UINT_MAX - total_files) {
+            goto malformed_response;
+        }
+
         if (batch_received > 0) {
+            const char *p = ((const char *) mainrep) + sizeof(*mainrep);
+            const char *end = ((const char *) mainrep) + content_len;
+            const size_t fixed_entry_size = sizeof(uint32_t) * 2U
+                                            + sizeof(struct afpc_unix_privileges)
+                                            + sizeof(uint64_t);
+
+            for (unsigned int i = 0; i < batch_received; i++) {
+                uint32_t name_len;
+
+                if ((size_t)(end - p) < sizeof(name_len)) {
+                    goto malformed_response;
+                }
+
+                memcpy(&name_len, p, sizeof(name_len));
+                p += sizeof(name_len);
+
+                if (name_len >= AFPC_MAX_NAME_BYTES
+                        || (size_t)(end - p) < (size_t)name_len
+                        + fixed_entry_size) {
+                    goto malformed_response;
+                }
+
+                p += name_len + fixed_entry_size;
+            }
+
+            if (p != end) {
+                goto malformed_response;
+            }
+
             /* Resize buffer */
-            size = (total_files + batch_received) * sizeof(struct afpc_file_info);
+            response_size = (size_t)(total_files + batch_received)
+                            * sizeof(struct afpc_file_info);
+
+            if (response_size / sizeof(struct afpc_file_info)
+                    != total_files + batch_received) {
+                goto malformed_response;
+            }
+
+            size = response_size;
             struct afpc_file_info *new_buffer = realloc(buffer, size);
 
             if (!new_buffer) {
@@ -1716,23 +2131,19 @@ int afp_sl_readdir(afpc_volume_t * volid, const char * path,
                     free(buffer);
                 }
 
+                free(req);
                 return -ENOMEM;
             }
 
             buffer = new_buffer;
             /* Unpack variable length data */
-            const char *p = ((char *) mainrep) + sizeof(struct afpsl_ipc_readdir_response);
+            p = ((const char *) mainrep) + sizeof(*mainrep);
             struct afpc_file_info *current_basic = buffer + total_files;
 
             for (unsigned int i = 0; i < batch_received; i++) {
                 uint32_t name_len;
                 memcpy(&name_len, p, sizeof(uint32_t));
                 p += sizeof(uint32_t);
-
-                if (name_len >= AFP_MAX_PATH) {
-                    name_len = AFP_MAX_PATH - 1;
-                }
-
                 memcpy(current_basic->name, p, name_len);
                 current_basic->name[name_len] = '\0';
                 p += name_len;
@@ -1769,7 +2180,13 @@ int afp_sl_readdir(afpc_volume_t * volid, const char * path,
         *eod = eod_flag;
     }
 
+    free(req);
     return 0;
+malformed_response:
+    free(buffer);
+    free(req);
+    close_connection();
+    return -EPROTO;
 }
 
 int afp_sl_getvols(afpc_server_t serverid, struct afpc_url *url,
@@ -1784,8 +2201,10 @@ int afp_sl_getvols(afpc_server_t serverid, struct afpc_url *url,
         return -EINVAL;
     }
 
-    if (ensure_daemon_connection()) {
-        return -ECONNREFUSED;
+    ret = ensure_daemon_connection();
+
+    if (ret) {
+        return ret;
     }
 
     req.header.close = 0;
@@ -1794,7 +2213,7 @@ int afp_sl_getvols(afpc_server_t serverid, struct afpc_url *url,
     req.serverid = serverid;
     req.start = start;
     req.count = count;
-    memcpy(&req.url, url, sizeof(*url));
+    copy_url_for_ipc(&req.url, url);
 
     if (send_command(sizeof(req), (char *) &req, AFPSL_IPC_COMMAND_GETVOLS) < 0) {
         return -ECONNRESET;
@@ -1826,15 +2245,16 @@ static int afp_sl_connect_with_flags(struct afpc_url *url,
     struct afpsl_ipc_connect_request req;
     const struct afpsl_ipc_connect_response *resp;
     int ret;
+    ret = ensure_daemon_connection();
 
-    if (ensure_daemon_connection()) {
-        return -ECONNREFUSED;
+    if (ret) {
+        return ret;
     }
 
     req.header.close = 0;
     req.header.len = sizeof(struct afpsl_ipc_connect_request);
     req.header.command = AFPSL_IPC_COMMAND_CONNECT;
-    memcpy(&req.url, url, sizeof(struct afpc_url));
+    copy_url_for_ipc(&req.url, url);
     req.uam_mask = uam_mask;
     req.flags = flags;
 
@@ -1904,8 +2324,10 @@ int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
         return -EINVAL;
     }
 
-    if (ensure_daemon_connection()) {
-        return -ECONNREFUSED;
+    ret = ensure_daemon_connection();
+
+    if (ret) {
+        return ret;
     }
 
     response = (void *) connection.data;
@@ -1913,7 +2335,7 @@ int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
     req.header.len = sizeof(struct afpsl_ipc_attach_request);
     req.header.command = AFPSL_IPC_COMMAND_ATTACH;
     req.serverid = serverid;
-    memcpy(&req.url, url, sizeof(struct afpc_url));
+    copy_url_for_ipc(&req.url, url);
     req.volume_options = volume_options;
 
     if (send_command(sizeof(req), (char *)&req, AFPSL_IPC_COMMAND_ATTACH) < 0) {
@@ -1953,9 +2375,10 @@ int afp_sl_detach(afpc_volume_t *volumeid, struct afpc_url * url)
     int ret;
     afpc_volume_t tmpvolid;
     afpc_volume_t *volid_p = volumeid;
+    ret = ensure_daemon_connection();
 
-    if (ensure_daemon_connection()) {
-        return -ECONNREFUSED;
+    if (ret) {
+        return ret;
     }
 
     if (volumeid == NULL) {
@@ -2009,7 +2432,7 @@ int afp_sl_changepw(struct afpc_url *url, const char *old_password,
     req.header.close = 0;
     req.header.len = sizeof(struct afpsl_ipc_changepw_request);
     req.header.command = AFPSL_IPC_COMMAND_CHANGEPW;
-    memcpy(&req.url, url, sizeof(struct afpc_url));
+    copy_url_for_ipc(&req.url, url);
     strlcpy(req.oldpasswd, old_password, AFP_MAX_PASSWORD_LEN);
     strlcpy(req.newpasswd, new_password, AFP_MAX_PASSWORD_LEN);
     ret = send_to_daemon((char *)&req, sizeof(req), (char *)&response,
@@ -2092,7 +2515,8 @@ int afp_sl_changepw(struct afpc_url *url, const char *old_password,
 
 static int ensure_daemon_connection(void)
 {
-    return daemon_connect(geteuid()) == 0 ? 0 : -ECONNREFUSED;
+    int ret = daemon_connect(geteuid());
+    return ret == 0 ? 0 : ret;
 }
 
 int afp_sl_serverinfo(struct afpc_url * url, struct afpc_server_info * basic)
@@ -2103,7 +2527,7 @@ int afp_sl_serverinfo(struct afpc_url * url, struct afpc_server_info * basic)
     req.header.close = 0;
     req.header.len = sizeof(struct afpsl_ipc_serverinfo_request);
     req.header.command = AFPSL_IPC_COMMAND_SERVERINFO;
-    memcpy(&req.url, url, sizeof(struct afpc_url));
+    copy_url_for_ipc(&req.url, url);
     ret = send_to_daemon((char *)&req, sizeof(req), (char *)&response,
                          sizeof(response));
 
@@ -2123,7 +2547,7 @@ int afp_sl_serverinfo(struct afpc_url * url, struct afpc_server_info * basic)
 int afp_sl_disconnect(afpc_server_t *id)
 {
     struct afpsl_ipc_disconnect_request req;
-    struct afpsl_ipc_disconnect_response response;
+    struct afpsl_ipc_disconnect_response response = { 0 };
     int ret;
 
     if (!id || !*id) {
