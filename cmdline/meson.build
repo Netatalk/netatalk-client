@@ -20,7 +20,7 @@ if with_afpcmd
             'discover.c',
         ],
         include_directories: afpcmd_incdir,
-        link_with: libafpsl,
+        link_with: [libafpsl, libafpclient],
         dependencies: [
             root_dependencies,
             cmdline_dependencies,

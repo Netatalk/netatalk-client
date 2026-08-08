@@ -224,11 +224,11 @@ int ll_get_directory_entry(struct afp_volume * volume,
                            struct afp_file_info *p)
 {
     int ret;
-    char tmpname[AFP_MAX_PATH];
-    memcpy(tmpname, p->basename, AFP_MAX_PATH);
+    char tmpname[AFPC_MAX_NAME_BYTES];
+    memcpy(tmpname, p->basename, sizeof(tmpname));
     ret = afp_getfiledirparms(volume, dirid,
                               filebitmap, dirbitmap, basename, p);
-    memcpy(p->basename, tmpname, AFP_MAX_PATH);
+    memcpy(p->basename, tmpname, sizeof(p->basename));
     return ret;
 }
 
@@ -533,8 +533,8 @@ int ll_readdir(struct afp_volume * volume, const char *path,
     unsigned long startindex = 1;
     int rc = 0, ret = 0, exit = 0;
     unsigned int filebitmap, dirbitmap;
-    char basename[AFP_MAX_PATH];
-    char converted_name[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
+    char converted_name[AFPC_MAX_NAME_BYTES];
     unsigned int dirid;
 
     if (invalid_filename(volume->server, path)) {
@@ -651,9 +651,9 @@ int ll_readdir(struct afp_volume * volume, const char *path,
         /* Convert all the names back to precomposed */
         convert_path_to_unix(
             volume->server->path_encoding,
-            converted_name, p->name, AFP_MAX_PATH);
-        snprintf(p->name, AFP_MAX_PATH, "%s", converted_name);
-        p->name[AFP_MAX_PATH - 1] = '\0';
+            converted_name, p->name, sizeof(converted_name));
+        snprintf(p->name, sizeof(p->name), "%s", converted_name);
+        p->name[sizeof(p->name) - 1U] = '\0';
         startindex++;
     }
 
@@ -679,7 +679,7 @@ int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
     unsigned int dirid;
     int rc;
     unsigned int filebitmap, dirbitmap;
-    char basename[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
     unsigned int creation_date;
     unsigned int modification_date;
     memset(stbuf, 0, sizeof(struct stat));
@@ -707,7 +707,7 @@ int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
         if (path[0] == '/' && path[1] == '\0') {
             /* This will sound odd, but when referring to /, AFP 2.x
                clients check on a 'file' with the volume name. */
-            snprintf(basename, AFP_MAX_PATH, "%s",
+            snprintf(basename, sizeof(basename), "%s",
                      volume->volume_name);
             dirid = 1;
         }

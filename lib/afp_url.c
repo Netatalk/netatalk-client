@@ -156,7 +156,9 @@ static char *escape_strchr(const char * haystack, int c, const char * toescape)
 static int parse_url(struct afpc_url *url, const char *toparse,
                      int log_messages)
 {
-    char firstpart[AFP_HOSTNAME_LEN], secondpart[MAX_CLIENT_RESPONSE];
+    char firstpart[AFP_HOSTNAME_LEN];
+    char *secondpart = NULL;
+    const char *path_part;
     char *p, *q;
     int firstpartlen;
     int skip_earliestpart = 0;
@@ -168,7 +170,7 @@ static int parse_url(struct afpc_url *url, const char *toparse,
     url->uamname[0] = '\0';
     url->password[0] = '\0';
     url->volumename[0] = '\0';
-    url->path[0] = '\0';
+    afpc_path_clear(&url->path);
 #define URL_LOG(level, ...) \
     do { \
         if (log_messages) { \
@@ -202,11 +204,27 @@ static int parse_url(struct afpc_url *url, const char *toparse,
         p = (char *)toparse;
     }
 
-    /* Now split on the first / */
-    if (sscanf(p, "%[^/]/%[^$]",
-               firstpart, secondpart) != 2) {
-        /* Okay, so there's no volume. */
+    /* Split the authority from the volume/path without putting a full path
+     * into a fixed parser buffer. */
+    path_part = strchr(p, '/');
+
+    if (!path_part) {
+        if (strlcpy(firstpart, p, sizeof(firstpart)) >= sizeof(firstpart)) {
+            URL_LOG(LOG_ERR, "Server authority is too long");
+            return -1;
+        }
+
         skip_secondpart = 1;
+    } else {
+        size_t firstpart_len = (size_t)(path_part - p);
+
+        if (firstpart_len >= sizeof(firstpart)) {
+            URL_LOG(LOG_ERR, "Server authority is too long");
+            return -1;
+        }
+
+        memcpy(firstpart, p, firstpart_len);
+        firstpart[firstpart_len] = '\0';
     }
 
     firstpartlen = strlen(firstpart);
@@ -326,6 +344,12 @@ parse_secondpart:
         goto done;
     }
 
+    secondpart = strdup(path_part + 1);
+
+    if (!secondpart) {
+        return -1;
+    }
+
     if (secondpart[0] == '\0') {
         goto done;
     }
@@ -350,16 +374,16 @@ parse_secondpart:
         URL_LOG(LOG_WARNING, "Warning: volumename truncated");
     }
 
-    if (q) {
-        url->path[0] = '/';
-
-        if (strlcpy(url->path + 1, q, sizeof(url->path) - 1) >= sizeof(url->path) - 1) {
-            URL_LOG(LOG_WARNING, "Warning: path truncated");
-        }
+    if (q && afpc_path_join(&url->path, "/", q,
+                            AFPC_MAX_UTF8_PATH_BYTES) < 0) {
+        URL_LOG(LOG_ERR, "AFP path exceeds the UTF-8 wire limit");
+        free(secondpart);
+        return -1;
     }
 
 done:
     escape_url(url);
+    free(secondpart);
     URL_LOG(LOG_DEBUG, "Successful parsing of URL");
 #undef URL_LOG
     return 0;

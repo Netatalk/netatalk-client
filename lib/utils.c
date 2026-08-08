@@ -12,6 +12,7 @@
 
 #include "afp_internal.h"
 #include "afp_protocol.h"
+#include "unicode.h"
 #include "utils.h"
 
 struct afp_path_header_long {
@@ -218,42 +219,54 @@ void copy_path(
 
 int invalid_filename(struct afp_server * server, const char * filename)
 {
-    unsigned int maxlen = 0;
-    int len;
-    char *p, *q;
-    len = strlen(filename);
+    size_t maxlen;
+    const char *p, *q;
 
-    if ((len == 1) && (*filename == '/')) {
-        return 0;
+    if (!server || !server->using_version || !filename) {
+        return 1;
     }
 
-    /* From p.34, each individual file can be 255 chars for > 30
-       for Long or short names.  UTF8 is "virtually unlimited" */
+    if ((filename[0] == '/') && (filename[1] == '\0')) {
+        return 0;
+    }
 
     if (server->using_version->av_number < 30) {
         maxlen = 31;
     } else if (server->path_encoding == kFPUTF8Name) {
-        maxlen = 1024;
+        maxlen = AFP_MAX_UTF8_NAME_CHARS;
     } else {
         maxlen = 255;
     }
 
-    p = (char *)filename + 1;
+    p = filename;
 
-    while ((q = strchr(p, '/'))) {
-        if (q > p + maxlen) {
+    while (*p) {
+        while (*p == '/') {
+            p++;
+        }
+
+        if (*p == '\0') {
+            break;
+        }
+
+        q = strchr(p, '/');
+
+        if (server->path_encoding == kFPUTF8Name
+                && server->using_version->av_number >= 30) {
+            size_t component_len = q ? (size_t)(q - p) : strlen(p);
+
+            if (mbStrLen(p, component_len) > maxlen) {
+                return 1;
+            }
+        } else if (q ? (size_t)(q - p) > maxlen : strlen(p) > maxlen) {
             return 1;
         }
 
-        p = q + 1;
-
-        if (p > filename + len) {
-            return 0;
+        if (!q) {
+            break;
         }
-    }
 
-    if (strlen(filename) - (p - filename) > maxlen) {
-        return 1;
+        p = q + 1;
     }
 
     return 0;

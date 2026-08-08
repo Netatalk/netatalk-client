@@ -34,6 +34,48 @@
 
 #define min(a,b) (((a)<(b)) ? (a) : (b))
 
+static int convert_path_to_afp_alloc(char encoding, const char *path,
+                                     char **converted_path)
+{
+    char *converted;
+    struct afpc_path owned = { 0 };
+    int ret;
+
+    if (!path || !converted_path) {
+        return -EINVAL;
+    }
+
+    ret = afpc_path_validate(path, AFPC_MAX_UTF8_PATH_BYTES, NULL);
+
+    if (ret) {
+        return ret;
+    }
+
+    /* Unicode normalization can expand UTF-8.  Give the converter the full
+     * AFP wire capacity, then retain only the owned, exact-size result. */
+    converted = malloc(AFPC_MAX_UTF8_PATH_STORAGE);
+
+    if (!converted) {
+        return -ENOMEM;
+    }
+
+    if (convert_path_to_afp(encoding, converted, path,
+                            AFPC_MAX_UTF8_PATH_STORAGE)) {
+        free(converted);
+        return -EINVAL;
+    }
+
+    ret = afpc_path_set(&owned, converted, AFPC_MAX_UTF8_PATH_BYTES);
+    free(converted);
+
+    if (ret) {
+        return ret;
+    }
+
+    *converted_path = owned.data;
+    return 0;
+}
+
 static int normalize_xattr_name(const char *name, const char **afp_name,
                                 unsigned short *afp_namelen)
 {
@@ -153,7 +195,12 @@ void add_file_by_name(struct afp_file_info ** base, const char *filename)
 {
     struct afp_file_info * t, *new_file;
     new_file = malloc(sizeof(*new_file));
-    memcpy(new_file->name, filename, AFP_MAX_PATH);
+
+    if (!new_file) {
+        return;
+    }
+
+    strlcpy(new_file->name, filename, sizeof(new_file->name));
     new_file->next = NULL;
 
     if (*base == NULL) {
@@ -240,23 +287,27 @@ int ml_open(struct afp_volume * volume, const char *path, int flags,
     struct afp_file_info * fp ;
     int ret;
     unsigned int dirid;
-    char converted_path[AFP_MAX_PATH];
+    char *converted_path;
+    ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+                                    &converted_path);
 
-    if (convert_path_to_afp(volume->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    if (ret) {
+        return ret;
     }
 
     if (invalid_filename(volume->server, converted_path)) {
+        free(converted_path);
         return -ENAMETOOLONG;
     }
 
     if (volume_is_readonly(volume) &&
             (flags & (O_WRONLY | O_RDWR | O_TRUNC | O_APPEND | O_CREAT))) {
+        free(converted_path);
         return -EACCES;
     }
 
     if ((fp = malloc(sizeof(*fp))) == NULL) {
+        free(converted_path);
         return -1;
     }
 
@@ -266,6 +317,7 @@ int ml_open(struct afp_volume * volume, const char *path, int flags,
 
     if (ret < 0) {
         free(fp);
+        free(converted_path);
         return ret;
     }
 
@@ -274,7 +326,8 @@ int ml_open(struct afp_volume * volume, const char *path, int flags,
     }
 
     if (get_dirid(volume, converted_path, fp->basename, &dirid) < 0) {
-        return -ENOENT;
+        ret = -ENOENT;
+        goto error;
     }
 
     fp->did = dirid;
@@ -285,9 +338,11 @@ int ml_open(struct afp_volume * volume, const char *path, int flags,
     }
 
 out:
+    free(converted_path);
     return 0;
 error:
     free(fp);
+    free(converted_path);
     return ret;
 }
 
@@ -296,37 +351,43 @@ error:
 int ml_creat(struct afp_volume * volume, const char *path, mode_t mode)
 {
     int ret;
-    char basename[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
     unsigned int dirid;
     int rc;
-    char converted_path[AFP_MAX_PATH];
+    char *converted_path;
+    ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+                                    &converted_path);
 
-    if (convert_path_to_afp(volume->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    if (ret) {
+        return ret;
     }
 
     if (volume_is_readonly(volume)) {
+        free(converted_path);
         return -EACCES;
     }
 
     ret = appledouble_creat(volume, path, mode);
 
     if (ret < 0) {
+        free(converted_path);
         return ret;
     }
 
     if (ret == 1) {
+        free(converted_path);
         return 0;
     }
 
     if (invalid_filename(volume->server, converted_path)) {
+        free(converted_path);
         return -ENAMETOOLONG;
     }
 
     ret = get_dirid(volume, converted_path, basename, &dirid);
 
     if (ret < 0) {
+        free(converted_path);
         return ret;
     }
 
@@ -343,26 +404,35 @@ int ml_creat(struct afp_volume * volume, const char *path, mode_t mode)
         /* kFPSoftCreate may succeed for an existing file.  Treat an explicit
          * kFPObjectExists the same way so retry after transient create/open
          * races can continue into the caller's open path. */
-        return 0;
+        ret = 0;
+        break;
 
     case kFPAccessDenied:
-        return -EACCES;
+        ret = -EACCES;
+        break;
 
     case kFPDiskFull:
-        return -ENOSPC;
+        ret = -ENOSPC;
+        break;
 
     case kFPObjectNotFound:
-        return -ENOENT;
+        ret = -ENOENT;
+        break;
 
     case kFPFileBusy:
     case kFPVolLocked:
-        return -EBUSY;
+        ret = -EBUSY;
+        break;
 
     default:
     case kFPParamErr:
     case kFPMiscErr:
-        return -EIO;
+        ret = -EIO;
+        break;
     }
+
+    free(converted_path);
+    return ret;
 }
 
 
@@ -372,16 +442,18 @@ int ml_readdir(struct afp_volume * volume,
                struct afp_file_info **fb)
 {
     int ret = 0;
-    char converted_path[AFP_MAX_PATH];
+    char *converted_path;
+    ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+                                    &converted_path);
 
-    if (convert_path_to_afp(volume->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    if (ret) {
+        return ret;
     }
 
     ret = appledouble_readdir(volume, converted_path, fb);
 
     if (ret < 0) {
+        free(converted_path);
         return ret;
     }
 
@@ -392,10 +464,12 @@ int ml_readdir(struct afp_volume * volume,
     ret = ll_readdir(volume, converted_path, fb, 0);
 
     if (ret < 0) {
+        free(converted_path);
         return ret;
     }
 
 done:
+    free(converted_path);
     ret = map_filebase_uidgid_to_client(volume, *fb);
 
     if (ret < 0) {
@@ -411,13 +485,19 @@ int ml_read(struct afp_volume * volume, const char *path,
             struct afp_file_info *fp, int *eof)
 {
     int ret = 0;
-    char converted_path[AFP_MAX_PATH];
+    char *converted_path;
     size_t amount_copied = 0;
     *eof = 0;
 
-    if (path && convert_path_to_afp(volume->server->path_encoding,
-                                    converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    if (path) {
+        ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+                                        &converted_path);
+
+        if (ret) {
+            return ret;
+        }
+
+        free(converted_path);
     }
 
     if (fp->resource) {
@@ -461,8 +541,8 @@ int ml_chmod(struct afp_volume * vol, const char * path, mode_t mode)
     int ret = 0, rc;
     struct afp_file_info fp;
     unsigned int dirid;
-    char basename[AFP_MAX_PATH];
-    char converted_path[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
+    char *converted_path;
     uid_t uid;
     gid_t gid;
 
@@ -474,9 +554,11 @@ int ml_chmod(struct afp_volume * vol, const char * path, mode_t mode)
         return -EACCES;
     }
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+                                    &converted_path);
+
+    if (ret) {
+        return ret;
     }
 
     /* There's no way to do this in AFP < 3.0 */
@@ -485,19 +567,23 @@ int ml_chmod(struct afp_volume * vol, const char * path, mode_t mode)
             struct stat stbuf;
             /* See if the file exists */
             ret = ll_getattr(vol, converted_path, &stbuf, 0);
+            free(converted_path);
             return ret;
         }
 
+        free(converted_path);
         return -ENOSYS;
     };
 
     ret = appledouble_chmod(vol, path, mode);
 
     if (ret < 0) {
+        free(converted_path);
         return ret;
     }
 
     if (ret == 1) {
+        free(converted_path);
         return 0;
     }
 
@@ -505,6 +591,7 @@ int ml_chmod(struct afp_volume * vol, const char * path, mode_t mode)
 
     if ((rc = get_unixprivs(vol,
                             dirid, basename, &fp))) {
+        free(converted_path);
         return rc;
     }
 
@@ -512,6 +599,7 @@ int ml_chmod(struct afp_volume * vol, const char * path, mode_t mode)
 
     /* Don't bother updating it if it's already the same */
     if ((fp.unixprivs.permissions & (~S_IFDIR)) == mode) {
+        free(converted_path);
         return 0;
     }
 
@@ -523,10 +611,12 @@ int ml_chmod(struct afp_volume * vol, const char * path, mode_t mode)
     gid = fp.unixprivs.gid;
 
     if (translate_uidgid_to_client(vol, &uid, &gid)) {
+        free(converted_path);
         return -EIO;
     }
 
     if ((gid != getgid()) && (uid != geteuid())) {
+        free(converted_path);
         return -EPERM;
     }
 
@@ -534,9 +624,11 @@ int ml_chmod(struct afp_volume * vol, const char * path, mode_t mode)
     rc = set_unixprivs(vol, dirid, basename, &fp);
 
     if (rc == -ENOSYS) {
+        free(converted_path);
         return -ENOSYS;
     }
 
+    free(converted_path);
     return rc;
 }
 
@@ -545,35 +637,41 @@ int ml_unlink(struct afp_volume * vol, const char *path)
 {
     int ret, rc;
     unsigned int dirid;
-    char basename[AFP_MAX_PATH];
-    char converted_path[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
+    char *converted_path;
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+                                    &converted_path);
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    if (ret) {
+        return ret;
     }
 
     if (volume_is_readonly(vol)) {
+        free(converted_path);
         return -EACCES;
     }
 
     ret = appledouble_unlink(vol, path);
 
     if (ret < 0) {
+        free(converted_path);
         return ret;
     }
 
     if (ret == 1) {
+        free(converted_path);
         return 0;
     }
 
-    get_dirid(vol, (char *) converted_path, basename, &dirid);
+    get_dirid(vol, converted_path, basename, &dirid);
 
     if (is_dir(vol, dirid, basename)) {
+        free(converted_path);
         return -EISDIR;
     }
 
     if (invalid_filename(vol->server, converted_path)) {
+        free(converted_path);
         return -ENAMETOOLONG;
     }
 
@@ -609,6 +707,7 @@ int ml_unlink(struct afp_volume * vol, const char *path)
         ret = 0;
     }
 
+    free(converted_path);
     return -ret;
 }
 
@@ -619,30 +718,35 @@ int ml_mkdir(struct afp_volume * vol, const char * path, mode_t mode)
 {
     int ret, rc;
     unsigned int result_did;
-    char basename[AFP_MAX_PATH];
-    char converted_path[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
+    char *converted_path;
     unsigned int dirid;
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+                                    &converted_path);
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    if (ret) {
+        return ret;
     }
 
     if (invalid_filename(vol->server, path)) {
+        free(converted_path);
         return -ENAMETOOLONG;
     }
 
     if (volume_is_readonly(vol)) {
+        free(converted_path);
         return -EACCES;
     }
 
     ret = appledouble_mkdir(vol, path, mode);
 
     if (ret < 0) {
+        free(converted_path);
         return ret;
     }
 
     if (ret == 1) {
+        free(converted_path);
         return 0;
     }
 
@@ -681,6 +785,7 @@ int ml_mkdir(struct afp_volume * vol, const char * path, mode_t mode)
         ret = 0;
     }
 
+    free(converted_path);
     return -ret;
 }
 
@@ -688,15 +793,18 @@ int ml_close(struct afp_volume * volume, const char * path,
              struct afp_file_info * fp)
 {
     int ret = 0;
-    char converted_path[AFP_MAX_PATH];
+    char *converted_path = NULL;
 
     if (path) {
-        if (convert_path_to_afp(volume->server->path_encoding,
-                                converted_path, (char *) path, AFP_MAX_PATH)) {
-            return -EINVAL;
+        ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+                                        &converted_path);
+
+        if (ret) {
+            return ret;
         }
 
         if (invalid_filename(volume->server, converted_path)) {
+            free(converted_path);
             return -ENAMETOOLONG;
         }
     }
@@ -704,6 +812,7 @@ int ml_close(struct afp_volume * volume, const char * path,
     /* The logic here is that if we don't have an fp anymore, then the
        fork must already be closed. */
     if (!fp) {
+        free(converted_path);
         return -EBADF;
     }
 
@@ -712,7 +821,9 @@ int ml_close(struct afp_volume * volume, const char * path,
     }
 
     if (fp->resource) {
-        return appledouble_close(volume, fp);
+        ret = appledouble_close(volume, fp);
+        free(converted_path);
+        return ret;
     }
 
     switch (afp_closefork(volume, fp->forkid)) {
@@ -729,18 +840,20 @@ int ml_close(struct afp_volume * volume, const char * path,
 
     remove_opened_fork(volume, fp);
 error:
+    free(converted_path);
     return -ret;
 }
 
 int ml_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf)
 {
-    char converted_path[AFP_MAX_PATH];
+    char *converted_path;
     int ret;
     memset(stbuf, 0, sizeof(struct stat));
+    ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+                                    &converted_path);
 
-    if (convert_path_to_afp(volume->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    if (ret) {
+        return ret;
     }
 
     /* If this is a fake file (comment, finderinfo, rsrc), continue since
@@ -748,14 +861,17 @@ int ml_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf)
     ret = appledouble_getattr(volume, converted_path, stbuf);
 
     if (ret < 0) {
+        free(converted_path);
         return ret;
     }
 
     if (ret > 0) {
+        free(converted_path);
         return 0;
     }
 
     ret = ll_getattr(volume, converted_path, stbuf, 0);
+    free(converted_path);
     return ret;
 }
 
@@ -771,7 +887,7 @@ int ml_write(struct afp_volume * volume, const char * path,
     unsigned char flags = 0;
     unsigned int max_packet_size = volume->server->tx_quantum;
 #endif
-    char converted_path[AFP_MAX_PATH];
+    char *converted_path;
 
     /* TODO:
        - handle nonblocking IO correctly
@@ -781,9 +897,15 @@ int ml_write(struct afp_volume * volume, const char * path,
         return -EFBIG;
     }
 
-    if (path && convert_path_to_afp(volume->server->path_encoding,
-                                    converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    if (path) {
+        ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+                                        &converted_path);
+
+        if (ret) {
+            return ret;
+        }
+
+        free(converted_path);
     }
 
     if (volume_is_readonly(volume)) {
@@ -837,19 +959,31 @@ int ml_readlink(struct afp_volume * vol, const char * path,
     int rc, ret;
     struct afp_file_info fp;
     struct afp_rx_buffer buffer;
-    char basename[AFP_MAX_PATH];
-    char converted_path[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
+    char *converted_path;
+    char *link_path;
     unsigned int dirid;
-    char link_path[AFP_MAX_PATH];
+
+    if (size == SIZE_MAX || size > INT_MAX) {
+        return -ENAMETOOLONG;
+    }
+
+    link_path = calloc(size + 1U, 1U);
+
+    if (!link_path) {
+        return -ENOMEM;
+    }
+
     memset(buf, 0, size);
-    memset(link_path, 0, AFP_MAX_PATH);
     buffer.data = link_path;
     buffer.maxsize = size;
     buffer.size = 0;
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+                                    &converted_path);
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    if (ret) {
+        free(link_path);
+        return ret;
     }
 
     get_dirid(vol, converted_path, basename, &dirid);
@@ -940,12 +1074,16 @@ int ml_readlink(struct afp_volume * vol, const char * path,
     remove_opened_fork(vol, &fp);
     /* Convert the name back precomposed UTF8 */
     convert_path_to_unix(vol->server->path_encoding,
-                         buf, (char *) link_path, AFP_MAX_PATH);
+                         buf, link_path, (int)size);
+    free(converted_path);
+    free(link_path);
     return 0;
 close_error:
     afp_closefork(vol, fp.forkid);
     remove_opened_fork(vol, &fp);
 error:
+    free(converted_path);
+    free(link_path);
     return -ret;
 }
 
@@ -953,35 +1091,41 @@ int ml_rmdir(struct afp_volume * vol, const char *path)
 {
     int ret, rc;
     unsigned int dirid;
-    char basename[AFP_MAX_PATH];
-    char converted_path[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
+    char *converted_path;
 
     if (invalid_filename(vol->server, path)) {
         return -ENAMETOOLONG;
     }
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+                                    &converted_path);
+
+    if (ret) {
+        return ret;
     }
 
     if (volume_is_readonly(vol)) {
+        free(converted_path);
         return -EACCES;
     }
 
     ret = appledouble_rmdir(vol, path);
 
     if (ret < 0) {
+        free(converted_path);
         return ret;
     }
 
     if (ret == 1) {
+        free(converted_path);
         return 0;
     }
 
     get_dirid(vol, converted_path, basename, &dirid);
 
     if (!is_dir(vol, dirid, basename)) {
+        free(converted_path);
         return -ENOTDIR;
     }
 
@@ -1020,6 +1164,7 @@ int ml_rmdir(struct afp_volume * vol, const char *path)
         ret = 0;
     }
 
+    free(converted_path);
     return -ret;
 }
 
@@ -1030,29 +1175,34 @@ int ml_chown(struct afp_volume * vol, const char * path,
     struct afp_file_info fp;
     int rc;
     unsigned int dirid;
-    char basename[AFP_MAX_PATH];
-    char converted_path[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
+    char *converted_path;
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+                                    &converted_path);
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    if (ret) {
+        return ret;
     }
 
     if (invalid_filename(vol->server, converted_path)) {
+        free(converted_path);
         return -ENAMETOOLONG;
     }
 
     if (volume_is_readonly(vol)) {
+        free(converted_path);
         return -EACCES;
     }
 
     ret = appledouble_chown(vol, path, uid, gid);
 
     if (ret < 0) {
+        free(converted_path);
         return ret;
     }
 
     if (ret == 1) {
+        free(converted_path);
         return 0;
     }
 
@@ -1062,9 +1212,11 @@ int ml_chown(struct afp_volume * vol, const char * path,
             struct stat stbuf;
             /* See if the file exists */
             ret = ll_getattr(vol, converted_path, &stbuf, 0);
+            free(converted_path);
             return ret;
         }
 
+        free(converted_path);
         return -ENOSYS;
     };
 
@@ -1072,6 +1224,7 @@ int ml_chown(struct afp_volume * vol, const char * path,
 
     if ((rc = get_unixprivs(vol,
                             dirid, basename, &fp))) {
+        free(converted_path);
         return rc;
     }
 
@@ -1084,15 +1237,18 @@ int ml_chown(struct afp_volume * vol, const char * path,
 
     switch (rc) {
     case -ENOSYS:
+        free(converted_path);
         return -ENOSYS;
 
     case kFPNoErr:
         break;
 
     case kFPAccessDenied:
+        free(converted_path);
         return -EACCES;
 
     case kFPObjectNotFound:
+        free(converted_path);
         return -ENOENT;
 
     case kFPBitmapErr:
@@ -1103,19 +1259,21 @@ int ml_chown(struct afp_volume * vol, const char * path,
         break;
     }
 
+    free(converted_path);
     return 0;
 }
 
 int ml_truncate(struct afp_volume * vol, const char * path, off_t offset)
 {
     int ret = 0;
-    char converted_path[AFP_MAX_PATH];
+    char *converted_path;
     struct afp_file_info *fp;
     int flags;
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+                                    &converted_path);
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    if (ret) {
+        return ret;
     }
 
     /* The approach here is to get the forkid by calling ml_open()
@@ -1123,20 +1281,24 @@ int ml_truncate(struct afp_volume * vol, const char * path, off_t offset)
        just to grab this forkid. */
 
     if (invalid_filename(vol->server, converted_path)) {
+        free(converted_path);
         return -ENAMETOOLONG;
     }
 
     if (volume_is_readonly(vol)) {
+        free(converted_path);
         return -EACCES;
     }
 
     ret = appledouble_truncate(vol, path, offset);
 
     if (ret < 0) {
+        free(converted_path);
         return ret;
     }
 
     if (ret == 1) {
+        free(converted_path);
         return 0;
     }
 
@@ -1145,6 +1307,7 @@ int ml_truncate(struct afp_volume * vol, const char * path, off_t offset)
     flags = O_WRONLY;
 
     if ((ml_open(vol, path, flags, &fp))) {
+        free(converted_path);
         return ret;
     };
 
@@ -1156,6 +1319,7 @@ int ml_truncate(struct afp_volume * vol, const char * path, off_t offset)
     remove_opened_fork(vol, fp);
     free(fp);
 out:
+    free(converted_path);
     return -ret;
 }
 
@@ -1172,8 +1336,8 @@ int ml_utime(struct afp_volume * vol, const char * path,
     int ret = 0;
     unsigned int dirid;
     struct afp_file_info fp;
-    char basename[AFP_MAX_PATH];
-    char converted_path[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
+    char *converted_path;
     int rc;
 
     if (volume_is_readonly(vol)) {
@@ -1187,18 +1351,22 @@ int ml_utime(struct afp_volume * vol, const char * path,
         return -ENAMETOOLONG;
     }
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+                                    &converted_path);
+
+    if (ret) {
+        return ret;
     }
 
     ret = appledouble_utime(vol, path, timebuf);
 
     if (ret < 0) {
+        free(converted_path);
         return ret;
     }
 
     if (ret == 1) {
+        free(converted_path);
         return 0;
     }
 
@@ -1217,9 +1385,11 @@ int ml_utime(struct afp_volume * vol, const char * path,
         break;
 
     case kFPAccessDenied:
+        free(converted_path);
         return -EACCES;
 
     case kFPObjectNotFound:
+        free(converted_path);
         return -ENOENT;
 
     case kFPBitmapErr:
@@ -1230,6 +1400,7 @@ int ml_utime(struct afp_volume * vol, const char * path,
         break;
     }
 
+    free(converted_path);
     return -ret;
 }
 
@@ -1242,9 +1413,9 @@ int ml_symlink(struct afp_volume *vol, const char * path1, const char * path2)
     size_t converted_path1_len;
     int rc;
     unsigned int dirid2;
-    char basename2[AFP_MAX_PATH];
-    char converted_path1[AFP_MAX_PATH];
-    char converted_path2[AFP_MAX_PATH];
+    char basename2[AFPC_MAX_NAME_BYTES];
+    char *converted_path1 = NULL;
+    char *converted_path2 = NULL;
 
     if (vol->server->using_version->av_number < 30) {
         /* No symlinks for AFP 2.x. */
@@ -1253,34 +1424,40 @@ int ml_symlink(struct afp_volume *vol, const char * path1, const char * path2)
     }
 
     /* Yes, you can create symlinks for AFP >=30.  Tested with 10.3.2 */
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path1,
+                                    &converted_path1);
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path1, (char *) path1, AFP_MAX_PATH)) {
-        return -EINVAL;
+    if (ret) {
+        return ret;
     }
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path2, (char *) path2, AFP_MAX_PATH)) {
-        return -EINVAL;
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path2,
+                                    &converted_path2);
+
+    if (ret) {
+        free(converted_path1);
+        return ret;
     }
 
-    converted_path1_len = strnlen(converted_path1, sizeof(converted_path1));
-
-    if (converted_path1_len == sizeof(converted_path1)) {
-        return -ENAMETOOLONG;
-    }
+    converted_path1_len = strlen(converted_path1);
 
     if (volume_is_readonly(vol)) {
+        free(converted_path1);
+        free(converted_path2);
         return -EACCES;
     }
 
     ret = appledouble_symlink(vol, path1, path2);
 
     if (ret < 0) {
+        free(converted_path1);
+        free(converted_path2);
         return ret;
     }
 
     if (ret == 1) {
+        free(converted_path1);
+        free(converted_path2);
         return 0;
     }
 
@@ -1449,10 +1626,14 @@ int ml_symlink(struct afp_volume *vol, const char * path1, const char * path2)
     }
 
 error:
+    free(converted_path1);
+    free(converted_path2);
     return -ret;
 close_error:
     afp_closefork(vol, fp.forkid);
     remove_opened_fork(vol, &fp);
+    free(converted_path1);
+    free(converted_path2);
     return -ret;
 }
 
@@ -1462,35 +1643,45 @@ int ml_rename(struct afp_volume * vol,
     int ret, rc;
     int dst_lookup_rc;
     struct afp_file_info dst_info;
-    char basename_from[AFP_MAX_PATH];
-    char basename_to[AFP_MAX_PATH];
-    char converted_path_from[AFP_MAX_PATH];
-    char converted_path_to[AFP_MAX_PATH];
+    char basename_from[AFPC_MAX_NAME_BYTES];
+    char basename_to[AFPC_MAX_NAME_BYTES];
+    char *converted_path_from;
+    char *converted_path_to;
     unsigned int dirid_from, dirid_to;
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path_from,
+                                    &converted_path_from);
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path_from, (char *) path_from, AFP_MAX_PATH)) {
-        return -EINVAL;
+    if (ret) {
+        return ret;
     }
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path_to, (char *) path_to, AFP_MAX_PATH)) {
-        return -EINVAL;
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path_to,
+                                    &converted_path_to);
+
+    if (ret) {
+        free(converted_path_from);
+        return ret;
     }
 
     if (volume_is_readonly(vol)) {
+        free(converted_path_from);
+        free(converted_path_to);
         return -EACCES;
     }
 
     ret = get_dirid(vol, converted_path_from, basename_from, &dirid_from);
 
     if (ret < 0) {
+        free(converted_path_from);
+        free(converted_path_to);
         return ret;
     }
 
     ret = get_dirid(vol, converted_path_to, basename_to, &dirid_to);
 
     if (ret < 0) {
+        free(converted_path_from);
+        free(converted_path_to);
         return ret;
     }
 
@@ -1525,6 +1716,8 @@ int ml_rename(struct afp_volume * vol,
                 int del_rc = afp_delete(vol, dirid_from, basename_from);
                 log_for_client(NULL, AFPFSD, LOG_DEBUG,
                                "ml_rename: afp_delete(src) rc=%d", del_rc);
+                free(converted_path_from);
+                free(converted_path_to);
                 return 0;
             }
 
@@ -1626,6 +1819,8 @@ int ml_rename(struct afp_volume * vol,
         ret = EIO;
     }
 
+    free(converted_path_from);
+    free(converted_path_to);
     return -ret;
 }
 
@@ -1634,10 +1829,10 @@ int ml_exchange(struct afp_volume * vol,
 {
     int ret;
     int rc;
-    char basename_from[AFP_MAX_PATH];
-    char basename_to[AFP_MAX_PATH];
-    char converted_path_from[AFP_MAX_PATH];
-    char converted_path_to[AFP_MAX_PATH];
+    char basename_from[AFPC_MAX_NAME_BYTES];
+    char basename_to[AFPC_MAX_NAME_BYTES];
+    char *converted_path_from;
+    char *converted_path_to;
     unsigned int dirid_from;
     unsigned int dirid_to;
 
@@ -1645,22 +1840,31 @@ int ml_exchange(struct afp_volume * vol,
         return -ENOSYS;
     }
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path_from, (char *) path_from, AFP_MAX_PATH)) {
-        return -EINVAL;
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path_from,
+                                    &converted_path_from);
+
+    if (ret) {
+        return ret;
     }
 
-    if (convert_path_to_afp(vol->server->path_encoding,
-                            converted_path_to, (char *) path_to, AFP_MAX_PATH)) {
-        return -EINVAL;
+    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path_to,
+                                    &converted_path_to);
+
+    if (ret) {
+        free(converted_path_from);
+        return ret;
     }
 
     if (volume_is_readonly(vol)) {
+        free(converted_path_from);
+        free(converted_path_to);
         return -EACCES;
     }
 
     if (get_dirid(vol, converted_path_from, basename_from, &dirid_from) < 0
             || get_dirid(vol, converted_path_to, basename_to, &dirid_to) < 0) {
+        free(converted_path_from);
+        free(converted_path_to);
         return -ENOENT;
     }
 
@@ -1694,6 +1898,8 @@ int ml_exchange(struct afp_volume * vol,
         break;
     }
 
+    free(converted_path_from);
+    free(converted_path_to);
     return -ret;
 }
 
@@ -1752,22 +1958,28 @@ static int open_appledouble_meta(struct afp_volume *volume, const char *path,
                                  unsigned int resource, int flags,
                                  struct afp_file_info *fp)
 {
-    char converted_path[AFP_MAX_PATH];
+    char *converted_path;
+    int ret;
 
     if (!volume || !path || !fp) {
         return -EINVAL;
     }
 
-    if (convert_path_to_afp(volume->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+                                    &converted_path);
+
+    if (ret) {
+        return ret;
     }
 
     if (invalid_filename(volume->server, converted_path)) {
+        free(converted_path);
         return -ENAMETOOLONG;
     }
 
-    return appledouble_open_meta(volume, converted_path, resource, flags, fp);
+    ret = appledouble_open_meta(volume, converted_path, resource, flags, fp);
+    free(converted_path);
+    return ret;
 }
 
 static int validate_special_xattr_flags(int flags, int exists_ret)
@@ -1848,7 +2060,7 @@ int ml_getresourcefork(struct afp_volume * volume, const char *path,
 {
     struct stat stbuf;
     struct afp_file_info fp;
-    char converted_path[AFP_MAX_PATH];
+    char *converted_path;
     size_t total = 0;
     uint64_t remaining;
     int ret;
@@ -1857,36 +2069,44 @@ int ml_getresourcefork(struct afp_volume * volume, const char *path,
         return -EINVAL;
     }
 
-    if (convert_path_to_afp(volume->server->path_encoding,
-                            converted_path, (char *) path, AFP_MAX_PATH)) {
-        return -EINVAL;
+    ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+                                    &converted_path);
+
+    if (ret) {
+        return ret;
     }
 
     ret = ll_getattr(volume, converted_path, &stbuf, 1);
 
     if (ret < 0 && ret != -EFBIG) {
+        free(converted_path);
         return ret;
     }
 
     if (stbuf.st_size == 0) {
+        free(converted_path);
         return -ENOATTR;
     }
 
     if (size == 0) {
         if (stbuf.st_size > INT_MAX) {
+            free(converted_path);
             return -EFBIG;
         }
 
+        free(converted_path);
         return (int)stbuf.st_size;
     }
 
     if (position < 0 || (uint64_t)position >= (uint64_t)stbuf.st_size) {
+        free(converted_path);
         return 0;
     }
 
     ret = open_appledouble_meta(volume, path, AFP_META_RESOURCE, O_RDONLY, &fp);
 
     if (ret < 0) {
+        free(converted_path);
         return ret;
     }
 
@@ -1901,11 +2121,13 @@ int ml_getresourcefork(struct afp_volume * volume, const char *path,
 
         if (ret < 0) {
             appledouble_close(volume, &fp);
+            free(converted_path);
             return ret;
         }
 
         if (ret != 1) {
             appledouble_close(volume, &fp);
+            free(converted_path);
             return -EIO;
         }
 
@@ -1924,16 +2146,18 @@ int ml_getresourcefork(struct afp_volume * volume, const char *path,
     appledouble_close(volume, &fp);
 
     if (total > INT_MAX) {
+        free(converted_path);
         return -EFBIG;
     }
 
+    free(converted_path);
     return (int)total;
 }
 
 int ml_setresourcefork(struct afp_volume * volume, const char *path,
                        const void *value, size_t size, off_t position)
 {
-    struct afp_file_info fp;
+    struct afp_file_info fp = { 0 };
     size_t written = 0;
     int ret;
 
@@ -2016,7 +2240,7 @@ int ml_setresourcefork_flags(struct afp_volume * volume, const char *path,
 int ml_truncateresourcefork(struct afp_volume * volume, const char *path,
                             uint64_t size)
 {
-    struct afp_file_info fp;
+    struct afp_file_info fp = { 0 };
     int ret;
     int close_ret;
 
@@ -2176,7 +2400,7 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
 {
     struct afp_extattr_info info;
     unsigned int dirid;
-    char basename[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
     const char *afp_name;
     unsigned short afp_namelen;
     int ret;
@@ -2278,7 +2502,7 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
                 const char *name, const void *value, size_t size, int flags)
 {
     unsigned int dirid;
-    char basename[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
     const char *afp_name;
     unsigned short afp_namelen;
     unsigned short bitmap = 0;
@@ -2372,7 +2596,7 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
 {
     struct afp_extattr_info info;
     unsigned int dirid;
-    char basename[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
     size_t filtered_size = 0;
     int ret = 0;
 
@@ -2470,7 +2694,7 @@ int ml_removexattr(struct afp_volume * volume, const char *path,
                    const char *name)
 {
     unsigned int dirid;
-    char basename[AFP_MAX_PATH];
+    char basename[AFPC_MAX_NAME_BYTES];
     const char *afp_name;
     unsigned short afp_namelen;
     int ret;

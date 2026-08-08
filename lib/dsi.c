@@ -37,9 +37,9 @@
 
 static int afpc_dsi_remove_from_request_queue(struct afp_server *server,
         struct dsi_request *toremove);
-int convert_utf8dec_to_utf8pre(char *src, int src_len,
+int convert_utf8dec_to_utf8pre(const char *src, int src_len,
                                char *dest, int dest_len);
-int convert_utf8pre_to_utf8dec(char * src, int src_len,
+int convert_utf8pre_to_utf8dec(const char * src, int src_len,
                                char *dest, int dest_len);
 
 struct dsi_attention_context {

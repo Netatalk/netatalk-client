@@ -31,8 +31,13 @@
 /* This is the maximum length of any UAM string */
 #define AFP_UAM_LENGTH 24
 
-/* This is the maximum length of any path description */
-#define AFP_MAX_PATH 768
+/* AFP 3.x UTF-8 pathnames are limited to 255 Unicode characters. */
+#define AFP_MAX_UTF8_NAME_CHARS 255
+
+/* AFP 3.x UTF-8 pathname headers use a 16-bit byte length.  This is a wire
+ * limit, not a recommendation to put full paths in fixed-size buffers. */
+#define AFP_MAX_UTF8_PATH_BYTES UINT16_MAX
+#define AFP_MAX_UTF8_PATH_STORAGE (AFP_MAX_UTF8_PATH_BYTES + 1U)
 
 #define AFP_VOL_FLAT 1
 #define AFP_VOL_FIXED 2

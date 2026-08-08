@@ -282,7 +282,7 @@ static int endpoint_score(const struct afpc_discovery_endpoint *endpoint)
 
 static int make_service_url(struct afpc_discovery *discovery,
                             const struct picker_entry *entry,
-                            char *url, size_t url_size)
+                            char **url)
 {
     char best_host[AFPC_DISCOVERY_TARGET_LEN + IF_NAMESIZE + 2] = {0};
     char resolved_target[AFPC_DISCOVERY_TARGET_LEN] = {0};
@@ -346,17 +346,34 @@ static int make_service_url(struct afpc_discovery *discovery,
     }
 
     int length;
+    char *result;
 
     if (strchr(best_host, ':')) {
-        length = snprintf(url, url_size, "afp://[%s]:%u", best_host,
-                          resolved_port);
+        length = snprintf(NULL, 0, "afp://[%s]:%u", best_host, resolved_port);
     } else {
-        length = snprintf(url, url_size, "afp://%s:%u", best_host,
-                          resolved_port);
+        length = snprintf(NULL, 0, "afp://%s:%u", best_host, resolved_port);
     }
 
-    return length < 0 || (size_t)length >= url_size
-           ? -ENAMETOOLONG : 0;
+    if (length < 0) {
+        return -EINVAL;
+    }
+
+    result = malloc((size_t)length + 1U);
+
+    if (!result) {
+        return -ENOMEM;
+    }
+
+    if (strchr(best_host, ':')) {
+        snprintf(result, (size_t)length + 1U, "afp://[%s]:%u", best_host,
+                 resolved_port);
+    } else {
+        snprintf(result, (size_t)length + 1U, "afp://%s:%u", best_host,
+                 resolved_port);
+    }
+
+    *url = result;
+    return 0;
 }
 
 static int parse_slot(char *line, unsigned long *slot)
@@ -378,7 +395,7 @@ static int parse_slot(char *line, unsigned long *slot)
     return 0;
 }
 
-int cmdline_discover_url(char *url, size_t url_size)
+int cmdline_discover_url(char **url)
 {
     struct afpc_discovery *discovery = NULL;
     struct picker picker = { .next_slot = 1 };
@@ -386,10 +403,11 @@ int cmdline_discover_url(char *url, size_t url_size)
     int changed = 0;
     int ret;
 
-    if (!url || url_size == 0) {
+    if (!url) {
         return -EINVAL;
     }
 
+    *url = NULL;
     ret = afpc_discovery_open(&discovery, NULL);
 
     if (ret != 0) {
@@ -446,7 +464,7 @@ int cmdline_discover_url(char *url, size_t url_size)
             continue;
         }
 
-        ret = make_service_url(discovery, entry, url, url_size);
+        ret = make_service_url(discovery, entry, url);
 
         if (ret == 0) {
             break;

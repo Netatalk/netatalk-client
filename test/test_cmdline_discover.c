@@ -19,8 +19,8 @@ static int count_text(const char *text, const char *needle)
     return count;
 }
 
-static int capture_picker(const char *input, char *url, size_t url_size,
-                          char *output, size_t output_size)
+static int capture_picker(const char *input, char **url, char *output,
+                          size_t output_size)
 {
     FILE *capture_in = NULL;
     FILE *capture_out = NULL;
@@ -47,7 +47,7 @@ static int capture_picker(const char *input, char *url, size_t url_size,
     }
 
     clearerr(stdin);
-    ret = cmdline_discover_url(url, url_size);
+    ret = cmdline_discover_url(url);
     fflush(stdout);
 done:
 
@@ -82,11 +82,9 @@ done:
 int main(int argc, char **argv)
 {
     char output[4096];
-    char url[512];
+    char *url = NULL;
     test_tap_init(argc, argv);
-    memset(url, 0, sizeof(url));
-    CHECK(capture_picker("1\n", url, sizeof(url), output,
-                         sizeof(output)) == 0);
+    CHECK(capture_picker("1\n", &url, output, sizeof(output)) == 0);
     CHECK(strcmp(url, "afp://192.0.2.10:548") == 0);
     CHECK(strstr(output, "AFP servers") != NULL);
     CHECK(strstr(output, "1  Office \"Mac\"") != NULL);
@@ -94,9 +92,9 @@ int main(int argc, char **argv)
     CHECK(strstr(output, "q  Quit") != NULL);
     CHECK(strstr(output, "Searching for AFP services") == NULL);
     CHECK(strstr(output, "manual") == NULL);
-    memset(url, 0, sizeof(url));
-    CHECK(capture_picker("q\n", url, sizeof(url), output,
-                         sizeof(output)) == 1);
-    CHECK(url[0] == '\0');
+    free(url);
+    url = NULL;
+    CHECK(capture_picker("q\n", &url, output, sizeof(output)) == 1);
+    CHECK(url == NULL);
     return test_tap_finish();
 }

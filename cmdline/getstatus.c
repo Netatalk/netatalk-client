@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <netdb.h>
 #include <sys/socket.h>
@@ -367,22 +368,53 @@ int main(int argc, char *argv[])
     /* Prepend afp:// if not already an AFP URL, and wrap bare IPv6
      * addresses in brackets so the URL parser doesn't treat the
      * colons as port delimiters */
-    char url_buf[AFP_MAX_PATH];
+    char *url_buf;
+    size_t servername_len = strnlen(servername, AFP_MAX_UTF8_PATH_STORAGE);
+    size_t url_len;
+
+    if (servername_len >= AFP_MAX_UTF8_PATH_STORAGE) {
+        fprintf(stderr, "Address is too long: %s\n", servername);
+        return -1;
+    }
 
     if (strncmp(servername, "afp://", 6) == 0) {
-        snprintf(url_buf, sizeof(url_buf), "%s", servername);
+        url_len = servername_len;
     } else if (strchr(servername, ':') && servername[0] != '[') {
-        snprintf(url_buf, sizeof(url_buf), "afp://[%s]", servername);
+        if (servername_len > SIZE_MAX - 9U) {
+            return -1;
+        }
+
+        url_len = servername_len + 8U;
     } else {
-        snprintf(url_buf, sizeof(url_buf), "afp://%s", servername);
+        if (servername_len > SIZE_MAX - 7U) {
+            return -1;
+        }
+
+        url_len = servername_len + 6U;
+    }
+
+    url_buf = malloc(url_len + 1U);
+
+    if (!url_buf) {
+        return -1;
+    }
+
+    if (strncmp(servername, "afp://", 6) == 0) {
+        memcpy(url_buf, servername, url_len + 1U);
+    } else if (strchr(servername, ':') && servername[0] != '[') {
+        snprintf(url_buf, url_len + 1U, "afp://[%s]", servername);
+    } else {
+        snprintf(url_buf, url_len + 1U, "afp://%s", servername);
     }
 
     if (afp_parse_url(&url, url_buf) != 0) {
+        free(url_buf);
         fprintf(stderr, "Could not parse address: %s\n", servername);
         usage();
         return -1;
     }
 
+    free(url_buf);
     servername = url.servername;
     port = url.port;
     afp_main_quick_startup(NULL);

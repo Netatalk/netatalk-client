@@ -48,9 +48,9 @@ struct afp_file_info {
     unsigned char writable;
     unsigned char dirty;
     char finderinfo[32];
-    char name[AFP_MAX_PATH];
-    char basename[AFP_MAX_PATH];
-    char translated_name[AFP_MAX_PATH];
+    char name[AFPC_MAX_NAME_BYTES];
+    char basename[AFPC_MAX_NAME_BYTES];
+    char translated_name[AFPC_MAX_NAME_BYTES];
     struct afpc_unix_privileges unixprivs;
     unsigned int accessrights;
     struct afp_file_info *next;

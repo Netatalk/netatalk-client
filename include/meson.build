@@ -1,5 +1,6 @@
 public_headers = files(
     'netatalk-client/afpsl.h',
+    'netatalk-client/path.h',
     'netatalk-client/transport.h',
     'netatalk-client/types.h',
     'netatalk-client/url.h',

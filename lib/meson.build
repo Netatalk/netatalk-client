@@ -25,6 +25,7 @@ libafpclient_sources = files(
     'lowlevel.c',
     'map_def.c',
     'midlevel.c',
+    'path.c',
     'proto_attr.c',
     'proto_desktop.c',
     'proto_directory.c',
