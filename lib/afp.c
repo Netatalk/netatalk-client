@@ -709,7 +709,6 @@ struct afp_server *afp_server_init(struct addrinfo * address)
 
     memset((void *) s, 0, sizeof(*s));
     s->exit_flag = 0;
-    s->path_encoding = kFPUTF8Name; /* This is a default */
     s->dsi_default_timeout = DSI_DEFAULT_TIMEOUT;
     s->next = NULL;
     s->bufsize = 128 * 1024;
@@ -966,13 +965,7 @@ int afp_connect_volume(struct afp_volume * volume, struct afp_server * server,
         new_encoding = kFPLongName;
     }
 
-    if (new_encoding != server->path_encoding) {
-        *l += snprintf(mesg, max - *l,
-                       "Volume %s changes the server's encoding\n",
-                       volume->volume_name_printable);
-    }
-
-    server->path_encoding = new_encoding;
+    volume->path_encoding = new_encoding;
 
     if (volume->signature != AFP_VOL_FIXED) {
         *l += snprintf(mesg, max - *l,

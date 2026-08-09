@@ -71,7 +71,7 @@ int afp_exchangefiles(struct afp_volume *volume,
     struct afp_server * server = volume->server;
     size_t slen = src_path ? strnlen(src_path, AFP_MAX_UTF8_PATH_STORAGE) : 0;
     size_t dlen = dst_path ? strnlen(dst_path, AFP_MAX_UTF8_PATH_STORAGE) : 0;
-    unsigned short header_len = sizeof_path_header(server);
+    unsigned short header_len = sizeof_path_header(volume);
     size_t len = sizeof(*request_packet) + (2 * header_len) + slen + dlen;
     int ret;
 
@@ -89,11 +89,11 @@ int afp_exchangefiles(struct afp_volume *volume,
     request_packet->src_did = htonl(src_did);
     request_packet->dst_did = htonl(dst_did);
     p = msg + sizeof(*request_packet);
-    copy_path(server, p, src_path, slen);
-    unixpath_to_afppath(server, p);
+    copy_path(volume, p, src_path, slen);
+    unixpath_to_afppath(volume, p);
     p += header_len + slen;
-    copy_path(server, p, dst_path, dlen);
-    unixpath_to_afppath(server, p);
+    copy_path(volume, p, dst_path, dlen);
+    unixpath_to_afppath(volume, p);
     ret = afpc_dsi_send(server, msg, (int)len, DSI_DEFAULT_TIMEOUT,
                         afpExchangeFiles,
                         NULL);
@@ -120,7 +120,7 @@ int afp_moveandrename(struct afp_volume *volume,
     size_t len;
     size_t dlen = 0, slen = 0, nlen = 0;
     int ret;
-    unsigned short header_len = sizeof_path_header(server);
+    unsigned short header_len = sizeof_path_header(volume);
     char null_path[255];
 
     if (dst_path == NULL) {
@@ -157,14 +157,14 @@ int afp_moveandrename(struct afp_volume *volume,
     request_packet->src_did = htonl(src_did);
     request_packet->dst_did = htonl(dst_did);
     p = msg + sizeof(*request_packet);
-    copy_path(server, p, src_path, slen);
-    unixpath_to_afppath(server, p);
-    p += sizeof_path_header(server) + slen;
-    copy_path(server, p, dst_path, dlen);
-    unixpath_to_afppath(server, p);
-    p += sizeof_path_header(server) + dlen;
-    copy_path(server, p, new_name, nlen);
-    unixpath_to_afppath(server, p);
+    copy_path(volume, p, src_path, slen);
+    unixpath_to_afppath(volume, p);
+    p += sizeof_path_header(volume) + slen;
+    copy_path(volume, p, dst_path, dlen);
+    unixpath_to_afppath(volume, p);
+    p += sizeof_path_header(volume) + dlen;
+    copy_path(volume, p, new_name, nlen);
+    unixpath_to_afppath(volume, p);
     ret = afpc_dsi_send(server, msg, (int)len, DSI_DEFAULT_TIMEOUT,
                         afpMoveAndRename,
                         NULL);
@@ -187,8 +187,8 @@ int afp_rename(struct afp_volume *volume,
     char *msg;
     struct afp_server * server = volume->server;
     unsigned int len = sizeof(*request_packet) +
-                       sizeof_path_header(server) + strlen(path_from) +
-                       sizeof_path_header(server) + strlen(path_to);
+                       sizeof_path_header(volume) + strlen(path_from) +
+                       sizeof_path_header(volume) + strlen(path_to);
     int ret;
 
     if ((msg = malloc(len)) == NULL) {
@@ -204,11 +204,11 @@ int afp_rename(struct afp_volume *volume,
     request_packet->volid = htons(volume->volid);
     request_packet->dirid = htonl(dirid);
     pathfromptr = msg + sizeof(*request_packet);
-    copy_path(server, pathfromptr, path_from, strlen(path_from));
-    unixpath_to_afppath(server, pathfromptr);
-    pathtoptr = pathfromptr + sizeof_path_header(server) + strlen(path_from);
-    copy_path(server, pathtoptr, path_to, strlen(path_to));
-    unixpath_to_afppath(server, pathtoptr);
+    copy_path(volume, pathfromptr, path_from, strlen(path_from));
+    unixpath_to_afppath(volume, pathfromptr);
+    pathtoptr = pathfromptr + sizeof_path_header(volume) + strlen(path_from);
+    copy_path(volume, pathtoptr, path_to, strlen(path_to));
+    unixpath_to_afppath(volume, pathtoptr);
     ret = afpc_dsi_send(server, msg, len, DSI_DEFAULT_TIMEOUT, afpRename, NULL);
     free(msg);
     return ret;
@@ -228,7 +228,7 @@ int afp_createdir(struct afp_volume * volume, unsigned int dirid,
     char *msg;
     struct afp_server * server = volume->server;
     unsigned int len = sizeof(*request_packet) +
-                       sizeof_path_header(server) + strlen(pathname);
+                       sizeof_path_header(volume) + strlen(pathname);
     int ret;
 
     if ((msg = malloc(len)) == NULL) {
@@ -244,8 +244,8 @@ int afp_createdir(struct afp_volume * volume, unsigned int dirid,
     request_packet->pad = 0;
     request_packet->volid = htons(volume->volid);
     request_packet->dirid = htonl(dirid);
-    copy_path(server, pathptr, pathname, strlen(pathname));
-    unixpath_to_afppath(server, pathptr);
+    copy_path(volume, pathptr, pathname, strlen(pathname));
+    unixpath_to_afppath(volume, pathptr);
     ret = afpc_dsi_send(server, msg, len, DSI_DEFAULT_TIMEOUT,
                         afpCreateDir, (void *)did_p);
     free(msg);
@@ -460,7 +460,7 @@ int afp_enumerate(
     struct afp_file_info * files = NULL;
     struct afp_server * server = volume->server;
     char *path;
-    len = sizeof_path_header(server) + strlen(pathname) +
+    len = sizeof_path_header(volume) + strlen(pathname) +
           sizeof(*afp_enumerate_request_packet);
 
     if ((data = malloc(len)) == NULL) {
@@ -483,8 +483,8 @@ int afp_enumerate(
     afp_enumerate_request_packet->startindex = htons(startindex);
     afp_enumerate_request_packet->maxreplysize =
         htons((uint16_t)enumerate_max_reply_size(server));
-    copy_path(server, path, pathname, strlen(pathname));
-    unixpath_to_afppath(server, path);
+    copy_path(volume, path, pathname, strlen(pathname));
+    unixpath_to_afppath(volume, path);
     rc = afpc_dsi_send(server, data, len, DSI_DEFAULT_TIMEOUT,
                        afpEnumerate, (void **) &files);
     *file_p = files;
@@ -519,7 +519,7 @@ int afp_enumerateext(
     struct afp_file_info * files = NULL;
     struct afp_server * server = volume->server;
     char *path;
-    len = sizeof_path_header(server) + strlen(pathname) +
+    len = sizeof_path_header(volume) + strlen(pathname) +
           sizeof(*afp_enumerateext_request_packet);
 
     if ((data = malloc(len)) == NULL) {
@@ -542,8 +542,8 @@ int afp_enumerateext(
     afp_enumerateext_request_packet->startindex = htons(startindex);
     afp_enumerateext_request_packet->maxreplysize =
         htons((uint16_t)enumerate_max_reply_size(server));
-    copy_path(server, path, pathname, strlen(pathname));
-    unixpath_to_afppath(server, path);
+    copy_path(volume, path, pathname, strlen(pathname));
+    unixpath_to_afppath(volume, path);
     rc = afpc_dsi_send(server, data, len, DSI_DEFAULT_TIMEOUT,
                        afpEnumerateExt, (void **) &files);
     *file_p = files;
@@ -578,7 +578,7 @@ int afp_enumerateext2(
     struct afp_file_info * files = NULL;
     struct afp_server * server = volume->server;
     char *path;
-    len = sizeof_path_header(server) + strlen(pathname) +
+    len = sizeof_path_header(volume) + strlen(pathname) +
           sizeof(*afp_enumerateext2_request_packet);
 
     if ((data = malloc(len)) == NULL) {
@@ -601,8 +601,8 @@ int afp_enumerateext2(
     afp_enumerateext2_request_packet->startindex = htonl(startindex);
     afp_enumerateext2_request_packet->maxreplysize =
         htonl(enumerate_max_reply_size(server));
-    copy_path(server, path, pathname, strlen(pathname));
-    unixpath_to_afppath(server, path);
+    copy_path(volume, path, pathname, strlen(pathname));
+    unixpath_to_afppath(volume, path);
     rc = afpc_dsi_send(server, data, len, DSI_DEFAULT_TIMEOUT,
                        afpEnumerateExt2, (void **) &files);
     *file_p = files;

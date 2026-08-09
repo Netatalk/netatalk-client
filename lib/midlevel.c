@@ -288,14 +288,14 @@ int ml_open(struct afp_volume * volume, const char *path, int flags,
     int ret;
     unsigned int dirid;
     char *converted_path;
-    ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(volume->path_encoding, path,
                                     &converted_path);
 
     if (ret) {
         return ret;
     }
 
-    if (invalid_filename(volume->server, converted_path)) {
+    if (invalid_filename(volume, converted_path)) {
         free(converted_path);
         return -ENAMETOOLONG;
     }
@@ -355,7 +355,7 @@ int ml_creat(struct afp_volume * volume, const char *path, mode_t mode)
     unsigned int dirid;
     int rc;
     char *converted_path;
-    ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(volume->path_encoding, path,
                                     &converted_path);
 
     if (ret) {
@@ -379,7 +379,7 @@ int ml_creat(struct afp_volume * volume, const char *path, mode_t mode)
         return 0;
     }
 
-    if (invalid_filename(volume->server, converted_path)) {
+    if (invalid_filename(volume, converted_path)) {
         free(converted_path);
         return -ENAMETOOLONG;
     }
@@ -443,7 +443,7 @@ int ml_readdir(struct afp_volume * volume,
 {
     int ret = 0;
     char *converted_path;
-    ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(volume->path_encoding, path,
                                     &converted_path);
 
     if (ret) {
@@ -490,7 +490,7 @@ int ml_read(struct afp_volume * volume, const char *path,
     *eof = 0;
 
     if (path) {
-        ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+        ret = convert_path_to_afp_alloc(volume->path_encoding, path,
                                         &converted_path);
 
         if (ret) {
@@ -546,7 +546,7 @@ int ml_chmod(struct afp_volume * vol, const char * path, mode_t mode)
     uid_t uid;
     gid_t gid;
 
-    if (invalid_filename(vol->server, path)) {
+    if (invalid_filename(vol, path)) {
         return -ENAMETOOLONG;
     }
 
@@ -554,7 +554,7 @@ int ml_chmod(struct afp_volume * vol, const char * path, mode_t mode)
         return -EACCES;
     }
 
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
                                     &converted_path);
 
     if (ret) {
@@ -639,7 +639,7 @@ int ml_unlink(struct afp_volume * vol, const char *path)
     unsigned int dirid;
     char basename[AFPC_MAX_NAME_BYTES];
     char *converted_path;
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
                                     &converted_path);
 
     if (ret) {
@@ -670,7 +670,7 @@ int ml_unlink(struct afp_volume * vol, const char *path)
         return -EISDIR;
     }
 
-    if (invalid_filename(vol->server, converted_path)) {
+    if (invalid_filename(vol, converted_path)) {
         free(converted_path);
         return -ENAMETOOLONG;
     }
@@ -721,14 +721,14 @@ int ml_mkdir(struct afp_volume * vol, const char * path, mode_t mode)
     char basename[AFPC_MAX_NAME_BYTES];
     char *converted_path;
     unsigned int dirid;
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
                                     &converted_path);
 
     if (ret) {
         return ret;
     }
 
-    if (invalid_filename(vol->server, path)) {
+    if (invalid_filename(vol, path)) {
         free(converted_path);
         return -ENAMETOOLONG;
     }
@@ -796,14 +796,14 @@ int ml_close(struct afp_volume * volume, const char * path,
     char *converted_path = NULL;
 
     if (path) {
-        ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+        ret = convert_path_to_afp_alloc(volume->path_encoding, path,
                                         &converted_path);
 
         if (ret) {
             return ret;
         }
 
-        if (invalid_filename(volume->server, converted_path)) {
+        if (invalid_filename(volume, converted_path)) {
             free(converted_path);
             return -ENAMETOOLONG;
         }
@@ -849,7 +849,7 @@ int ml_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf)
     char *converted_path;
     int ret;
     memset(stbuf, 0, sizeof(struct stat));
-    ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(volume->path_encoding, path,
                                     &converted_path);
 
     if (ret) {
@@ -898,7 +898,7 @@ int ml_write(struct afp_volume * volume, const char * path,
     }
 
     if (path) {
-        ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+        ret = convert_path_to_afp_alloc(volume->path_encoding, path,
                                         &converted_path);
 
         if (ret) {
@@ -978,7 +978,7 @@ int ml_readlink(struct afp_volume * vol, const char * path,
     buffer.data = link_path;
     buffer.maxsize = size;
     buffer.size = 0;
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
                                     &converted_path);
 
     if (ret) {
@@ -1073,7 +1073,7 @@ int ml_readlink(struct afp_volume * vol, const char * path,
 
     remove_opened_fork(vol, &fp);
     /* Convert the name back precomposed UTF8 */
-    convert_path_to_unix(vol->server->path_encoding,
+    convert_path_to_unix(vol->path_encoding,
                          buf, link_path, (int)size);
     free(converted_path);
     free(link_path);
@@ -1094,11 +1094,11 @@ int ml_rmdir(struct afp_volume * vol, const char *path)
     char basename[AFPC_MAX_NAME_BYTES];
     char *converted_path;
 
-    if (invalid_filename(vol->server, path)) {
+    if (invalid_filename(vol, path)) {
         return -ENAMETOOLONG;
     }
 
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
                                     &converted_path);
 
     if (ret) {
@@ -1177,14 +1177,14 @@ int ml_chown(struct afp_volume * vol, const char * path,
     unsigned int dirid;
     char basename[AFPC_MAX_NAME_BYTES];
     char *converted_path;
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
                                     &converted_path);
 
     if (ret) {
         return ret;
     }
 
-    if (invalid_filename(vol->server, converted_path)) {
+    if (invalid_filename(vol, converted_path)) {
         free(converted_path);
         return -ENAMETOOLONG;
     }
@@ -1269,7 +1269,7 @@ int ml_truncate(struct afp_volume * vol, const char * path, off_t offset)
     char *converted_path;
     struct afp_file_info *fp;
     int flags;
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
                                     &converted_path);
 
     if (ret) {
@@ -1280,7 +1280,7 @@ int ml_truncate(struct afp_volume * vol, const char * path, off_t offset)
        (and not afp_openfork).  Note the fake afp_file_info used
        just to grab this forkid. */
 
-    if (invalid_filename(vol->server, converted_path)) {
+    if (invalid_filename(vol, converted_path)) {
         free(converted_path);
         return -ENAMETOOLONG;
     }
@@ -1347,11 +1347,11 @@ int ml_utime(struct afp_volume * vol, const char * path,
     memset(&fp, 0, sizeof(struct afp_file_info));
     fp.modification_date = timebuf->modtime;
 
-    if (invalid_filename(vol->server, path)) {
+    if (invalid_filename(vol, path)) {
         return -ENAMETOOLONG;
     }
 
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
                                     &converted_path);
 
     if (ret) {
@@ -1424,14 +1424,14 @@ int ml_symlink(struct afp_volume *vol, const char * path1, const char * path2)
     }
 
     /* Yes, you can create symlinks for AFP >=30.  Tested with 10.3.2 */
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path1,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path1,
                                     &converted_path1);
 
     if (ret) {
         return ret;
     }
 
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path2,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path2,
                                     &converted_path2);
 
     if (ret) {
@@ -1648,14 +1648,14 @@ int ml_rename(struct afp_volume * vol,
     char *converted_path_from;
     char *converted_path_to;
     unsigned int dirid_from, dirid_to;
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path_from,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path_from,
                                     &converted_path_from);
 
     if (ret) {
         return ret;
     }
 
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path_to,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path_to,
                                     &converted_path_to);
 
     if (ret) {
@@ -1840,14 +1840,14 @@ int ml_exchange(struct afp_volume * vol,
         return -ENOSYS;
     }
 
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path_from,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path_from,
                                     &converted_path_from);
 
     if (ret) {
         return ret;
     }
 
-    ret = convert_path_to_afp_alloc(vol->server->path_encoding, path_to,
+    ret = convert_path_to_afp_alloc(vol->path_encoding, path_to,
                                     &converted_path_to);
 
     if (ret) {
@@ -1965,14 +1965,14 @@ static int open_appledouble_meta(struct afp_volume *volume, const char *path,
         return -EINVAL;
     }
 
-    ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(volume->path_encoding, path,
                                     &converted_path);
 
     if (ret) {
         return ret;
     }
 
-    if (invalid_filename(volume->server, converted_path)) {
+    if (invalid_filename(volume, converted_path)) {
         free(converted_path);
         return -ENAMETOOLONG;
     }
@@ -2069,7 +2069,7 @@ int ml_getresourcefork(struct afp_volume * volume, const char *path,
         return -EINVAL;
     }
 
-    ret = convert_path_to_afp_alloc(volume->server->path_encoding, path,
+    ret = convert_path_to_afp_alloc(volume->path_encoding, path,
                                     &converted_path);
 
     if (ret) {

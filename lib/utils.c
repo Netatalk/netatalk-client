@@ -32,10 +32,10 @@ unsigned short utf8_to_string(char * dest, char * buf, unsigned short maxlen)
 }
 
 unsigned char unixpath_to_afppath(
-    struct afp_server * server,
+    const struct afp_volume *volume,
     char *buf)
 {
-    unsigned char encoding = server->path_encoding;
+    unsigned char encoding = volume->path_encoding;
     char *p = NULL, *end;
     unsigned short len = 0;
 
@@ -164,9 +164,9 @@ unsigned short copy_to_pascal_two(char *dest, const char *src)
     return len;
 }
 
-unsigned char sizeof_path_header(struct afp_server * server)
+unsigned char sizeof_path_header(const struct afp_volume *volume)
 {
-    switch (server->path_encoding) {
+    switch (volume->path_encoding) {
     case kFPUTF8Name:
         return (sizeof(struct afp_path_header_unicode));
 
@@ -179,13 +179,13 @@ unsigned char sizeof_path_header(struct afp_server * server)
 
 
 void copy_path(
-    struct afp_server * server,
+    const struct afp_volume *volume,
     char *dest,
     const char *pathname,
     size_t len
 )
 {
-    unsigned char encoding = server->path_encoding;
+    unsigned char encoding = volume->path_encoding;
     struct afp_path_header_unicode * header_unicode = (void *) dest;
     struct afp_path_header_long * header_long = (void *) dest;
 
@@ -217,14 +217,18 @@ void copy_path(
     }
 }
 
-int invalid_filename(struct afp_server * server, const char * filename)
+int invalid_filename(const struct afp_volume *volume, const char *filename)
 {
+    const struct afp_server *server;
     size_t maxlen;
     const char *p, *q;
 
-    if (!server || !server->using_version || !filename) {
+    if (!volume || !volume->server || !volume->server->using_version
+            || !filename) {
         return 1;
     }
+
+    server = volume->server;
 
     if ((filename[0] == '/') && (filename[1] == '\0')) {
         return 0;
@@ -232,7 +236,7 @@ int invalid_filename(struct afp_server * server, const char * filename)
 
     if (server->using_version->av_number < 30) {
         maxlen = 31;
-    } else if (server->path_encoding == kFPUTF8Name) {
+    } else if (volume->path_encoding == kFPUTF8Name) {
         maxlen = AFP_MAX_UTF8_NAME_CHARS;
     } else {
         maxlen = 255;
@@ -251,7 +255,7 @@ int invalid_filename(struct afp_server * server, const char * filename)
 
         q = strchr(p, '/');
 
-        if (server->path_encoding == kFPUTF8Name
+        if (volume->path_encoding == kFPUTF8Name
                 && server->using_version->av_number >= 30) {
             size_t component_len = q ? (size_t)(q - p) : strlen(p);
 

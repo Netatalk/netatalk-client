@@ -37,7 +37,7 @@ static int afp_setparms_lowlevel(struct afp_volume * volume,
     unsigned short result_bitmap = 0;
 #endif
     unsigned int len = sizeof(*request_packet) +
-                       sizeof_path_header(server) + strlen(pathname) +
+                       sizeof_path_header(volume) + strlen(pathname) +
                        200 +  /* This is the max size of a data block */
                        1; /* In case we're not on an even boundary */
     char *msg, *pathptr, *p;
@@ -48,7 +48,7 @@ static int afp_setparms_lowlevel(struct afp_volume * volume,
     }
 
     pathptr = msg + sizeof(*request_packet);
-    p = pathptr + sizeof_path_header(server) + strlen(pathname);
+    p = pathptr + sizeof_path_header(volume) + strlen(pathname);
 
     if (((uintptr_t) p) & 0x1) {
         p++;    /* Make sure we're on an even boundary */
@@ -64,8 +64,8 @@ static int afp_setparms_lowlevel(struct afp_volume * volume,
     request_packet->volid = htons(volume->volid);
     request_packet->dirid = htonl(dirid);
     request_packet->bitmap = htons(bitmap);
-    copy_path(server, pathptr, pathname, strlen(pathname));
-    unixpath_to_afppath(server, pathptr);
+    copy_path(volume, pathptr, pathname, strlen(pathname));
+    unixpath_to_afppath(volume, pathptr);
 
     if (bitmap & kFPAttributeBit) {
         /* Todo:
@@ -172,7 +172,7 @@ int afp_delete(struct afp_volume * volume,
     }  __attribute__((__packed__)) *request_packet;
     struct afp_server * server = volume->server;
     unsigned int len = sizeof(*request_packet) + sizeof_path_header(
-                           server) + strlen(pathname);
+                           volume) + strlen(pathname);
     char *pathptr, *msg;
     int ret = 0;
 
@@ -194,8 +194,8 @@ int afp_delete(struct afp_volume * volume,
     request_packet->pad = 0;
     request_packet->volid = htons(volume->volid);
     request_packet->dirid = htonl(dirid);
-    copy_path(server, pathptr, pathname, strlen(pathname));
-    unixpath_to_afppath(server, pathptr);
+    copy_path(volume, pathptr, pathname, strlen(pathname));
+    unixpath_to_afppath(volume, pathptr);
     ret = afpc_dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
                         afpDelete, NULL);
     free(msg);
@@ -377,7 +377,7 @@ int afp_getfiledirparms(struct afp_volume *volume, unsigned int did,
         return -1;
     }
 
-    len = sizeof(*getfiledirparms) + sizeof_path_header(server) + strlen(pathname);
+    len = sizeof(*getfiledirparms) + sizeof_path_header(volume) + strlen(pathname);
 
     if ((msg = malloc(len)) == NULL) {
         return -1;
@@ -394,8 +394,8 @@ int afp_getfiledirparms(struct afp_volume *volume, unsigned int did,
     getfiledirparms->did = htonl(did);
     getfiledirparms->file_bitmap = htons(filebitmap);
     getfiledirparms->directory_bitmap = htons(dirbitmap);
-    copy_path(server, path, pathname, strlen(pathname));
-    unixpath_to_afppath(server, path);
+    copy_path(volume, path, pathname, strlen(pathname));
+    unixpath_to_afppath(volume, path);
     ret = afpc_dsi_send(server, (char *) getfiledirparms, len, DSI_DEFAULT_TIMEOUT,
                         afpGetFileDirParms, (void *) fpp);
     free(msg);
@@ -416,7 +416,7 @@ int afp_createfile(struct afp_volume * volume, unsigned char flag,
     char *path, *msg;
     struct afp_server * server = volume->server;
     unsigned int len = sizeof(*request_packet) +
-                       sizeof_path_header(server) + strlen(pathname);
+                       sizeof_path_header(volume) + strlen(pathname);
     int ret = 0;
 
     if ((msg = malloc(len)) == NULL) {
@@ -432,8 +432,8 @@ int afp_createfile(struct afp_volume * volume, unsigned char flag,
     request_packet->flag = flag;
     request_packet->volid = htons(volume->volid);
     request_packet->did = htonl(did);
-    copy_path(server, path, pathname, strlen(pathname));
-    unixpath_to_afppath(server, path);
+    copy_path(volume, path, pathname, strlen(pathname));
+    unixpath_to_afppath(volume, path);
     ret = afpc_dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
                         afpCreateFile, NULL);
     free(msg);

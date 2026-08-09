@@ -26,9 +26,9 @@ static inline uint64_t ntoh64(uint64_t value)
 #define max(a,b) (((a)>(b)) ? (a) : (b))
 
 unsigned char unixpath_to_afppath(
-    struct afp_server * server,
+    const struct afp_volume *volume,
     char *buf);
-unsigned char sizeof_path_header(struct afp_server * server);
+unsigned char sizeof_path_header(const struct afp_volume *volume);
 
 unsigned char copy_from_pascal(char *dest, char *pascal, unsigned int max_len) ;
 unsigned short copy_from_pascal_two(char *dest, char *pascal,
@@ -37,12 +37,13 @@ unsigned short copy_from_pascal_two(char *dest, char *pascal,
 unsigned char copy_to_pascal(char *dest, const char *src);
 unsigned short copy_to_pascal_two(char *dest, const char *src);
 
-void copy_path(struct afp_server * server, char * dest, const char * pathname,
+void copy_path(const struct afp_volume *volume, char * dest,
+               const char *pathname,
                size_t len);
 char *create_path(struct afp_server * server, char * pathname,
                   unsigned short *len);
 
-int invalid_filename(struct afp_server * server, const char * filename);
+int invalid_filename(const struct afp_volume *volume, const char *filename);
 
 void trigger_exit(void);
 void afp_set_auto_shutdown_on_unmount(int enabled);

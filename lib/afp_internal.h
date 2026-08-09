@@ -98,6 +98,8 @@ struct afp_volume {
     struct afp_server *server;
     char volume_name[AFP_VOLUME_NAME_UTF8_LEN];
     char volume_name_printable[AFP_VOLUME_NAME_UTF8_LEN];
+    /* AFP pathname format is advertised by each volume, not the server. */
+    unsigned char path_encoding;
     unsigned short dtrefnum;
     char volpassword[AFP_VOLPASS_LEN];
     unsigned int extra_flags; /* This is a Netatalk Client specific field */
@@ -223,7 +225,6 @@ struct afp_server {
 
 
     char loginmesg[200];
-    char path_encoding;
 
     /* This is the data for the incoming buffer */
     char *incoming_buffer;

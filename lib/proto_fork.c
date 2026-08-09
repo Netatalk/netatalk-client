@@ -155,7 +155,7 @@ int afp_openfork(struct afp_volume * volume,
     char *pathptr;
     struct afp_server * server = volume->server;
     unsigned int len = sizeof(*afp_openfork_request) +
-                       sizeof_path_header(server) + strlen(filename);
+                       sizeof_path_header(volume) + strlen(filename);
     int ret;
 
     if ((msg = malloc(len)) == NULL) {
@@ -174,8 +174,8 @@ int afp_openfork(struct afp_volume * volume,
     afp_openfork_request->volid = htons(volume->volid);
     afp_openfork_request->dirid = htonl(dirid);
     afp_openfork_request->accessmode = htons(accessmode);
-    copy_path(server, pathptr, filename, strlen(filename));
-    unixpath_to_afppath(server, pathptr);
+    copy_path(volume, pathptr, filename, strlen(filename));
+    unixpath_to_afppath(volume, pathptr);
     ret = afpc_dsi_send(server, (char *) msg, len, DSI_DEFAULT_TIMEOUT,
                         afpOpenFork, (void *) fp);
     free(msg);
