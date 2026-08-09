@@ -8,7 +8,6 @@ Protocol features
 * connection recovery
   * open files
   * locked files
-* desktop database support
 
 Authentication
 --------------

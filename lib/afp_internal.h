@@ -317,6 +317,21 @@ struct afp_icon {
     char *data;
 };
 
+/* Desktop database results intentionally carry no desktop reference number.
+ * The reference is session-private state owned by struct afp_volume. */
+struct afp_icon_info {
+    uint32_t tag;
+    uint32_t filetype;
+    uint16_t size;
+    uint8_t icontype;
+};
+
+struct afp_appl {
+    uint16_t bitmap;
+    uint32_t tag;
+    struct afp_file_info file;
+};
+
 #define AFP_DEFAULT_ATTENTION_QUANTUM 1024
 
 void afp_unixpriv_to_stat(struct afp_file_info *fp,
@@ -465,10 +480,18 @@ int afp_getcomment(struct afp_volume *volume, unsigned int did,
 
 int afp_addcomment(struct afp_volume *volume, unsigned int did,
                    const char *pathname, char *comment, uint64_t *size);
+int afp_addcomment_sized(struct afp_volume *volume, unsigned int did,
+                         const char *pathname, const void *comment,
+                         size_t comment_size);
 
 int afp_geticon(struct afp_volume * volume, unsigned int filecreator,
                 unsigned int filetype, unsigned char icontype,
                 unsigned short length, struct afp_icon * icon);
+int afp_geticoninfo(struct afp_volume *volume, unsigned int filecreator,
+                    unsigned short index, struct afp_icon_info *info);
+int afp_getappl(struct afp_volume *volume, unsigned int filecreator,
+                unsigned short index, unsigned short bitmap,
+                struct afp_appl *appl);
 
 /* Things you want to do to a server */
 

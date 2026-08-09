@@ -186,6 +186,7 @@ static char **filename_completion(const char *text,
         if (cmd && (strcmp(cmd, "cat") == 0 ||
                     strcmp(cmd, "cd") == 0 ||
                     strcmp(cmd, "chmod") == 0 ||
+                    strcmp(cmd, "comment") == 0 ||
                     strcmp(cmd, "cp") == 0 ||
                     strcmp(cmd, "finderinfo") == 0 ||
                     strcmp(cmd, "get") == 0 ||
@@ -249,14 +250,17 @@ static int com_close(char *arg)
 static int com_help(char *arg);
 
 COMMAND commands[] = {
+    { "appl", com_appl, "Desktop APPL: appl list|get CREATOR ...", 1 },
     { "cat", com_view, "View the contents of FILE", 1 },
     { "cd", com_cd, "Change to directory DIR", 1 },
     { "chmod", com_chmod, "Change mode to MODE on FILE (-r for directories)", 1 },
+    { "comment", com_comment, "Desktop comment: comment get|set PATH ...", 1 },
     { "cp", com_copy, "Copy FILE to NEWFILE (-r for directories)", 1 },
     { "disconnect", com_close, "Close server connection and shut down afpcmd", 0 },
     { "df", com_statvfs, "Get volume space information", 1 },
     { "exit", com_exit, "Detach from the current volume", 0 },
     { "finderinfo", com_finderinfo, "Get, set, or remove FinderInfo", 1 },
+    { "icon", com_icon, "Desktop icons: icon list|get CREATOR ...", 1 },
     { "get", com_get, "Retrieve FILE (-r for directories)", 1 },
     { "help", com_help, "Display this text", 0 },
     { "lcd", com_lcd, "Change local directory to DIR", 1 },

@@ -28,6 +28,10 @@ int main(int argc, char **argv)
     uint64_t written64 = 99;
     struct afp_extattr_info xattr_info;
     struct afp_server server;
+    struct afp_icon icon;
+    struct afp_comment comment;
+    struct afp_icon_info icon_info;
+    struct afp_appl appl;
     struct {
         struct dsi_header header __attribute__((__packed__));
         uint16_t bitmap;
@@ -90,5 +94,73 @@ int main(int argc, char **argv)
     CHECK(xattr_info.data[0] == 'x'
           && xattr_info.data[large_size - 1U] == 'x');
     free(large_reply);
+    {
+        struct {
+            struct dsi_header header;
+            char data[2];
+        } __attribute__((__packed__)) icon_reply = { 0 };
+        char icon_data[4] = { 0 };
+        memcpy(icon_reply.data, "ok", 2);
+        icon.data = icon_data;
+        icon.maxsize = sizeof(icon_data);
+        icon.size = 0;
+        CHECK(afp_geticon_reply(NULL, (char *)&icon_reply,
+                                sizeof(icon_reply), &icon) == 0);
+        CHECK(icon.size == 2 && memcmp(icon.data, "ok", 2) == 0);
+    }
+    {
+        struct {
+            struct dsi_header header;
+            uint8_t length;
+            char data[2];
+        } __attribute__((__packed__)) comment_reply = { 0 };
+        char comment_data[4] = { 0 };
+        comment.data = comment_data;
+        comment.maxsize = sizeof(comment_data);
+        comment_reply.length = 2;
+        memcpy(comment_reply.data, "hi", 2);
+        CHECK(afp_getcomment_reply(NULL, (char *)&comment_reply,
+                                   sizeof(comment_reply), &comment) == 0);
+        CHECK(comment.size == 2 && memcmp(comment.data, "hi", 2) == 0);
+    }
+    {
+        struct {
+            struct dsi_header header;
+            uint32_t tag;
+            uint32_t type;
+            uint8_t icon_type;
+            uint8_t pad;
+            uint16_t size;
+        } __attribute__((__packed__)) icon_info_reply = { 0 };
+        icon_info_reply.tag = htonl(42);
+        icon_info_reply.type = htonl(UINT32_C(0x54455854));
+        icon_info_reply.icon_type = 7;
+        icon_info_reply.size = htons(512);
+        CHECK(afp_geticoninfo_reply(NULL, (char *)&icon_info_reply,
+                                    sizeof(icon_info_reply), &icon_info) == 0);
+        CHECK(icon_info.tag == 42 && icon_info.filetype == UINT32_C(0x54455854)
+              && icon_info.icontype == 7 && icon_info.size == 512);
+    }
+    {
+        struct {
+            struct dsi_header header;
+            uint16_t bitmap;
+            uint32_t tag;
+            uint32_t did;
+            uint16_t name_offset;
+            uint8_t name_len;
+            char name[3];
+        } __attribute__((__packed__)) appl_reply = { 0 };
+        appl_reply.bitmap = htons(kFPParentDirIDBit | kFPLongNameBit);
+        appl_reply.tag = htonl(99);
+        appl_reply.did = htonl(123);
+        appl_reply.name_offset = htons(6);
+        appl_reply.name_len = 3;
+        memcpy(appl_reply.name, "App", 3);
+        CHECK(afp_getappl_reply(&server, (char *)&appl_reply,
+                                sizeof(appl_reply), &appl) == 0);
+        CHECK(appl.tag == 99 && appl.file.did == 123
+              && strcmp(appl.file.name, "App") == 0);
+    }
     return test_tap_finish();
 }

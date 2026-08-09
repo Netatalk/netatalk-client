@@ -23,6 +23,36 @@ extern "C" {
  * namespace prefixes can make them larger than the AFP reply containing the
  * original names. */
 #define AFP_SL_XATTR_LIST_MAX (224U * 1024U)
+#define AFP_SL_DESKTOP_COMMENT_MAX 255U
+#define AFP_SL_DESKTOP_COMMENT_AFP2_MAX 199U
+#define AFP_SL_DESKTOP_ICON_MAX UINT16_MAX
+
+/* BSD and macOS call a missing extended attribute ENOATTR, while Linux uses
+ * ENODATA.  Desktop comments have the same missing-value semantics. */
+#ifdef ENOATTR
+#define AFP_SL_DESKTOP_COMMENT_MISSING ENOATTR
+#else
+#define AFP_SL_DESKTOP_COMMENT_MISSING ENODATA
+#endif
+
+struct afp_sl_desktop_icon_info {
+    uint32_t tag;
+    uint32_t type;
+    uint16_t size;
+    uint8_t icon_type;
+};
+
+struct afp_sl_desktop_appl {
+    uint16_t file_bitmap;
+    uint32_t tag;
+    uint32_t directory_id;
+    uint32_t file_id;
+    uint32_t creation_date;
+    uint32_t modification_date;
+    uint64_t data_fork_size;
+    uint64_t resource_fork_size;
+    char pathname[AFPC_MAX_NAME_BYTES];
+};
 
 /* Portable setxattr flags.  Their values match XATTR_CREATE and
  * XATTR_REPLACE on platforms that provide those constants. */
@@ -205,6 +235,28 @@ int afp_sl_setresourcefork(afpc_volume_t *volid, const char *path,
 int afp_sl_truncateresourcefork(afpc_volume_t *volid, const char *path,
                                 unsigned long long size);
 int afp_sl_removeresourcefork(afpc_volume_t *volid, const char *path);
+
+/* Desktop database queries.  The database reference is private to the
+ * daemon; callers only use a volume handle.  Text and icon functions return
+ * a nonnegative byte count.  A missing comment is
+ * -AFP_SL_DESKTOP_COMMENT_MISSING; a missing icon or APPL mapping is -ENOENT.
+ */
+int afp_sl_desktop_get_comment(afpc_volume_t *volid, const char *path,
+                               void *value, size_t size);
+/* Set a comment from an explicitly sized byte sequence.  On successful AFP
+ * 2.x updates, written and truncated report the server's 199-byte limit. */
+int afp_sl_desktop_set_comment(afpc_volume_t *volid, const char *path,
+                               const void *text, size_t size,
+                               size_t *written, int *truncated);
+int afp_sl_desktop_get_icon_info(afpc_volume_t *volid, uint32_t creator,
+                                 uint16_t index,
+                                 struct afp_sl_desktop_icon_info *info);
+int afp_sl_desktop_get_icon(afpc_volume_t *volid, uint32_t creator,
+                            uint32_t type, uint8_t icon_type, void *value,
+                            size_t size);
+int afp_sl_desktop_get_appl(afpc_volume_t *volid, uint32_t creator,
+                            uint16_t index,
+                            struct afp_sl_desktop_appl *appl);
 
 /* Classify errno-style failures. ESTALE requires restoring the volume
  * attachment; connection failures require rebuilding the daemon/session
