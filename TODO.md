@@ -1,23 +1,17 @@
 Netatalk Client Improvements
-=====================
+============================
 
-AFP 3.x
--------
+Protocol features
+-----------------
 
 * ACL support
-
-AFP 2.x
--------
-
-* use getsrvrinfo to get connection IP address to make room for AT
 * connection recovery
   * open files
   * locked files
 * desktop database support
-* UTF8 flag is now server-specific, but it should be volume-specific
 
-Authentitcation
----------------
+Authentication
+--------------
 
 * ClientKRB
 * reconnection

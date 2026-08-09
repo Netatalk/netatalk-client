@@ -537,7 +537,7 @@ int ll_readdir(struct afp_volume * volume, const char *path,
     char converted_name[AFPC_MAX_NAME_BYTES];
     unsigned int dirid;
 
-    if (invalid_filename(volume->server, path)) {
+    if (invalid_filename(volume, path)) {
         return -ENAMETOOLONG;
     }
 
@@ -650,7 +650,7 @@ int ll_readdir(struct afp_volume * volume, const char *path,
     for (p = filebase; p; p = p->next) {
         /* Convert all the names back to precomposed */
         convert_path_to_unix(
-            volume->server->path_encoding,
+            volume->path_encoding,
             converted_name, p->name, sizeof(converted_name));
         snprintf(p->name, sizeof(p->name), "%s", converted_name);
         p->name[sizeof(p->name) - 1U] = '\0';
@@ -685,7 +685,7 @@ int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
     memset(stbuf, 0, sizeof(struct stat));
 
     if ((volume->server) &&
-            (invalid_filename(volume->server, path))) {
+            (invalid_filename(volume, path))) {
         return -ENAMETOOLONG;
     }
 

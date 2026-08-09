@@ -81,7 +81,7 @@ int afp_addcomment(struct afp_volume *volume, unsigned int did,
         uint32_t dirid ;
     } __attribute__((__packed__)) * request_packet;
     unsigned int len = sizeof(*request_packet) +
-                       sizeof_path_header(volume->server) + strlen(pathname)
+                       sizeof_path_header(volume) + strlen(pathname)
                        + strlen(comment) +1;
     char *msg, *p;
     int rc;
@@ -96,9 +96,9 @@ int afp_addcomment(struct afp_volume *volume, unsigned int did,
     request_packet->pad = 0;
     request_packet->dtrefnum = htons(volume->dtrefnum);
     request_packet->dirid = htonl(did);
-    copy_path(volume->server, p, pathname, strlen(pathname));
-    unixpath_to_afppath(volume->server, p);
-    p = msg + sizeof(*request_packet) + sizeof_path_header(volume->server) + strlen(
+    copy_path(volume, p, pathname, strlen(pathname));
+    unixpath_to_afppath(volume, p);
+    p = msg + sizeof(*request_packet) + sizeof_path_header(volume) + strlen(
             pathname);
 
     if (((uintptr_t) p) & 0x1) {
@@ -126,7 +126,7 @@ int afp_getcomment(struct afp_volume *volume, unsigned int did,
         uint32_t dirid ;
     } __attribute__((__packed__)) * request_packet;
     unsigned int len = sizeof(*request_packet) +
-                       sizeof_path_header(volume->server) + strlen(pathname);
+                       sizeof_path_header(volume) + strlen(pathname);
     char *msg, *path;
     int rc;
     msg = malloc(len);
@@ -139,8 +139,8 @@ int afp_getcomment(struct afp_volume *volume, unsigned int did,
     request_packet->pad = 0;
     request_packet->dtrefnum = htons(volume->dtrefnum);
     request_packet->dirid = htonl(did);
-    copy_path(volume->server, path, pathname, strlen(pathname));
-    unixpath_to_afppath(volume->server, path);
+    copy_path(volume, path, pathname, strlen(pathname));
+    unixpath_to_afppath(volume, path);
     rc = afpc_dsi_send(volume->server, (char *)msg, len, DSI_DEFAULT_TIMEOUT,
                        afpGetComment, (void *) comment);
     free(msg);
@@ -228,4 +228,3 @@ int afp_opendt_reply(struct afp_server *server _U_,
     *refnum = ntohs(reply_packet->refnum);
     return 0;
 }
-

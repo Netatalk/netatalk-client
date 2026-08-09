@@ -39,7 +39,7 @@ int afp_listextattr(struct afp_volume * volume,
         } __attribute__((__packed__)) *request_packet;
         struct afp_server * server = volume->server;
         unsigned int len = sizeof(*request_packet) + sizeof_path_header(
-                               server) + strlen(pathname);
+                               volume) + strlen(pathname);
         char *pathptr;
         char *msg = malloc(len);
 
@@ -64,8 +64,8 @@ int afp_listextattr(struct afp_volume * volume,
         request_packet->startindex = 0;
         request_packet->bitmap = htons(bitmap);
         request_packet->maxreplysize = htonl(info->maxsize);
-        copy_path(server, pathptr, pathname, strlen(pathname));
-        unixpath_to_afppath(server, pathptr);
+        copy_path(volume, pathptr, pathname, strlen(pathname));
+        unixpath_to_afppath(volume, pathptr);
         ret = afpc_dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
                             afpListExtAttrs, (void *) info);
         free(msg);
@@ -213,7 +213,7 @@ int afp_getextattr(struct afp_volume * volume, unsigned int dirid,
             uint32_t maxreplysize;
         } __attribute__((__packed__)) *request_packet;
         struct afp_server * server = volume->server;
-        unsigned int pathlen = sizeof_path_header(server) + strlen(pathname);
+        unsigned int pathlen = sizeof_path_header(volume) + strlen(pathname);
         unsigned int path_offset = sizeof(*request_packet);
         unsigned int padding = (path_offset + pathlen) & 1;
         unsigned int len = sizeof(*request_packet) + pathlen + padding + 2 + namelen;
@@ -243,8 +243,8 @@ int afp_getextattr(struct afp_volume * volume, unsigned int dirid,
         request_packet->reqcount = UINT64_MAX;
         request_packet->maxreplysize = htonl(replysize);
         /* Copy path */
-        copy_path(server, p, pathname, strlen(pathname));
-        unixpath_to_afppath(server, p);
+        copy_path(volume, p, pathname, strlen(pathname));
+        unixpath_to_afppath(volume, p);
         p2 = p + pathlen;
 
         /* Pad the following EA name field to an even packet offset. */
@@ -281,7 +281,7 @@ int afp_setextattr(struct afp_volume * volume, unsigned int dirid,
             uint64_t offset ;
         } __attribute__((__packed__)) *request_packet;
         struct afp_server * server = volume->server;
-        unsigned int pathlen = sizeof_path_header(server) + strlen(pathname);
+        unsigned int pathlen = sizeof_path_header(volume) + strlen(pathname);
         unsigned int path_offset = sizeof(*request_packet);
         unsigned int padding = (path_offset + pathlen) & 1;
         unsigned int len = sizeof(*request_packet) + pathlen + padding + 2 + namelen +
@@ -309,8 +309,8 @@ int afp_setextattr(struct afp_volume * volume, unsigned int dirid,
         request_packet->bitmap = htons(bitmap);
         request_packet->offset = hton64(offset);
         /* Copy path */
-        copy_path(server, p, pathname, strlen(pathname));
-        unixpath_to_afppath(server, p);
+        copy_path(volume, p, pathname, strlen(pathname));
+        unixpath_to_afppath(volume, p);
         p2 = p + pathlen;
 
         /* Pad the following EA name field to an even packet offset. */
@@ -355,7 +355,7 @@ int afp_removeextattr(struct afp_volume * volume, unsigned int dirid,
             uint16_t bitmap;
         } __attribute__((__packed__)) *request_packet;
         struct afp_server * server = volume->server;
-        unsigned int pathlen = sizeof_path_header(server) + strlen(pathname);
+        unsigned int pathlen = sizeof_path_header(volume) + strlen(pathname);
         unsigned int path_offset = sizeof(*request_packet);
         unsigned int padding = (path_offset + pathlen) & 1;
         unsigned int len = sizeof(*request_packet) + pathlen + padding + 2 + namelen;
@@ -378,8 +378,8 @@ int afp_removeextattr(struct afp_volume * volume, unsigned int dirid,
         request_packet->dirid = htonl(dirid);
         request_packet->bitmap = htons(bitmap);
         /* Copy path */
-        copy_path(server, p, pathname, strlen(pathname));
-        unixpath_to_afppath(server, p);
+        copy_path(volume, p, pathname, strlen(pathname));
+        unixpath_to_afppath(volume, p);
         p2 = p + pathlen;
 
         /* Pad the following EA name field to an even packet offset. */
