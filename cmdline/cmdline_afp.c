@@ -37,6 +37,7 @@
 #include <libgen.h>
 #include <limits.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <sys/ioctl.h>
@@ -2740,6 +2741,423 @@ static int metadata_command_error(const char *operation, int ret)
     }
 
     return -1;
+}
+
+static int parse_finder_code(const char *text, uint32_t *code)
+{
+    const char *hex = text;
+    uint32_t value = 0;
+
+    if (!text || !code) {
+        return -EINVAL;
+    }
+
+    if (hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X')) {
+        hex += 2;
+    }
+
+    if (strlen(hex) == 8) {
+        for (size_t i = 0; i < 8; i++) {
+            unsigned char ch = (unsigned char)hex[i];
+            unsigned int digit;
+
+            if (ch >= '0' && ch <= '9') {
+                digit = ch - '0';
+            } else if (ch >= 'a' && ch <= 'f') {
+                digit = ch - 'a' + 10U;
+            } else if (ch >= 'A' && ch <= 'F') {
+                digit = ch - 'A' + 10U;
+            } else {
+                digit = 16U;
+            }
+
+            if (digit > 15U) {
+                value = 0;
+                break;
+            }
+
+            value = (value << 4) | digit;
+        }
+
+        if (value || strcmp(hex, "00000000") == 0) {
+            *code = value;
+            return 0;
+        }
+    }
+
+    if (strlen(text) != 4) {
+        return -EINVAL;
+    }
+
+    *code = ((uint32_t)(unsigned char)text[0] << 24)
+            | ((uint32_t)(unsigned char)text[1] << 16)
+            | ((uint32_t)(unsigned char)text[2] << 8)
+            | (uint32_t)(unsigned char)text[3];
+    return 0;
+}
+
+static void format_finder_code(uint32_t code, char *text, size_t text_size)
+{
+    static const char hex[] = "0123456789abcdef";
+    unsigned char bytes[4] = {
+        (unsigned char)(code >> 24), (unsigned char)(code >> 16),
+        (unsigned char)(code >> 8), (unsigned char)code,
+    };
+    size_t pos = 0;
+
+    if (!text || text_size == 0) {
+        return;
+    }
+
+    for (size_t i = 0; i < sizeof(bytes) && pos + 1 < text_size; i++) {
+        unsigned char ch = bytes[i];
+
+        if (ch >= 0x20 && ch <= 0x7e && ch != '\\' && ch != '\'') {
+            text[pos++] = (char)ch;
+        } else if (pos + 4 < text_size) {
+            text[pos++] = '\\';
+            text[pos++] = 'x';
+            text[pos++] = hex[ch >> 4];
+            text[pos++] = hex[ch & 0xf];
+        } else {
+            break;
+        }
+    }
+
+    text[pos] = '\0';
+}
+
+static int parse_decimal_u16(const char *text, uint16_t *value)
+{
+    char *end;
+    unsigned long parsed;
+
+    if (!text || !*text || !value || text[0] == '-') {
+        return -EINVAL;
+    }
+
+    errno = 0;
+    parsed = strtoul(text, &end, 10);
+
+    if (errno || *end != '\0' || parsed > UINT16_MAX) {
+        return -EINVAL;
+    }
+
+    *value = (uint16_t)parsed;
+    return 0;
+}
+
+static int desktop_command_error(const char *operation, int ret)
+{
+    if (ret == -EOPNOTSUPP) {
+        printf("%s is not supported by this AFP server\n", operation);
+    } else {
+        return metadata_command_error(operation, ret);
+    }
+
+    return -1;
+}
+
+static int write_icon_file_exclusive(const char *path, const void *data,
+                                     size_t size)
+{
+    int fd;
+    int ret;
+    fd = open(path, O_WRONLY | O_CREAT | O_EXCL, METADATA_OUTPUT_MODE);
+
+    if (fd < 0) {
+        return -errno;
+    }
+
+    ret = write_all_fd(fd, data, size);
+
+    if (close(fd) < 0 && ret == 0) {
+        ret = -errno;
+    }
+
+    if (ret < 0) {
+        (void)unlink(path);
+    }
+
+    return ret;
+}
+
+int com_comment(char *arg)
+{
+    char **words = NULL;
+    char *path = NULL;
+    char comment[AFP_SL_DESKTOP_COMMENT_MAX];
+    int argc = parse_command_words_alloc(arg, &words, 3);
+    int ret;
+
+    if (!vol_id) {
+        printf("You're not attached to a volume\n");
+        goto out;
+    }
+
+    if (argc < 2 || !(path = get_server_path_alloc(words[1]))) {
+        printf("usage: comment get REMOTE-PATH | set REMOTE-PATH TEXT\n");
+        goto out;
+    }
+
+    if (strcmp(words[0], "get") == 0 && argc == 2) {
+        ret = afp_sl_desktop_get_comment(&vol_id, path, comment, sizeof(comment));
+
+        if (ret == -AFP_SL_DESKTOP_COMMENT_MISSING) {
+            printf("No Desktop database comment for %s\n", words[1]);
+            goto out;
+        }
+
+        if (ret < 0) {
+            desktop_command_error("comment get", ret);
+            goto out;
+        }
+
+        fwrite(comment, 1, (size_t)ret, stdout);
+        putchar('\n');
+
+        if (verbose_mode) {
+            printf("comment_bytes=%d\n", ret);
+        }
+
+        free(path);
+        free_command_words(words, argc > 0 ? argc : 0);
+        return 0;
+    }
+
+    if (strcmp(words[0], "set") == 0 && argc == 3) {
+        size_t written = 0;
+        int truncated = 0;
+        ret = afp_sl_desktop_set_comment(&vol_id, path, words[2],
+                                         strlen(words[2]), &written,
+                                         &truncated);
+
+        if (ret < 0) {
+            desktop_command_error("comment set", ret);
+            goto out;
+        }
+
+        if (truncated) {
+            printf("comment set: AFP 2.x truncated input from %zu to %zu bytes\n",
+                   strlen(words[2]), written);
+        } else if (verbose_mode) {
+            printf("comment_bytes=%zu\n", written);
+        }
+
+        free(path);
+        free_command_words(words, argc > 0 ? argc : 0);
+        return 0;
+    }
+
+    printf("usage: comment get REMOTE-PATH | set REMOTE-PATH TEXT\n");
+    goto out;
+out:
+    free(path);
+    free_command_words(words, argc > 0 ? argc : 0);
+    return -1;
+}
+
+int com_icon(char *arg)
+{
+    char **words = NULL;
+    uint32_t creator;
+    int argc = parse_command_words_alloc(arg, &words, 5);
+    int result = -1;
+
+    if (!vol_id) {
+        printf("You're not attached to a volume\n");
+        goto out;
+    }
+
+    if (argc < 2 || parse_finder_code(words[1], &creator) < 0) {
+        goto usage;
+    }
+
+    if (strcmp(words[0], "list") == 0 && argc == 2) {
+        char creator_text[20];
+        format_finder_code(creator, creator_text, sizeof(creator_text));
+
+        for (uint32_t index = 1; index <= UINT16_MAX; index++) {
+            struct afp_sl_desktop_icon_info info;
+            char type[20];
+            int ret = afp_sl_desktop_get_icon_info(&vol_id, creator,
+                                                   (uint16_t)index, &info);
+
+            if (ret == -ENOENT) {
+                result = 0;
+                break;
+            }
+
+            if (ret < 0) {
+                result = desktop_command_error("icon list", ret);
+                break;
+            }
+
+            format_finder_code(info.type, type, sizeof(type));
+            printf("index=%u creator=%s creator_hex=%08" PRIx32
+                   " type=%s type_hex=%08" PRIx32
+                   " icon_type=%u tag=%" PRIu32 " bytes=%u\n",
+                   index, creator_text, creator, type, info.type,
+                   info.icon_type, info.tag, info.size);
+            result = 0;
+        }
+
+        goto out;
+    }
+
+    if (strcmp(words[0], "get") == 0 && argc == 5) {
+        uint32_t type;
+        uint16_t icon_type;
+        struct afp_sl_desktop_icon_info info;
+        void *data = NULL;
+        uint32_t tag = 0;
+        int found_info = 0;
+        int ret;
+        char creator_text[20];
+        char type_text[20];
+
+        if (parse_finder_code(words[2], &type) < 0
+                || parse_decimal_u16(words[3], &icon_type) < 0
+                || icon_type > UINT8_MAX) {
+            goto usage;
+        }
+
+        for (uint32_t index = 1; index <= UINT16_MAX; index++) {
+            ret = afp_sl_desktop_get_icon_info(&vol_id, creator,
+                                               (uint16_t)index, &info);
+
+            if (ret == -ENOENT) {
+                break;
+            }
+
+            if (ret < 0) {
+                result = desktop_command_error("icon get", ret);
+                goto icon_out;
+            }
+
+            if (info.type == type && info.icon_type == (uint8_t)icon_type) {
+                tag = info.tag;
+                found_info = 1;
+                break;
+            }
+        }
+
+        if (!found_info) {
+            printf("Icon not found\n");
+            goto icon_out;
+        }
+
+        data = malloc(info.size ? info.size : 1U);
+
+        if (!data) {
+            result = desktop_command_error("icon get", -ENOMEM);
+            goto icon_out;
+        }
+
+        ret = afp_sl_desktop_get_icon(&vol_id, creator, type,
+                                      (uint8_t)icon_type, data, info.size);
+
+        if (ret < 0) {
+            result = desktop_command_error("icon get", ret);
+            goto icon_out;
+        }
+
+        ret = write_icon_file_exclusive(words[4], data, (size_t)ret);
+
+        if (ret < 0) {
+            result = desktop_command_error("icon get output", ret);
+            goto icon_out;
+        }
+
+        format_finder_code(creator, creator_text, sizeof(creator_text));
+        format_finder_code(type, type_text, sizeof(type_text));
+        printf("creator=%s creator_hex=%08" PRIx32 " type=%s type_hex=%08" PRIx32
+               " icon_type=%u tag=%" PRIu32 " bytes=%d path=%s\n",
+               creator_text, creator, type_text, type, icon_type, tag, ret,
+               words[4]);
+        result = 0;
+icon_out:
+        free(data);
+        goto out;
+    }
+
+usage:
+    printf("usage: icon list CREATOR | get CREATOR TYPE ICON-TYPE LOCAL-FILE\n");
+out:
+    free_command_words(words, argc > 0 ? argc : 0);
+    return result;
+}
+
+int com_appl(char *arg)
+{
+    char **words = NULL;
+    uint32_t creator;
+    int argc = parse_command_words_alloc(arg, &words, 3);
+    int result = -1;
+
+    if (!vol_id) {
+        printf("You're not attached to a volume\n");
+        goto out;
+    }
+
+    if (argc < 2 || parse_finder_code(words[1], &creator) < 0) {
+        goto usage;
+    }
+
+    if ((strcmp(words[0], "list") == 0 && argc == 2)
+            || (strcmp(words[0], "get") == 0 && argc == 3)) {
+        uint32_t first = 1;
+        uint32_t last = UINT16_MAX;
+
+        if (argc == 3) {
+            uint16_t index;
+
+            if (parse_decimal_u16(words[2], &index) < 0 || index == 0) {
+                goto usage;
+            }
+
+            first = last = index;
+        }
+
+        for (uint32_t index = first; index <= last; index++) {
+            struct afp_sl_desktop_appl appl;
+            char creator_text[20];
+            char pathname[AFPC_MAX_NAME_BYTES * 4U];
+            int ret = afp_sl_desktop_get_appl(&vol_id, creator,
+                                              (uint16_t)index, &appl);
+
+            if (ret == -ENOENT && argc == 2) {
+                result = 0;
+                break;
+            }
+
+            if (ret < 0) {
+                result = desktop_command_error("appl get", ret);
+                break;
+            }
+
+            format_finder_code(creator, creator_text, sizeof(creator_text));
+            printf("index=%u creator=%s creator_hex=%08" PRIx32
+                   " tag=%" PRIu32 " directory_id=%" PRIu32
+                   " pathname=%s file_bitmap=%04x file_id=%" PRIu32
+                   " created=%" PRIu32 " modified=%" PRIu32
+                   " data_bytes=%" PRIu64 " resource_bytes=%" PRIu64 "\n",
+                   index, creator_text, creator, appl.tag, appl.directory_id,
+                   display_text(appl.pathname, pathname, sizeof(pathname)),
+                   appl.file_bitmap, appl.file_id,
+                   appl.creation_date, appl.modification_date,
+                   appl.data_fork_size, appl.resource_fork_size);
+            result = 0;
+        }
+
+        goto out;
+    }
+
+usage:
+    printf("usage: appl list CREATOR | get CREATOR INDEX\n");
+out:
+    free_command_words(words, argc > 0 ? argc : 0);
+    return result;
 }
 
 int com_xattr(char *arg)

@@ -231,6 +231,8 @@ With
 recursively remove a directory tree.
 .El
 .Ss Metadata commands
+In command input, double quotes group an operand containing whitespace.
+Single quotes are literal characters.
 .Bl -tag -width Ds
 .It Cm xattr list Ar path
 List generic extended attributes.
@@ -254,6 +256,32 @@ Read a ResourceFork.
 Set a ResourceFork from a local binary file.
 .It Cm resourcefork remove Ar path
 Remove a ResourceFork.
+.It Cm comment get Ar path
+Print the AFP Desktop database comment for a file or directory.  Relative
+paths are resolved from the current remote directory.
+.It Cm comment set Ar path Ar text
+Set the AFP Desktop database comment.  Whitespace in a double-quoted
+.Ar text
+is preserved.  AFP 2.x comments are limited to 199 bytes; when that limit
+causes truncation, afpcmd reports both the supplied and stored byte counts
+after the update succeeds.
+.It Cm icon list Ar creator
+List Desktop database icons for the four-character Finder creator code.
+.It Cm icon get Ar creator Ar type Ar icon-type Ar local-file
+Retrieve one raw AFP icon bitmap into a new local file.  The destination is
+created exclusively and is never overwritten.
+.It Cm appl list Ar creator
+List Desktop APPL mappings for a Finder creator code.
+.It Cm appl get Ar creator Ar index
+Show one one-based Desktop APPL mapping.
+For Desktop commands, a Finder creator or type is either a four-character
+code, such as
+.Dq APPL
+or
+.Dq TEXT ,
+or eight hexadecimal
+digits (optionally prefixed with 0x).  Output includes both an escaped code
+rendering and its hexadecimal value.
 .El
 .Ss Status commands
 .Bl -tag -width Ds

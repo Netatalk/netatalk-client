@@ -7,10 +7,12 @@
 #include "netatalk-client/afpsl.h"
 #include "lib/afp_protocol.h"
 
-#define AFPSL_IPC_MAX_RESPONSE 16384
+/* Desktop icons may use the AFP uint16_t maximum, so the framing limit must
+ * accommodate one raw icon plus the fixed response and log trailer. */
+#define AFPSL_IPC_MAX_RESPONSE (UINT16_MAX + 1024U)
 #define AFPSL_IPC_PROTOCOL_MAGIC UINT32_C(0x41465053)
 #define AFPSL_IPC_PROTOCOL_MAJOR 2U
-#define AFPSL_IPC_PROTOCOL_MINOR 0U
+#define AFPSL_IPC_PROTOCOL_MINOR 2U
 
 /* Unix socket shared by afpsld and libafpsl. */
 #define AFPSL_IPC_SOCKET_PATH "/tmp/afp_sl"
@@ -68,6 +70,11 @@ struct afpsl_ipc_log_footer {
 #define AFPSL_IPC_COMMAND_REMOVERESOURCEFORK 48
 #define AFPSL_IPC_COMMAND_TRUNCATERESOURCEFORK 49
 #define AFPSL_IPC_COMMAND_HELLO 50
+#define AFPSL_IPC_COMMAND_DESKTOP_GET_COMMENT 51
+#define AFPSL_IPC_COMMAND_DESKTOP_GET_ICON_INFO 52
+#define AFPSL_IPC_COMMAND_DESKTOP_GET_ICON 53
+#define AFPSL_IPC_COMMAND_DESKTOP_GET_APPL 54
+#define AFPSL_IPC_COMMAND_DESKTOP_SET_COMMENT 55
 
 /* Stateless IPC result codes. */
 #define AFPSL_IPC_RESULT_OK 0
@@ -431,6 +438,72 @@ struct afpsl_ipc_metadata_response {
     int error;
     unsigned int size;
     char data[];
+};
+
+struct afpsl_ipc_desktop_path_request {
+    struct afpsl_ipc_request_header header;
+    afpc_volume_t volumeid;
+    uint32_t path_len;
+    char path[];
+};
+
+struct afpsl_ipc_desktop_set_comment_request {
+    struct afpsl_ipc_request_header header;
+    afpc_volume_t volumeid;
+    uint32_t path_len;
+    uint32_t text_len;
+    char data[]; /* NUL-terminated path followed by text_len raw bytes. */
+};
+
+struct afpsl_ipc_desktop_code_request {
+    struct afpsl_ipc_request_header header;
+    afpc_volume_t volumeid;
+    uint32_t creator;
+    uint32_t type;
+    uint16_t index;
+    uint8_t icon_type;
+    uint8_t pad;
+    uint32_t size;
+};
+
+struct afpsl_ipc_desktop_data_response {
+    struct afpsl_ipc_response_header header;
+    int error;
+    uint32_t size;
+    char data[];
+};
+
+struct afpsl_ipc_desktop_set_comment_response {
+    struct afpsl_ipc_response_header header;
+    int error;
+    uint32_t written;
+    uint8_t truncated;
+    uint8_t pad[3];
+};
+
+struct afpsl_ipc_desktop_icon_info_response {
+    struct afpsl_ipc_response_header header;
+    int error;
+    uint32_t tag;
+    uint32_t type;
+    uint16_t size;
+    uint8_t icon_type;
+    uint8_t pad;
+};
+
+struct afpsl_ipc_desktop_appl_response {
+    struct afpsl_ipc_response_header header;
+    int error;
+    uint16_t file_bitmap;
+    uint16_t pad;
+    uint32_t tag;
+    uint32_t directory_id;
+    uint32_t file_id;
+    uint32_t creation_date;
+    uint32_t modification_date;
+    uint64_t data_fork_size;
+    uint64_t resource_fork_size;
+    char pathname[AFPC_MAX_NAME_BYTES];
 };
 
 #endif

@@ -165,9 +165,15 @@ int main(int argc, char **argv)
         .log_len = sizeof(record) + sizeof(message) - 1,
     };
     struct capture capture = { 0 };
+    afpc_volume_t dummy_volume = (afpc_volume_t)(uintptr_t)1;
+    unsigned char oversized_comment[AFP_SL_DESKTOP_COMMENT_MAX + 1U] = { 0 };
     size_t pos = 0;
     size_t content_len = 0;
     test_tap_init(argc, argv);
+    CHECK(afp_sl_desktop_set_comment(&dummy_volume, "/file",
+                                     oversized_comment,
+                                     sizeof(oversized_comment), NULL,
+                                     NULL) == -E2BIG);
     memcpy(response + pos, payload, sizeof(payload) - 1);
     pos += sizeof(payload) - 1;
     memcpy(response + pos, &record, sizeof(record));

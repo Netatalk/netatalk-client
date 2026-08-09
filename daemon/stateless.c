@@ -75,7 +75,7 @@ static void *log_callback_data;
 static int read_bytes_with_timeout(int fd, char *buf, size_t len);
 static int server_result_to_errno(int result);
 static int ensure_daemon_connection(void);
-static int send_command(unsigned int len, char *data, unsigned int num);
+static int send_command(unsigned int len, const char *data, unsigned int num);
 static int read_answer(void);
 static int ipc_handshake(void);
 
@@ -665,7 +665,7 @@ static int read_bytes_with_timeout(int fd, char *buf, size_t len)
     return 0;
 }
 
-static int send_command(unsigned int len, char * data, unsigned int num)
+static int send_command(unsigned int len, const char *data, unsigned int num)
 {
     int ret = write_bytes(connection.fd, data, len);
 
@@ -1348,6 +1348,296 @@ int afp_sl_removeresourcefork(afpc_volume_t *volid, const char *path)
 {
     return metadata_call(AFPSL_IPC_COMMAND_REMOVERESOURCEFORK, volid, path, NULL,
                          NULL, 0, 0, 0, 0);
+}
+
+static int desktop_read_data(struct afpsl_ipc_desktop_data_response *response,
+                             void *value, size_t capacity)
+{
+    char *tail = NULL;
+    size_t content_len;
+    int ret;
+    ret = read_bytes_with_timeout(connection.fd, (char *)response,
+                                  sizeof(*response));
+
+    if (ret < 0 || response->header.len < sizeof(*response)
+            + sizeof(struct afpsl_ipc_log_footer)
+            || response->header.len > AFPSL_IPC_MAX_RESPONSE
+            + AFPSL_IPC_LOG_BUFFER_SIZE + sizeof(struct afpsl_ipc_log_footer)) {
+        close_connection();
+        return -EPROTO;
+    }
+
+    if (read_response_tail(response->header.len, sizeof(*response), &tail,
+                           &content_len) < 0) {
+        close_connection();
+        return -EPROTO;
+    }
+
+    if (response->header.result != AFPSL_IPC_RESULT_OK
+            || content_len != response->size) {
+        free(tail);
+        close_connection();
+        return -EPROTO;
+    }
+
+    if (response->error < 0) {
+        ret = response->error;
+    } else if (content_len > capacity || (content_len && !value)) {
+        ret = -ERANGE;
+    } else {
+        if (content_len) {
+            memcpy(value, tail, content_len);
+        }
+
+        ret = (int)content_len;
+    }
+
+    free(tail);
+    return ret;
+}
+
+static int desktop_send_data_request(const void *request, size_t request_len,
+                                     void *value, size_t size)
+{
+    struct afpsl_ipc_desktop_data_response response;
+    int ret;
+    ret = ensure_daemon_connection();
+
+    if (ret) {
+        return ret;
+    }
+
+    if (send_command((unsigned int)request_len, (const char *)request,
+                     ((const struct afpsl_ipc_request_header *)request)->command) < 0) {
+        return -ECONNRESET;
+    }
+
+    return desktop_read_data(&response, value, size);
+}
+
+int afp_sl_desktop_get_comment(afpc_volume_t *volid, const char *path,
+                               void *value, size_t size)
+{
+    struct afpsl_ipc_desktop_path_request *request;
+    size_t path_len;
+    size_t request_len;
+    int ret;
+
+    if (!volid || !path || size > AFP_SL_DESKTOP_COMMENT_MAX) {
+        return -EINVAL;
+    }
+
+    ret = wire_path_length(path, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*request) + path_len + 1U;
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.command = AFPSL_IPC_COMMAND_DESKTOP_GET_COMMENT;
+    request->header.len = (unsigned int)request_len;
+    memcpy(&request->volumeid, volid, sizeof(*volid));
+    request->path_len = (uint32_t)path_len;
+    memcpy(request->path, path, path_len + 1U);
+    ret = desktop_send_data_request(request, request_len, value, size);
+    free(request);
+    return ret;
+}
+
+int afp_sl_desktop_set_comment(afpc_volume_t *volid, const char *path,
+                               const void *text, size_t size,
+                               size_t *written, int *truncated)
+{
+    struct afpsl_ipc_desktop_set_comment_request *request;
+    struct afpsl_ipc_desktop_set_comment_response response;
+    size_t path_len;
+    size_t request_len;
+    int ret;
+
+    if (written) {
+        *written = 0;
+    }
+
+    if (truncated) {
+        *truncated = 0;
+    }
+
+    if (!volid || !path || (!text && size != 0)) {
+        return -EINVAL;
+    }
+
+    if (size > AFP_SL_DESKTOP_COMMENT_MAX) {
+        return -E2BIG;
+    }
+
+    ret = wire_path_length(path, &path_len);
+
+    if (ret) {
+        return ret;
+    }
+
+    request_len = sizeof(*request) + path_len + 1U + size;
+    request = calloc(1, request_len);
+
+    if (!request) {
+        return -ENOMEM;
+    }
+
+    request->header.command = AFPSL_IPC_COMMAND_DESKTOP_SET_COMMENT;
+    request->header.len = (unsigned int)request_len;
+    memcpy(&request->volumeid, volid, sizeof(*volid));
+    request->path_len = (uint32_t)path_len;
+    request->text_len = (uint32_t)size;
+    memcpy(request->data, path, path_len + 1U);
+
+    if (size) {
+        memcpy(request->data + path_len + 1U, text, size);
+    }
+
+    ret = send_to_daemon((char *)request, (int)request_len, (char *)&response,
+                         sizeof(response));
+    free(request);
+
+    if (ret) {
+        return ret;
+    }
+
+    if (response.header.result != AFPSL_IPC_RESULT_OK) {
+        return server_result_to_errno(response.header.result);
+    }
+
+    if (response.error < 0) {
+        return response.error;
+    }
+
+    if (response.written > size) {
+        return -EPROTO;
+    }
+
+    if (written) {
+        *written = response.written;
+    }
+
+    if (truncated) {
+        *truncated = response.truncated != 0;
+    }
+
+    return 0;
+}
+
+static void desktop_code_request(struct afpsl_ipc_desktop_code_request *request,
+                                 unsigned int command, afpc_volume_t *volid,
+                                 uint32_t creator, uint32_t type,
+                                 uint16_t index, uint8_t icon_type,
+                                 uint32_t size)
+{
+    memset(request, 0, sizeof(*request));
+    request->header.command = (char)command;
+    request->header.len = sizeof(*request);
+    memcpy(&request->volumeid, volid, sizeof(*volid));
+    request->creator = creator;
+    request->type = type;
+    request->index = index;
+    request->icon_type = icon_type;
+    request->size = size;
+}
+
+int afp_sl_desktop_get_icon_info(afpc_volume_t *volid, uint32_t creator,
+                                 uint16_t index,
+                                 struct afp_sl_desktop_icon_info *info)
+{
+    struct afpsl_ipc_desktop_code_request request;
+    struct afpsl_ipc_desktop_icon_info_response response;
+    int ret;
+
+    if (!volid || !info || index == 0) {
+        return -EINVAL;
+    }
+
+    desktop_code_request(&request, AFPSL_IPC_COMMAND_DESKTOP_GET_ICON_INFO,
+                         volid, creator, 0, index, 0, 0);
+    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+                         sizeof(response));
+
+    if (ret) {
+        return ret;
+    }
+
+    if (response.header.result != AFPSL_IPC_RESULT_OK) {
+        return server_result_to_errno(response.header.result);
+    }
+
+    if (response.error < 0) {
+        return response.error;
+    }
+
+    info->tag = response.tag;
+    info->type = response.type;
+    info->size = response.size;
+    info->icon_type = response.icon_type;
+    return 0;
+}
+
+int afp_sl_desktop_get_icon(afpc_volume_t *volid, uint32_t creator,
+                            uint32_t type, uint8_t icon_type, void *value,
+                            size_t size)
+{
+    struct afpsl_ipc_desktop_code_request request;
+
+    if (!volid || size > AFP_SL_DESKTOP_ICON_MAX || (!value && size)) {
+        return -EINVAL;
+    }
+
+    desktop_code_request(&request, AFPSL_IPC_COMMAND_DESKTOP_GET_ICON, volid,
+                         creator, type, 0, icon_type, (uint32_t)size);
+    return desktop_send_data_request(&request, sizeof(request), value, size);
+}
+
+int afp_sl_desktop_get_appl(afpc_volume_t *volid, uint32_t creator,
+                            uint16_t index, struct afp_sl_desktop_appl *appl)
+{
+    struct afpsl_ipc_desktop_code_request request;
+    struct afpsl_ipc_desktop_appl_response response;
+    int ret;
+
+    if (!volid || !appl || index == 0) {
+        return -EINVAL;
+    }
+
+    desktop_code_request(&request, AFPSL_IPC_COMMAND_DESKTOP_GET_APPL, volid,
+                         creator, 0, index, 0, 0);
+    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+                         sizeof(response));
+
+    if (ret) {
+        return ret;
+    }
+
+    if (response.header.result != AFPSL_IPC_RESULT_OK) {
+        return server_result_to_errno(response.header.result);
+    }
+
+    if (response.error < 0) {
+        return response.error;
+    }
+
+    memset(appl, 0, sizeof(*appl));
+    appl->file_bitmap = response.file_bitmap;
+    appl->tag = response.tag;
+    appl->directory_id = response.directory_id;
+    appl->file_id = response.file_id;
+    appl->creation_date = response.creation_date;
+    appl->modification_date = response.modification_date;
+    appl->data_fork_size = response.data_fork_size;
+    appl->resource_fork_size = response.resource_fork_size;
+    strlcpy(appl->pathname, response.pathname, sizeof(appl->pathname));
+    return 0;
 }
 
 enum afp_sl_recovery_action afp_sl_recovery_for_error(int result)

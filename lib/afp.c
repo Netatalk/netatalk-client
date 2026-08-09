@@ -78,7 +78,7 @@ int (*afp_replies[])(struct afp_server * server, char * buf, unsigned int len,
     NULL, NULL, afp_blank_reply, NULL,
     NULL, NULL, NULL, NULL,                       /*40 - 47 */
     afp_opendt_reply, afp_blank_reply, NULL, afp_geticon_reply,
-    NULL, NULL, NULL, NULL,                       /*48 - 55 */
+    afp_geticoninfo_reply, NULL, NULL, afp_getappl_reply, /*48 - 55 */
     afp_blank_reply, NULL, afp_getcomment_reply, afp_byterangelockext_reply,
     afp_readext_reply, afp_writeext_reply,
     NULL, afp_login_reply,            /*56 - 63 */
@@ -1101,6 +1101,8 @@ int afp_server_reconnect(struct afp_server * s, char * mesg,
 
     for (i = 0; i < s->num_volumes; i++) {
         v = &s->volumes[i];
+        /* Desktop references belong to the old AFP session. */
+        v->dtrefnum = 0;
 
         if ((v->attached == AFP_VOLUME_ATTACHED || strlen(v->mountpoint))
                 && afp_connect_volume(v, v->server, mesg, l, max)) {

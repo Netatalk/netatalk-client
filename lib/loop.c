@@ -205,6 +205,13 @@ void loop_disconnect(struct afp_server *s)
     }
 
     afpc_dsi_fail_request_queue(s, -EIO);
+
+    /* Desktop references are allocated per AFP session and cannot survive a
+     * transport loss, even when the volume will later be reattached. */
+    for (int i = 0; i < s->num_volumes; i++) {
+        s->volumes[i].dtrefnum = 0;
+    }
+
     s->data_read = 0;
     s->attention_len = 0;
     rm_fd_and_signal(s->fd);

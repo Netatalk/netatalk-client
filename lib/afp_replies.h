@@ -17,6 +17,10 @@ int afp_getcomment_reply(struct afp_server *server, char * buf,
 
 int afp_geticon_reply(struct afp_server *server, char * buf, unsigned int size,
                       void *other);
+int afp_geticoninfo_reply(struct afp_server *server, char *buf,
+                          unsigned int size, void *other);
+int afp_getappl_reply(struct afp_server *server, char *buf,
+                      unsigned int size, void *other);
 
 int afp_login_reply(struct afp_server *server, char *buf, unsigned int size,
                     void *other);
