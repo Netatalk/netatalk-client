@@ -55,7 +55,14 @@ int dhx2_login(struct afp_server *server, char *username, char *passwd)
     K = gcry_mpi_new(0);
     nonce = gcry_mpi_new(0);
     new_nonce = gcry_mpi_new(0);
+    /* The DHX2 Pascal username must end on an even AFP-packet boundary. */
     ai_len = (int)strnlen(username, AFP_MAX_USERNAME_LEN) + 1;
+
+    if ((1 + 1 + (int)strnlen(server->using_version->av_name, UINT8_MAX) +
+            1 + (int)strlen("DHX2") + ai_len) & 1) {
+        ai_len++;
+    }
+
     ai = calloc(1, ai_len);
 
     if (ai == NULL) {
@@ -415,6 +422,11 @@ int dhx2_passwd(struct afp_server *server,
         *d++ = 0;
     } else {
         ai_len = (int)strnlen(username, AFP_MAX_USERNAME_LEN) + 1;
+
+        if (ai_len & 1) {
+            ai_len++;
+        }
+
         ai = calloc(1, ai_len);
 
         if (ai == NULL) {
@@ -538,7 +550,7 @@ int dhx2_passwd(struct afp_server *server,
         *d++ = 0;
     } else {
         int pascal_len = 1 + (int)strnlen(username, AFP_MAX_USERNAME_LEN);
-        int pad = (pascal_len & 1) ? 0 : 1;
+        int pad = pascal_len & 1;
         ai_len = pascal_len + pad + 2 + bignum_len + sizeof(nonce_binary);
         ai = calloc(1, ai_len);
         d = ai;
@@ -549,9 +561,7 @@ int dhx2_passwd(struct afp_server *server,
 
         d += copy_to_pascal(d, username) + 1;
 
-        if ((long)d & 0x1) {
-            ai_len--;
-        } else {
+        if (pad) {
             d++;
         }
     }
@@ -650,7 +660,7 @@ int dhx2_passwd(struct afp_server *server,
         *d++ = 0;
     } else {
         int pascal_len = 1 + (int)strnlen(username, AFP_MAX_USERNAME_LEN);
-        int pad = (pascal_len & 1) ? 0 : 1;
+        int pad = pascal_len & 1;
         ai_len = pascal_len + pad + 2 + payload_len;
         ai = calloc(1, ai_len);
         d = ai;
@@ -661,9 +671,7 @@ int dhx2_passwd(struct afp_server *server,
 
         d += copy_to_pascal(d, username) + 1;
 
-        if ((long)d & 0x1) {
-            ai_len--;
-        } else {
+        if (pad) {
             d++;
         }
     }
