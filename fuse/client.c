@@ -432,7 +432,7 @@ static void usage(void)
         "         -P, --volpass <password>   : use this volume password\n"
         "                                      If password is '-', you get prompted for it\n"
         "         -o, --port <portnum>       : connect using <portnum> instead of 548\n"
-        "         -v, --afpversion <version> : set the AFP version, eg. 3.1\n"
+        "         -f, --afpversion <version> : set the AFP version, eg. 3.1\n"
         "         -a, --uam <uam>            : use this authentication method, one of:\n"
         "                                      guest, clrtxt, randnum, randnum2, dhx, dhx2\n"
         "         -m, --map <mapname>        : use this uid/gid mapping method, one of:\n"
@@ -704,7 +704,7 @@ static int do_mount(int argc, char ** argv)
     const char *volume_name = NULL;
     enum { OPT_VOLUME = 256 };
     struct option long_options[] = {
-        {"afpversion", 1, 0, 'v'},
+        {"afpversion", 1, 0, 'f'},
         {"volpass", 1, 0, 'P'},
         {"user", 1, 0, 'u'},
         {"pass", 1, 0, 'p'},
@@ -730,7 +730,7 @@ static int do_mount(int argc, char ** argv)
 
     while (1) {
         optnum++;
-        c = getopt_long(argc, argv, "a:m:O:o:P:p:s:u:v:", long_options,
+        c = getopt_long(argc, argv, "a:f:m:O:o:P:p:s:u:", long_options,
                         &option_index);
 
         if (c == -1) {
@@ -786,26 +786,16 @@ static int do_mount(int argc, char ** argv)
             snprintf(request.url.username, AFP_MAX_USERNAME_LEN, "%s", optarg);
             break;
 
-        case 'v': {
+        case 'f':
+
             /* Parse AFP version string like "3.1" or "22" to integer format.
              * AFP 2.2 = 22, AFP 3.1 = 31, AFP 3.2 = 32, etc. */
-            int major, minor;
-
-            if (strchr(optarg, '.')) {
-                /* Format like "3.1" */
-                if (sscanf(optarg, "%d.%d", &major, &minor) == 2) {
-                    request.url.requested_version = major * 10 + minor;
-                } else {
-                    printf("Invalid AFP version format: %s\n", optarg);
-                    return -1;
-                }
-            } else {
-                /* Format like "31" or "22" */
-                request.url.requested_version = strtol(optarg, NULL, 10);
+            if (afp_parse_version(optarg, &request.url.requested_version) != 0) {
+                printf("Invalid AFP version format: %s\n", optarg);
+                return -1;
             }
 
             break;
-        }
         }
     }
 

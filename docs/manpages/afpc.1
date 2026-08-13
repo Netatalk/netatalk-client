@@ -1,4 +1,4 @@
-.Dd August 5, 2026
+.Dd August 14, 2026
 .Dt AFPC 1
 .Os Netatalk Client
 .Sh NAME
@@ -43,11 +43,7 @@ communicates with
 .Xr afpfsd 1
 and is present only when FUSE support was built. It provides structured
 mounting and FUSE mount lifecycle commands. The mount options are the same as
-the former AFP client mount command: use
-.Fl -service
-to resolve an advertised service, and use
-.Fl -volume
-to select a volume when mounting a service.
+the former AFP client mount command.
 .Pp
 Unqualified controller commands such as
 .Dq afpc status
@@ -58,6 +54,93 @@ are invalid. Use the appropriate
 or
 .Cm sl
 namespace.
+.Sh FS MOUNT OPTIONS
+The following options apply to
+.Cm afpc fs mount .
+They may be used with either a direct
+.Ar server : volume
+mount or a service-based mount unless noted otherwise.
+.Bl -tag -width Ds
+.It Fl s Ar name , Fl -service Ar name
+Resolve the named AFP service advertised through DNS-SD or Avahi.
+Service names containing spaces should be quoted.
+When this option is used, the service's advertised port is used unless
+.Fl o
+is also supplied.
+.It Fl -volume Ar volume
+Select the volume to mount after resolving a service.
+This option is valid only with
+.Fl -service .
+If it is omitted, the command authenticates, lists the available volumes, and
+exits without mounting; a mountpoint is optional in that case.
+.It Fl u Ar username , Fl -user Ar username
+Authenticate as
+.Ar username .
+If the password is omitted, the command prompts for it.
+Without a username, the default authentication methods may select guest access.
+.It Fl p Ar password , Fl -pass Ar password
+Use
+.Ar password
+for AFP authentication.
+Use
+.Sq -
+to request an interactive password prompt.
+.It Fl P Ar password , Fl -volpass Ar password
+Use
+.Ar password
+as the AFP volume password.
+Use
+.Sq -
+to request an interactive volume-password prompt.
+.It Fl o Ar port , Fl -port Ar port
+Connect to TCP
+.Ar port
+instead of the default AFP port, 548.
+.It Fl f Ar version , Fl -afpversion Ar version
+Limit the AFP protocol version used to connect.
+The version may be written with or without a decimal point, for example
+.Cm 3.1
+or
+.Cm 31 .
+.It Fl a Ar uam , Fl -uam Ar uam
+Restrict authentication to the specified UAM.
+Supported shorthands are
+.Cm guest ,
+.Cm clrtxt ,
+.Cm randnum ,
+.Cm randnum2 ,
+.Cm dhx ,
+and
+.Cm dhx2 .
+.It Fl m Ar map , Fl -map Ar map
+Select the UID and GID mapping method.
+Valid values are
+.Cm common
+and
+.Cm loginids .
+.It Fl O Ar flags , Fl -options Ar flags
+Pass a comma-separated set of FUSE mount options to the mount operation.
+Consult the FUSE documentation for supported flags.
+.El
+.Pp
+For a direct mount, specify both
+.Ar server : volume
+and
+.Ar mountpoint .
+For example:
+.Bd -literal -offset indent
+afpc fs mount --user myuser --afpversion 3.1 \\
+    afpserver.local:Files /home/myuser/fusemount
+.Ed
+.Pp
+For a service-based mount, use
+.Fl -service
+and
+.Fl -volume :
+.Bd -literal -offset indent
+afpc fs mount --service "Office File Server" --volume Files \\
+    /home/myuser/fusemount
+.Ed
 .Sh COMPATIBILITY
 When FUSE support is built,
 .Xr mount_afpfs 1

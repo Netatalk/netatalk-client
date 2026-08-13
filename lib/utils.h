@@ -51,6 +51,9 @@ int afp_get_auto_shutdown_on_unmount(void);
 
 void sanitize_text(const char *text, char *sanitized, size_t size);
 
+/* Parse an AFP version such as "3.1" or "31" into its numeric form. */
+int afp_parse_version(const char *text, int *version_out);
+
 /* Log level conversion functions */
 const char *log_level_to_string(int level);
 int string_to_log_level(const char *str, int *level_out);

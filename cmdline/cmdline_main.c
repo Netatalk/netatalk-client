@@ -25,7 +25,6 @@
     59 Temple Place, Suite 330, Boston, MA 02111 USA.
 */
 
-#include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -49,6 +48,8 @@
 #endif
 
 #include "netatalk-client/url.h"
+
+#include "lib/utils.h"
 
 #include "cmdline_afp.h"
 #include "discover.h"
@@ -473,23 +474,25 @@ static void usage(void)
 {
     printf(
         "Netatalk Client %s - AFP command-line client\n"
-        "afpcmd [-V] [-v loglevel] [-M mode] --browse\n"
-        "afpcmd [-V] [-v loglevel] [-M mode] <afp url>\n"
+        "afpcmd [-V] [-f version] [-v loglevel] [-M mode] --browse\n"
+        "afpcmd [-V] [-f version] [-v loglevel] [-M mode] <afp url>\n"
         "afpcmd -h\n"
         "Options:\n"
         "\t-h:          show this help message and exit\n"
         "\t-b, --browse: browse and select an advertised AFP service\n"
         "\t-M mode:     preserve metadata using auto, netatalk, xattr, macos, or none\n"
         "\t-r:          recursively transfer directories in batch mode\n"
-        "\t-V:          verbose mode (show detailed transfer messages)\n"
+        "\t-f, --afpversion version:\n"
+        "\t             set the AFP version, e.g. 3.1\n"
+        "\t-V, --verbose: show detailed transfer messages\n"
         "\t-v loglevel: set log verbosity (debug, info, notice, warning, error)\n"
         "\turl:         an AFP url, in the form of:\n"
         "\t\t         afp://username;AUTH=uamname:password@server:548/volume/path\n"
         "\t             uamname can be a full UAM name or shorthand:\n"
         "\t             guest, clrtxt, randnum, randnum2, dhx, dhx2, srp\n\n"
         "Batch transfer mode:\n"
-        "\tafpcmd [-r] [-V] [-M mode] <afp url> <local path>   (Download from server)\n"
-        "\tafpcmd [-r] [-V] [-M mode] <local path> <afp url>   (Upload to server)\n\n"
+        "\tafpcmd [-r] [-V] [-f version] [-M mode] <afp url> <local path>   (Download from server)\n"
+        "\tafpcmd [-r] [-V] [-f version] [-M mode] <local path> <afp url>   (Upload to server)\n\n"
         "See the afpcmd(1) man page for more information.\n", NETATALK_CLIENT_VERSION
     );
 }
@@ -505,12 +508,14 @@ int main(int argc, char *argv[])
     int discovered = 0;
     int show_usage = 0;
     int log_level = LOG_NOTICE;
+    int requested_version = 0;
     const char *metadata_mode = "auto";
     struct option long_options[] = {
         {"browse", 0, 0, 'b'},
         {"help", 0, 0, 'h'},
         {"metadata", 1, 0, 'M'},
         {"recursive", 0, 0, 'r'},
+        {"afpversion", 1, 0, 'f'},
         {"verbose", 0, 0, 'V'},
         {"loglevel", 1, 0, 'v'},
         {NULL, 0, NULL, 0},
@@ -523,7 +528,7 @@ int main(int argc, char *argv[])
     int direction = 0; /* 0 = GET (remote->local), 1 = PUT (local->remote) */
 
     while (1) {
-        c = getopt_long(argc, argv, "bhM:rVv:",
+        c = getopt_long(argc, argv, "bhM:rf:v:V",
                         long_options, &option_index);
 
         if (c == -1) {
@@ -545,6 +550,14 @@ int main(int argc, char *argv[])
 
         case 'r':
             recursive = 1;
+            break;
+
+        case 'f':
+            if (afp_parse_version(optarg, &requested_version) != 0) {
+                printf("Invalid AFP version format: %s\n", optarg);
+                return -1;
+            }
+
             break;
 
         case 'V':
@@ -677,7 +690,8 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (cmdline_afp_setup(batch_mode, url, discovered_username) != 0) {
+    if (cmdline_afp_setup(batch_mode, url, discovered_username,
+                          requested_version) != 0) {
         free(discovered_url);
         free(discovered_username);
         cmdline_afp_exit();

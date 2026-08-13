@@ -7,22 +7,28 @@
 .Sh SYNOPSIS
 .Nm
 .Op Fl V
+.Op Fl f Ar version
 .Op Fl v Ar loglevel
 .Op Fl M Ar mode
 .Fl b
 .Nm
 .Op Fl V
+.Op Fl f Ar version
 .Op Fl v Ar loglevel
 .Op Fl M Ar mode
 .Ar afp_url
 .Nm
-.Op Fl rV
+.Op Fl r
+.Op Fl V
+.Op Fl f Ar version
 .Op Fl v Ar loglevel
 .Op Fl M Ar mode
 .Ar afp_url
 .Ar local_path
 .Nm
-.Op Fl rV
+.Op Fl r
+.Op Fl V
+.Op Fl f Ar version
 .Op Fl v Ar loglevel
 .Op Fl M Ar mode
 .Ar local_path
@@ -61,6 +67,12 @@ Recursively transfers directories in batch mode.
 This invocation-level option is not accepted in interactive mode; use
 .Fl r
 after an interactive command name instead.
+.It Fl f Ar version , Fl -afpversion Ar version
+Limits the AFP protocol version used to connect to the server.
+The version may be written with or without a decimal point, for example
+.Cm 3.1
+or
+.Cm 31 .
 .It Fl V , Fl -verbose
 Enables verbose mode for file transfers.
 When enabled, displays detailed messages during upload and download operations,

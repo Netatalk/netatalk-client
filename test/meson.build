@@ -240,6 +240,23 @@ test(
     verbose: true,
 )
 
+afp_version_test = executable(
+    'test_afp_version',
+    sources: ['test_afp_version.c'],
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'AFP version parsing',
+    afp_version_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
 identify_test = executable(
     'test_identify',
     sources: ['test_identify.c'],
