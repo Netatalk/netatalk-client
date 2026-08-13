@@ -100,8 +100,17 @@ int dhx_login(struct afp_server *server, char *username, char *passwd)
     /* Ma = g^Ra mod p <- This is our "public" key, which we exchange
      * with the remote server to help make K, the session key. */
     gcry_mpi_powm(Ma, g, Ra, p);
-    /* The first authinfo block, containing the username and our Ma value. */
-    ai_len = 1 + (int)strnlen(username, AFP_MAX_USERNAME_LEN) + 1 + Ma_len;
+    /* The first authinfo block contains the username and Ma.  Ma must start
+     * at an even AFP-packet offset, so calculate the username padding from
+     * the serialized FPLogin prefix rather than the heap address. */
+    ai_len = 1 + (int)strnlen(username, AFP_MAX_USERNAME_LEN);
+
+    if ((1 + 1 + (int)strnlen(server->using_version->av_name, UINT8_MAX) +
+            1 + (int)strlen("DHCAST128") + ai_len) & 1) {
+        ai_len++;
+    }
+
+    ai_len += Ma_len;
     ai = calloc(1, ai_len);
     d = ai;
 
@@ -111,10 +120,9 @@ int dhx_login(struct afp_server *server, char *username, char *passwd)
 
     d += copy_to_pascal(ai, username) + 1;
 
-    if (((long)d) % 2) {
+    if ((1 + 1 + (int)strnlen(server->using_version->av_name, UINT8_MAX) +
+            1 + (int)strlen("DHCAST128") + (d - ai)) & 1) {
         d++;
-    } else {
-        ai_len--;
     }
 
     /* Extract Ma to send to the server for the exchange. */
@@ -389,7 +397,7 @@ int dhx_passwd(struct afp_server *server,
     } else {
         /* AFP < 3.0: username as pascal string */
         int pascal_len = 1 + (int)strnlen(username, AFP_MAX_USERNAME_LEN);
-        int pad = (pascal_len & 1) ? 0 : 1;
+        int pad = pascal_len & 1;
         username_overhead = pascal_len + pad;
         ai_len = username_overhead + 2 + Ma_len;
         ai = calloc(1, ai_len);
@@ -401,9 +409,7 @@ int dhx_passwd(struct afp_server *server,
 
         d += copy_to_pascal(d, username) + 1;
 
-        if ((long)d & 0x1) {
-            ai_len--;
-        } else {
+        if (pad) {
             d++;
         }
     }
@@ -508,7 +514,7 @@ int dhx_passwd(struct afp_server *server,
         *d++ = 0;
     } else {
         int pascal_len = 1 + (int)strnlen(username, AFP_MAX_USERNAME_LEN);
-        int pad = (pascal_len & 1) ? 0 : 1;
+        int pad = pascal_len & 1;
         username_overhead = pascal_len + pad;
         ai_len = username_overhead + 2 + changepw_plaintext_len;
         ai = calloc(1, ai_len);
@@ -520,9 +526,7 @@ int dhx_passwd(struct afp_server *server,
 
         d += copy_to_pascal(d, username) + 1;
 
-        if ((long)d & 0x1) {
-            ai_len--;
-        } else {
+        if (pad) {
             d++;
         }
     }
