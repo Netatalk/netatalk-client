@@ -6,9 +6,11 @@
  *
  */
 
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "afp_internal.h"
 #include "afp_protocol.h"
@@ -25,6 +27,43 @@ struct afp_path_header_unicode {
     uint32_t hint;
     uint16_t unicode;
 }  __attribute__((__packed__)) ;
+
+int afp_parse_version(const char *text, int *version_out)
+{
+    long version;
+    char *end;
+
+    if (!text || !version_out) {
+        return -1;
+    }
+
+    if (strchr(text, '.')) {
+        long major, minor;
+        char trailing;
+
+        if (sscanf(text, "%ld.%ld%c", &major, &minor, &trailing) != 2
+                || major < 0 || minor < 0 || minor > 9
+                || major > (INT_MAX - minor) / 10) {
+            return -1;
+        }
+
+        version = major * 10 + minor;
+    } else {
+        errno = 0;
+        version = strtol(text, &end, 10);
+
+        if (errno != 0 || end == text || *end != '\0') {
+            return -1;
+        }
+    }
+
+    if (version < 0 || version > INT_MAX) {
+        return -1;
+    }
+
+    *version_out = (int)version;
+    return 0;
+}
 
 unsigned short utf8_to_string(char * dest, char * buf, unsigned short maxlen)
 {

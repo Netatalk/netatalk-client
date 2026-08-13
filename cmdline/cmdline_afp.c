@@ -4756,7 +4756,7 @@ void cmdline_afp_setup_logging(void)
 
 
 int cmdline_afp_setup(int batch_mode, char *url_string,
-                      const char *username_override)
+                      const char *username_override, int requested_version)
 {
     if (set_current_directory(DEFAULT_DIRECTORY) != 0) {
         return -1;
@@ -4778,6 +4778,10 @@ int cmdline_afp_setup(int batch_mode, char *url_string,
             if (afp_sl_url_parse(&url, url_string)) {
                 printf("Could not parse url.\n");
                 return -1;
+            }
+
+            if (requested_version) {
+                url.requested_version = requested_version;
             }
 
             if (username_override
