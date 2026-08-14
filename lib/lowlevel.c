@@ -502,12 +502,11 @@ int ll_read(struct afp_volume * volume,
             break;
         }
 
+        /* A short successful AFP read is not EOF.  In particular, Classic
+         * Mac OS AFP servers may cap a kFPNoErr reply below the requested
+         * count. Continue from the returned offset; only an explicit
+         * kFPEOFErr above establishes EOF. */
         totalsize += buffer.size;
-
-        if ((size_t)buffer.size < chunksize) {
-            *eof = 1;
-            break;
-        }
     }
 
 done:
