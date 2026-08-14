@@ -241,6 +241,7 @@ int ll_open(struct afp_volume * volume,
     int ret;
     int dsi_ret;
     int rc;
+    unsigned int resource = fp->resource;
     unsigned char aflags = 0;
     /* O_RDONLY is 0, so we need to check access mode bits properly */
     int access_mode = flags & O_ACCMODE;
@@ -270,11 +271,6 @@ int ll_open(struct afp_volume * volume,
        O_APPEND
        O_NOATIME - we have no way to handle this anyway
     */
-    /*this will be used later for caching*/
-    fp->sync = (unsigned char)(flags & (O_SYNC));
-    fp->writable = (aflags & AFP_OPENFORK_ALLOWWRITE) ? 1 : 0;
-    fp->dirty = 0;
-
     /* Handle file creation properly when O_CREAT is set */
     if ((flags & O_CREAT) && (aflags & AFP_OPENFORK_ALLOWWRITE)) {
         if (flags & O_EXCL) {
@@ -305,7 +301,7 @@ int ll_open(struct afp_volume * volume,
     if (volume->server->using_version->av_number < 30) {
         switch (ll_get_directory_entry(volume, fp->basename, fp->did,
                                        kFPParentDirIDBit | kFPNodeIDBit |
-                                       (fp->resource ? kFPRsrcForkLenBit : kFPDataForkLenBit),
+                                       (resource ? kFPRsrcForkLenBit : kFPDataForkLenBit),
                                        0, fp)) {
         case kFPAccessDenied:
             ret = EACCES;
@@ -326,8 +322,8 @@ int ll_open(struct afp_volume * volume,
             goto error;
         }
 
-        if ((fp->resource ? (fp->resourcesize >= (AFP_MAX_AFP2_FILESIZE - 1)) :
-                (fp->size >= AFP_MAX_AFP2_FILESIZE - 1))) {
+        if (resource ? (fp->resourcesize >= (AFP_MAX_AFP2_FILESIZE - 1)) :
+                (fp->size >= AFP_MAX_AFP2_FILESIZE - 1)) {
             /* According to p.30, if the server doesn't support >4GB files
                and the file being opened is >4GB, then resourcesize or size
                will return 4GB.  How can it return 4GB in 32 bits?  I
@@ -336,9 +332,19 @@ int ll_open(struct afp_volume * volume,
             ret = EOVERFLOW;
             goto error;
         }
+
+        /* parse_reply_block() clears the complete result structure.  Keep
+         * the caller's fork type: resource forks need it for both the AFP
+         * open and appledouble_close(), which unregisters the open fork. */
+        fp->resource = resource;
     }
 
-    dsi_ret = afp_openfork(volume, fp->resource ? 1 : 0, fp->did,
+    /* These are client-side open state, not AFP reply parameters.  Set them
+     * after the AFP 2.x parameter query, whose reply parser clears fp. */
+    fp->sync = (unsigned char)(flags & O_SYNC);
+    fp->writable = (aflags & AFP_OPENFORK_ALLOWWRITE) ? 1 : 0;
+    fp->dirty = 0;
+    dsi_ret = afp_openfork(volume, resource ? 1 : 0, fp->did,
                            aflags, fp->basename, fp);
 
     switch (dsi_ret) {
@@ -389,7 +395,7 @@ int ll_open(struct afp_volume * volume,
     /* Handle O_TRUNC flag: truncate existing files (but not newly created ones) */
     /* Skip truncation if O_CREAT was set (file just created, already empty) */
     if ((flags & O_TRUNC) && !(flags & O_CREAT)) {
-        ret = ll_zero_file(volume, fp->forkid, fp->resource);
+        ret = ll_zero_file(volume, fp->forkid, resource);
 
         if (ret != 0) {
             goto error;
