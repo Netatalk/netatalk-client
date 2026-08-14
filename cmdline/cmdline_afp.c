@@ -2129,6 +2129,16 @@ static int retrieve_file(const char *arg, int fd, struct stat *stat,
         offset += received;
     }
 
+    /* A server can return a short kFPNoErr response.  Do not present the
+     * resulting partial local file as a successful download: the remote
+     * catalog size captured above is the expected data-fork length. */
+    if (stat->st_size < 0 || total != (unsigned long long)stat->st_size) {
+        fprintf(stderr, "Incomplete download of %s: received %llu of %lld bytes\n",
+                path, total, (long long)stat->st_size);
+        ret = -EIO;
+        goto out;
+    }
+
     if (verbose_mode) {
         gettimeofday(&endtv, NULL);
         printdiff(&starttv, &endtv, &total);
