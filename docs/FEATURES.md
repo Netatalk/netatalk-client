@@ -229,14 +229,13 @@ to log in.  'status' will show you this also.
 
 The detection is done in order to deal with some details.
 
-### Mac OS 8
+### Mac OS 8 and earlier
 
-Netatalk Client has never been used with Mac OS 8, so there's no data.  You could do
-this with AFP over TCP/IP, but this could be difficult. Email me if you have any info.
+Netatalk Client has never been used with Mac OS 8 and earlier versions, so there's no data.
 
 ### Mac OS 9
 
-This speaks AFP 2.1, so this presents certain restrictions, such as:
+This speaks AFP 2.1 or 2.2, which presents certain restrictions, such as:
 
 - smaller limits on file and disk sizes (4GB)
   - creating files larger than 2GB isn't possible and isn't handled properly
@@ -246,7 +245,7 @@ This speaks AFP 2.1, so this presents certain restrictions, such as:
 - for directories, timestamps are reported as the mount times, which is what
   the Mac OS X client does.
 
-There is no proper charset conversions for filenames.  Patches accepted.
+Out of the classic Mac OS charsets, only MacRoman is supported presently.
 
 ### Mac OS X
 
@@ -291,9 +290,10 @@ being developed as a companion client to the Netatalk AFP server project.
 You must use Netatalk 2.0.4 or later because earlier versions of the server has
 broken Unix privilege support, notably when setting the execute bit.
 
-### LaCie devices
+### NAS devices by LaCie, Synology, and other vendors
 
-The LaCie device has an ARM processor in it, and speaks Netatalk.
+Historically, most NAS devices with AFP support have bundled Netatalk 2.x or 3.x,
+so they are expected to work with Netatalk Client.
 
 ## I. FUSE-specific bugs
 
