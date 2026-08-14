@@ -38,6 +38,7 @@ void cmdline_afp_setup_logging(void);
 void cmdline_set_log_level(int loglevel);
 void cmdline_set_verbose(int verbose);
 int cmdline_set_metadata_mode(const char *mode);
+void cmdline_log_metadata_mode(void);
 int cmdline_batch_transfer(char * local_path, int direction, int recursive);
 char *afp_remote_file_generator(const char *text, int state);
 

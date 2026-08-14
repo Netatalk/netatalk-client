@@ -598,6 +598,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    cmdline_log_metadata_mode();
+
     if (browse && optind < argc) {
         printf("--browse cannot be combined with an AFP URL or batch arguments.\n");
         usage();
