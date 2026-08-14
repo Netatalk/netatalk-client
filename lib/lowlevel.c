@@ -667,6 +667,20 @@ int ll_readdir(struct afp_volume * volume, const char *path,
             unsigned int temp_permissions = p->unixprivs.permissions;
             set_nonunix_perms(&temp_permissions, p);
             p->unixprivs.permissions = temp_permissions;
+
+            /* Some AFP 2.x servers return the unset-date sentinel for
+             * directory times.  Preserve every real server timestamp; only
+             * use the connection time where the protocol says no date exists.
+             */
+            if (p->isdir) {
+                if (p->creation_date_is_unset) {
+                    p->creation_date = volume->server->connect_time;
+                }
+
+                if (p->modification_date_is_unset) {
+                    p->modification_date = volume->server->connect_time;
+                }
+            }
         }
     }
 
@@ -685,8 +699,8 @@ int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
     int rc;
     unsigned int filebitmap, dirbitmap;
     char basename[AFPC_MAX_NAME_BYTES];
-    unsigned int creation_date;
-    unsigned int modification_date;
+    time_t creation_date;
+    time_t modification_date;
     memset(stbuf, 0, sizeof(struct stat));
 
     if ((volume->server) &&

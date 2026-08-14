@@ -2128,7 +2128,7 @@ static unsigned char process_readdir(struct daemon_client * c)
 
         size_t name_len = strlen(fp->name);
         size_t entry_size = sizeof(uint32_t) + name_len +
-                            sizeof(uint32_t) * 2 +
+                            sizeof(int64_t) * 2 +
                             sizeof(struct afpc_unix_privileges) +
                             sizeof(uint64_t);
 
@@ -2142,10 +2142,14 @@ static unsigned char process_readdir(struct daemon_client * c)
         p += sizeof(uint32_t);
         memcpy(p, fp->name, name_len);
         p += name_len;
-        memcpy(p, &fp->creation_date, sizeof(uint32_t));
-        p += sizeof(uint32_t);
-        memcpy(p, &fp->modification_date, sizeof(uint32_t));
-        p += sizeof(uint32_t);
+        {
+            int64_t creation_date = fp->creation_date;
+            int64_t modification_date = fp->modification_date;
+            memcpy(p, &creation_date, sizeof(creation_date));
+            p += sizeof(creation_date);
+            memcpy(p, &modification_date, sizeof(modification_date));
+            p += sizeof(modification_date);
+        }
         memcpy(p, &fp->unixprivs, sizeof(struct afpc_unix_privileges));
         p += sizeof(struct afpc_unix_privileges);
         memcpy(p, &fp->size, sizeof(uint64_t));

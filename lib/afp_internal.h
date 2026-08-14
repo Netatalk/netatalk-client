@@ -2,6 +2,7 @@
 #define AFPCLIENT_INTERNAL_H
 
 #include <arpa/inet.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <netdb.h>
 #include <sys/statvfs.h>
@@ -10,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <netinet/in.h>
+#include <time.h>
 
 #include "netatalk-client/types.h"
 #include "netatalk-client/url.h"
@@ -39,9 +41,13 @@ struct afp_rx_buffer {
 struct afp_file_info {
     unsigned short attributes;
     unsigned int did;
-    unsigned int creation_date;
-    unsigned int modification_date;
-    unsigned int backup_date;
+    time_t creation_date;
+    time_t modification_date;
+    time_t backup_date;
+    /* The signed AFP date value 0x80000000 denotes an unset date. */
+    unsigned char creation_date_is_unset;
+    unsigned char modification_date_is_unset;
+    unsigned char backup_date_is_unset;
     unsigned int fileid;
     unsigned short offspring;
     unsigned char sync;
@@ -88,9 +94,9 @@ struct afp_volume {
     char flags;  /* This is from afpGetSrvrParms */
     unsigned short attributes; /* This is from VolOpen */
     unsigned short signature;  /* This is fixed or variable */
-    unsigned int creation_date;
-    unsigned int modification_date;
-    unsigned int backup_date;
+    time_t creation_date;
+    time_t modification_date;
+    time_t backup_date;
     struct statvfs stat;
     unsigned char mounted;
     unsigned char attached;
@@ -184,6 +190,10 @@ struct afp_server {
 
     /* This is the time we connected */
     time_t connect_time;
+
+    /* AFP 2.x timestamps use the server's local clock.  This is the
+     * server-minus-client offset calculated from FPGetSrvrParms. */
+    time_t time_offset;
 
     /* UAMs */
     unsigned int supported_uams;
@@ -672,9 +682,11 @@ int afp_removeextattr(struct afp_volume * volume, unsigned int dirid,
 char *afp_get_command_name(unsigned char code);
 
 /* From Netatalk's adouble.h. */
-#define AD_DATE_DELTA         946684800
-#define AD_DATE_FROM_UNIX(x)  (htonl((x) - AD_DATE_DELTA))
-#define AD_DATE_TO_UNIX(x)    (ntohl(x) + AD_DATE_DELTA)
+#define AD_DATE_DELTA 946684800LL
+
+/* AFP dates are signed, network-order, seconds from 2000-01-01. */
+time_t afp_date_to_unix(const struct afp_server *server, uint32_t date);
+uint32_t afp_date_from_unix(const struct afp_server *server, time_t date);
 
 void add_file_by_name(struct afp_file_info **base, const char *filename);
 

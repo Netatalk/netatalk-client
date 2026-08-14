@@ -32,6 +32,8 @@ int main(int argc, char **argv)
     struct afp_comment comment;
     struct afp_icon_info icon_info;
     struct afp_appl appl;
+    struct afp_file_info file_info;
+    struct afp_versions afp2 = { "AFP2.2", 22 };
     struct {
         struct dsi_header header __attribute__((__packed__));
         uint16_t bitmap;
@@ -40,6 +42,24 @@ int main(int argc, char **argv)
     } __attribute__((__packed__)) xattr_reply;
     test_tap_init(argc, argv);
     memset(&server, 0, sizeof(server));
+    CHECK(afp_date_to_unix(NULL, htonl(UINT32_C(0x80000000)))
+          == (time_t)(AD_DATE_DELTA - INT64_C(0x80000000)));
+    server.using_version = &afp2;
+    server.time_offset = 3600;
+    CHECK(afp_date_to_unix(&server, htonl(UINT32_C(0x80000000)))
+          == (time_t)(AD_DATE_DELTA - INT64_C(0x80000000) - 3600));
+    CHECK(afp_date_to_unix(&server,
+                           afp_date_from_unix(&server, (time_t)1700000000))
+          == (time_t)1700000000);
+    memset(&file_info, 0, sizeof(file_info));
+    wire32 = htonl(UINT32_C(0x80000000));
+    CHECK(parse_reply_block(&server, (const char *)&wire32, sizeof(wire32),
+                            0, kFPModDateBit, 0, &file_info) == 0);
+    CHECK(file_info.modification_date
+          == (time_t)(AD_DATE_DELTA - INT64_C(0x80000000) - 3600));
+    CHECK(file_info.modification_date_is_unset);
+    server.using_version = NULL;
+    server.time_offset = 0;
     CHECK(!afp_server_has_valid_signature(&server));
     server.flags = kSrvrSig;
     CHECK(!afp_server_has_valid_signature(&server));

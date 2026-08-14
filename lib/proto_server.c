@@ -8,6 +8,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "afp_internal.h"
 #include "afp_protocol.h"
@@ -16,6 +17,44 @@
 #include "dsi.h"
 #include "dsi_protocol.h"
 #include "utils.h"
+
+static int server_uses_local_time(const struct afp_server *server)
+{
+    return server && server->using_version
+           && server->using_version->av_number < 30;
+}
+
+time_t afp_date_to_unix(const struct afp_server *server, uint32_t date)
+{
+    uint32_t wire_seconds = ntohl(date);
+    int64_t seconds = wire_seconds;
+
+    /* AFP defines this field as a signed long.  Do the sign extension before
+     * applying the 2000 epoch; 0x80000000 is the protocol's unset-date
+     * sentinel, not a date in 2068. */
+    if (wire_seconds & UINT32_C(0x80000000)) {
+        seconds -= INT64_C(0x100000000);
+    }
+
+    seconds += AD_DATE_DELTA;
+
+    if (server_uses_local_time(server)) {
+        seconds -= server->time_offset;
+    }
+
+    return (time_t)seconds;
+}
+
+uint32_t afp_date_from_unix(const struct afp_server *server, time_t date)
+{
+    int64_t seconds = (int64_t)date - AD_DATE_DELTA;
+
+    if (server_uses_local_time(server)) {
+        seconds += server->time_offset;
+    }
+
+    return htonl((uint32_t)seconds);
+}
 
 int afp_getsrvrparms(struct afp_server *server)
 {
@@ -53,7 +92,16 @@ int afp_getsrvrparms_reply(struct afp_server *server, char * msg,
         return -1;
     }
 
-    server->connect_time = AD_DATE_TO_UNIX(afp_getsrvparm_reply->time);
+    server->connect_time = afp_date_to_unix(NULL, afp_getsrvparm_reply->time);
+
+    if (server_uses_local_time(server)) {
+        /* AFP 2.x dates use the server's local clock.  Express subsequent
+         * dates on the client's Unix time base, using the server time sampled
+         * in this reply. */
+        server->time_offset = server->connect_time - time(NULL);
+        server->connect_time -= server->time_offset;
+    }
+
     server->num_volumes = afp_getsrvparm_reply->numvolumes;
     newvolumes = malloc(afp_getsrvparm_reply->numvolumes * sizeof(
                             struct afp_volume));

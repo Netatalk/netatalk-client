@@ -43,19 +43,19 @@ static int parse_volbitmap_reply(struct afp_server *server _U_,
 
     if (bitmap & kFPVolCreateDateBit) {
         unsigned int *date = (void *) p;
-        tmpvol->creation_date = AD_DATE_TO_UNIX(*date);
+        tmpvol->creation_date = afp_date_to_unix(server, *date);
         p += 4;
     }
 
     if (bitmap & kFPVolModDateBit) {
         unsigned int *date = (void *) p;
-        tmpvol->modification_date = AD_DATE_TO_UNIX(*date);
+        tmpvol->modification_date = afp_date_to_unix(server, *date);
         p += 4;
     }
 
     if (bitmap & kFPVolBackupDateBit) {
         unsigned int *date = (void *) p;
-        tmpvol->backup_date = AD_DATE_TO_UNIX(*date);
+        tmpvol->backup_date = afp_date_to_unix(server, *date);
         p += 4;
     }
 

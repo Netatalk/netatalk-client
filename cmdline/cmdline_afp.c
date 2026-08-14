@@ -3154,7 +3154,7 @@ int com_appl(char *arg)
             printf("index=%u creator=%s creator_hex=%08" PRIx32
                    " tag=%" PRIu32 " directory_id=%" PRIu32
                    " pathname=%s file_bitmap=%04x file_id=%" PRIu32
-                   " created=%" PRIu32 " modified=%" PRIu32
+                   " created=%" PRId64 " modified=%" PRId64
                    " data_bytes=%" PRIu64 " resource_bytes=%" PRIu64 "\n",
                    index, creator_text, creator, appl.tag, appl.directory_id,
                    display_text(appl.pathname, pathname, sizeof(pathname)),

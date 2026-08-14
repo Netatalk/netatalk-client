@@ -2377,7 +2377,7 @@ int afp_sl_readdir(afpc_volume_t * volid, const char * path,
         if (batch_received > 0) {
             const char *p = ((const char *) mainrep) + sizeof(*mainrep);
             const char *end = ((const char *) mainrep) + content_len;
-            const size_t fixed_entry_size = sizeof(uint32_t) * 2U
+            const size_t fixed_entry_size = sizeof(int64_t) * 2U
                                             + sizeof(struct afpc_unix_privileges)
                                             + sizeof(uint64_t);
 
@@ -2437,10 +2437,12 @@ int afp_sl_readdir(afpc_volume_t * volid, const char * path,
                 memcpy(current_basic->name, p, name_len);
                 current_basic->name[name_len] = '\0';
                 p += name_len;
-                memcpy(&current_basic->creation_date, p, sizeof(uint32_t));
-                p += sizeof(uint32_t);
-                memcpy(&current_basic->modification_date, p, sizeof(uint32_t));
-                p += sizeof(uint32_t);
+                memcpy(&current_basic->creation_date, p,
+                       sizeof(current_basic->creation_date));
+                p += sizeof(current_basic->creation_date);
+                memcpy(&current_basic->modification_date, p,
+                       sizeof(current_basic->modification_date));
+                p += sizeof(current_basic->modification_date);
                 memcpy(&current_basic->unixprivs, p, sizeof(struct afpc_unix_privileges));
                 p += sizeof(struct afpc_unix_privileges);
                 memcpy(&current_basic->size, p, sizeof(uint64_t));
