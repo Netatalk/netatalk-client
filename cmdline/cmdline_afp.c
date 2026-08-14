@@ -70,6 +70,9 @@ static char last_log_message[CMDLINE_ERROR_LEN];
 
 int full_url = 0;
 
+static void cmdline_stateless_log(void *user_data, int loglevel,
+                                  const char *message);
+
 #define DEFAULT_DIRECTORY "/"
 #define METADATA_OUTPUT_MODE 0600
 #define DIRECTORY_PAGE_SIZE 256
@@ -4445,6 +4448,27 @@ void cmdline_set_verbose(int verbose)
 int cmdline_set_metadata_mode(const char *mode)
 {
     return afp_metadata_mode_parse(mode, &transfer_metadata_mode);
+}
+
+void cmdline_log_metadata_mode(void)
+{
+    char message[CMDLINE_ERROR_LEN];
+    const char *mode;
+
+    if (transfer_metadata_mode != AFP_METADATA_AUTO) {
+        mode = afp_metadata_mode_name(transfer_metadata_mode);
+    } else {
+#if defined(__APPLE__)
+        mode = "native macOS extended attributes";
+#else
+        mode = "filesystem extended attributes, with Netatalk AppleDouble fallback";
+#endif
+    }
+
+    snprintf(message, sizeof(message),
+             "Selected metadata transfer format: %s",
+             mode);
+    cmdline_stateless_log(NULL, LOG_DEBUG, message);
 }
 
 static void cmdline_stateless_log(void *user_data, int loglevel,
