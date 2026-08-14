@@ -82,7 +82,7 @@ static int afp_setparms_lowlevel(struct afp_volume * volume,
 
     if (bitmap & kFPCreateDateBit) {
         unsigned int *date = (void *) p;
-        *date = AD_DATE_FROM_UNIX(fp->creation_date);
+        *date = afp_date_from_unix(volume->server, fp->creation_date);
 #if 0
         result_bitmap |= kFPCreateDateBit;
 #endif
@@ -91,7 +91,7 @@ static int afp_setparms_lowlevel(struct afp_volume * volume,
 
     if (bitmap & kFPModDateBit) {
         unsigned int *date = (void *) p;
-        *date = AD_DATE_FROM_UNIX(fp->modification_date);
+        *date = afp_date_from_unix(volume->server, fp->modification_date);
 #if 0
         result_bitmap |= kFPModDateBit;
 #endif
@@ -100,7 +100,7 @@ static int afp_setparms_lowlevel(struct afp_volume * volume,
 
     if (bitmap & kFPBackupDateBit) {
         unsigned int *date = (void *) p;
-        *date = AD_DATE_FROM_UNIX(fp->backup_date);
+        *date = afp_date_from_unix(volume->server, fp->backup_date);
         p += 4;
 #if 0
         result_bitmap |= kFPBackupDateBit;

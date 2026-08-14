@@ -499,8 +499,8 @@ struct afpsl_ipc_desktop_appl_response {
     uint32_t tag;
     uint32_t directory_id;
     uint32_t file_id;
-    uint32_t creation_date;
-    uint32_t modification_date;
+    int64_t creation_date;
+    int64_t modification_date;
     uint64_t data_fork_size;
     uint64_t resource_fork_size;
     char pathname[AFPC_MAX_NAME_BYTES];

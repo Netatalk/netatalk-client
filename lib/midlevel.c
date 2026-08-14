@@ -273,7 +273,7 @@ static int map_filebase_uidgid_to_client(struct afp_volume * volume,
     return 0;
 }
 
-static void update_time(unsigned int * newtime)
+static void update_time(time_t *newtime)
 {
     struct timeval tv;
     gettimeofday(&tv, NULL);

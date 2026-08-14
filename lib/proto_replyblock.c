@@ -144,7 +144,9 @@ int parse_reply_block(struct afp_server *server _U_,
             return -1;
         }
 
-        filecur->creation_date = AD_DATE_TO_UNIX(*date);
+        filecur->creation_date = afp_date_to_unix(server, *date);
+        filecur->creation_date_is_unset =
+            ntohl(*date) == UINT32_C(0x80000000);
         p2 += 4;
     }
 
@@ -155,7 +157,9 @@ int parse_reply_block(struct afp_server *server _U_,
             return -1;
         }
 
-        filecur->modification_date = AD_DATE_TO_UNIX(*date);
+        filecur->modification_date = afp_date_to_unix(server, *date);
+        filecur->modification_date_is_unset =
+            ntohl(*date) == UINT32_C(0x80000000);
         p2 += 4;
     }
 
@@ -166,7 +170,9 @@ int parse_reply_block(struct afp_server *server _U_,
             return -1;
         }
 
-        filecur->backup_date = AD_DATE_TO_UNIX(*date);
+        filecur->backup_date = afp_date_to_unix(server, *date);
+        filecur->backup_date_is_unset =
+            ntohl(*date) == UINT32_C(0x80000000);
         p2 += 4;
     }
 

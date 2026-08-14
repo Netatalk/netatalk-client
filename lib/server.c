@@ -90,7 +90,7 @@ struct afp_server *afp_server_complete_connection(
     }
 
     /* If we haven't gotten a proper date back, so set it to the connect time. */
-    if (server->connect_time == AD_DATE_TO_UNIX(0)) {
+    if (server->connect_time == afp_date_to_unix(NULL, 0)) {
         struct timeval tv;
         gettimeofday(&tv, NULL);
         server->connect_time = tv.tv_sec;

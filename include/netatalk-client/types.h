@@ -75,8 +75,8 @@ struct afpc_unix_privileges {
 
 struct afpc_file_info {
     char name[AFPC_MAX_NAME_BYTES];
-    unsigned int creation_date;
-    unsigned int modification_date;
+    int64_t creation_date;
+    int64_t modification_date;
     struct afpc_unix_privileges unixprivs;
     unsigned long long size;
 };
