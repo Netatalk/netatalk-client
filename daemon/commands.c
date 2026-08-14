@@ -1078,11 +1078,19 @@ static unsigned char process_chmod(struct daemon_client * c)
             result = AFPSL_IPC_RESULT_ENOENT;
         } else if (ret == -EACCES || ret == -EPERM) {
             result = AFPSL_IPC_RESULT_ACCESS;
+        } else if (ret == -ENOSYS || ret == -ENOTSUP
+                   || ret == -EOPNOTSUPP) {
+            /* AFP 2.x servers, including Classic Mac OS, cannot expose
+             * POSIX Unix privileges.  Preserve this capability result so
+             * transfer callers can keep copying AFP metadata. */
+            result = AFPSL_IPC_RESULT_NOTSUPPORTED;
         } else {
             result = AFPSL_IPC_RESULT_ERROR;
         }
 
-        log_for_client((void *) c, AFPFSD, LOG_ERR,
+        log_for_client((void *) c, AFPFSD,
+                       result == AFPSL_IPC_RESULT_NOTSUPPORTED
+                       ? LOG_DEBUG : LOG_ERR,
                        "Failed to chmod file %s: %d (%s)", path, ret,
                        strerror(-ret));
     }

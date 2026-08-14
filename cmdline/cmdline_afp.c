@@ -798,7 +798,7 @@ static int apply_remote_posix_metadata(const char *path, const struct stat *st)
 {
     int ret = afp_sl_chmod(&vol_id, path, NULL, st->st_mode & 07777);
 
-    if (ret != 0 && ret != -ENOTSUP && ret != -EACCES) {
+    if (ret != 0 && ret != -ENOTSUP && ret != -ENOSYS && ret != -EACCES) {
         return ret;
     }
 
@@ -806,7 +806,8 @@ static int apply_remote_posix_metadata(const char *path, const struct stat *st)
 
     ret = afp_sl_utime(&vol_id, path, NULL, &times);
 
-    return ret == 0 || ret == -ENOTSUP || ret == -EACCES ? 0 : ret;
+    return ret == 0 || ret == -ENOTSUP || ret == -ENOSYS || ret == -EACCES
+           ? 0 : ret;
 }
 
 static int copy_local_metadata_to_remote(const char *local_path,
