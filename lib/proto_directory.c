@@ -8,6 +8,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 
 #include "afp_internal.h"
 #include "afp_protocol.h"
@@ -28,7 +29,11 @@ typedef struct ext2_reply_entry {
     uint8_t pad;
 } __attribute__((__packed__)) ext2_reply_entry;
 
-#define AFP_ENUMERATE_MAX_REPLY_SIZE 32768
+/* FPEnumerate and FPEnumerateExt carry MaxReplySize in a legacy signed
+ * 16-bit field.  Classic AFP servers reject 0x8000 and above, so keep the
+ * common cap within INT16_MAX even though the local receive buffer is larger.
+ */
+#define AFP_ENUMERATE_MAX_REPLY_SIZE INT16_MAX
 
 static unsigned int enumerate_max_reply_size(struct afp_server *server)
 {
