@@ -24,6 +24,40 @@
  * without making this command parser depend on afpsld's private protocol. */
 #define AFPC_SL_STATUS_BUFFER_SIZE (64U * 1024U)
 
+static int sl_log_rank(int loglevel)
+{
+    switch (loglevel) {
+    case LOG_DEBUG:
+        return 0;
+
+    case LOG_INFO:
+        return 1;
+
+    case LOG_NOTICE:
+        return 2;
+
+    case LOG_WARNING:
+        return 3;
+
+    case LOG_ERR:
+        return 4;
+
+    default:
+        return 4;
+    }
+}
+
+static void sl_log_callback(void *user_data, int loglevel, const char *message)
+{
+    (void)user_data;
+
+    if (sl_log_rank(loglevel) < sl_log_rank(LOG_NOTICE)) {
+        return;
+    }
+
+    fprintf(stderr, "%s\n", message);
+}
+
 static void sl_usage(FILE *stream)
 {
     fputs("Usage:\n"
@@ -33,6 +67,8 @@ static void sl_usage(FILE *stream)
 
 int afpc_sl_command(int argc, char **argv)
 {
+    afp_sl_set_log_callback(sl_log_callback, NULL);
+
     if (argc != 1) {
         sl_usage(stderr);
         return 2;

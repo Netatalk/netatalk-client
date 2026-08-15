@@ -50,6 +50,143 @@ static pthread_mutex_t file_handle_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Serialize all AFP server operations to prevent concurrent DSI calls */
 static pthread_mutex_t server_op_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static const char *afpsl_ipc_command_name(unsigned char command)
+{
+    switch (command) {
+    case AFPSL_IPC_COMMAND_ATTACH:
+        return "ATTACH";
+
+    case AFPSL_IPC_COMMAND_DETACH:
+        return "DETACH";
+
+    case AFPSL_IPC_COMMAND_STATUS:
+        return "STATUS";
+
+    case AFPSL_IPC_COMMAND_EXIT:
+        return "EXIT";
+
+    case AFPSL_IPC_COMMAND_CONNECT:
+        return "CONNECT";
+
+    case AFPSL_IPC_COMMAND_GETVOLID:
+        return "GETVOLID";
+
+    case AFPSL_IPC_COMMAND_READDIR:
+        return "READDIR";
+
+    case AFPSL_IPC_COMMAND_GETVOLS:
+        return "GETVOLS";
+
+    case AFPSL_IPC_COMMAND_STAT:
+        return "STAT";
+
+    case AFPSL_IPC_COMMAND_OPEN:
+        return "OPEN";
+
+    case AFPSL_IPC_COMMAND_READ:
+        return "READ";
+
+    case AFPSL_IPC_COMMAND_CLOSE:
+        return "CLOSE";
+
+    case AFPSL_IPC_COMMAND_SERVERINFO:
+        return "SERVERINFO";
+
+    case AFPSL_IPC_COMMAND_GET_MOUNTPOINT:
+        return "GET_MOUNTPOINT";
+
+    case AFPSL_IPC_COMMAND_WRITE:
+        return "WRITE";
+
+    case AFPSL_IPC_COMMAND_CREAT:
+        return "CREAT";
+
+    case AFPSL_IPC_COMMAND_CHMOD:
+        return "CHMOD";
+
+    case AFPSL_IPC_COMMAND_RENAME:
+        return "RENAME";
+
+    case AFPSL_IPC_COMMAND_UNLINK:
+        return "UNLINK";
+
+    case AFPSL_IPC_COMMAND_TRUNCATE:
+        return "TRUNCATE";
+
+    case AFPSL_IPC_COMMAND_MKDIR:
+        return "MKDIR";
+
+    case AFPSL_IPC_COMMAND_RMDIR:
+        return "RMDIR";
+
+    case AFPSL_IPC_COMMAND_STATFS:
+        return "STATFS";
+
+    case AFPSL_IPC_COMMAND_UTIME:
+        return "UTIME";
+
+    case AFPSL_IPC_COMMAND_DISCONNECT:
+        return "DISCONNECT";
+
+    case AFPSL_IPC_COMMAND_CHANGEPW:
+        return "CHANGEPW";
+
+    case AFPSL_IPC_COMMAND_GETXATTR:
+        return "GETXATTR";
+
+    case AFPSL_IPC_COMMAND_SETXATTR:
+        return "SETXATTR";
+
+    case AFPSL_IPC_COMMAND_LISTXATTR:
+        return "LISTXATTR";
+
+    case AFPSL_IPC_COMMAND_REMOVEXATTR:
+        return "REMOVEXATTR";
+
+    case AFPSL_IPC_COMMAND_GETFINDERINFO:
+        return "GETFINDERINFO";
+
+    case AFPSL_IPC_COMMAND_SETFINDERINFO:
+        return "SETFINDERINFO";
+
+    case AFPSL_IPC_COMMAND_REMOVEFINDERINFO:
+        return "REMOVEFINDERINFO";
+
+    case AFPSL_IPC_COMMAND_GETRESOURCEFORK:
+        return "GETRESOURCEFORK";
+
+    case AFPSL_IPC_COMMAND_SETRESOURCEFORK:
+        return "SETRESOURCEFORK";
+
+    case AFPSL_IPC_COMMAND_REMOVERESOURCEFORK:
+        return "REMOVERESOURCEFORK";
+
+    case AFPSL_IPC_COMMAND_TRUNCATERESOURCEFORK:
+        return "TRUNCATERESOURCEFORK";
+
+    case AFPSL_IPC_COMMAND_HELLO:
+        return "HELLO";
+
+    case AFPSL_IPC_COMMAND_DESKTOP_GET_COMMENT:
+        return "DESKTOP_GET_COMMENT";
+
+    case AFPSL_IPC_COMMAND_DESKTOP_GET_ICON_INFO:
+        return "DESKTOP_GET_ICON_INFO";
+
+    case AFPSL_IPC_COMMAND_DESKTOP_GET_ICON:
+        return "DESKTOP_GET_ICON";
+
+    case AFPSL_IPC_COMMAND_DESKTOP_GET_APPL:
+        return "DESKTOP_GET_APPL";
+
+    case AFPSL_IPC_COMMAND_DESKTOP_SET_COMMENT:
+        return "DESKTOP_SET_COMMENT";
+
+    default:
+        return "UNKNOWN";
+    }
+}
+
 static void finish_response(struct daemon_client *c, int send_result,
                             int close_requested)
 {
@@ -2978,7 +3115,9 @@ static void *process_command_thread(void * other)
     c->outgoing_string_len = 0;
     pthread_mutex_unlock(&c->command_string_mutex);
     log_for_client((void *) c, AFPFSD, LOG_DEBUG,
-                   "******* processing command %d", req->command);
+                   "******* processing command %s (%u)",
+                   afpsl_ipc_command_name((unsigned char)req->command),
+                   (unsigned char)req->command);
     pthread_mutex_lock(&server_op_mutex);
 
     if (!c->ipc_ready && req->command != AFPSL_IPC_COMMAND_HELLO) {
