@@ -36,7 +36,8 @@ int dhx2_login(struct afp_server *server, char *username, char *passwd)
         assert("libgcrypt initialization failed");
     }
 
-    gcry_mpi_t p, g, Ma, Mb, Ra, K, nonce, new_nonce;
+    gcry_mpi_t p = NULL, g = NULL, Mb = NULL, Ra = NULL, nonce = NULL;
+    gcry_mpi_t Ma, K, new_nonce;
     char *ai = NULL, *d, *Ra_binary = NULL, *K_binary = NULL;
     char *K_hash = NULL, nonce_binary[16];
     int ai_len, hash_len, ret;
@@ -47,13 +48,10 @@ int dhx2_login(struct afp_server *server, char *username, char *passwd)
     gcry_cipher_hd_t ctx;
     gcry_error_t ctxerror;
     rbuf.data = NULL;
-    p = gcry_mpi_new(0);
-    g = gcry_mpi_new(0);
-    Ra = gcry_mpi_new(0);
+    /* Allocate MPIs which are written in place; gcry_mpi_scan() creates
+     * the remaining MPIs. */
     Ma = gcry_mpi_new(0);
-    Mb = gcry_mpi_new(0);
     K = gcry_mpi_new(0);
-    nonce = gcry_mpi_new(0);
     new_nonce = gcry_mpi_new(0);
     /* The DHX2 Pascal username must end on an even AFP-packet boundary. */
     ai_len = (int)strnlen(username, AFP_MAX_USERNAME_LEN) + 1;
@@ -186,7 +184,7 @@ int dhx2_login(struct afp_server *server, char *username, char *passwd)
     }
 
     /* Set the initialization vector for client->server transfer. */
-    ctxerror = gcry_cipher_setiv(ctx, dhx_c2siv, sizeof(dhx_s2civ));
+    ctxerror = gcry_cipher_setiv(ctx, dhx_c2siv, sizeof(dhx_c2siv));
 
     if (gcry_err_code(ctxerror) != GPG_ERR_NO_ERROR) {
         goto dhx2_fail;
@@ -280,6 +278,9 @@ int dhx2_login(struct afp_server *server, char *username, char *passwd)
         goto dhx2_fail;
     }
 
+    /* This MPI is no longer needed; the next scan allocates a new one. */
+    gcry_mpi_release(nonce);
+    nonce = NULL;
     d += sizeof(nonce_binary);
     /* Pull the server's nonce value into an gcry_mpi_t. */
     gcry_mpi_scan(&nonce, GCRYMPI_FMT_USG, d, sizeof(nonce_binary), NULL);
@@ -313,7 +314,7 @@ int dhx2_login(struct afp_server *server, char *username, char *passwd)
     /* Copy the user's password into the plaintext buffer. */
     strlcpy(d, passwd, 256);
     /* Set the initialization vector for client->server transfer. */
-    ctxerror = gcry_cipher_setiv(ctx, dhx_c2siv, sizeof(dhx_s2civ));
+    ctxerror = gcry_cipher_setiv(ctx, dhx_c2siv, sizeof(dhx_c2siv));
 
     if (gcry_err_code(ctxerror) != GPG_ERR_NO_ERROR) {
         goto dhx2_fail;
@@ -380,8 +381,9 @@ int dhx2_passwd(struct afp_server *server,
         assert("libgcrypt initialization failed");
     }
 
-    gcry_mpi_t p, g, Ma, Mb, Rb, K, clientNonce, new_clientNonce;
-    gcry_mpi_t serverNonce, new_serverNonce;
+    gcry_mpi_t p = NULL, g = NULL, Ma = NULL, Rb = NULL;
+    gcry_mpi_t clientNonce = NULL, serverNonce = NULL;
+    gcry_mpi_t Mb, K, new_clientNonce, new_serverNonce;
     char *ai = NULL, *d, *Rb_binary = NULL, *K_binary = NULL;
     char *K_hash = NULL, nonce_binary[16];
     int ai_len, hash_len, ret;
@@ -395,15 +397,11 @@ int dhx2_passwd(struct afp_server *server,
     int afp_version = server->using_version->av_number;
     int have_ctx = 0;
     rbuf.data = NULL;
-    p = gcry_mpi_new(0);
-    g = gcry_mpi_new(0);
-    Rb = gcry_mpi_new(0);
-    Ma = gcry_mpi_new(0);
+    /* Allocate MPIs which are written in place; gcry_mpi_scan() creates
+     * the remaining MPIs. */
     Mb = gcry_mpi_new(0);
     K = gcry_mpi_new(0);
-    clientNonce = gcry_mpi_new(0);
     new_clientNonce = gcry_mpi_new(0);
-    serverNonce = gcry_mpi_new(0);
     new_serverNonce = gcry_mpi_new(0);
 
     /*
@@ -625,8 +623,7 @@ int dhx2_passwd(struct afp_server *server,
     gcry_mpi_scan(&clientNonce, GCRYMPI_FMT_USG, nonce_binary,
                   sizeof(nonce_binary), NULL);
     gcry_mpi_add_ui(new_clientNonce, clientNonce, 1);
-    gcry_mpi_t retNonce;
-    retNonce = gcry_mpi_new(0);
+    gcry_mpi_t retNonce = NULL;
     gcry_mpi_scan(&retNonce, GCRYMPI_FMT_USG, d, 16, NULL);
 
     if (gcry_mpi_cmp(new_clientNonce, retNonce) != 0) {

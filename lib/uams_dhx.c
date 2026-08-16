@@ -73,22 +73,18 @@ int dhx_login(struct afp_server *server, char *username, char *passwd)
     unsigned char Ra_binary[32], K_binary[16];
     int ai_len, ret;
     const int Ma_len = 16, Mb_len = 16, nonce_len = 16;
-    gcry_mpi_t p, g, Ra, Ma, Mb, K, nonce, new_nonce;
+    gcry_mpi_t p = NULL, g = NULL, Ra = NULL;
+    gcry_mpi_t Ma, Mb = NULL, K, nonce = NULL, new_nonce;
     size_t len;
     struct afp_rx_buffer rbuf;
     unsigned short ID;
     gcry_cipher_hd_t ctx;
     gcry_error_t ctxerror;
     rbuf.data = NULL;
-    /* Initialize all gcry_mpi_t variables, so they can all be uninitialized
-     * in an orderly manner later. */
-    p = gcry_mpi_new(0);
-    g = gcry_mpi_new(0);
-    Ra = gcry_mpi_new(0);
+    /* Allocate MPIs which are written in place; gcry_mpi_scan() creates
+     * the remaining MPIs. */
     Ma = gcry_mpi_new(0);
-    Mb = gcry_mpi_new(0);
     K = gcry_mpi_new(0);
-    nonce = gcry_mpi_new(0);
     new_nonce = gcry_mpi_new(0);
     /* Get p and g into a form that libgcrypt can use */
     gcry_mpi_scan(&p, GCRYMPI_FMT_USG, p_binary, sizeof(p_binary), NULL);
@@ -351,7 +347,8 @@ int dhx_passwd(struct afp_server *server,
     int ai_len, ret;
     const int Ma_len = 16, Mb_len = 16, nonce_len = 16;
     const int changepw_plaintext_len = nonce_len + 64 + 64; /* 144 bytes */
-    gcry_mpi_t p, g, Ra, Ma, Mb, K, nonce, new_nonce;
+    gcry_mpi_t p = NULL, g = NULL, Ra = NULL;
+    gcry_mpi_t Ma, Mb = NULL, K, nonce = NULL, new_nonce;
     size_t len;
     struct afp_rx_buffer rbuf;
     unsigned short ID;
@@ -360,14 +357,10 @@ int dhx_passwd(struct afp_server *server,
     int afp_version = server->using_version->av_number;
     int username_overhead;
     rbuf.data = NULL;
-    /* Initialize all gcry_mpi_t variables */
-    p = gcry_mpi_new(0);
-    g = gcry_mpi_new(0);
-    Ra = gcry_mpi_new(0);
+    /* Allocate MPIs which are written in place; gcry_mpi_scan() creates
+     * the remaining MPIs. */
     Ma = gcry_mpi_new(0);
-    Mb = gcry_mpi_new(0);
     K = gcry_mpi_new(0);
-    nonce = gcry_mpi_new(0);
     new_nonce = gcry_mpi_new(0);
     /* Get p and g into a form that libgcrypt can use */
     gcry_mpi_scan(&p, GCRYMPI_FMT_USG, p_binary, sizeof(p_binary), NULL);
