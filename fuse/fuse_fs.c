@@ -1216,6 +1216,15 @@ static void *afp_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
     struct afp_volume * vol = fuse_get_context()->private_data;
     struct fuse_context *ctx = fuse_get_context();
+
+    /* Keep each FUSE write within the server's negotiated DSI request
+     * quantum.  This gives FUSE 3 a useful large-write size while avoiding
+     * an avoidable split and extra AFP write round trip in ll_write(). */
+    if (conn && vol->server->tx_quantum
+            && conn->max_write > vol->server->tx_quantum) {
+        conn->max_write = vol->server->tx_quantum;
+    }
+
 #ifdef __APPLE__
 
     if (conn) {
