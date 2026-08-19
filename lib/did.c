@@ -22,6 +22,8 @@ struct did_cache_entry {
     /* For the example /foo/bar/baz */
     char *dirname;                            /* full name, eg. /foo/bar/     */
     unsigned int did;            /*            eg  2323          */
+    unsigned int parentdid;
+    char *name;
     struct timeval time;
     struct did_cache_entry *next;
 } ;
@@ -36,6 +38,7 @@ int free_entire_did_cache(struct afp_volume * volume)
         p2 = p;
         p = d->next;
         free(p2->dirname);
+        free(p2->name);
         free(p2);
     }
 
@@ -59,6 +62,7 @@ int remove_did_entry(struct afp_volume * volume, const char * name)
 
             volume->did_cache_stats.force_removed++;
             free(d->dirname);
+            free(d->name);
             free(d);
             break;
         } else {
@@ -72,7 +76,8 @@ int remove_did_entry(struct afp_volume * volume, const char * name)
 
 
 static int add_did_cache_entry(struct afp_volume * volume,
-                               unsigned int new_did, const char *path)
+                               unsigned int parentdid, unsigned int new_did,
+                               const char *path, const char *name)
 {
     struct did_cache_entry * new, *old_base;
 #ifdef DID_CACHE_DISABLE
@@ -91,7 +96,16 @@ static int add_did_cache_entry(struct afp_volume * volume,
         return -1;
     }
 
+    new->name = strdup(name);
+
+    if (!new->name) {
+        free(new->dirname);
+        free(new);
+        return -1;
+    }
+
     new->did = new_did;
+    new->parentdid = parentdid;
     gettimeofday(&new->time, NULL);
     pthread_mutex_lock(&volume->did_cache_mutex);
     old_base = volume->did_cache_base;
@@ -101,6 +115,50 @@ static int add_did_cache_entry(struct afp_volume * volume,
     return 0;
 }
 
+/* Return a non-zero directory ID when this direct child is already cached.
+ * Only directories are added to the DID cache, so a cache hit also answers
+ * the type question without another FPGetFileDirParms round trip. */
+static unsigned int find_cached_directory(
+    struct afp_volume *volume,
+    unsigned int parentdid,
+    const char *name)
+{
+    struct did_cache_entry *next;
+    struct did_cache_entry **prev_ptr;
+    struct timeval now;
+    unsigned int did = 0;
+#ifdef DID_CACHE_DISABLE
+    return 0;
+#endif
+    gettimeofday(&now, NULL);
+    pthread_mutex_lock(&volume->did_cache_mutex);
+    prev_ptr = &volume->did_cache_base;
+
+    for (struct did_cache_entry *p = *prev_ptr; p; p = next) {
+        next = p->next;
+
+        if (now.tv_sec > p->time.tv_sec + timeout) {
+            *prev_ptr = next;
+            volume->did_cache_stats.expired++;
+            free(p->dirname);
+            free(p->name);
+            free(p);
+            continue;
+        }
+
+        if (p->parentdid == parentdid && strcmp(p->name, name) == 0) {
+            did = p->did;
+            volume->did_cache_stats.hits++;
+            break;
+        }
+
+        prev_ptr = &p->next;
+    }
+
+    pthread_mutex_unlock(&volume->did_cache_mutex);
+    return did;
+}
+
 unsigned char is_dir(struct afp_volume * volume,
                      unsigned int parentdid, const char *path)
 {
@@ -108,14 +166,12 @@ unsigned char is_dir(struct afp_volume * volume,
     unsigned int filebitmap = 0;
     unsigned int dirbitmap = 0;
     struct afp_file_info fi;
-#if 0
-    struct did_cache_entry * p;
 
-    if ((p = find_did_cache_entry(volume, parentdid, path, strlen(path)))) {
-        return p->isdir;
+    if (find_cached_directory(volume, parentdid, path)) {
+        return 1;
     }
 
-#endif
+    volume->did_cache_stats.misses++;
     ret = afp_getfiledirparms(volume, parentdid,
                               filebitmap, dirbitmap, path, &fi);
 
@@ -152,6 +208,7 @@ static unsigned int find_dirid_by_fullname(struct afp_volume * volume,
             if (strcmp(p->dirname, path) == 0) {
                 *prev_ptr = next;
                 free(p->dirname);
+                free(p->name);
                 free(p);
                 goto out;
             }
@@ -159,6 +216,7 @@ static unsigned int find_dirid_by_fullname(struct afp_volume * volume,
             /* Remove expired entry */
             *prev_ptr = next;
             free(p->dirname);
+            free(p->name);
             free(p);
             p = next;
             continue;
@@ -268,9 +326,9 @@ int get_dirid(struct afp_volume * volume, const char * path,
         volume->did_cache_stats.misses++;
         ret = afp_getfiledirparms(volume, parent_did,
                                   filebitmap, dirbitmap, name, &fi);
-        free(name);
 
         if (ret) {
+            free(name);
             goto out;
         }
 
@@ -278,16 +336,20 @@ int get_dirid(struct afp_volume * volume, const char * path,
             full_parent = strndup(path, (size_t)(slash - path));
 
             if (!full_parent) {
+                free(name);
                 ret = -ENOMEM;
                 goto out;
             }
 
-            (void)add_did_cache_entry(volume, fi.fileid, full_parent);
+            (void)add_did_cache_entry(volume, parent_did, fi.fileid,
+                                      full_parent, name);
             free(full_parent);
         } else {
+            free(name);
             break;
         }
 
+        free(name);
         parent_did = fi.fileid;
         component = slash + 1U;
     }
