@@ -13,14 +13,12 @@ Authentication
 --------------
 
 * ClientKRB
-* reconnection
+* Reconnect UAM
 * Open directory integration
 
 Performance
 -----------
 
-* in mknod(), you only need to do the setfiledirparms if the mode or perms
-are different
 * asynchronous unlocking
 * use rx and tx quantums properly
 * queue writes to be one tx quantum
@@ -29,9 +27,7 @@ are different
 packet
 * make a preallocated pool of dsi requests
 * make a preallocated pool for dsi messages
-* is_dir function should look in did cache
 * check to see how Mac OS does locking on writes
-* large block writes for FUSE 3.x
 
 Protocol bugs
 -------------
