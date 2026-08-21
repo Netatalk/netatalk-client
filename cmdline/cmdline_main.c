@@ -457,7 +457,8 @@ void earlyexit_handler(int signum)
 
     if (interrupt_count > 0) {
         const char msg[] = "\nImmediate exit requested.\n";
-        write(STDERR_FILENO, msg, sizeof(msg) - 1);
+        ssize_t bytes_written = write(STDERR_FILENO, msg, sizeof(msg) - 1);
+        (void)bytes_written;
         tty_reset(STDIN_FILENO);
         _exit(1);
     }
