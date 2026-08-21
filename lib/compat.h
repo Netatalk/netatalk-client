@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <strings.h>
 
+#ifdef HAVE_LIBBSD
+#include <bsd/string.h>
+#endif
+
 /* Mark a declaration as intentionally unused when the compiler supports it. */
 #ifndef _U_
 #if defined(__has_attribute)

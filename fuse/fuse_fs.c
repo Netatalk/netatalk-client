@@ -84,7 +84,7 @@
 #define FUSE_NEW_API 0
 #endif
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && FUSE_USE_VERSION >= 30
 static uint16_t finderinfo_get_flags(const char finderinfo[32])
 {
     return ((uint16_t)(unsigned char)finderinfo[8] << 8)
@@ -910,7 +910,7 @@ static int fuse_rename(const char * path_from, const char * path_to)
 
 #endif
 
-#if defined(__APPLE__) && !FUSE_NEW_API
+#if defined(__APPLE__) && FUSE_USE_VERSION >= 30 && !FUSE_NEW_API
 static int fuse_renamex(const char *path_from, const char *path_to,
                         unsigned int flags)
 {
