@@ -86,8 +86,9 @@ int afp_status_server(struct afp_server * s, char * text, int * len)
     }
 
     for (j = 0; j < AFP_SIGNATURE_LEN; j++)
-        sprintf(signature_string + (j * 2), "%02x",
-                (unsigned int)((unsigned char) s->signature[j]));
+        snprintf(signature_string + (j * 2),
+                 sizeof(signature_string) - (j * 2), "%02x",
+                 (unsigned int)((unsigned char) s->signature[j]));
 
     switch (s->used_address->ai_family) {
     case AF_INET6:

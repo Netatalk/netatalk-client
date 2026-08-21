@@ -16,6 +16,7 @@
 #include "netatalk-client/types.h"
 #include "netatalk-client/url.h"
 #include "afp_protocol.h"
+#include "compat.h"
 #include "client.h"
 #include "xattr.h"
 
