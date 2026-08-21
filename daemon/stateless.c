@@ -79,6 +79,18 @@ static int send_command(unsigned int len, const char *data, unsigned int num);
 static int read_answer(void);
 static int ipc_handshake(void);
 
+/* After fork(), only use async-signal-safe functions before _exit(). */
+static void report_exec_failure(int fd, int child_errno)
+{
+    ssize_t bytes_written;
+
+    do {
+        bytes_written = write(fd, &child_errno, sizeof(child_errno));
+    } while (bytes_written < 0 && errno == EINTR);
+
+    _exit(1);
+}
+
 static int wire_path_length(const char *path, size_t *len)
 {
     return afpc_path_validate(path, AFPC_MAX_UTF8_PATH_BYTES, len);
@@ -333,8 +345,7 @@ static int start_afpsld(void)
         execv(filename, argv);
         /* exec failed */
         child_errno = errno;
-        (void) write(error_pipe[1], &child_errno, sizeof(child_errno));
-        _exit(1);
+        report_exec_failure(error_pipe[1], child_errno);
     }
 
     close(error_pipe[1]);
@@ -351,9 +362,16 @@ static int start_afpsld(void)
         return -1;
     }
 
-    if (bytes_read > 0) {
+    if (bytes_read == (ssize_t)sizeof(child_errno)) {
         (void) waitpid(child, NULL, 0);
         stateless_log_errno(LOG_ERR, "Could not execute afpsld", child_errno);
+        return -1;
+    }
+
+    if (bytes_read != 0) {
+        (void) waitpid(child, NULL, 0);
+        stateless_log_message(LOG_ERR,
+                              "Invalid afpsld startup status from child");
         return -1;
     }
 
