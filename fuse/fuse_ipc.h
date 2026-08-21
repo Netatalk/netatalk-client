@@ -1,6 +1,7 @@
 #ifndef NETATALK_CLIENT_FUSE_IPC_H
 #define NETATALK_CLIENT_FUSE_IPC_H
 
+#include <stddef.h>
 #include <limits.h>
 
 #include "netatalk-client/types.h"
@@ -65,5 +66,9 @@ struct afpfsd_ipc_response {
     char result;
     unsigned int len;
 };
+
+/* Read or write an entire IPC message, retrying interrupted syscalls. */
+int afpfsd_ipc_write_all(int fd, const void *buffer, size_t length);
+int afpfsd_ipc_read_all(int fd, void *buffer, size_t length);
 
 #endif

@@ -237,6 +237,30 @@ static int append_text(char *text, size_t size, int *pos, const char *src)
     return 0;
 }
 
+static int send_response(int client_fd, char result, const void *data,
+                         size_t data_len)
+{
+    if (data_len > UINT_MAX) {
+        return -1;
+    }
+
+    struct afpfsd_ipc_response response = {
+        .result = result,
+        .len = (unsigned int)data_len,
+    };
+
+    if (afpfsd_ipc_write_all(client_fd, &response, sizeof(response)) < 0) {
+        return -1;
+    }
+
+    if (data_len != 0
+            && afpfsd_ipc_write_all(client_fd, data, data_len) < 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
 /* Send exit command to a socket path */
 static void send_exit_to_socket(const char *socket_path)
 {
@@ -261,7 +285,11 @@ static void send_exit_to_socket(const char *socket_path)
     if (connect(sock, (struct sockaddr *)&sa,
                 sizeof(sa.sun_family) + len + 1) == 0) {
         unsigned char cmd = AFPFSD_IPC_COMMAND_EXIT;
-        (void)write(sock, &cmd, 1);
+
+        if (afpfsd_ipc_write_all(sock, &cmd, sizeof(cmd)) < 0) {
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "Could not send exit command to child daemon");
+        }
     }
 
 out:
@@ -281,7 +309,6 @@ static struct manager_child *find_child_by_mountpoint(const char *mountpoint,
 
     /* Not found - send error if client_fd provided */
     if (client_fd >= 0) {
-        struct afpfsd_ipc_response response;
         char text[1024];
         int len = sizeof(text);
         int pos = 0;
@@ -297,10 +324,12 @@ static struct manager_child *find_child_by_mountpoint(const char *mountpoint,
         append_text(text, sizeof(text), &pos, "No mount found at ");
         append_text(text, sizeof(text), &pos, safe_mountpoint);
         append_text(text, sizeof(text), &pos, "\n");
-        response.result = AFPFSD_IPC_RESULT_ERROR;
-        response.len = strlen(text);
-        (void)write(client_fd, &response, sizeof(response));
-        (void)write(client_fd, text, response.len);
+
+        if (send_response(client_fd, AFPFSD_IPC_RESULT_ERROR, text,
+                          strlen(text)) < 0) {
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "Failed to send mount-not-found response to client");
+        }
     }
 
     return NULL;
@@ -314,11 +343,11 @@ static int connect_to_child_socket(const char *socket_path,
     int child_sock = socket(AF_UNIX, SOCK_STREAM, 0);
 
     if (child_sock < 0) {
-        if (client_fd >= 0) {
-            struct afpfsd_ipc_response response;
-            response.result = AFPFSD_IPC_RESULT_ERROR;
-            response.len = 0;
-            (void)write(client_fd, &response, sizeof(response));
+        if (client_fd >= 0 &&
+                send_response(client_fd, AFPFSD_IPC_RESULT_ERROR,
+                              NULL, 0) < 0) {
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "Failed to send socket error response to client");
         }
 
         return -1;
@@ -332,7 +361,6 @@ static int connect_to_child_socket(const char *socket_path,
     if (strlcpy(child_addr.sun_path, socket_path,
                 sizeof(child_addr.sun_path)) >= sizeof(child_addr.sun_path)) {
         if (client_fd >= 0) {
-            struct afpfsd_ipc_response response;
             char text[1024];
             char safe_mountpoint[PATH_MAX * 4];
             int pos = 0;
@@ -343,10 +371,12 @@ static int connect_to_child_socket(const char *socket_path,
                         "Socket path too long for ");
             append_text(text, sizeof(text), &pos, safe_mountpoint);
             append_text(text, sizeof(text), &pos, "\n");
-            response.result = AFPFSD_IPC_RESULT_ERROR;
-            response.len = strlen(text);
-            (void)write(client_fd, &response, sizeof(response));
-            (void)write(client_fd, text, response.len);
+
+            if (send_response(client_fd, AFPFSD_IPC_RESULT_ERROR, text,
+                              strlen(text)) < 0) {
+                log_for_client(NULL, AFPFSD, LOG_WARNING,
+                               "Failed to send socket-path error response to client");
+            }
         }
 
         close(child_sock);
@@ -356,7 +386,6 @@ static int connect_to_child_socket(const char *socket_path,
     if (connect(child_sock, (struct sockaddr *)&child_addr,
                 sizeof(child_addr.sun_family) + strlen(child_addr.sun_path) + 1) < 0) {
         if (client_fd >= 0) {
-            struct afpfsd_ipc_response response;
             char text[1024];
             int len = sizeof(text);
             int pos = 0;
@@ -367,10 +396,12 @@ static int connect_to_child_socket(const char *socket_path,
 
             snprintf(text + pos, sizeof(text) - pos,
                      "Could not connect to daemon\n");
-            response.result = AFPFSD_IPC_RESULT_ERROR;
-            response.len = strlen(text);
-            (void)write(client_fd, &response, sizeof(response));
-            (void)write(client_fd, text, response.len);
+
+            if (send_response(client_fd, AFPFSD_IPC_RESULT_ERROR, text,
+                              strlen(text)) < 0) {
+                log_for_client(NULL, AFPFSD, LOG_WARNING,
+                               "Failed to send connection error response to client");
+            }
         }
 
         close(child_sock);
@@ -384,62 +415,45 @@ static int connect_to_child_socket(const char *socket_path,
 static int forward_child_response(int child_sock, int client_fd)
 {
     struct afpfsd_ipc_response response;
+    char *buffer = NULL;
 
-    if (read(child_sock, &response, sizeof(response)) != sizeof(response)) {
-        response.result = AFPFSD_IPC_RESULT_ERROR;
-        response.len = 0;
-
-        if (write(client_fd, &response, sizeof(response)) != sizeof(response)) {
-            log_for_client(NULL, AFPFSD, LOG_WARNING,
-                           "Failed to send error response to client");
-        }
-
-        return -1;
+    if (afpfsd_ipc_read_all(child_sock, &response, sizeof(response)) < 0) {
+        goto child_error;
     }
 
     if (response.len > AFPFSD_IPC_MAX_RESPONSE) {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
                        "Child response exceeds maximum allowed size");
-        response.result = AFPFSD_IPC_RESULT_ERROR;
-        response.len = 0;
-
-        if (write(client_fd, &response, sizeof(response)) != sizeof(response)) {
-            log_for_client(NULL, AFPFSD, LOG_WARNING,
-                           "Failed to send error response to client");
-        }
-
-        return -1;
-    }
-
-    if (write(client_fd, &response, sizeof(response)) != sizeof(response)) {
-        log_for_client(NULL, AFPFSD, LOG_WARNING,
-                       "Failed to forward response header to client");
-        return -1;
+        goto child_error;
     }
 
     if (response.len > 0) {
-        char *buffer = malloc(response.len);
+        buffer = malloc(response.len);
 
-        if (buffer) {
-            ssize_t bytes_read = read(child_sock, buffer, response.len);
-
-            if (bytes_read > 0) {
-                ssize_t bytes_written = write(client_fd, buffer, bytes_read);
-
-                if (bytes_written != bytes_read) {
-                    log_for_client(NULL, AFPFSD, LOG_WARNING,
-                                   "Failed to forward response data to client (%zd/%zd bytes)",
-                                   bytes_written < 0 ? 0 : bytes_written, bytes_read);
-                    free(buffer);
-                    return -1;
-                }
-            }
-
+        if (!buffer || afpfsd_ipc_read_all(child_sock, buffer,
+                                           response.len) < 0) {
             free(buffer);
+            goto child_error;
         }
     }
 
+    if (send_response(client_fd, response.result, buffer, response.len) < 0) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Failed to forward response to client");
+        free(buffer);
+        return -1;
+    }
+
+    free(buffer);
     return 0;
+child_error:
+
+    if (send_response(client_fd, AFPFSD_IPC_RESULT_ERROR, NULL, 0) < 0) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Failed to send error response to client");
+    }
+
+    return -1;
 }
 
 static void add_child(pid_t pid, const char *socket_id, const char *mountpoint,
@@ -577,76 +591,88 @@ static int start_mount_daemon(char *socket_id, const char *mountpoint,
 static int handle_manager_command(int client_fd)
 {
     unsigned char command;
-    ssize_t n = read(client_fd, &command, 1);
 
-    if (n <= 0) {
+    if (afpfsd_ipc_read_all(client_fd, &command, sizeof(command)) < 0) {
         return -1;
     }
 
     switch (command) {
     case AFPFSD_IPC_COMMAND_SPAWN_MOUNT: {
         struct afpfsd_ipc_spawn_mount_request req;
-        n = read(client_fd, &req, sizeof(req));
+        unsigned char result = AFPFSD_IPC_RESULT_ERROR;
+        int command_result = 0;
+        int request_is_valid;
 
-        if (n != sizeof(req)) {
+        if (afpfsd_ipc_read_all(client_fd, &req, sizeof(req)) < 0) {
             return -1;
         }
 
-        if (memchr(req.mountpoint, '\0', sizeof(req.mountpoint)) == NULL ||
-                memchr(req.socket_id, '\0', sizeof(req.socket_id)) == NULL ||
-                memchr(req.volumename, '\0', sizeof(req.volumename)) == NULL) {
-            unsigned char result = AFPFSD_IPC_RESULT_ERROR;
-            (void)write(client_fd, &result, 1);
-            break;
+        request_is_valid = memchr(req.mountpoint, '\0', sizeof(req.mountpoint)) != NULL
+                           &&
+                           memchr(req.socket_id, '\0', sizeof(req.socket_id)) != NULL &&
+                           memchr(req.volumename, '\0', sizeof(req.volumename)) != NULL;
+
+        if (request_is_valid) {
+            command_result = start_mount_daemon(req.socket_id, req.mountpoint,
+                                                req.volumename);
+
+            if (command_result == 0) {
+                sleep(1);
+                result = AFPFSD_IPC_RESULT_OK;
+            }
         }
 
-        if (start_mount_daemon(req.socket_id, req.mountpoint, req.volumename) < 0) {
-            unsigned char result = AFPFSD_IPC_RESULT_ERROR;
-            (void)write(client_fd, &result, 1);
+        if (afpfsd_ipc_write_all(client_fd, &result, sizeof(result)) < 0) {
             return -1;
         }
 
-        sleep(1);
-        unsigned char result = AFPFSD_IPC_RESULT_OK;
-        (void)write(client_fd, &result, 1);
+        if (command_result < 0) {
+            return -1;
+        }
+
         break;
     }
 
     case AFPFSD_IPC_COMMAND_EXIT: {
-        struct afpfsd_ipc_response response;
-        response.result = AFPFSD_IPC_RESULT_OK;
-        response.len = 0;
-        (void)write(client_fd, &response, sizeof(response));
+        if (send_response(client_fd, AFPFSD_IPC_RESULT_OK, NULL, 0) < 0) {
+            return -1;
+        }
+
         cleanup_all_children();
         return -2;  /* Signal to exit manager; caller closes client_fd */
     }
 
     case AFPFSD_IPC_COMMAND_PING: {
         unsigned char result = AFPFSD_IPC_RESULT_OK;
-        (void)write(client_fd, &result, 1);
+
+        if (afpfsd_ipc_write_all(client_fd, &result, sizeof(result)) < 0) {
+            return -1;
+        }
+
         break;
     }
 
     case AFPFSD_IPC_COMMAND_STATUS: {
         struct afpfsd_ipc_status_request req;
-        n = read(client_fd, &req, sizeof(req));
 
-        if (n != sizeof(req)) {
+        if (afpfsd_ipc_read_all(client_fd, &req, sizeof(req)) < 0) {
             /* Read error */
-            struct afpfsd_ipc_response response;
-            response.result = AFPFSD_IPC_RESULT_ERROR;
-            response.len = 0;
-            (void)write(client_fd, &response, sizeof(response));
+            if (send_response(client_fd, AFPFSD_IPC_RESULT_ERROR,
+                              NULL, 0) < 0) {
+                return -1;
+            }
+
             break;
         }
 
         if (memchr(req.volumename, '\0', sizeof(req.volumename)) == NULL ||
                 memchr(req.servername, '\0', sizeof(req.servername)) == NULL ||
                 memchr(req.mountpoint, '\0', sizeof(req.mountpoint)) == NULL) {
-            struct afpfsd_ipc_response response;
-            response.result = AFPFSD_IPC_RESULT_ERROR;
-            response.len = 0;
-            (void)write(client_fd, &response, sizeof(response));
+            if (send_response(client_fd, AFPFSD_IPC_RESULT_ERROR,
+                              NULL, 0) < 0) {
+                return -1;
+            }
+
             break;
         }
 
@@ -670,14 +696,17 @@ static int handle_manager_command(int client_fd)
             /* Send command to child */
             unsigned char cmd = AFPFSD_IPC_COMMAND_STATUS;
 
-            if (write(child_sock, &cmd, 1) != 1 ||
-                    write(child_sock, &req, sizeof(req)) != sizeof(req)) {
+            if (afpfsd_ipc_write_all(child_sock, &cmd, sizeof(cmd)) < 0 ||
+                    afpfsd_ipc_write_all(child_sock, &req, sizeof(req)) < 0) {
                 log_for_client(NULL, AFPFSD, LOG_WARNING,
                                "Failed to send status command to child daemon");
-                struct afpfsd_ipc_response response;
-                response.result = AFPFSD_IPC_RESULT_ERROR;
-                response.len = 0;
-                (void)write(client_fd, &response, sizeof(response));
+
+                if (send_response(client_fd, AFPFSD_IPC_RESULT_ERROR,
+                                  NULL, 0) < 0) {
+                    close(child_sock);
+                    return -1;
+                }
+
                 close(child_sock);
                 break;
             }
@@ -686,7 +715,6 @@ static int handle_manager_command(int client_fd)
             close(child_sock);
         } else {
             /* Manager daemon: return overview with header and list of mounts */
-            struct afpfsd_ipc_response response;
             char text[4096];
             int len = sizeof(text);
             int pos = 0;
@@ -824,13 +852,12 @@ static int handle_manager_command(int client_fd)
             }
 
             append_text(text, sizeof(text), &pos, "\n");
-            response.result = AFPFSD_IPC_RESULT_OK;
-            response.len = strlen(text);
 
-            if (write(client_fd, &response, sizeof(response)) != sizeof(response) ||
-                    write(client_fd, text, response.len) != (ssize_t)response.len) {
+            if (send_response(client_fd, AFPFSD_IPC_RESULT_OK, text,
+                              strlen(text)) < 0) {
                 log_for_client(NULL, AFPFSD, LOG_WARNING,
                                "Failed to send status response to client");
+                return -1;
             }
         }
 
@@ -841,21 +868,22 @@ static int handle_manager_command(int client_fd)
     case AFPFSD_IPC_COMMAND_RESUME: {
         /* These commands must be forwarded to the appropriate child daemon */
         struct afpfsd_ipc_suspend_request req;
-        n = read(client_fd, &req, sizeof(req));
 
-        if (n != sizeof(req)) {
-            struct afpfsd_ipc_response response;
-            response.result = AFPFSD_IPC_RESULT_ERROR;
-            response.len = 0;
-            (void)write(client_fd, &response, sizeof(response));
+        if (afpfsd_ipc_read_all(client_fd, &req, sizeof(req)) < 0) {
+            if (send_response(client_fd, AFPFSD_IPC_RESULT_ERROR,
+                              NULL, 0) < 0) {
+                return -1;
+            }
+
             break;
         }
 
         if (memchr(req.mountpoint, '\0', sizeof(req.mountpoint)) == NULL) {
-            struct afpfsd_ipc_response response;
-            response.result = AFPFSD_IPC_RESULT_ERROR;
-            response.len = 0;
-            (void)write(client_fd, &response, sizeof(response));
+            if (send_response(client_fd, AFPFSD_IPC_RESULT_ERROR,
+                              NULL, 0) < 0) {
+                return -1;
+            }
+
             break;
         }
 
@@ -874,14 +902,17 @@ static int handle_manager_command(int client_fd)
         }
 
         /* Send command to child */
-        if (write(child_sock, &command, 1) != 1 ||
-                write(child_sock, &req, sizeof(req)) != sizeof(req)) {
+        if (afpfsd_ipc_write_all(child_sock, &command, sizeof(command)) < 0 ||
+                afpfsd_ipc_write_all(child_sock, &req, sizeof(req)) < 0) {
             log_for_client(NULL, AFPFSD, LOG_WARNING,
                            "Failed to send suspend/resume command to child daemon");
-            struct afpfsd_ipc_response response;
-            response.result = AFPFSD_IPC_RESULT_ERROR;
-            response.len = 0;
-            (void)write(client_fd, &response, sizeof(response));
+
+            if (send_response(client_fd, AFPFSD_IPC_RESULT_ERROR,
+                              NULL, 0) < 0) {
+                close(child_sock);
+                return -1;
+            }
+
             close(child_sock);
             break;
         }

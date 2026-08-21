@@ -851,9 +851,9 @@ static void *process_command_thread(void * other)
     response.len = fuse_client_response_len(c);
     bcopy(&response, tosend, sizeof(response));
     bcopy(c->client_string, tosend + sizeof(response), response.len);
-    ret = write(c->fd, tosend, sizeof(response) + response.len);
 
-    if (ret < 0) {
+    if (afpfsd_ipc_write_all(c->fd, tosend,
+                             sizeof(response) + response.len) < 0) {
         perror("Writing");
     }
 
