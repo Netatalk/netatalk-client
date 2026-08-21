@@ -80,50 +80,6 @@ static void clear_outgoing_mount_url_path(void)
     afpc_path_clear(&request->url.path);
 }
 
-static int write_all(int fd, const void *buffer, size_t length)
-{
-    const char *cursor = buffer;
-
-    while (length != 0) {
-        ssize_t written = write(fd, cursor, length);
-
-        if (written < 0 && errno == EINTR) {
-            continue;
-        }
-
-        if (written <= 0) {
-            return -1;
-        }
-
-        cursor += written;
-        length -= (size_t)written;
-    }
-
-    return 0;
-}
-
-static int read_all(int fd, void *buffer, size_t length)
-{
-    char *cursor = buffer;
-
-    while (length != 0) {
-        ssize_t received = read(fd, cursor, length);
-
-        if (received < 0 && errno == EINTR) {
-            continue;
-        }
-
-        if (received <= 0) {
-            return -1;
-        }
-
-        cursor += received;
-        length -= (size_t)received;
-    }
-
-    return 0;
-}
-
 /* Log handler that filters by log level */
 static void client_log_for_client(void *priv _U_,
                                   enum logtypes logtype _U_,
@@ -314,19 +270,19 @@ static int start_afpfsd(const char *mountpoint, const char *volumename)
     snprintf(req.volumename, sizeof(req.volumename), "%s",
              volumename ? volumename : "");
 
-    if (write_all(sock, &command, sizeof(command)) != 0) {
+    if (afpfsd_ipc_write_all(sock, &command, sizeof(command)) != 0) {
         close(sock);
         return -1;
     }
 
-    if (write_all(sock, &req, sizeof(req)) != 0) {
+    if (afpfsd_ipc_write_all(sock, &req, sizeof(req)) != 0) {
         close(sock);
         return -1;
     }
 
     /* Wait for response */
     if (wait_readable(sock) != 0
-            || read_all(sock, &result, sizeof(result)) != 0) {
+            || afpfsd_ipc_read_all(sock, &result, sizeof(result)) != 0) {
         close(sock);
         return -1;
     }
@@ -532,7 +488,7 @@ static int copy_secret(char *dst, size_t dstlen, const char *src,
 
 static int send_command(int sock, char * msg, int len)
 {
-    return write_all(sock, msg, (size_t)len);
+    return afpfsd_ipc_write_all(sock, msg, (size_t)len);
 }
 
 static int do_exit(int argc _U_, char **argv _U_)

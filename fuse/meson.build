@@ -1,6 +1,8 @@
-afpc_fs_sources = files('client.c')
+fuse_ipc_sources = files('fuse_ipc.c')
 
-afpfsd_sources = ['commands.c', 'daemon.c', 'fuse_fs.c', 'fuse_error.c']
+afpc_fs_sources = files('client.c') + fuse_ipc_sources
+
+afpfsd_sources = ['commands.c', 'daemon.c', 'fuse_fs.c', 'fuse_error.c'] + fuse_ipc_sources
 
 executable(
     'afpfsd',
