@@ -35,7 +35,11 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 #elif defined(HAVE_LIBEDIT)
+#ifdef HAVE_EDITLINE_READLINE_H
 #include <editline/readline.h>
+#else
+#include <readline.h>
+#endif
 #include <histedit.h>
 #endif
 #include <getopt.h>

@@ -88,7 +88,16 @@ if cc.compiles(
 endif
 
 root_dependencies = []
-cmdline_dependencies = [readline_dep]
+cmdline_dependencies = []
+
+libedit_readline_header = ''
+if editline_dep.found()
+    if cc.has_header('editline/readline.h', dependencies: editline_dep)
+        libedit_readline_header = 'editline/readline.h'
+    elif cc.has_header('readline.h', dependencies: editline_dep)
+        libedit_readline_header = 'readline.h'
+    endif
+endif
 
 if host_os == 'sunos'
     # illumos/Solaris provides socket(), getaddrinfo(), and related interfaces
@@ -96,9 +105,12 @@ if host_os == 'sunos'
     root_dependencies += cc.find_library('socket', required: true)
 endif
 
-if editline_dep.found()
+if libedit_readline_header != ''
     cmdline_dependencies += editline_dep
     cflags += '-DHAVE_LIBEDIT'
+    if libedit_readline_header == 'editline/readline.h'
+        cflags += '-DHAVE_EDITLINE_READLINE_H'
+    endif
 elif readline_dep.found()
     cmdline_dependencies += readline_dep
     cflags += '-DHAVE_LIBREADLINE'
@@ -129,7 +141,7 @@ if not fuse_dep.found() or get_option('force-fuse-v2')
     fuse_dep = dependency('fuse', version: '>=2.9.0', required: false)
 endif
 
-with_afpcmd = readline_dep.found() or editline_dep.found()
+with_afpcmd = readline_dep.found() or libedit_readline_header != ''
 with_fuse = get_option('enable-fuse') and fuse_dep.found()
 with_crypt = gcrypt_dep.found()
 
