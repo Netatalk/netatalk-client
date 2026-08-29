@@ -39,6 +39,7 @@ int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
 struct dsi_session *afpc_dsi_create(struct afp_server *server);
 int afpc_dsi_restart(struct afp_server *server);
 int afpc_dsi_recv(struct afp_server *server);
+void afpc_dsi_incoming_closesession(struct afp_server *server);
 
 #define DSI_BLOCK_TIMEOUT -1
 #define DSI_DONT_WAIT 0
