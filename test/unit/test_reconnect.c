@@ -283,7 +283,7 @@ int main(int argc, char **argv)
         CHECK(server->connect_state == SERVER_STATE_CONNECTED);
         CHECK(afp_fake_server_count(&fake, afpDisconnectOldSession) == 1);
         CHECK(afp_fake_server_count(&fake, afpGetSessionToken) == 1);
-        CHECK(afp_fake_server_count(&fake, afpLogin) == 2);
+        CHECK(afp_fake_server_count(&fake, afpLoginExt) == 2);
         CHECK(afp_fake_server_count(&fake, afpOpenVol) == 1);
         CHECK(afp_fake_server_count(&fake, afpOpenFork) == 1);
         CHECK(afp_fake_server_count(&fake, afpWriteExt) == 1);
@@ -368,7 +368,7 @@ int main(int argc, char **argv)
         CHECK(ll_write(volume, data, sizeof(data), 0, 0, fp, &written) == -EIO);
         CHECK(afp_fake_server_count(&fake, afpWriteExt) == 0);
         CHECK(afp_fake_server_count(&fake, afpDisconnectOldSession) == 1);
-        CHECK(afp_fake_server_count(&fake, afpLogin) == 3);
+        CHECK(afp_fake_server_count(&fake, afpLoginExt) == 3);
         CHECK(afp_fake_server_count(&fake, afpGetSessionToken) == 2);
         CHECK(afp_fake_server_count(&fake, afpOpenVol) == 2);
         CHECK(volume->open_forks == NULL);
@@ -394,7 +394,7 @@ int main(int argc, char **argv)
         drop_session(&fake, server);
         CHECK(afp_detach_volume(volume) == 0);
         CHECK(afp_fake_server_count(&fake, afpCloseDT) == 0);
-        CHECK(afp_fake_server_count(&fake, afpLogin) == 1);
+        CHECK(afp_fake_server_count(&fake, afpLoginExt) == 1);
         CHECK(volume->dtrefnum == 0);
         afp_server_release(server);
         afp_fake_server_stop_listening(&fake);
@@ -445,7 +445,7 @@ int main(int argc, char **argv)
         CHECK(afp_fake_server_listen(&fake) == 0);
         server = open_session(&fake, &volume, &fp);
         drop_session(&fake, server);
-        fake.refuse = afpLogin;
+        fake.refuse = afpLoginExt;
         errno = 0;
         CHECK(afp_server_reconnect(server, mesg, &len, sizeof(mesg)) == 1);
         CHECK(errno == EACCES);
@@ -597,7 +597,7 @@ int main(int argc, char **argv)
          * counted here went out on another connection. */
         CHECK(afp_fake_server_count(&fake, afpLogout) == 0);
         CHECK(afp_fake_server_count(&fake, afpDisconnectOldSession) == 1);
-        CHECK(afp_fake_server_count(&fake, afpLogin) == 3);
+        CHECK(afp_fake_server_count(&fake, afpLoginExt) == 3);
         CHECK(server->connect_state == SERVER_STATE_CONNECTED);
         afp_fake_server_release(&fake);
         close_session(&fake, server, volume, fp);
@@ -709,7 +709,7 @@ int main(int argc, char **argv)
         drop_session(&fake, server);
         __atomic_store_n(&server->token_ended, 1, __ATOMIC_RELEASE);
         CHECK(afp_unmount_volume(volume) == 0);
-        CHECK(afp_fake_server_count(&fake, afpLogin) == 2);
+        CHECK(afp_fake_server_count(&fake, afpLoginExt) == 2);
         CHECK(afp_fake_server_count(&fake, afpOpenVol) == 1);
         CHECK(volume->mounted == AFP_VOLUME_UNMOUNTED);
         CHECK(volume->attached == AFP_VOLUME_DETACHED);

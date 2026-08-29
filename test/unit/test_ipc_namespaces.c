@@ -87,7 +87,7 @@ _Static_assert(offsetof(struct afpfsd_ipc_mount_request, fuse_options)
                == offsetof(struct legacy_fuse_mount_request, fuse_options),
                "FUSE mount field offset changed");
 
-_Static_assert(AFPFSD_IPC_COMMAND_MOUNT == 1, "FUSE mount command changed");
+_Static_assert(AFPFSD_IPC_COMMAND_MOUNT == 13, "FUSE mount command changed");
 _Static_assert(AFPFSD_IPC_COMMAND_STATUS == 4, "FUSE status command changed");
 _Static_assert(AFPFSD_IPC_COMMAND_UNMOUNT == 6, "FUSE unmount command changed");
 _Static_assert(AFPFSD_IPC_COMMAND_SUSPEND == 8, "FUSE suspend command changed");

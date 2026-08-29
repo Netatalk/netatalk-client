@@ -147,7 +147,11 @@ static char16 *ucs2_buffer_get(struct ucs2_buffer *buffer, size_t chars)
         return buffer->stack;
     }
 
-    buffer->heap = malloc(chars * sizeof(char16));
+    if (chars > SIZE_MAX / sizeof(*buffer->heap)) {
+        return NULL;
+    }
+
+    buffer->heap = malloc(chars * sizeof(*buffer->heap));
     return buffer->heap;
 }
 
@@ -293,42 +297,43 @@ static unsigned char unicode_to_mac_roman(char16 uc)
 /*!
  * @brief Convert a UTF-8 string to Mac Roman
  *
- * A result is never longer than its source, so a dest_len above src_len
- * holds it.
- *
  * @param[in]  src       UTF-8 string
  * @param[in]  src_len   bytes of src to convert
  * @param[out] dest      receives the Mac Roman string, "" on refusal
- * @param[in]  dest_len  capacity of dest, above src_len
- * @returns 0, or -1 for a string that does not decode whole or has a
- *          character Mac Roman lacks
+ * @param[in]  dest_len  capacity of dest
+ * @returns 0, or -1 when the string cannot be represented in dest
  */
-static int convert_utf8_to_mac_roman(const char *src, int src_len,
-                                     char *dest, int dest_len)
+int convert_utf8_to_mac_roman(const char *src, size_t src_len,
+                              char *dest, size_t dest_len)
 {
     struct ucs2_buffer ucs2;
     char16 *chars;
     size_t bytes_consumed;
     unsigned int substituted;
     int count;
-    int out = 0;
+    size_t out = 0;
 
-    if (!src || !dest || src_len <= 0 || dest_len <= 0) {
+    if (!src || !dest || src_len == 0 || src_len > INT_MAX || dest_len == 0) {
         return -1;
     }
 
-    chars = ucs2_buffer_get(&ucs2, (size_t)src_len + 1U);
+    if (contains_supplementary_utf8(src, src_len)) {
+        dest[0] = '\0';
+        return -1;
+    }
+
+    chars = ucs2_buffer_get(&ucs2, src_len + 1U);
 
     if (!chars) {
         return -1;
     }
 
-    count = UTF8toUCS2(src, (size_t)src_len, chars, (size_t)src_len + 1U,
+    count = UTF8toUCS2(src, src_len, chars, src_len + 1U,
                        &bytes_consumed, &substituted);
 
     /* A path that does not decode whole names something else. */
-    if (count < 0 || substituted != 0
-            || bytes_consumed != (size_t)src_len) {
+    if (count < 0 || (size_t)count >= dest_len || substituted != 0
+            || bytes_consumed != src_len) {
         ucs2_buffer_put(&ucs2);
         dest[0] = '\0';
         return -1;
@@ -507,9 +512,8 @@ int convert_path_to_afp(char encoding, char *dest,
                               (size_t)dest_len) < 0) {
                 return -1;
             }
-        } else if (contains_supplementary_utf8(src, src_len)
-                   || convert_utf8_to_mac_roman(src, src_len, dest,
-                                                dest_len) < 0) {
+        } else if (convert_utf8_to_mac_roman(src, (size_t)src_len, dest,
+                                             (size_t)dest_len) < 0) {
             return -1;
         }
 

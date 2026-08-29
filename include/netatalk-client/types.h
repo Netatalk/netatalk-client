@@ -9,7 +9,12 @@
 #define AFPC_SIGNATURE_LEN 16
 #define AFPC_MACHINE_TYPE_LEN 16
 #define AFPC_SERVER_ICON_LEN 256
-#define AFPC_MAX_USERNAME_LEN 127
+#define AFPC_MAX_USERNAME_CHARS 255U
+/* Storage for a NUL-terminated AFP 3.x username.  AFPName permits a 16-bit
+ * byte length, while the protocol's 255-character limit is tighter for
+ * well-formed UTF-8 (at most four bytes per Unicode scalar value). */
+#define AFPC_MAX_USERNAME_BYTES (AFPC_MAX_USERNAME_CHARS * 4U)
+#define AFPC_MAX_USERNAME_LEN (AFPC_MAX_USERNAME_BYTES + 1U)
 #define AFPC_MAX_PASSWORD_LEN 127
 #define AFPC_ZONE_LEN 32
 /* AFP 3.x UTF-8 names are limited to 255 Unicode characters per component.

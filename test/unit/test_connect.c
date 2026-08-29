@@ -266,7 +266,7 @@ int main(int argc, char **argv)
         CHECK(server->supported_uams & UAM_NOUSERAUTHENT);
         CHECK(server->num_volumes == 1);
         CHECK(fake.accepted == 2);
-        CHECK(afp_fake_server_count(&fake, afpLogin) == 1);
+        CHECK(afp_fake_server_count(&fake, afpLoginExt) == 1);
         afp_logout(server, 1);
         afp_server_remove(server);
         afp_fake_server_stop_listening(&fake);
@@ -344,7 +344,7 @@ int main(int argc, char **argv)
         CHECK(afp_fake_server_listen(&fake) == 0);
         server = connect_guest(&fake);
         CHECK(server != NULL);
-        CHECK(afp_fake_server_count(&fake, afpLogin) == 1);
+        CHECK(afp_fake_server_count(&fake, afpLoginExt) == 1);
         afp_logout(server, 1);
         afp_server_remove(server);
         afp_fake_server_stop_listening(&fake);
