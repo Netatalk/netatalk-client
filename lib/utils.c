@@ -65,6 +65,131 @@ int afp_parse_version(const char *text, int *version_out)
     return 0;
 }
 
+int afp_validate_utf8_name(const char *name, size_t max_characters,
+                           size_t *byte_len_out)
+{
+    const uint8_t *p;
+    const uint8_t *end;
+    size_t byte_len;
+    size_t characters = 0;
+
+    if (name == NULL) {
+        return -EINVAL;
+    }
+
+    byte_len = strnlen(name, AFPC_MAX_NAME_BYTES);
+
+    if (byte_len == AFPC_MAX_NAME_BYTES || byte_len > UINT16_MAX) {
+        return -ENAMETOOLONG;
+    }
+
+    p = (const uint8_t *)name;
+    end = p + byte_len;
+
+    while (p < end) {
+        size_t sequence_len;
+        size_t remaining = (size_t)(end - p);
+
+        if (*p <= 0x7f) {
+            sequence_len = 1;
+        } else if (*p >= 0xc2 && *p <= 0xdf) {
+            sequence_len = 2;
+
+            if (remaining < sequence_len || (p[1] & 0xc0) != 0x80) {
+                return -EILSEQ;
+            }
+        } else if (*p == 0xe0) {
+            sequence_len = 3;
+
+            if (remaining < sequence_len || p[1] < 0xa0 || p[1] > 0xbf
+                    || (p[2] & 0xc0) != 0x80) {
+                return -EILSEQ;
+            }
+        } else if ((*p >= 0xe1 && *p <= 0xec)
+                   || (*p >= 0xee && *p <= 0xef)) {
+            sequence_len = 3;
+
+            if (remaining < sequence_len || (p[1] & 0xc0) != 0x80
+                    || (p[2] & 0xc0) != 0x80) {
+                return -EILSEQ;
+            }
+        } else if (*p == 0xed) {
+            sequence_len = 3;
+
+            if (remaining < sequence_len || p[1] < 0x80 || p[1] > 0x9f
+                    || (p[2] & 0xc0) != 0x80) {
+                return -EILSEQ;
+            }
+        } else if (*p == 0xf0) {
+            sequence_len = 4;
+
+            if (remaining < sequence_len || p[1] < 0x90 || p[1] > 0xbf
+                    || (p[2] & 0xc0) != 0x80 || (p[3] & 0xc0) != 0x80) {
+                return -EILSEQ;
+            }
+        } else if (*p >= 0xf1 && *p <= 0xf3) {
+            sequence_len = 4;
+
+            if (remaining < sequence_len || (p[1] & 0xc0) != 0x80
+                    || (p[2] & 0xc0) != 0x80 || (p[3] & 0xc0) != 0x80) {
+                return -EILSEQ;
+            }
+        } else if (*p == 0xf4) {
+            sequence_len = 4;
+
+            if (remaining < sequence_len || p[1] < 0x80 || p[1] > 0x8f
+                    || (p[2] & 0xc0) != 0x80 || (p[3] & 0xc0) != 0x80) {
+                return -EILSEQ;
+            }
+        } else {
+            return -EILSEQ;
+        }
+
+        characters++;
+
+        if (characters > max_characters) {
+            return -ENAMETOOLONG;
+        }
+
+        p += sequence_len;
+    }
+
+    if (byte_len_out != NULL) {
+        *byte_len_out = byte_len;
+    }
+
+    return 0;
+}
+
+int afp_validate_username(const char *username, size_t *byte_len_out)
+{
+    return afp_validate_utf8_name(username, AFPC_MAX_USERNAME_CHARS,
+                                  byte_len_out);
+}
+
+int afp_validate_legacy_username(const char *username,
+                                 size_t *byte_len_out)
+{
+    size_t byte_len;
+
+    if (username == NULL) {
+        return -EINVAL;
+    }
+
+    byte_len = strnlen(username, AFPC_MAX_USERNAME_LEN);
+
+    if (byte_len == AFPC_MAX_USERNAME_LEN
+            || byte_len > AFP_LEGACY_MAX_USERNAME_BYTES) {
+        return -ENAMETOOLONG;
+    }
+
+    if (byte_len_out != NULL) {
+        *byte_len_out = byte_len;
+    }
+
+    return 0;
+}
+
 unsigned short utf8_to_string(char * dest, char * buf, unsigned short maxlen)
 {
     return copy_from_pascal_two(dest, buf + 4, maxlen);
@@ -240,7 +365,7 @@ void copy_path(
         }
 
         header_unicode->type = encoding;
-        header_unicode->hint = htonl(0x08000103);
+        header_unicode->hint = htonl(AFP_TEXT_ENCODING_UTF8);
         header_unicode->unicode = htons((uint16_t)len);
         memcpy(dest + sizeof(struct afp_path_header_unicode), pathname, len);
         break;

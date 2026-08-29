@@ -212,16 +212,16 @@ int randnum_login(struct afp_server *server, char *username,
         assert("libgcrypt initialization failed");
     }
 
-    char *ai = NULL, *p;
+    char *p;
     unsigned char key_buffer[8];
-    int ai_len, ret;
+    int ret;
     const int randnum_len = 8;
     gcry_cipher_hd_t ctx;
     gcry_error_t ctxerror;
     struct afp_rx_buffer rbuf;
     unsigned short ID;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "Starting Randnum Exchange authentication for user '%s'", username);
+                   "Starting Randnum Exchange authentication");
     rbuf.maxsize = sizeof(ID) + randnum_len;
     rbuf.data = calloc(1, rbuf.maxsize);
     p = rbuf.data;
@@ -233,22 +233,10 @@ int randnum_login(struct afp_server *server, char *username,
     }
 
     rbuf.size = 0;
-    ai_len = 1 + (int)strnlen(username, AFP_MAX_USERNAME_LEN);
-    ai = calloc(1, ai_len);
-
-    if (ai == NULL) {
-        log_for_client(NULL, AFPFSD, LOG_ERR,
-                       "Randnum: Failed to allocate authinfo buffer");
-        goto randnum_noctx_fail;
-    }
-
-    copy_to_pascal(ai, username);
-    /* Send the initial FPLogin request to the server. */
-    ret = afp_login(server, "Randnum Exchange", ai, ai_len, &rbuf);
-    free(ai);
-    ai = NULL;
+    ret = afp_login_initial(server, "Randnum Exchange", username, 0,
+                            NULL, 0, &rbuf);
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "Randnum: FPLogin returned %d (expected %d for kFPAuthContinue), rbuf.size=%u",
+                   "Randnum: initial login returned %d (expected %d for kFPAuthContinue), rbuf.size=%u",
                    ret, kFPAuthContinue, rbuf.size);
 
     if (ret != kFPAuthContinue) {
@@ -325,15 +313,14 @@ randnum_noctx_cleanup:
 
     if (ret == kFPNoErr) {
         log_for_client(NULL, AFPFSD, LOG_INFO,
-                       "Randnum Exchange authentication succeeded for user '%s'", username);
+                       "Randnum Exchange authentication succeeded");
     } else {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
-                       "Randnum Exchange authentication failed for user '%s' with code %d",
-                       username, ret);
+                       "Randnum Exchange authentication failed with code %d",
+                       ret);
     }
 
     free(rbuf.data);
-    free(ai);
     return ret;
 }
 
@@ -387,7 +374,7 @@ int randnum2_login(struct afp_server *server, char *username,
     struct afp_rx_buffer rbuf;
     unsigned short ID;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "Starting 2-Way Randnum Exchange authentication for user '%s'", username);
+                   "Starting 2-Way Randnum Exchange authentication");
     rbuf.maxsize = sizeof(ID) + 8;
     rbuf.data = calloc(1, rbuf.maxsize);
     p = rbuf.data;
@@ -399,22 +386,10 @@ int randnum2_login(struct afp_server *server, char *username,
     }
 
     rbuf.size = 0;
-    ai_len = 1 + (int)strnlen(username, AFP_MAX_USERNAME_LEN);
-    ai = calloc(1, ai_len);
-
-    if (ai == NULL) {
-        log_for_client(NULL, AFPFSD, LOG_ERR,
-                       "Randnum2: Failed to allocate authinfo buffer");
-        goto randnum2_noctx_fail;
-    }
-
-    copy_to_pascal(ai, username);
-    /* Send the initial FPLogin request to the server. */
-    ret = afp_login(server, "2-Way Randnum Exchange", ai, ai_len, &rbuf);
-    free(ai);
-    ai = NULL;
+    ret = afp_login_initial(server, "2-Way Randnum Exchange", username, 0,
+                            NULL, 0, &rbuf);
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "Randnum2: FPLogin returned %d (expected %d for kFPAuthContinue), rbuf.size=%u",
+                   "Randnum2: initial login returned %d (expected %d for kFPAuthContinue), rbuf.size=%u",
                    ret, kFPAuthContinue, rbuf.size);
 
     if (ret != kFPAuthContinue) {
@@ -566,11 +541,11 @@ randnum2_noctx_cleanup:
 
     if (ret == kFPNoErr) {
         log_for_client(NULL, AFPFSD, LOG_INFO,
-                       "2-Way Randnum Exchange authentication succeeded for user '%s'", username);
+                       "2-Way Randnum Exchange authentication succeeded");
     } else {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
-                       "2-Way Randnum Exchange authentication failed for user '%s' with code %d",
-                       username, ret);
+                       "2-Way Randnum Exchange authentication failed with code %d",
+                       ret);
     }
 
     free(rbuf.data);

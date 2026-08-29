@@ -96,29 +96,14 @@ int dhx_login(struct afp_server *server, char *username, char *passwd)
     /* Ma = g^Ra mod p <- This is our "public" key, which we exchange
      * with the remote server to help make K, the session key. */
     gcry_mpi_powm(Ma, g, Ra, p);
-    /* The first authinfo block contains the username and Ma.  Ma must start
-     * at an even AFP-packet offset, so calculate the username padding from
-     * the serialized FPLogin prefix rather than the heap address. */
-    ai_len = 1 + (int)strnlen(username, AFP_MAX_USERNAME_LEN);
-
-    if ((1 + 1 + (int)strnlen(server->using_version->av_name, UINT8_MAX) +
-            1 + (int)strlen("DHCAST128") + ai_len) & 1) {
-        ai_len++;
-    }
-
-    ai_len += Ma_len;
+    /* Username encoding and packet-relative alignment are owned by the
+     * command-aware initial-login serializer.  The UAM supplies only Ma. */
+    ai_len = Ma_len;
     ai = calloc(1, ai_len);
     d = ai;
 
     if (ai == NULL) {
         goto dhx_noctx_fail;
-    }
-
-    d += copy_to_pascal(ai, username) + 1;
-
-    if ((1 + 1 + (int)strnlen(server->using_version->av_name, UINT8_MAX) +
-            1 + (int)strlen("DHCAST128") + (d - ai)) & 1) {
-        d++;
     }
 
     /* Extract Ma to send to the server for the exchange. */
@@ -139,8 +124,8 @@ int dhx_login(struct afp_server *server, char *username, char *passwd)
     }
 
     rbuf.size = 0;
-    /* Send the first FPLogin request, and see what happens. */
-    ret = afp_login(server, "DHCAST128", ai, ai_len, &rbuf);
+    ret = afp_login_initial(server, "DHCAST128", username, 1,
+                            ai, ai_len, &rbuf);
     free(ai);
     ai = NULL;
 

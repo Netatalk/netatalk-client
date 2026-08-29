@@ -35,8 +35,20 @@ struct afp_server *afp_server_complete_connection(
     char mesg[MAX_ERROR_LEN];
     unsigned int len = 0;
     memset(loginmsg, 0, AFP_LOGINMESG_LEN);
+
+    if (afp_validate_username(username, NULL) != 0) {
+        errno = EINVAL;
+        goto error;
+    }
+
     server->requested_version = requested_version;
-    strlcpy(server->username, username, sizeof(server->username));
+
+    if (strlcpy(server->username, username, sizeof(server->username))
+            >= sizeof(server->username)) {
+        errno = ENAMETOOLONG;
+        goto error;
+    }
+
     strlcpy(server->password, password, sizeof(server->password));
     add_fd_and_signal(server->fd);
 

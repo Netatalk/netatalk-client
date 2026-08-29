@@ -53,21 +53,6 @@ int dhx2_login(struct afp_server *server, char *username, char *passwd)
     Ma = gcry_mpi_new(0);
     K = gcry_mpi_new(0);
     new_nonce = gcry_mpi_new(0);
-    /* The DHX2 Pascal username must end on an even AFP-packet boundary. */
-    ai_len = (int)strnlen(username, AFP_MAX_USERNAME_LEN) + 1;
-
-    if ((1 + 1 + (int)strnlen(server->using_version->av_name, UINT8_MAX) +
-            1 + (int)strlen("DHX2") + ai_len) & 1) {
-        ai_len++;
-    }
-
-    ai = calloc(1, ai_len);
-
-    if (ai == NULL) {
-        goto dhx2_noctx_fail;
-    }
-
-    copy_to_pascal(ai, username);
     /* Reply block will contain:
      *   Transaction ID (2 bytes, MSB)
      *   g (4 bytes, MSB)
@@ -86,9 +71,8 @@ int dhx2_login(struct afp_server *server, char *username, char *passwd)
 
     rbuf.size = 0;
     /* Send the initial request in the login sequence. */
-    ret = afp_login(server, "DHX2", ai, ai_len, &rbuf);
-    free(ai);
-    ai = NULL;
+    ret = afp_login_initial(server, "DHX2", username, 1,
+                            NULL, 0, &rbuf);
 
     if (ret != kFPAuthContinue) {
         goto dhx2_noctx_cleanup;

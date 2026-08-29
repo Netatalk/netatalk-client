@@ -183,7 +183,8 @@ static int noauth_login(
     char *passwd _U_
 )
 {
-    return afp_login(server, "No User Authent", NULL, 0, NULL);
+    return afp_login_initial(server, "No User Authent", NULL, 0,
+                             NULL, 0, NULL);
 }
 
 int afp_dologin(struct afp_server *server,
@@ -195,6 +196,12 @@ int afp_dologin(struct afp_server *server,
         log_for_client(NULL, AFPFSD, LOG_WARNING,
                        "afp_dologin -- Unknown UAM");
         return -1;
+    }
+
+    if (uam == UAM_SRP && server->using_version->av_number < 30) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "SRP requires AFP 3.x FPLoginExt");
+        return kFPCallNotSupported;
     }
 
     return u->do_server_login(server, username, passwd);
@@ -217,6 +224,13 @@ int afp_dopasswd(struct afp_server *server,
                        "afp_dopasswd -- UAM %s does not support password change",
                        u->name);
         return kFPCallNotSupported;
+    }
+
+    if (server->using_version->av_number < 30
+            && afp_validate_legacy_username(username, NULL) != 0) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Username exceeds the legacy AFP 2.x limit");
+        return -1;
     }
 
     return u->do_server_passwd(server, username, oldpasswd, newpasswd);

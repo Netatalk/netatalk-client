@@ -52,7 +52,8 @@
 #define FUSE_DEVICE "/dev/fuse"
 #endif
 
-#define AFPFSD_CLIENT_INCOMING_BUF (2048 + 256)
+#define AFPFSD_CLIENT_INCOMING_BUF \
+    (sizeof(struct afpfsd_ipc_mount_request) + 1U)
 
 struct afpfsd_client {
     char incoming_string[AFPFSD_CLIENT_INCOMING_BUF];
@@ -637,6 +638,13 @@ static int process_mount(struct afpfsd_client * c)
     }
 
     memcpy(&req, (void *)((uintptr_t)c->incoming_string + 1), sizeof(req));
+
+    if (afp_validate_username(req.url.username, NULL) != 0) {
+        log_for_client((void *)c, AFPFSD, LOG_ERR,
+                       "Mount request contains an invalid username");
+        goto error;
+    }
+
     /* Check that the mount point exists and is a directory with proper permissions */
     struct stat mountpoint_stat;
 

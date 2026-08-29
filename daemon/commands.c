@@ -511,9 +511,17 @@ static unsigned char process_changepw(struct daemon_client * c)
         goto done;
     }
 
-    /* Force null-termination of string fields from untrusted client data */
+    if (afp_validate_username(req->url.username, NULL) != 0) {
+        log_for_client((void *)c, AFPFSD, LOG_WARNING,
+                       "Password-change request contains an invalid username");
+        response.header.result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    /* Force null-termination of the remaining string fields from untrusted
+     * client data.  Usernames are validated without modifying the request so
+     * an unterminated value cannot be accepted as a truncated credential. */
     req->url.servername[AFP_SERVER_NAME_UTF8_LEN - 1] = '\0';
-    req->url.username[AFP_MAX_USERNAME_LEN - 1] = '\0';
     req->oldpasswd[AFP_MAX_PASSWORD_LEN - 1] = '\0';
     req->newpasswd[AFP_MAX_PASSWORD_LEN - 1] = '\0';
     server = afp_server_find_by_name_hold(req->url.servername);
@@ -533,8 +541,7 @@ static unsigned char process_changepw(struct daemon_client * c)
         response.afp_error = 0;
     } else {
         log_for_client((void *)c, AFPFSD, LOG_WARNING,
-                       "Password change failed for user %s (error %d)",
-                       req->url.username, ret);
+                       "Password change failed (error %d)", ret);
         response.header.result = AFPSL_IPC_RESULT_ERROR;
         response.afp_error = ret;
     }
@@ -617,8 +624,12 @@ static unsigned char process_getvolid(struct daemon_client * c)
         goto done;
     }
 
-    /* Force null-termination of all string fields from untrusted client data */
-    req->url.username[AFP_MAX_USERNAME_LEN - 1] = '\0';
+    if (afp_validate_username(req->url.username, NULL) != 0) {
+        ret = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    /* Force null-termination of the remaining string fields from untrusted client data */
     req->url.uamname[49] = '\0';
     req->url.password[AFP_MAX_PASSWORD_LEN - 1] = '\0';
     req->url.servername[AFP_SERVER_NAME_UTF8_LEN - 1] = '\0';
@@ -671,8 +682,12 @@ static unsigned char process_serverinfo(struct daemon_client * c)
         return AFPSL_IPC_RESULT_ERROR;
     }
 
-    /* Force null-termination of all string fields from untrusted client data */
-    req->url.username[AFP_MAX_USERNAME_LEN - 1] = '\0';
+    if (afp_validate_username(req->url.username, NULL) != 0) {
+        response.header.result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    /* Force null-termination of the remaining string fields from untrusted client data */
     req->url.uamname[49] = '\0';
     req->url.password[AFP_MAX_PASSWORD_LEN - 1] = '\0';
     req->url.servername[AFP_SERVER_NAME_UTF8_LEN - 1] = '\0';
@@ -749,8 +764,12 @@ static unsigned char process_getvols(struct daemon_client * c)
         goto error;
     }
 
-    /* Force null-termination of all string fields from untrusted client data */
-    request->url.username[AFP_MAX_USERNAME_LEN - 1] = '\0';
+    if (afp_validate_username(request->url.username, NULL) != 0) {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto error;
+    }
+
+    /* Force null-termination of the remaining string fields from untrusted client data */
     request->url.uamname[49] = '\0';
     request->url.password[AFP_MAX_PASSWORD_LEN - 1] = '\0';
     request->url.servername[AFP_SERVER_NAME_UTF8_LEN - 1] = '\0';
@@ -2587,8 +2606,13 @@ static int process_connect(struct daemon_client * c)
     }
 
     req = (void *) c->complete_packet;
-    /* Force null-termination of all string fields from untrusted client data */
-    req->url.username[AFP_MAX_USERNAME_LEN - 1] = '\0';
+
+    if (afp_validate_username(req->url.username, NULL) != 0) {
+        error = EINVAL;
+        goto error;
+    }
+
+    /* Force null-termination of the remaining string fields from untrusted client data */
     req->url.uamname[49] = '\0';
     req->url.password[AFP_MAX_PASSWORD_LEN - 1] = '\0';
     req->url.servername[AFP_SERVER_NAME_UTF8_LEN - 1] = '\0';
@@ -2754,8 +2778,12 @@ static int process_attach(struct daemon_client * c)
         goto error;
     }
 
-    /* Force null-termination of all string fields from untrusted client data */
-    req->url.username[AFP_MAX_USERNAME_LEN - 1] = '\0';
+    if (afp_validate_username(req->url.username, NULL) != 0) {
+        response_result = AFPSL_IPC_RESULT_ERROR;
+        goto error;
+    }
+
+    /* Force null-termination of the remaining string fields from untrusted client data */
     req->url.uamname[49] = '\0';
     req->url.password[AFP_MAX_PASSWORD_LEN - 1] = '\0';
     req->url.servername[AFP_SERVER_NAME_UTF8_LEN - 1] = '\0';

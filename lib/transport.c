@@ -27,6 +27,7 @@
 #include "dsi.h"
 #include "dsi_protocol.h"
 #include "uam_registry.h"
+#include "utils.h"
 
 #define AFPC_AFP_ERROR_BASE (-5000)
 #define AFPC_DEFAULT_RAW_TIMEOUT 20
@@ -177,6 +178,12 @@ int afpc_transport_connect(const struct afpc_transport_options *options,
 
     error = copy_option(request.url.username,
                         sizeof(request.url.username), options->username);
+
+    if (error != 0) {
+        return error;
+    }
+
+    error = afp_validate_username(request.url.username, NULL);
 
     if (error != 0) {
         return error;

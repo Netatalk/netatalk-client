@@ -18,6 +18,7 @@
 #include "afp_internal.h"
 #include "client.h"
 #include "uam_registry.h"
+#include "utils.h"
 
 void afp_default_url(struct afpc_url *url)
 {
@@ -58,31 +59,22 @@ static int check_uamname(char * uam)
     return !uam_string_to_bitmap(uam);
 }
 
-static void escape_string(char * string, char c)
+static void escape_string(char *string, char c)
 {
-    char d;
-    int inescape = 0;
-    char tmpstring[1024];
-    char *p = tmpstring;
-    memset(tmpstring, 0, 1024);
+    char *read_cursor = string;
+    char *write_cursor = string;
 
-    for (unsigned long i = 0; i < strlen(string); i++) {
-        d = string[i]; /* convenience */
+    while (*read_cursor != '\0') {
+        *write_cursor++ = *read_cursor;
 
-        if ((inescape) && (d == c)) {
-            inescape = 0;
-            continue;
-        }
-
-        *p = d;
-        p++;
-
-        if (d == c) {
-            inescape = 1;
+        if (*read_cursor == c && read_cursor[1] == c) {
+            read_cursor += 2;
+        } else {
+            read_cursor++;
         }
     }
 
-    strcpy(string, tmpstring);
+    *write_cursor = '\0';
 }
 
 static void escape_url(struct afpc_url * url)
@@ -156,7 +148,11 @@ static char *escape_strchr(const char * haystack, int c, const char * toescape)
 static int parse_url(struct afpc_url *url, const char *toparse,
                      int log_messages)
 {
-    char firstpart[AFP_HOSTNAME_LEN];
+    /* Escaped delimiters can make the authority longer than any individual
+     * decoded field. */
+    char firstpart[AFPC_MAX_USERNAME_BYTES
+                   + (2U * AFPC_MAX_PASSWORD_LEN)
+                   + AFP_HOSTNAME_LEN + 128U];
     char *secondpart = NULL;
     const char *path_part;
     char *p, *q;
@@ -177,7 +173,8 @@ static int parse_url(struct afpc_url *url, const char *toparse,
             log_for_client(NULL, AFPFSD, level, __VA_ARGS__); \
         } \
     } while (0)
-    URL_LOG(LOG_DEBUG, "Parsing AFP URL: %s", toparse);
+    /* Never log the URL: its authority may contain authentication data. */
+    URL_LOG(LOG_DEBUG, "Parsing AFP URL");
 
     /* if there is a ://, make sure it is preceeded by afp */
 
@@ -312,7 +309,8 @@ static int parse_url(struct afpc_url *url, const char *toparse,
         q++;
 
         if (strlcpy(url->password, q, sizeof(url->password)) >= sizeof(url->password)) {
-            URL_LOG(LOG_WARNING, "Warning: password truncated");
+            URL_LOG(LOG_ERR, "Password is too long");
+            return -1;
         }
     }
 
@@ -324,7 +322,8 @@ static int parse_url(struct afpc_url *url, const char *toparse,
         q += 6;
 
         if (strlcpy(url->uamname, q, sizeof(url->uamname)) >= sizeof(url->uamname)) {
-            URL_LOG(LOG_WARNING, "Warning: uamname truncated");
+            URL_LOG(LOG_ERR, "UAM name is too long");
+            return -1;
         }
 
         if (check_uamname(url->uamname)) {
@@ -335,7 +334,8 @@ static int parse_url(struct afpc_url *url, const char *toparse,
 
     if (*p != '\0'
             && strlcpy(url->username, p, sizeof(url->username)) >= sizeof(url->username)) {
-        URL_LOG(LOG_WARNING, "Warning: username truncated");
+        URL_LOG(LOG_ERR, "Username is too long");
+        return -1;
     }
 
 parse_secondpart:
@@ -383,6 +383,13 @@ parse_secondpart:
 
 done:
     escape_url(url);
+
+    if (afp_validate_username(url->username, NULL) != 0) {
+        URL_LOG(LOG_ERR, "Username is not valid UTF-8 or exceeds 255 characters");
+        free(secondpart);
+        return -1;
+    }
+
     free(secondpart);
     URL_LOG(LOG_DEBUG, "Successful parsing of URL");
 #undef URL_LOG
