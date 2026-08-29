@@ -52,7 +52,11 @@
 #ifdef HAVE_LIBREADLINE
 #include <readline/readline.h>
 #elif defined(HAVE_LIBEDIT)
+#ifdef HAVE_EDITLINE_READLINE_H
 #include <editline/readline.h>
+#else
+#include <readline.h>
+#endif
 #endif
 
 #include "netatalk-client/afpsl.h"
