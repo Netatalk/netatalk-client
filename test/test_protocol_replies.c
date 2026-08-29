@@ -3,9 +3,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include "lib/afp_internal.h"
 #include "lib/afp_replies.h"
+#include "lib/dsi.h"
 #include "lib/dsi_protocol.h"
 #include "tap.h"
 
@@ -33,7 +36,11 @@ int main(int argc, char **argv)
     struct afp_icon_info icon_info;
     struct afp_appl appl;
     struct afp_file_info file_info;
+    struct afp_server close_server;
+    struct afp_volume close_volume;
+    struct afp_file_info open_fork;
     struct afp_versions afp2 = { "AFP2.2", 22 };
+    int close_session_fds[2];
     struct {
         struct dsi_header header __attribute__((__packed__));
         uint16_t bitmap;
@@ -42,6 +49,25 @@ int main(int argc, char **argv)
     } __attribute__((__packed__)) xattr_reply;
     test_tap_init(argc, argv);
     memset(&server, 0, sizeof(server));
+    memset(&close_server, 0, sizeof(close_server));
+    memset(&close_volume, 0, sizeof(close_volume));
+    memset(&open_fork, 0, sizeof(open_fork));
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, close_session_fds) == 0);
+    close_server.fd = close_session_fds[0];
+    close_server.connect_state = SERVER_STATE_CONNECTED;
+    close_server.num_volumes = 1;
+    close_server.volumes = &close_volume;
+    close_volume.server = &close_server;
+    close_volume.attached = AFP_VOLUME_ATTACHED;
+    close_volume.dtrefnum = 12;
+    close_volume.open_forks = &open_fork;
+    afpc_dsi_incoming_closesession(&close_server);
+    CHECK(close_server.connect_state == SERVER_STATE_DISCONNECTED);
+    CHECK(close_server.fd == -1 && close_server.need_resume);
+    CHECK(close_volume.attached == AFP_VOLUME_ATTACHED);
+    CHECK(close_volume.dtrefnum == 0);
+    CHECK(close_volume.open_forks == &open_fork);
+    close(close_session_fds[1]);
     CHECK(afp_date_to_unix(NULL, htonl(UINT32_C(0x80000000)))
           == (time_t)(AD_DATE_DELTA - INT64_C(0x80000000)));
     server.using_version = &afp2;

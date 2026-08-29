@@ -750,7 +750,11 @@ void afpc_dsi_getstatus_reply(struct afp_server * server)
 
 void afpc_dsi_incoming_closesession(struct afp_server *server)
 {
-    afp_unmount_all_volumes(server);
+    /* This runs on the DSI receiver.  Detaching a volume sends synchronous
+     * AFP Flush/Close requests, whose replies cannot be received until this
+     * handler returns.  It also tears down FUSE-owned open-fork records.
+     * A server-initiated close therefore means transport loss only: preserve
+     * the local volume state so a later reconnect can recover it. */
     loop_disconnect(server);
 }
 
