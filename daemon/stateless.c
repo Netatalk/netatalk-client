@@ -2555,6 +2555,11 @@ static int afp_sl_connect_with_flags(struct afpc_url *url,
     struct afpsl_ipc_connect_request req;
     const struct afpsl_ipc_connect_response *resp;
     int ret;
+
+    if (url == NULL || afp_validate_username(url->username, NULL) != 0) {
+        return -EINVAL;
+    }
+
     ret = ensure_daemon_connection();
 
     if (ret) {
@@ -2730,7 +2735,8 @@ int afp_sl_changepw(struct afpc_url *url, const char *old_password,
     struct afpsl_ipc_changepw_response response;
     int ret;
 
-    if (!url || !old_password || !new_password) {
+    if (!url || !old_password || !new_password
+            || afp_validate_username(url->username, NULL) != 0) {
         return -EINVAL;
     }
 

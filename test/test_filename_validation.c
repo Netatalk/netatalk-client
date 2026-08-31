@@ -69,6 +69,8 @@ int main(int argc, char **argv)
     char legacy_long_source[UINT8_MAX + 2U];
     char legacy_long_name[UINT8_MAX + 2U];
     char *long_url;
+    char *username_url;
+    char too_many_username_chars[AFPC_MAX_USERNAME_CHARS + 2U];
     struct afpc_url parsed_url;
     struct afpc_path owned_path = { 0 };
     struct afpc_path copied_path = { 0 };
@@ -87,9 +89,12 @@ int main(int argc, char **argv)
     supplementary_name_255 = supplementary_utf8_name(AFP_MAX_UTF8_NAME_CHARS);
     converted_supplementary_name = malloc(AFPC_MAX_NAME_BYTES + 1U);
     long_url = malloc(sizeof("afp://server/volume/") + long_path_len);
+    username_url = malloc(sizeof("afp://@server")
+                          + AFPC_MAX_USERNAME_BYTES);
     CHECK(name_255 != NULL && name_256 != NULL && supplementary_name_255 != NULL
           && converted_supplementary_name != NULL);
     CHECK(long_url != NULL);
+    CHECK(username_url != NULL);
     CHECK(afpc_path_set(&owned_path, "/parent", AFPC_MAX_UTF8_PATH_BYTES) == 0);
     CHECK(afpc_path_join(&copied_path, owned_path.data, "child",
                          AFPC_MAX_UTF8_PATH_BYTES) == 0);
@@ -131,10 +136,6 @@ int main(int argc, char **argv)
     CHECK((unsigned char)utf8_path[6] == 3);
     CHECK((unsigned char)legacy_path[0] == kFPLongName);
     CHECK((unsigned char)legacy_path[1] == 3);
-    free(name_255);
-    free(name_256);
-    free(supplementary_name_255);
-    free(converted_supplementary_name);
 
     if (long_url) {
         strcpy(long_url, "afp://server/volume/");
@@ -146,7 +147,38 @@ int main(int argc, char **argv)
         afpc_path_clear(&parsed_url.path);
     }
 
+    if (username_url && supplementary_name_255) {
+        size_t username_len = strlen(supplementary_name_255 + 1);
+        memcpy(username_url, "afp://", strlen("afp://"));
+        memcpy(username_url + strlen("afp://"), supplementary_name_255 + 1,
+               username_len);
+        strcpy(username_url + strlen("afp://") + username_len, "@server");
+        afp_default_url(&parsed_url);
+        CHECK(afp_parse_url_quiet(&parsed_url, username_url) == 0);
+        CHECK(memcmp(parsed_url.username, supplementary_name_255 + 1,
+                     username_len + 1U) == 0);
+        afpc_path_clear(&parsed_url.path);
+    }
+
+    memset(too_many_username_chars, 'u',
+           sizeof(too_many_username_chars) - 1U);
+    too_many_username_chars[sizeof(too_many_username_chars) - 1U] = '\0';
+
+    if (username_url) {
+        snprintf(username_url,
+                 sizeof("afp://@server") + AFPC_MAX_USERNAME_BYTES,
+                 "afp://%s@server", too_many_username_chars);
+        afp_default_url(&parsed_url);
+        CHECK(afp_parse_url_quiet(&parsed_url, username_url) != 0);
+        afpc_path_clear(&parsed_url.path);
+    }
+
     free(long_url);
+    free(username_url);
+    free(name_255);
+    free(name_256);
+    free(supplementary_name_255);
+    free(converted_supplementary_name);
     afpc_path_clear(&owned_path);
     afpc_path_clear(&copied_path);
     return test_tap_finish();

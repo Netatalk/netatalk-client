@@ -46,44 +46,13 @@
 int cleartxt_login(struct afp_server *server, char *username,
                    char *passwd)
 {
-    char *p, *ai = NULL;
-    int len, ret;
-    /* Pack the username and password into the authinfo struct. */
-    len = 1 + (int)strnlen(username, AFP_MAX_USERNAME_LEN) + 1 + 8;
-    ai = calloc(1, len);
-    p = ai;
-
-    if (ai == NULL) {
-        goto cleartxt_fail;
-    }
-
-    p += copy_to_pascal(p, username) + 1;
-
-    if ((long)p & 0x1) {
-        len--;
-    } else {
-        p++;
-    }
-
+    unsigned char password[8] = { 0 };
+    int ret;
     size_t passwd_len = strnlen(passwd, 8);
-
-    if (passwd_len > 8) {
-        passwd_len = 8;
-    }
-
-    memcpy(p, passwd, passwd_len);
-
-    if (passwd_len < 8) {
-        memset(p + passwd_len, 0, 8 - passwd_len);
-    }
-
-    /* Send the login request on to the server. */
-    ret = afp_login(server, "Cleartxt Passwrd", ai, len, NULL);
-    goto cleartxt_cleanup;
-cleartxt_fail:
-    ret = -1;
-cleartxt_cleanup:
-    free(ai);
+    memcpy(password, passwd, passwd_len);
+    ret = afp_login_initial(server, "Cleartxt Passwrd", username, 1,
+                            password, sizeof(password), NULL);
+    explicit_bzero(password, sizeof(password));
     return ret;
 }
 

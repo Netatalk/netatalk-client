@@ -509,14 +509,11 @@ int afp_getappl(struct afp_volume *volume, unsigned int filecreator,
 int afp_getsrvrmsg(struct afp_server *server, unsigned short messagetype,
                    unsigned char utf8, unsigned char block, char *mesg);
 
-int afp_login(struct afp_server *server, const char * uaname,
-              char *userauthinfo, unsigned int userauthinfo_len,
-              struct afp_rx_buffer *rx);
-
-int afp_loginext(struct afp_server *server, const char *uaname,
-                 const char *username,
-                 char *userauthinfo, unsigned int userauthinfo_len,
-                 struct afp_rx_buffer *rx);
+int afp_login_initial(struct afp_server *server, const char *uaname,
+                      const char *username, int pad_before_authinfo,
+                      const void *userauthinfo,
+                      unsigned int userauthinfo_len,
+                      struct afp_rx_buffer *rx);
 
 int afp_changepassword(struct afp_server *server, const char * uaname,
                        char *userauthinfo, unsigned int userauthinfo_len,

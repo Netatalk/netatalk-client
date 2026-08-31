@@ -54,6 +54,19 @@ void sanitize_text(const char *text, char *sanitized, size_t size);
 /* Parse an AFP version such as "3.1" or "31" into its numeric form. */
 int afp_parse_version(const char *text, int *version_out);
 
+/* Validate a NUL-terminated AFP 3.x username and optionally return its UTF-8
+ * byte length. */
+int afp_validate_username(const char *username, size_t *byte_len_out);
+
+/* Validate a username for the one-byte-length FPLogin representation.  AFP
+ * 2.x names are byte strings, so this deliberately does not impose UTF-8. */
+int afp_validate_legacy_username(const char *username,
+                                 size_t *byte_len_out);
+
+/* Internal validator shared by AFPName serializers. */
+int afp_validate_utf8_name(const char *name, size_t max_characters,
+                           size_t *byte_len_out);
+
 /* Log level conversion functions */
 const char *log_level_to_string(int level);
 int string_to_log_level(const char *str, int *level_out);

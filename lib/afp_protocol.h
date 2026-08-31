@@ -25,14 +25,17 @@
 #define AFP_HOSTNAME_LEN 255
 #define AFP_ZONE_LEN 32
 #define AFP_SERVER_ICON_LEN 256
-#define AFP_MAX_USERNAME_LEN 127
+#define AFP_MAX_USERNAME_LEN AFPC_MAX_USERNAME_LEN
 #define AFP_MAX_PASSWORD_LEN 127
 
 /* This is the maximum length of any UAM string */
 #define AFP_UAM_LENGTH 24
 
 /* AFP 3.x UTF-8 pathnames are limited to 255 Unicode characters. */
-#define AFP_MAX_UTF8_NAME_CHARS 255
+#define AFP_MAX_UTF8_NAME_CHARS AFPC_MAX_USERNAME_CHARS
+
+/* FPLogin represents a username as a one-byte-length Pascal string. */
+#define AFP_LEGACY_MAX_USERNAME_BYTES UINT8_MAX
 
 /* AFP 3.x UTF-8 pathname headers use a 16-bit byte length.  This is a wire
  * limit, not a recommendation to put full paths in fixed-size buffers. */
@@ -52,6 +55,9 @@ enum {
     kFPLongName = 2,
     kFPUTF8Name = 3
 };
+
+/* AFP's UTF-8 text-encoding hint, including the decomposed-name variant. */
+#define AFP_TEXT_ENCODING_UTF8 UINT32_C(0x08000103)
 
 /* fork types */
 #define AFP_FORKTYPE_DATA 0x0

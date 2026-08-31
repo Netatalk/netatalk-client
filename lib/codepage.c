@@ -169,8 +169,8 @@ static unsigned char unicode_to_mac_roman(char16 uc)
  * codepoint to Mac Roman using the reverse page tables.
  * Unmappable characters are replaced with '?'.
  */
-static int convert_utf8_to_mac_roman(const char *src, int src_len,
-                                     char *dest, int dest_len)
+int convert_utf8_to_mac_roman(const char *src, int src_len,
+                              char *dest, int dest_len)
 {
     char16 *ucs2;
     size_t bytes_consumed;

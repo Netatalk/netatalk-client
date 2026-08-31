@@ -688,9 +688,9 @@ int main(int argc, char *argv[])
             exit(0);
         }
 
-        if (strnlen(discovered_username, AFPC_MAX_USERNAME_LEN)
-                >= AFPC_MAX_USERNAME_LEN) {
-            fprintf(stderr, "Username is too long.\n");
+        if (afp_validate_username(discovered_username, NULL) != 0) {
+            fprintf(stderr,
+                    "Username must be valid UTF-8 and no more than 255 characters.\n");
             free(discovered_username);
             tty_reset(STDIN_FILENO);
             exit(1);

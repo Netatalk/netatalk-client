@@ -36,6 +36,5 @@ Protocol bugs
 * reconnect isn't reliable
 * If a DSI stream gets broken or there's a protocol error, the connection
   should be reset
-* for logins, fpLoginExt should be used instead of fpLogin
 * for fpCreateFile, use soft creates
 * honour volume's HasConfigInfo flag

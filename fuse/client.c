@@ -739,7 +739,15 @@ static int do_mount(int argc, char ** argv)
             break;
 
         case 'u':
-            snprintf(request.url.username, AFP_MAX_USERNAME_LEN, "%s", optarg);
+            if (afp_validate_username(optarg, NULL) != 0
+                    || strlcpy(request.url.username, optarg,
+                               sizeof(request.url.username))
+                    >= sizeof(request.url.username)) {
+                fprintf(stderr,
+                        "Username must be valid UTF-8 and no more than 255 characters.\n");
+                return -1;
+            }
+
             break;
 
         case 'f':

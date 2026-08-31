@@ -61,6 +61,12 @@ struct afp_server *afp_server_full_connect(void * priv,
     unsigned int rx_quantum;
     char icon[AFP_SERVER_ICON_LEN];
 
+    if (req == NULL
+            || afp_validate_username(req->url.username, NULL) != 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+
     if ((address = afp_get_address(priv, req->url.servername,
                                    req->url.port)) == NULL) {
         goto error;
