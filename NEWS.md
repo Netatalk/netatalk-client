@@ -1,5 +1,45 @@
 # NEWS
 
+## Netatalk Client v1.0.0 (September 15, 2026)
+
+### AFP Client Library Improvements
+
+- Add Zeroconf AFP service discovery with Bonjour/DNS-SD and Avahi backends. The new **afpc discover** command
+  produces human-readable, verbose, or JSON output, and **afpcmd --browse** provides an interactive service picker.
+  FUSE mounts can resolve an advertised service by name
+- Strengthen connection recovery by verifying the AFP server signature before a session is reused. Reconnecting clients
+  now reject a server identity mismatch while continuing to support a verified server at a changed address
+- Support full-length UTF-8 AFP path components and retain the negotiated filename encoding independently for each
+  volume on a server. This prevents one volume's encoding capabilities from affecting another's operations
+- Improve AFP 2.x compatibility, including enumeration reply sizing, ResourceFork lifecycle handling, pre-2000
+  timestamps, and transfers involving servers that do not support POSIX operations
+- BREAKING: Add a supported, namespaced public API under _netatalk-client/_ for both the daemon-backed _libafpsl_
+  API and the opaque stateful _libafpclient_ transport API. Any applications that used the v0.9.5 and earlier API
+  must be updated.
+
+### Stateless Client and afpcmd Improvements
+
+- Add AFP Desktop database support: _afpcmd_ can now read and set Finder comments, list and retrieve icons, and query
+  application mappings. The stateless library exposes the same operations to applications
+- Add **-f** / **--afpversion** to _afpcmd_ and FUSE mounting commands to set the maximum AFP protocol version used
+  for a connection
+- Validate the stateless client-daemon protocol and version before accepting requests, and harden request and response
+  framing for long paths and Desktop database data
+
+### Build and Portability Improvements
+
+- Add build and CI support for illumos, OmniOS, and Solaris 11
+- Allow Meson builds that install only the client libraries, without requiring either FUSE or a command-line client
+- Improve portability of _afpcmd_ builds using libedit/editline and promote compiler warnings to errors in supported
+  builds
+
+### Reliability Improvements
+
+- Avoid synchronous DSI connection teardown when a server closes a session, making shutdown and reconnect paths more
+  robust
+- Harden UAM, daemon startup, and FUSE IPC error handling, including complete read/write handling and stricter public
+  API boundaries
+
 ## Netatalk Client v0.9.5 (July 7, 2026)
 
 **Note:** With this release version onwards, this project is now called _Netatalk Client_.
