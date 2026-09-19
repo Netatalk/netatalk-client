@@ -39,3 +39,15 @@ option(
     value: 'auto',
     description: 'Select the Zeroconf discovery provider',
 )
+option(
+    'website-docs',
+    type: 'boolean',
+    value: false,
+    description: 'Export Markdown documentation for the Netatalk website (admin use only)',
+)
+option(
+    'website-docs-install-path',
+    type: 'string',
+    value: '',
+    description: 'Set the destination for website documentation exports (admin use only)',
+)
