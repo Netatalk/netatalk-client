@@ -155,8 +155,6 @@ and (partial) compatibility.
 
 ## rdmark/afpfs-ng 0.9.3 (February 8, 2026)
 
-**Note:** This release is from Daniel Markstedt's afpfs-ng fork.
-
 ### Stateless Client Library
 
 - The stateless client library (_libafpsl.so_) together with the stateless client daemon (_afpsld_) have been
