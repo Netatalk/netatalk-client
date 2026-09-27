@@ -14,7 +14,7 @@ by running:
     afpfsd --manager
 
 This should fork off.  You should see messages in /var/log/messages.  For more
-details, run it with the '--debug' option to see detailed debug info.
+details, run it with the `--debug` option to see detailed debug info.
 
 Note that if afpfsd is not running, afpc fs commands or mount_afpfs will start it
 automatically, so in most cases you don't need to start it manually.
@@ -132,18 +132,18 @@ E.g.
 
 Transfers preserve FinderInfo, ResourceForks, generic extended attributes,
 file modes, and modification times by default.
-The default '-M auto' mode uses filesystem extended attributes for generic
+The default `-M auto` mode uses filesystem extended attributes for generic
 xattrs when available, and falls back to Netatalk AppleDouble EA sidecars
 otherwise. FinderInfo and ResourceForks use native filesystem xattrs on macOS,
 and macOS AppleDouble sidecars on other systems.
-Use '-M netatalk', '-M xattr', or '-M macos' to force local metadata storage,
-and '-M none' to transfer only the data fork.
+Use `-M netatalk`, `-M xattr`, or `-M macos` to force local metadata storage,
+and `-M none` to transfer only the data fork.
 
 See afpcmd(1) for more information.
 
 ## getting status
 
-You can get status information on servers with 'afpgetstatus _servername_'.  
+You can get status information on servers with 'afpgetstatus _servername_'.
 This provides some information without having to log in.
 
 See afpgetstatus(1) for more information.
