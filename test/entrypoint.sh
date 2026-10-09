@@ -72,3 +72,18 @@ run_test ./test_afpgetstatus.t
 run_test ./test_afpcmd_batch.t
 stop_afpsld
 run_test ./test_afpcmd_interactive.t
+
+if [ "${AFP_TEST_FUSE:-0}" = 1 ]; then
+    if [ ! -c /dev/fuse ]; then
+        echo "FUSE tests require --device /dev/fuse --cap-add SYS_ADMIN" >&2
+        exit 1
+    fi
+    # Only fusermount3 needs mount privileges. Run the client and its daemons
+    # as the test user, with SYS_ADMIN as the helper's sole bounding capability.
+    fuse_workdir=$(mktemp -d /tmp/afp-fuse-test.XXXXXX)
+    chown "$TEST_USR:$TEST_USR" "$fuse_workdir"
+    cd "$fuse_workdir"
+    setpriv --bounding-set=-all,+sys_admin \
+        --reuid="$TEST_USR" --regid="$TEST_USR" --clear-groups \
+        prove /test/test_fuse.t
+fi

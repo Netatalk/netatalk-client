@@ -9,7 +9,8 @@
 | `test_afpgetstatus.t` | Verifies `afpgetstatus` can retrieve and parse AFP server status information. |
 | `test_fuse.t` | Mounts an AFP share via `mount_afpfs` (FUSE) and performs various operations to test its functionality. |
 
-`test_fuse.t` must be run stand-alone on a real host — FUSE kernel support is not reliable inside containers. See below.
+`test_fuse.t` can run on a host or inside a Linux container with access to
+the kernel's FUSE device and permission to mount. See below.
 
 All tests use the `Test::More` library (part of Perl core) and are executed with the `prove` test runner.
 
@@ -20,7 +21,7 @@ See Manual environment prep below for setup instructions.
 
 ---
 
-## Container tests (batch + interactive only)
+## Container tests
 
 Build and run the container friendly tests inside a self-contained container image.
 The image compiles Netatalk Client from source and includes a Netatalk AFP server.
@@ -38,6 +39,32 @@ podman run --rm netatalk-client-test
 ```
 
 `prove` exits non-zero on any test failure, which causes the container to exit with a non-zero status.
+
+### Include FUSE tests
+
+The image includes libfuse 3 and `fusermount3`. To include `test_fuse.t`:
+
+```sh
+docker run --rm --device /dev/fuse --cap-add SYS_ADMIN \
+    -e AFP_TEST_FUSE=1 netatalk-client-test
+```
+
+The same options can be used with a rootful Podman runtime. The Linux host
+(or Linux VM on macOS) must provide `/dev/fuse`. The mount lives inside the
+container; no host directory or host mount namespace is shared.
+
+The entrypoint starts the AFP server as root, then runs the FUSE test and
+client daemons as `test_usr`. It restricts their capability bounding set to
+`SYS_ADMIN`; their effective capabilities are empty. The setuid `fusermount3`
+helper temporarily acquires the mount capability. This does not require
+`--privileged`, but is not a fully unprivileged container: the helper still
+needs `SYS_ADMIN`. Do not add `no-new-privileges` to this mode, since it
+prevents that helper from acquiring its privilege.
+
+Docker's default seccomp profile is sufficient on the tested Docker Desktop
+runtime. Other hosts may need a local AppArmor or SELinux policy that allows
+FUSE mounts. Rootless runtimes and pre-mounted file descriptor handoff are
+separate configurations; see [the issue #366 analysis](issue-366.md).
 
 ---
 
@@ -93,7 +120,7 @@ The `afpsld` session daemon is killed between the two test runs to ensure a clea
 
 ### Running the FUSE test
 
-`test_fuse.t` requires a real kernel FUSE mount and must be run on the host (not inside a container):
+`test_fuse.t` requires a real kernel FUSE mount. On a configured host:
 
 ```sh
 cd test

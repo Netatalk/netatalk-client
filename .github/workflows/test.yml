@@ -75,7 +75,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Create image name
         run: |
-          echo "IMAGE_NAME=${REPO,,}-tests" >> ${GITHUB_ENV}
+          echo "IMAGE_NAME=${REPO,,}-tests" >> "${GITHUB_ENV}"
       - name: Login to container registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -106,10 +106,19 @@ jobs:
     steps:
       - name: Create image name
         run: |
-          echo "IMAGE_NAME=${REPO,,}-tests" >> ${GITHUB_ENV}
-      - name: Run integration tests
+          echo "IMAGE_NAME=${REPO,,}-tests" >> "${GITHUB_ENV}"
+      - name: Prepare FUSE device
         run: |
+          sudo modprobe fuse
+          test -c /dev/fuse
+      - name: Run integration tests including FUSE
+        run: |
+          # Docker's default AppArmor profile on Ubuntu denies mounts.
           docker run --rm \
+            --device /dev/fuse \
+            --cap-add SYS_ADMIN \
+            --security-opt apparmor=unconfined \
+            -e AFP_TEST_FUSE=1 \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
   distribution-tests:

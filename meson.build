@@ -136,9 +136,23 @@ elif cc.has_function(
 endif
 
 gcrypt_dep = dependency('libgcrypt', version: '>=1.2.3', required: false)
-fuse_dep = dependency('fuse3', version: '>=3.0.0', required: false)
+# Linux libfuse headers can trigger pedantic warnings (e.g. libfuse 3.17).
+# Preserve normal include precedence elsewhere: on macOS, -isystem lets
+# /usr/local/include/fuse.h (a FUSE 2 shim) shadow the FUSE 3 headers.
+fuse_include_type = host_os == 'linux' ? 'system' : 'preserve'
+fuse_dep = dependency(
+    'fuse3',
+    version: '>=3.0.0',
+    required: false,
+    include_type: fuse_include_type,
+)
 if not fuse_dep.found() or get_option('force-fuse-v2')
-    fuse_dep = dependency('fuse', version: '>=2.9.0', required: false)
+    fuse_dep = dependency(
+        'fuse',
+        version: '>=2.9.0',
+        required: false,
+        include_type: fuse_include_type,
+    )
 endif
 
 with_afpcmd = readline_dep.found() or libedit_readline_header != ''

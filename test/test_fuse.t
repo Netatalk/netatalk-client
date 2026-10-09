@@ -14,6 +14,7 @@ use warnings;
 
 use Test::More;
 use Cwd qw(getcwd);
+use File::Spec;
 use Getopt::Long qw(GetOptions);
 use IO::Handle;
 use POSIX qw(WNOHANG setsid);
@@ -47,26 +48,24 @@ my $AFP_AUTH_URL = sprintf(
 my $AFP_GUEST_URL = "afp://$AFP_HOST/$AFP_VOL";
 
 sub start_afpfsd_manager {
-    if (!$AFP_FUSE_DEBUG_LOG) {
-        is(system('afpfsd', '--manager'), 0,
-            'prepare: afpfsd daemon started');
-        return;
-    }
-
-    open(my $log_fh, '>>', $AFP_FUSE_DEBUG_LOG)
-        or BAIL_OUT("Cannot open AFP_FUSE_DEBUG_LOG '$AFP_FUSE_DEBUG_LOG': $!");
+    # Own the manager's lifetime and keep daemon output out of prove's TAP
+    # pipe. An orphaned manager holding that pipe open prevents prove exiting.
+    my $log_path = $AFP_FUSE_DEBUG_LOG // File::Spec->devnull();
+    open(my $log_fh, '>>', $log_path)
+        or BAIL_OUT("Cannot open afpfsd log '$log_path': $!");
     $log_fh->autoflush(1);
-    print $log_fh "\n==> Starting afpfsd debug manager for test_fuse.t pid $$\n";
+    print $log_fh "\n==> Starting afpfsd manager for test_fuse.t pid $$\n";
 
     my $pid = fork();
-    BAIL_OUT("Cannot fork afpfsd debug manager: $!") unless defined $pid;
+    BAIL_OUT("Cannot fork afpfsd manager: $!") unless defined $pid;
 
     if ($pid == 0) {
         setsid() or die "setsid: $!";
         open(STDOUT, '>&', $log_fh) or die "dup stdout: $!";
         open(STDERR, '>&', $log_fh) or die "dup stderr: $!";
         close $log_fh;
-        exec('afpfsd', '--debug', '--manager') or die "exec afpfsd: $!";
+        exec('afpfsd', $AFP_FUSE_DEBUG_LOG ? '--debug' : '--foreground', '--manager')
+            or die "exec afpfsd: $!";
     }
 
     close $log_fh;
@@ -76,10 +75,10 @@ sub start_afpfsd_manager {
     my $exited = waitpid($pid, WNOHANG);
     if ($exited == $pid) {
         undef $afpfsd_pid;
-        BAIL_OUT("afpfsd debug manager exited early; see $AFP_FUSE_DEBUG_LOG");
+        BAIL_OUT("afpfsd manager exited early; log: $log_path");
     }
 
-    ok($pid > 0, "prepare: afpfsd debug manager started, logging to $AFP_FUSE_DEBUG_LOG");
+    ok($pid > 0, "prepare: afpfsd manager started, logging to $log_path");
 }
 
 END {
