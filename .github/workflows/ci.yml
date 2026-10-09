@@ -48,7 +48,8 @@ jobs:
             libedit-dev \
             libgcrypt-dev \
             meson \
-            ninja
+            ninja \
+            perl
       - name: Setup
         run: meson setup build --prefix=/usr
       - name: Compile
@@ -82,7 +83,8 @@ jobs:
             libedit-dev \
             libgcrypt-dev \
             meson \
-            ninja
+            ninja \
+            perl
       - name: Setup
         run: meson setup build --prefix=/usr
       - name: Compile
@@ -116,6 +118,9 @@ jobs:
             libgcrypt-devel \
             meson \
             ninja-build \
+            perl-File-Temp \
+            perl-Test-Simple \
+            perl-interpreter \
             readline-devel
       - name: Setup
         run: meson setup build --prefix=/usr
@@ -150,6 +155,9 @@ jobs:
             libgcrypt-devel \
             meson \
             ninja-build \
+            perl-File-Temp \
+            perl-Test-Simple \
+            perl-interpreter \
             readline-devel
       - name: Setup
         run: meson setup build --prefix=/usr
@@ -184,6 +192,7 @@ jobs:
             libfuse-dev \
             libreadline-dev \
             ninja-build \
+            perl \
             pkg-config \
             python3-pip
           sudo python3 -m pip install --upgrade meson
@@ -220,6 +229,7 @@ jobs:
             libreadline-dev \
             meson \
             ninja-build \
+            perl \
             pkg-config
       - name: Setup
         run: meson setup build --prefix=/usr
@@ -322,6 +332,7 @@ jobs:
               libgcrypt \
               libiconv \
               meson \
+              perl5 \
               pkgconf
           run: |
             set -e
@@ -359,6 +370,7 @@ jobs:
               libgcrypt \
               libiconv \
               meson \
+              perl5 \
               pkgconf
           run: |
             set -e
@@ -392,6 +404,7 @@ jobs:
               gcc13 \
               libgcrypt \
               meson \
+              perl \
               pkg-config
           run: |
             set -e
@@ -464,7 +477,8 @@ jobs:
             pkgin -y install \
               avahi \
               meson \
-              libgcrypt
+              libgcrypt \
+              perl
           run: |
             set -e
             export PATH=/opt/local/sbin:/opt/local/bin:/usr/gnu/bin:/usr/bin:/usr/sbin:/sbin:$PATH

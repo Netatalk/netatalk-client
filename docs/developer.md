@@ -532,9 +532,9 @@ The frontends deliberately have different UX responsibilities:
   Verbose output also retains every device-info advertisement as an
   independent diagnostic entry.
 
-Fake providers in `test/` make event ordering, output, interface selection, and
-ambiguity handling deterministic without requiring multicast networking in
-the unit test suite.
+Fake providers in `test/unit/` make event ordering, output, interface selection,
+and ambiguity handling deterministic without requiring multicast networking
+in the unit test suite.
 
 ## afpcmd Implementation Using Stateless Library
 

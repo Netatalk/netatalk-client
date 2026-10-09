@@ -67,11 +67,11 @@ RUN apt-get update \
 &&  apt-get clean \
 &&  rm -rf /var/lib/apt/lists/*
 
-COPY /test/entrypoint.sh /test/entrypoint.sh
-COPY /test/test_afpcmd_batch.t /test/test_afpcmd_batch.t
-COPY /test/test_afpcmd_interactive.t /test/test_afpcmd_interactive.t
-COPY /test/test_afpgetstatus.t /test/test_afpgetstatus.t
-COPY /test/test_fuse.t /test/test_fuse.t
+COPY /test/integration/entrypoint.sh /test/entrypoint.sh
+COPY /test/integration/test_afpcmd_batch.t /test/test_afpcmd_batch.t
+COPY /test/integration/test_afpcmd_interactive.t /test/test_afpcmd_interactive.t
+COPY /test/integration/test_afpgetstatus.t /test/test_afpgetstatus.t
+COPY /test/integration/test_fuse.t /test/test_fuse.t
 
 WORKDIR /test
 CMD ["/test/entrypoint.sh"]

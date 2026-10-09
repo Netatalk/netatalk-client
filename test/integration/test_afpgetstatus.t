@@ -47,38 +47,38 @@ sub afpgetstatus_run {
 
     is($status, 0, 'getstatus: exits 0');
 
-    like($out, qr/AFP response from/,
-        'getstatus: response header present');
+    like( $out, qr/AFP response from/,
+          'getstatus: response header present');
 
-    like($out, qr/Server name:\s+afpfs_testsrv/,
-        'getstatus: server name is afpfs_testsrv');
+    like( $out, qr/Server name:\s+afpfs_testsrv/,
+          'getstatus: server name is afpfs_testsrv');
 
-    like($out, qr/Server type:/,
-        'getstatus: server type present');
+    like( $out, qr/Server type:/,
+          'getstatus: server type present');
 
-    like($out, qr/AFP versions:/,
-        'getstatus: AFP versions section present');
+    like( $out, qr/AFP versions:/,
+          'getstatus: AFP versions section present');
 
-    like($out, qr/UAMs:/,
-        'getstatus: UAMs section present');
+    like( $out, qr/UAMs:/,
+          'getstatus: UAMs section present');
 
-    like($out, qr/No User Authent/,
-        'getstatus: guest UAM listed');
+    like( $out, qr/No User Authent/,
+          'getstatus: guest UAM listed');
 
-    like($out, qr/DHX2/,
-        'getstatus: DHX2 UAM listed');
+    like( $out, qr/DHX2/,
+          'getstatus: DHX2 UAM listed');
 
-    like($out, qr/Flags:/,
-        'getstatus: Flags section present');
+    like( $out, qr/Flags:/,
+          'getstatus: Flags section present');
 
-    like($out, qr/Signature:/,
-        'getstatus: Signature section present');
+    like( $out, qr/Signature:/,
+          'getstatus: Signature section present');
 
-    like($out, qr/Shared volumes:/,
-        'getstatus: Shared volumes section present');
+    like( $out, qr/Shared volumes:/,
+          'getstatus: Shared volumes section present');
 
-    like($out, qr/\bafpfs_test\b/,
-        'getstatus: afpfs_test volume listed');
+    like( $out, qr/\bafpfs_test\b/,
+          'getstatus: afpfs_test volume listed');
 }
 
 # -----------------------------------------------------------------------
@@ -89,11 +89,11 @@ sub afpgetstatus_run {
 
     is($status, 0, 'getstatus_url: exits 0 with afp:// prefix');
 
-    like($out, qr/Server name:\s+afpfs_testsrv/,
-        'getstatus_url: server name matches');
+    like( $out, qr/Server name:\s+afpfs_testsrv/,
+          'getstatus_url: server name matches');
 
-    like($out, qr/\bafpfs_test\b/,
-        'getstatus_url: afpfs_test volume listed');
+    like( $out, qr/\bafpfs_test\b/,
+          'getstatus_url: afpfs_test volume listed');
 }
 
 # -----------------------------------------------------------------------
