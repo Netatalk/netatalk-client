@@ -159,26 +159,35 @@ with_afpcmd = readline_dep.found() or libedit_readline_header != ''
 with_fuse = get_option('enable-fuse') and fuse_dep.found()
 with_crypt = gcrypt_dep.found()
 
-# Check for optional Zeroconf discovery support. DNS-SD is part of libSystem
-# on macOS, while other implementations commonly provide libdns_sd.
+# Check for Zeroconf discovery support. Prefer DNS-SD in the default link
+# environment (libSystem on macOS) before looking for a separate library.
 zeroconf_option = get_option('zeroconf')
 zeroconf_backend_option = get_option('zeroconf-backend')
 avahi_dep = dependency('avahi-client', required: false)
-dnssd_lib = cc.find_library('dns_sd', required: false)
 dnssd_dependencies = []
-
-if dnssd_lib.found()
-    dnssd_dependencies += dnssd_lib
-endif
+have_dnssd_header = cc.has_header('dns_sd.h')
 
 have_dnssd = (
-    cc.has_header('dns_sd.h')
+    have_dnssd_header
     and cc.has_function(
         'DNSServiceBrowse',
         prefix: '#include <dns_sd.h>',
-        dependencies: dnssd_dependencies,
     )
 )
+
+if have_dnssd_header and not have_dnssd
+    dnssd_lib = cc.find_library('dns_sd', required: false)
+    if dnssd_lib.found()
+        have_dnssd = cc.has_function(
+            'DNSServiceBrowse',
+            prefix: '#include <dns_sd.h>',
+            dependencies: dnssd_lib,
+        )
+        if have_dnssd
+            dnssd_dependencies += dnssd_lib
+        endif
+    endif
+endif
 
 have_dnssd_getaddrinfo = (
     have_dnssd
