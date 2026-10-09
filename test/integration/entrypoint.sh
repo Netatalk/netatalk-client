@@ -11,11 +11,20 @@
 set -e
 TEST_USR="test_usr"
 TEST_PWD="test_pwd"
+AFP_SERVER_LOG="/var/log/afpd.log"
+
+if [ -n "${AFP_TEST_LOG_DIR:-}" ]; then
+    mkdir -p "$AFP_TEST_LOG_DIR"
+    AFP_SERVER_LOG="$AFP_TEST_LOG_DIR/afpd.log"
+    touch "$AFP_SERVER_LOG"
+    chmod 0644 "$AFP_SERVER_LOG"
+    export AFP_FUSE_DEBUG_LOG="${AFP_FUSE_DEBUG_LOG:-$AFP_TEST_LOG_DIR/afpfsd.log}"
+fi
 
 run_test() {
     test="$1"
     echo "==> Running $test"
-    prove "$test"
+    prove -v "$test"
 }
 
 live_afpsld_pids() {
@@ -57,7 +66,7 @@ rm -f /var/lock/netatalk
 
 cat << EOF > /etc/netatalk/afp.conf
 [Global]
-log file = /var/log/afpd.log
+log file = $AFP_SERVER_LOG
 log level = default:debug
 server name = afpfs_testsrv
 uam list = uams_guest.so uams_dhx2.so
@@ -82,8 +91,13 @@ if [ "${AFP_TEST_FUSE:-0}" = 1 ]; then
     # as the test user, with SYS_ADMIN as the helper's sole bounding capability.
     fuse_workdir=$(mktemp -d /tmp/afp-fuse-test.XXXXXX)
     chown "$TEST_USR:$TEST_USR" "$fuse_workdir"
+    if [ -n "${AFP_FUSE_DEBUG_LOG:-}" ]; then
+        touch "$AFP_FUSE_DEBUG_LOG"
+        chown "$TEST_USR:$TEST_USR" "$AFP_FUSE_DEBUG_LOG"
+        chmod 0644 "$AFP_FUSE_DEBUG_LOG"
+    fi
     cd "$fuse_workdir"
     setpriv --bounding-set=-all,+sys_admin \
         --reuid="$TEST_USR" --regid="$TEST_USR" --clear-groups \
-        prove /test/test_fuse.t
+        prove -v /test/test_fuse.t
 fi

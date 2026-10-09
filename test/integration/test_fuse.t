@@ -19,17 +19,17 @@ use Getopt::Long qw(GetOptions);
 use IO::Handle;
 use POSIX qw(WNOHANG setsid);
 
-my $AFP_USER = $ENV{AFP_TEST_USER} // 'test_usr';
-my $AFP_PASS = $ENV{AFP_TEST_PASSWORD} // 'test_pwd';
-my $AFP_HOST = 'localhost';
-my $AFP_VOL  = 'afpfs_test';
+my $AFP_USER           = $ENV{AFP_TEST_USER}     // 'test_usr';
+my $AFP_PASS           = $ENV{AFP_TEST_PASSWORD} // 'test_pwd';
+my $AFP_HOST           = 'localhost';
+my $AFP_VOL            = 'afpfs_test';
 my $AFP_FUSE_DEBUG_LOG = $ENV{AFP_FUSE_DEBUG_LOG};
-my $mnt_dir = getcwd() . '/afpfs_mnt';
+my $mnt_dir            = getcwd() . '/afpfs_mnt';
 my $afpfsd_pid;
 
 GetOptions(
-    'user=s'     => \$AFP_USER,
-    'password=s' => \$AFP_PASS,
+           'user=s'     => \$AFP_USER,
+           'password=s' => \$AFP_PASS,
 ) or BAIL_OUT('Invalid arguments. Usage: prove test_fuse.t :: --user USER --password PASSWORD');
 
 sub url_escape_component {
@@ -39,11 +39,11 @@ sub url_escape_component {
 }
 
 my $AFP_AUTH_URL = sprintf(
-    'afp://%s:%s@%s/%s',
-    url_escape_component($AFP_USER),
-    url_escape_component($AFP_PASS),
-    $AFP_HOST,
-    $AFP_VOL,
+                           'afp://%s:%s@%s/%s',
+                           url_escape_component($AFP_USER),
+                           url_escape_component($AFP_PASS),
+                           $AFP_HOST,
+                           $AFP_VOL,
 );
 my $AFP_GUEST_URL = "afp://$AFP_HOST/$AFP_VOL";
 
@@ -52,7 +52,7 @@ sub start_afpfsd_manager {
     # pipe. An orphaned manager holding that pipe open prevents prove exiting.
     my $log_path = $AFP_FUSE_DEBUG_LOG // File::Spec->devnull();
     open(my $log_fh, '>>', $log_path)
-        or BAIL_OUT("Cannot open afpfsd log '$log_path': $!");
+      or BAIL_OUT("Cannot open afpfsd log '$log_path': $!");
     $log_fh->autoflush(1);
     print $log_fh "\n==> Starting afpfsd manager for test_fuse.t pid $$\n";
 
@@ -65,7 +65,7 @@ sub start_afpfsd_manager {
         open(STDERR, '>&', $log_fh) or die "dup stderr: $!";
         close $log_fh;
         exec('afpfsd', $AFP_FUSE_DEBUG_LOG ? '--debug' : '--foreground', '--manager')
-            or die "exec afpfsd: $!";
+          or die "exec afpfsd: $!";
     }
 
     close $log_fh;
@@ -96,19 +96,20 @@ sub mount_or_bail {
 
     is($rc, 0, $description);
     BAIL_OUT("$description failed: @cmd exited with " . ($rc >> 8))
-        if $rc != 0;
+      if $rc != 0;
 }
 
 sub unmount_or_bail {
     my ($description) = @_;
-    my @cmd = $^O eq 'darwin'
-        ? ('/sbin/umount', $mnt_dir)
-        : ('afpc', 'fs', 'unmount', $mnt_dir);
+    my @cmd =
+      $^O eq 'darwin'
+      ? ('/sbin/umount', $mnt_dir)
+      : ('afpc', 'fs', 'unmount', $mnt_dir);
     my $rc = system(@cmd);
 
     is($rc, 0, $description);
     BAIL_OUT("$description failed: @cmd exited with " . ($rc >> 8))
-        if $rc != 0;
+      if $rc != 0;
 }
 
 # -----------------------------------------------------------------------
@@ -123,59 +124,60 @@ start_afpfsd_manager();
 # fuse_auth: authenticated mount
 # -----------------------------------------------------------------------
 sleep 1;
-mount_or_bail('fuse_auth: authenticated mount succeeds',
-    'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+mount_or_bail(
+              'fuse_auth: authenticated mount succeeds',
+              'mount_afpfs', $AFP_AUTH_URL, $mnt_dir
+);
 
 open(my $wfh, '>', "$mnt_dir/sample.txt")
-    or BAIL_OUT("Cannot write to mounted share: $!");
+  or BAIL_OUT("Cannot write to mounted share: $!");
 print $wfh "You should read this back\n";
 close $wfh;
 
 open(my $rfh, '<', "$mnt_dir/sample.txt")
-    or BAIL_OUT("Cannot read from mounted share: $!");
+  or BAIL_OUT("Cannot read from mounted share: $!");
 my $content = do { local $/; <$rfh> };
 close $rfh;
-like($content, qr/^You should read this back$/m,
-    'fuse_auth: file content readable after write');
+like( $content, qr/^You should read this back$/m,
+      'fuse_auth: file content readable after write');
 
 # -----------------------------------------------------------------------
 # fuse_resume: authenticated suspend/resume keeps mounted volume usable
 # -----------------------------------------------------------------------
 is(system('afpc', 'fs', 'suspend', $mnt_dir), 0,
-    'fuse_resume: authenticated suspend succeeds');
+   'fuse_resume: authenticated suspend succeeds');
 
 open(my $status_fh, '-|', 'afpc', 'fs', 'status', $mnt_dir)
-    or BAIL_OUT("Cannot run afpc fs status: $!");
-my $status = do { local $/; <$status_fh> };
+  or BAIL_OUT("Cannot run afpc fs status: $!");
+my $status          = do { local $/; <$status_fh> };
 my $status_close_ok = close $status_fh;
-my $status_rc = $?;
+my $status_rc       = $?;
 ok($status_close_ok, 'fuse_resume: status command exits successfully')
-    or diag('afpc fs status exited with '
-        . ($status_rc == -1 ? "close error: $!" : 'status ' . ($status_rc >> 8)));
-like($status, qr/connection: .*disconnected/,
-    'fuse_resume: status reports disconnected server after suspend');
+  or diag('afpc fs status exited with ' . ($status_rc == -1 ? "close error: $!" : 'status ' . ($status_rc >> 8)));
+like( $status, qr/connection: .*disconnected/,
+      'fuse_resume: status reports disconnected server after suspend');
 
 is(system('afpc', 'fs', 'resume', $mnt_dir), 0,
-    'fuse_resume: authenticated resume succeeds without new password');
+   'fuse_resume: authenticated resume succeeds without new password');
 
 open(my $resume_rfh, '<', "$mnt_dir/sample.txt")
-    or BAIL_OUT("Cannot read file after resume: $!");
+  or BAIL_OUT("Cannot read file after resume: $!");
 my $resume_content = do { local $/; <$resume_rfh> };
 close $resume_rfh;
-like($resume_content, qr/^You should read this back$/m,
-    'fuse_resume: existing file readable after resume');
+like( $resume_content, qr/^You should read this back$/m,
+      'fuse_resume: existing file readable after resume');
 
 open(my $resume_wfh, '>', "$mnt_dir/resume.txt")
-    or BAIL_OUT("Cannot write file after resume: $!");
+  or BAIL_OUT("Cannot write file after resume: $!");
 print $resume_wfh "Resume write survived reconnect\n";
 close $resume_wfh;
 
 open(my $resume_check_fh, '<', "$mnt_dir/resume.txt")
-    or BAIL_OUT("Cannot read resume check file: $!");
+  or BAIL_OUT("Cannot read resume check file: $!");
 my $resume_check = do { local $/; <$resume_check_fh> };
 close $resume_check_fh;
-like($resume_check, qr/^Resume write survived reconnect$/m,
-    'fuse_resume: new file writable after resume');
+like( $resume_check, qr/^Resume write survived reconnect$/m,
+      'fuse_resume: new file writable after resume');
 
 unlink "$mnt_dir/resume.txt";
 ok(!-e "$mnt_dir/resume.txt", 'fuse_resume: resume check file removed');
@@ -183,37 +185,41 @@ ok(!-e "$mnt_dir/resume.txt", 'fuse_resume: resume check file removed');
 unmount_or_bail('fuse_auth: authenticated unmount succeeds');
 
 # -----------------------------------------------------------------------
-# fuse_auth: guest mount
+# fuse_auth: guest mount immediately after authenticated unmount
 # -----------------------------------------------------------------------
-sleep 1;
-mount_or_bail('fuse_auth: guest mount succeeds',
-    'mount_afpfs', $AFP_GUEST_URL, $mnt_dir);
+mount_or_bail(
+              'fuse_auth: guest mount succeeds',
+              'mount_afpfs', $AFP_GUEST_URL, $mnt_dir
+);
 
-ok(-f "$mnt_dir/sample.txt",
-    'fuse_auth: guest mount shows previously written file');
+ok(
+   -f "$mnt_dir/sample.txt",
+   'fuse_auth: guest mount shows previously written file'
+);
 
 open(my $gfh, '<', "$mnt_dir/sample.txt")
-    or BAIL_OUT("Cannot read file on guest mount: $!");
+  or BAIL_OUT("Cannot read file on guest mount: $!");
 my $guest_content = do { local $/; <$gfh> };
 close $gfh;
-like($guest_content, qr/^You should read this back$/m,
-    'fuse_auth: guest mount file content matches');
+like( $guest_content, qr/^You should read this back$/m,
+      'fuse_auth: guest mount file content matches');
 
 unmount_or_bail('fuse_auth: guest unmount succeeds');
 
 # -----------------------------------------------------------------------
-# fuse_auth: authenticated mount cleanup
+# fuse_auth: authenticated mount cleanup immediately after guest unmount
 # -----------------------------------------------------------------------
-sleep 1;
-mount_or_bail('fuse_auth: cleanup mount succeeds',
-    'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+mount_or_bail(
+              'fuse_auth: cleanup mount succeeds',
+              'mount_afpfs', $AFP_AUTH_URL, $mnt_dir
+);
 
 open(my $cfh, '<', "$mnt_dir/sample.txt")
-    or BAIL_OUT("Cannot read file on cleanup mount: $!");
+  or BAIL_OUT("Cannot read file on cleanup mount: $!");
 my @lines = <$cfh>;
 close $cfh;
-like($lines[0], qr/^You should read this back$/,
-    'fuse_auth: cleanup mount file content matches');
+like( $lines[0], qr/^You should read this back$/,
+      'fuse_auth: cleanup mount file content matches');
 is(scalar @lines, 1, 'fuse_auth: file has exactly one line');
 
 unlink "$mnt_dir/sample.txt";

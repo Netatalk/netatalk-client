@@ -1,35 +1,29 @@
-# Integration tests for Netatalk Client
+# Tests for Netatalk Client
 
 ## Test suite overview
 
-| File | Tests |
-| ---- | ----- |
-| `test_afpcmd_batch.t` | Uploads a file to an AFP share via `afpcmd` batch mode, downloads it back, and verifies the checksum matches. |
-| `test_afpcmd_interactive.t` | Exercises `afpcmd` interactive mode by piping command sequences through stdin and asserting expected output patterns. |
-| `test_afpgetstatus.t` | Verifies `afpgetstatus` can retrieve and parse AFP server status information. |
-| `test_fuse.t` | Mounts an AFP share via `mount_afpfs` (FUSE) and performs various operations to test its functionality. |
+Tests are organized into two directories:
 
-`test_fuse.t` can run on a host or inside a Linux container with access to
-the kernel's FUSE device and permission to mount. See below.
+- `unit/` contains the unit tests and their helpers, run by `meson test` against build-tree binaries
+- `integration/` contains the installed-client tests, run in a container or on a host with a running AFP server
 
-All tests use the `Test::More` library (part of Perl core) and are executed with the `prove` test runner.
-
-The tests assume a netatalk AFP server is running locally with a share at `afp://localhost/afpfs_test`
+The integration tests use the `Test::More` library (part of Perl core) and are executed with the `prove` test runner.
+These tests assume a netatalk AFP server is running locally with a share at `afp://localhost/afpfs_test`
 that allows both guest and authenticated access.
 The default authenticated user is `test_usr` with password `test_pwd`.
 See Manual environment prep below for setup instructions.
 
 ---
 
-## Container tests
+## Run integration tests in a container
 
-Build and run the container friendly tests inside a self-contained container image.
+Build and run the integration tests inside a self-contained container image.
 The image compiles Netatalk Client from source and includes a Netatalk AFP server.
 
 ### Build
 
 ```sh
-podman build -f test/Dockerfile -t netatalk-client-test .
+podman build -f test/integration/Dockerfile -t netatalk-client-test .
 ```
 
 ### Run
@@ -63,12 +57,30 @@ prevents that helper from acquiring its privilege.
 
 Docker's default seccomp profile is sufficient on the tested Docker Desktop
 runtime. Other hosts may need a local AppArmor or SELinux policy that allows
-FUSE mounts. Rootless runtimes and pre-mounted file descriptor handoff are
-separate configurations; see [the issue #366 analysis](issue-366.md).
+FUSE mounts.
+
+### Saving container logs
+
+To save container logs locally, bind a directory into the container and set
+`AFP_TEST_LOG_DIR`. Use Bash with `pipefail` so test failures remain visible
+through `tee`:
+
+```bash
+set -o pipefail
+mkdir -p /tmp/netatalk-client-test-logs
+docker run --rm --device /dev/fuse --cap-add SYS_ADMIN \
+    --volume /tmp/netatalk-client-test-logs:/test-logs \
+    -e AFP_TEST_FUSE=1 -e AFP_TEST_LOG_DIR=/test-logs \
+    netatalk-client-test 2>&1 | tee /tmp/netatalk-client-test-logs/integration-tests.log
+```
+
+Logs remain in the host directory after the container exits. An explicit
+`AFP_FUSE_DEBUG_LOG` overrides the default FUSE log path; place it inside the
+mounted directory to preserve it.
 
 ---
 
-## Stand-alone tests
+## Run integration tests on a host
 
 ### Prerequisites
 
@@ -109,7 +121,7 @@ volume name = afpfs_test
 ### Running batch and interactive tests
 
 ```sh
-cd test
+cd test/integration
 prove test_afpcmd_batch.t
 pkill -x afpsld || true
 while pgrep -x afpsld > /dev/null 2>&1; do sleep 0.1; done
@@ -123,7 +135,7 @@ The `afpsld` session daemon is killed between the two test runs to ensure a clea
 `test_fuse.t` requires a real kernel FUSE mount. On a configured host:
 
 ```sh
-cd test
+cd test/integration
 prove test_fuse.t
 ```
 

@@ -13,6 +13,9 @@ This project uses the Meson build system with a Ninja backend.
 Make sure *meson* and *ninja* (sometimes packaged as *ninja-build*) are installed.
 You also want *pkg-config* that is used by the build system to find libraries.
 
+The test suite requires Perl with the `Test::More`, `File::Temp`, and
+`File::Spec` modules, which are normally supplied with Perl.
+
 ### Libraries
 
 | Dependency | Needed for                                                |
