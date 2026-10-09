@@ -13,7 +13,10 @@
 --ignore-exclude-errors-x
 --indent=spaces=4
 --max-code-length=80
+--max-code-length-mode=ignore-side-comments
+--max-continuation-indent=60
 --pad-comma
 --pad-header
 --pad-oper
+--pad-semicolon=none
 --unpad-paren
