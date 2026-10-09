@@ -68,15 +68,23 @@ int get_debug_mode(void)
     return debug_mode;
 }
 
+void fuse_stop_listener(void)
+{
+    /* Unlink only once: a replacement daemon may already own this path
+     * when the main loop completes its shutdown. */
+    if (command_fd_global >= 0) {
+        int fd = command_fd_global;
+        command_fd_global = -1;
+        close_commands(fd);
+        rm_fd_and_signal(fd);
+    }
+}
+
 void fuse_forced_ending_hook(void)
 {
     struct afp_volume * volume;
-
     /* Close and unlink the command listener socket before unmounting */
-    if (command_fd_global >= 0) {
-        close_commands(command_fd_global);
-        command_fd_global = -1;
-    }
+    fuse_stop_listener();
 
     for (struct afp_server * s = get_server_base(); s;) {
         /* Save next pointer before unmounting */
@@ -1152,7 +1160,7 @@ int main(int argc, char *argv[])
         log_for_client(NULL, AFPFSD, LOG_NOTICE,
                        "Starting up AFP FUSE controller daemon version %s", NETATALK_CLIENT_VERSION);
         afp_main_loop(command_fd);
-        close_commands(command_fd);
+        fuse_stop_listener();
     }
 
     return 0;

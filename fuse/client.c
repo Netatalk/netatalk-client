@@ -1262,11 +1262,6 @@ static int read_response(int sock)
     char response[AFPFSD_IPC_MAX_RESPONSE + 1];
 
     if (read_response_bytes(sock, &answer, sizeof(answer)) != 0) {
-        /* afpfsd can close the mount socket as it completes an unmount. */
-        if (outgoing_buffer[0] == AFPFSD_IPC_COMMAND_UNMOUNT) {
-            return 0;
-        }
-
         fputs("Failed to read response header\n", stderr);
         return -1;
     }
