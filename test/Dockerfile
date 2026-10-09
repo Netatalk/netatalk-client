@@ -1,11 +1,15 @@
 ARG RUN_DEPS="\
+    fuse3 \
     libgcrypt20 \
     libreadline8t64 \
     netatalk \
     perl \
+    procps \
+    util-linux \
     "
 ARG BUILD_DEPS="\
     build-essential \
+    libfuse3-dev \
     libgcrypt20-dev \
     libreadline-dev \
     meson \
@@ -46,7 +50,8 @@ RUN meson setup build \
     -Denable-fuse=true \
 &&  meson compile -C build
 
-RUN meson install --destdir=/staging/ -C build
+RUN meson install --destdir=/staging/ -C build \
+&&  test -x /staging/usr/local/bin/afpfsd
 
 FROM debian:13.6-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS deploy
 
@@ -66,6 +71,7 @@ COPY /test/entrypoint.sh /test/entrypoint.sh
 COPY /test/test_afpcmd_batch.t /test/test_afpcmd_batch.t
 COPY /test/test_afpcmd_interactive.t /test/test_afpcmd_interactive.t
 COPY /test/test_afpgetstatus.t /test/test_afpgetstatus.t
+COPY /test/test_fuse.t /test/test_fuse.t
 
 WORKDIR /test
 CMD ["/test/entrypoint.sh"]
