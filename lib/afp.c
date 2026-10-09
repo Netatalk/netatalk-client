@@ -596,8 +596,9 @@ int afp_unmount_volume(struct afp_volume * volume)
         return -1;
     }
 
-    afp_detach_volume(volume);
     volume->mounted = AFP_VOLUME_UNMOUNTED;
+    /* Detaching the last volume can free its server and volume storage. */
+    afp_detach_volume(volume);
     return 0;
 }
 

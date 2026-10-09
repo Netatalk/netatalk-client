@@ -10,6 +10,7 @@ int add_client(int fd);
 int process_client_fds(fd_set * set, int max_fd, int ** onfd);
 int fuse_unmount_volume(struct afp_volume * volume);
 void fuse_forced_ending_hook(void);
+void fuse_stop_listener(void);
 
 #define STATUS_LEN 1024
 

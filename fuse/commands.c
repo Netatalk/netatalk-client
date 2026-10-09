@@ -536,6 +536,7 @@ static unsigned char process_unmount(struct afpfsd_client * c)
     struct afpfsd_ipc_unmount_request req;
     struct afp_server * s;
     struct afp_volume * v;
+    char mountpoint[AFP_MOUNTPOINT_LEN];
     int j = 0;
     memcpy(&req, (void *)((uintptr_t)c->incoming_string + 1), sizeof(req));
 
@@ -558,14 +559,17 @@ found:
         return AFPFSD_IPC_RESULT_ERROR;
     }
 
+    /* A successful unmount can release the server owning v. */
+    strlcpy(mountpoint, v->mountpoint, sizeof(mountpoint));
+
     if (afp_unmount_volume(v) != 0) {
         log_for_client((void *) c, AFPFSD, LOG_ERR,
-                       "Unmount failed for %s; try using 'umount' or 'fusermount -u'", v->mountpoint);
+                       "Unmount failed for %s; try using 'umount' or 'fusermount -u'", mountpoint);
         return AFPFSD_IPC_RESULT_ERROR;
     }
 
     log_for_client((void *) c, AFPFSD, LOG_NOTICE,
-                   "Volume %s unmounted", v->mountpoint);
+                   "Volume %s unmounted", mountpoint);
     return AFPFSD_IPC_RESULT_OK;
 notfound:
     log_for_client((void *)c, AFPFSD, LOG_WARNING,
@@ -847,6 +851,18 @@ static void *process_command_thread(void * other)
     /* Send response */
     unsigned char command = c->incoming_string[0];
     int command_result = ret;
+    int should_exit = command_result == AFPFSD_IPC_RESULT_OK
+                      && (command == AFPFSD_IPC_COMMAND_EXIT ||
+                          (command == AFPFSD_IPC_COMMAND_UNMOUNT &&
+                           afp_get_auto_shutdown_on_unmount() &&
+                           get_server_base() == NULL));
+
+    /* Retire the listener before acknowledging shutdown so the next mount
+     * cannot connect to this daemon while its main loop is still exiting. */
+    if (should_exit) {
+        fuse_stop_listener();
+    }
+
     response.result = ret;
     response.len = fuse_client_response_len(c);
     bcopy(&response, tosend, sizeof(response));
@@ -857,11 +873,7 @@ static void *process_command_thread(void * other)
         perror("Writing");
     }
 
-    if (command_result == AFPFSD_IPC_RESULT_OK
-            && (command == AFPFSD_IPC_COMMAND_EXIT ||
-                (command == AFPFSD_IPC_COMMAND_UNMOUNT &&
-                 afp_get_auto_shutdown_on_unmount() &&
-                 get_server_base() == NULL))) {
+    if (should_exit) {
         trigger_exit();
         signal_main_thread();
     }
