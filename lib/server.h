@@ -13,7 +13,7 @@ struct afp_server *new_server(
     unsigned int uams, char *username, char *password,
     unsigned int requested_version, unsigned int uam_mask);
 
-int server_login(void * priv, struct afp_server * server);
+int server_login(void *priv, struct afp_server * server);
 
 
 #endif

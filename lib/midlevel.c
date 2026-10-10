@@ -191,7 +191,7 @@ static int set_unixprivs(struct afp_volume * vol,
     return -ret;
 }
 
-void add_file_by_name(struct afp_file_info ** base, const char *filename)
+void add_file_by_name(struct afp_file_info **base, const char *filename)
 {
     struct afp_file_info * t, *new_file;
     new_file = malloc(sizeof(*new_file));
@@ -256,7 +256,7 @@ static int set_uidgid(struct afp_volume * volume,
 }
 
 static int map_filebase_uidgid_to_client(struct afp_volume * volume,
-        struct afp_file_info * filebase)
+                                         struct afp_file_info * filebase)
 {
     for (struct afp_file_info * fp = filebase; fp; fp = fp->next) {
         unsigned int uid = fp->unixprivs.uid;
@@ -284,7 +284,7 @@ int ml_open(struct afp_volume * volume, const char *path, int flags,
             struct afp_file_info **newfp)
 {
     /* FIXME:  doesn't handle create properly */
-    struct afp_file_info * fp ;
+    struct afp_file_info * fp;
     int ret;
     unsigned int dirid;
     char *converted_path;
@@ -517,7 +517,7 @@ int ml_read(struct afp_volume * volume, const char *path,
 }
 
 
-int ml_chmod(struct afp_volume * vol, const char * path, mode_t mode)
+int ml_chmod(struct afp_volume * vol, const char *path, mode_t mode)
 {
     /*
     chmod has an interesting story to it.
@@ -714,7 +714,7 @@ int ml_unlink(struct afp_volume * vol, const char *path)
 
 
 
-int ml_mkdir(struct afp_volume * vol, const char * path, mode_t mode)
+int ml_mkdir(struct afp_volume * vol, const char *path, mode_t mode)
 {
     int ret, rc;
     unsigned int result_did;
@@ -789,7 +789,7 @@ int ml_mkdir(struct afp_volume * vol, const char * path, mode_t mode)
     return -ret;
 }
 
-int ml_close(struct afp_volume * volume, const char * path,
+int ml_close(struct afp_volume * volume, const char *path,
              struct afp_file_info * fp)
 {
     int ret = 0;
@@ -875,7 +875,7 @@ int ml_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf)
     return ret;
 }
 
-int ml_write(struct afp_volume * volume, const char * path,
+int ml_write(struct afp_volume * volume, const char *path,
              const char *data, size_t size, off_t offset,
              struct afp_file_info * fp, uid_t uid,
              gid_t gid)
@@ -953,7 +953,7 @@ int ml_write(struct afp_volume * volume, const char * path,
     return totalwritten;
 }
 
-int ml_readlink(struct afp_volume * vol, const char * path,
+int ml_readlink(struct afp_volume * vol, const char *path,
                 char *buf, size_t size)
 {
     int rc, ret;
@@ -1168,7 +1168,7 @@ int ml_rmdir(struct afp_volume * vol, const char *path)
     return -ret;
 }
 
-int ml_chown(struct afp_volume * vol, const char * path,
+int ml_chown(struct afp_volume * vol, const char *path,
              uid_t uid, gid_t gid)
 {
     int ret;
@@ -1263,7 +1263,7 @@ int ml_chown(struct afp_volume * vol, const char * path,
     return 0;
 }
 
-int ml_truncate(struct afp_volume * vol, const char * path, off_t offset)
+int ml_truncate(struct afp_volume * vol, const char *path, off_t offset)
 {
     int ret = 0;
     char *converted_path;
@@ -1330,7 +1330,7 @@ int ml_setfork_size(struct afp_volume * vol, unsigned short forkid,
 }
 
 
-int ml_utime(struct afp_volume * vol, const char * path,
+int ml_utime(struct afp_volume * vol, const char *path,
              struct utimbuf * timebuf)
 {
     int ret = 0;
@@ -1405,7 +1405,7 @@ int ml_utime(struct afp_volume * vol, const char * path,
 }
 
 
-int ml_symlink(struct afp_volume *vol, const char * path1, const char * path2)
+int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
 {
     int ret;
     struct afp_file_info fp;
@@ -1911,7 +1911,7 @@ int ml_statfs(struct afp_volume * vol, const char *path _U_,
     memset(stat, 0, sizeof(*stat));
 
     if (vol->server->using_version->av_number < 30) {
-        flags = kFPVolBytesFreeBit | kFPVolBytesTotalBit ;
+        flags = kFPVolBytesFreeBit | kFPVolBytesTotalBit;
     } else {
         flags = kFPVolExtBytesFreeBit | kFPVolExtBytesTotalBit | kFPVolBlockSizeBit;
     }
@@ -2227,7 +2227,7 @@ int ml_setresourcefork_flags(struct afp_volume * volume, const char *path,
     if (flags & (kXAttrCreate | kXAttrReplace)) {
         ret = validate_special_xattr_flags(flags,
                                            ml_getresourcefork(volume, path,
-                                               NULL, 0, 0));
+                                                              NULL, 0, 0));
 
         if (ret < 0) {
             return ret;
@@ -2378,7 +2378,7 @@ int ml_setfinderinfo_flags(struct afp_volume * volume, const char *path,
     if (flags & (kXAttrCreate | kXAttrReplace)) {
         ret = validate_special_xattr_flags(flags,
                                            ml_getfinderinfo(volume, path,
-                                               NULL, 0));
+                                                            NULL, 0));
 
         if (ret < 0) {
             return ret;

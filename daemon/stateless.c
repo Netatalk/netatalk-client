@@ -408,7 +408,7 @@ int daemon_connect(unsigned int daemon_uid)
     snprintf(servaddr.sun_path, sizeof(servaddr.sun_path), "%s-%d",
              AFPSL_IPC_SOCKET_PATH, daemon_uid);
     /* Try to connect first */
-    ret = connect(sock, (struct sockaddr*) &servaddr, sizeof(servaddr));
+    ret = connect(sock, (struct sockaddr *) &servaddr, sizeof(servaddr));
 
     if (ret >= 0) {
         stateless_log_message(LOG_DEBUG, "Connected to running afpsld");
@@ -427,7 +427,7 @@ int daemon_connect(unsigned int daemon_uid)
     while (retries > 0) {
         struct timespec ts = {0, 100000000}; /* 100ms */
         nanosleep(&ts, NULL);
-        ret = connect(sock, (struct sockaddr*) &servaddr, sizeof(servaddr));
+        ret = connect(sock, (struct sockaddr *) &servaddr, sizeof(servaddr));
 
         if (ret >= 0) {
             stateless_log_message(LOG_DEBUG,
@@ -695,7 +695,7 @@ static int send_command(unsigned int len, const char *data, unsigned int num)
     return  ret;
 }
 
-static int send_to_daemon(char * request, int req_len, char * reply,
+static int send_to_daemon(char *request, int req_len, char *reply,
                           int reply_len)
 {
     int ret;
@@ -993,7 +993,7 @@ int afp_sl_open(afpc_volume_t *volid, const char *path, struct afpc_url *url,
 }
 
 
-int afp_sl_read(afpc_volume_t * volid, unsigned int fileid,
+int afp_sl_read(afpc_volume_t *volid, unsigned int fileid,
                 unsigned int resource,
                 unsigned long long start,
                 unsigned int length, unsigned int *received,
@@ -1063,7 +1063,7 @@ int afp_sl_read(afpc_volume_t * volid, unsigned int fileid,
     return 0;
 }
 
-int afp_sl_write(afpc_volume_t * volid, unsigned int fileid,
+int afp_sl_write(afpc_volume_t *volid, unsigned int fileid,
                  unsigned int resource,
                  unsigned long long offset, unsigned int size,
                  unsigned int *written, const char *data)
@@ -1224,7 +1224,7 @@ static int metadata_call(unsigned int command, afpc_volume_t *volid,
     }
 
     if (response.header.len < sizeof(response) + sizeof(struct
-            afpsl_ipc_log_footer)
+                                                        afpsl_ipc_log_footer)
             || response.header.len > sizeof(response) + payload_limit +
             AFPSL_IPC_LOG_BUFFER_SIZE + sizeof(struct afpsl_ipc_log_footer)) {
         close_connection();
@@ -2276,7 +2276,7 @@ int afp_sl_close(afpc_volume_t *volid, unsigned int fileid)
     return server_result_to_errno(response.header.result);
 }
 
-int afp_sl_readdir(afpc_volume_t * volid, const char * path,
+int afp_sl_readdir(afpc_volume_t *volid, const char *path,
                    struct afpc_url * url,
                    int start, int count, unsigned int *numfiles,
                    struct afpc_file_info **data, int *eod)

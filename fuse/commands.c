@@ -69,7 +69,7 @@ static struct afpfsd_client *client_base = NULL;
 static int volopen(struct afpfsd_client * c, struct afp_volume * volume);
 static int process_command(struct afpfsd_client * c);
 static struct afp_volume *mount_volume(struct afpfsd_client * c,
-                                       struct afp_server * server, char *volname, char *volpassword) ;
+                                       struct afp_server * server, char *volname, char *volpassword);
 
 static unsigned int fuse_client_response_len(struct afpfsd_client *c)
 {
@@ -189,7 +189,7 @@ static int fuse_process_client_fds(fd_set *set, int max_fd _U_)
     return 0;
 }
 
-static int fuse_scan_extra_fds(int command_fd, fd_set *set, int * max_fd)
+static int fuse_scan_extra_fds(int command_fd, fd_set *set, int *max_fd)
 {
     struct sockaddr_un new_addr;
     socklen_t new_len = sizeof(struct sockaddr_un);
@@ -235,7 +235,7 @@ out:
     return 1;
 }
 
-static void fuse_log_for_client(void * priv,
+static void fuse_log_for_client(void *priv,
                                 enum logtypes logtype _U_,
                                 int loglevel, const char *message)
 {
@@ -307,7 +307,7 @@ static char *fsname_escape_commas(char *fsnameold)
     return fsname;
 }
 
-static void *start_fuse_thread(void * other)
+static void *start_fuse_thread(void *other)
 {
     int fuseargc = 0;
     char *fuseargv[200];
@@ -807,7 +807,7 @@ error:
 }
 
 
-static void *process_command_thread(void * other)
+static void *process_command_thread(void *other)
 {
     struct afpfsd_client * c = other;
     int ret = 0;

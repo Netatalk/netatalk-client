@@ -51,7 +51,7 @@ static void reset_client_request(struct daemon_client *c)
     c->incoming_header_size = 0;
 }
 
-int remove_client(struct daemon_client ** toremove)
+int remove_client(struct daemon_client **toremove)
 {
     int ret = 0;
 

@@ -28,12 +28,12 @@ int afp_geticon(struct afp_volume * volume, unsigned int filecreator,
         struct dsi_header dsi_header __attribute__((__packed__));
         uint8_t command;
         uint8_t pad1;
-        uint16_t dtrefnum ;
+        uint16_t dtrefnum;
         uint32_t filecreator;
-        uint32_t filetype ;
-        uint8_t icontype ;
+        uint32_t filetype;
+        uint8_t icontype;
         uint8_t pad2;
-        uint16_t length ;
+        uint16_t length;
     } __attribute__((__packed__)) request_packet;
     struct dsi_header hdr;
     afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
@@ -96,8 +96,8 @@ int afp_addcomment_sized(struct afp_volume *volume, unsigned int did,
         struct dsi_header dsi_header __attribute__((__packed__));
         uint8_t command;
         uint8_t pad;
-        uint16_t dtrefnum ;
-        uint32_t dirid ;
+        uint16_t dtrefnum;
+        uint32_t dirid;
     } __attribute__((__packed__)) * request_packet;
     size_t path_size;
     size_t len;
@@ -187,8 +187,8 @@ int afp_getcomment(struct afp_volume *volume, unsigned int did,
         struct dsi_header dsi_header __attribute__((__packed__));
         uint8_t command;
         uint8_t pad;
-        uint16_t dtrefnum ;
-        uint32_t dirid ;
+        uint16_t dtrefnum;
+        uint32_t dirid;
     } __attribute__((__packed__)) * request_packet;
     unsigned int len = sizeof(*request_packet) +
                        sizeof_path_header(volume) + strlen(pathname);
@@ -251,7 +251,7 @@ int afp_closedt(struct afp_server * server, unsigned short refnum)
         struct dsi_header dsi_header __attribute__((__packed__));
         uint8_t command;
         uint8_t pad;
-        uint16_t refnum ;
+        uint16_t refnum;
     } __attribute__((__packed__)) request_packet;
     struct dsi_header hdr;
     afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
@@ -265,13 +265,13 @@ int afp_closedt(struct afp_server * server, unsigned short refnum)
 
 
 
-int afp_opendt(struct afp_volume *volume, unsigned short * refnum)
+int afp_opendt(struct afp_volume *volume, unsigned short *refnum)
 {
     struct {
         struct dsi_header dsi_header __attribute__((__packed__));
         uint8_t command;
         uint8_t pad;
-        uint16_t volid ;
+        uint16_t volid;
     } __attribute__((__packed__)) request_packet;
     struct dsi_header hdr;
     afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
@@ -290,7 +290,7 @@ int afp_opendt_reply(struct afp_server *server _U_,
 {
     struct {
         struct dsi_header header __attribute__((__packed__));
-        uint16_t refnum ;
+        uint16_t refnum;
     } __attribute__((__packed__)) * reply_packet = (void *) buf;
     unsigned short *refnum = other;
 

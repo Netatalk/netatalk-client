@@ -127,7 +127,7 @@ int afp_mapid_reply(struct afp_server *server _U_,
 {
     struct {
         struct dsi_header header __attribute__((__packed__));
-        char *name ;
+        char *name;
     }  __attribute__((__packed__)) * reply = (void *) buf;
     static char name[AFPC_MAX_NAME_BYTES];
     char *name_ptr = other;
@@ -189,7 +189,7 @@ int afp_mapname_reply(struct afp_server *server _U_,
 {
     struct {
         struct dsi_header header __attribute__((__packed__));
-        uint32_t id ;
+        uint32_t id;
     }  __attribute__((__packed__))* reply = (void *) buf;
     unsigned int *id = (void *) other;
 

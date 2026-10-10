@@ -307,7 +307,7 @@ out:
 
 /* Find child by mountpoint */
 static struct manager_child *find_child_by_mountpoint(const char *mountpoint,
-        int client_fd)
+                                                      int client_fd)
 {
     for (struct manager_child *child = child_list; child; child = child->next) {
         if (strcmp(child->mountpoint, mountpoint) == 0) {
@@ -688,14 +688,14 @@ static int handle_manager_command(int client_fd)
         if (req.mountpoint[0] != '\0') {
             /* Forward to specific child daemon */
             const struct manager_child *child = find_child_by_mountpoint(req.mountpoint,
-                                                client_fd);
+                client_fd);
 
             if (!child) {
                 break;
             }
 
             int child_sock = connect_to_child_socket(child->socket_id, req.mountpoint,
-                             client_fd);
+                                                     client_fd);
 
             if (child_sock < 0) {
                 break;
@@ -896,14 +896,14 @@ static int handle_manager_command(int client_fd)
         }
 
         const struct manager_child *child = find_child_by_mountpoint(req.mountpoint,
-                                            client_fd);
+            client_fd);
 
         if (!child) {
             break;
         }
 
         int child_sock = connect_to_child_socket(child->socket_id, req.mountpoint,
-                         client_fd);
+                                                 client_fd);
 
         if (child_sock < 0) {
             break;

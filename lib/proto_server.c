@@ -72,7 +72,7 @@ int afp_getsrvrparms(struct afp_server *server)
 }
 
 
-int afp_getsrvrparms_reply(struct afp_server *server, char * msg,
+int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
                            unsigned int size, void *ignore _U_)
 {
     const struct {

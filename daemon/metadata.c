@@ -1684,7 +1684,7 @@ int local_resourcefork_write(const char *path, enum afp_metadata_mode mode,
 
     if (apple_metadata_uses_sys(mode)) {
         off_t old_size = offset == 0 ? 0 : local_resourcefork_size(path,
-                         AFP_METADATA_XATTR);
+                                                                   AFP_METADATA_XATTR);
         size_t position = (size_t)offset;
         size_t total = position + size;
         unsigned char *all;
@@ -2026,8 +2026,10 @@ int afp_sl_metadata_clear(afpc_volume_t *volume, const char *path,
 }
 
 static int transfer_local_xattrs_to_remote(const char *local_path,
-        enum afp_metadata_mode mode, afpc_volume_t *volume, const char *remote_path,
-        unsigned int *warnings)
+                                           enum afp_metadata_mode mode,
+                                           afpc_volume_t *volume,
+                                           const char *remote_path,
+                                           unsigned int *warnings)
 {
     char *list = NULL;
     size_t list_size = 0;
@@ -2138,7 +2140,7 @@ int afp_sl_metadata_copy_local_to_remote(
         }
 
         ssize_t amount = local_resourcefork_read(local_path, mode, buffer,
-                         chunk, offset);
+                                                 chunk, offset);
 
         if (amount <= 0 || (size_t)amount > chunk) {
             return amount < 0 ? (int)amount : -EIO;
@@ -2174,8 +2176,10 @@ int afp_sl_metadata_copy_local_to_remote(
 }
 
 static int transfer_remote_xattrs_to_local(afpc_volume_t *volume,
-        const char *remote_path, const char *local_path,
-        enum afp_metadata_mode mode, unsigned int *warnings)
+                                           const char *remote_path,
+                                           const char *local_path,
+                                           enum afp_metadata_mode mode,
+                                           unsigned int *warnings)
 {
     char *list = NULL;
     size_t list_size = 0;
@@ -2299,7 +2303,7 @@ int afp_sl_metadata_copy_remote_to_local(
             }
 
             int write_ret = local_resourcefork_write(local_path, mode, buffer,
-                            (size_t)ret, (off_t)offset);
+                                                     (size_t)ret, (off_t)offset);
 
             if (transfer_error_unsupported(write_ret)) {
                 transfer_warning(warnings, AFP_METADATA_WARNING_UNSUPPORTED);
@@ -2325,8 +2329,10 @@ int afp_sl_metadata_copy_remote_to_local(
 }
 
 static int transfer_remote_xattrs_to_remote(afpc_volume_t *source_volume,
-        const char *source_path, afpc_volume_t *destination_volume,
-        const char *destination_path, unsigned int *warnings)
+                                            const char *source_path,
+                                            afpc_volume_t *destination_volume,
+                                            const char *destination_path,
+                                            unsigned int *warnings)
 {
     char *list = NULL;
     size_t list_size = 0;
@@ -2450,7 +2456,10 @@ int afp_sl_metadata_copy_remote_to_remote(
             }
 
             int write_ret = afp_sl_setresourcefork(destination_volume,
-                                                   destination_path, buffer, (size_t)ret, offset);
+                                                   destination_path,
+                                                   buffer,
+                                                   (size_t)ret,
+                                                   offset);
 
             if (transfer_error_unsupported(write_ret)) {
                 transfer_warning(warnings, AFP_METADATA_WARNING_UNSUPPORTED);
@@ -2471,6 +2480,9 @@ int afp_sl_metadata_copy_remote_to_remote(
         }
     }
 
-    return transfer_remote_xattrs_to_remote(source_volume, source_path,
-                                            destination_volume, destination_path, warnings);
+    return transfer_remote_xattrs_to_remote(source_volume,
+                                            source_path,
+                                            destination_volume,
+                                            destination_path,
+                                            warnings);
 }
