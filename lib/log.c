@@ -16,7 +16,7 @@
 #include "compat.h"
 #include "utils.h"
 
-void log_for_client(void * priv,
+void log_for_client(void *priv,
                     enum logtypes logtype, int loglevel,
                     const char *message)
 {

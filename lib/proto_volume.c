@@ -124,7 +124,7 @@ int afp_volclose(struct afp_volume * volume)
 }
 
 
-int afp_volopen_reply(struct afp_server *server, char * buf, unsigned int size,
+int afp_volopen_reply(struct afp_server *server, char *buf, unsigned int size,
                       void *other)
 {
     struct {
@@ -220,7 +220,7 @@ int afp_volopen(struct afp_volume * volume,
 }
 
 
-int afp_getvolparms_reply(struct afp_server *server, char * buf,
+int afp_getvolparms_reply(struct afp_server *server, char *buf,
                           unsigned int size, void *other)
 {
     unsigned int bitmap;

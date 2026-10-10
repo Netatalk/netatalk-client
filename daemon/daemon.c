@@ -59,7 +59,7 @@ static void daemon_set_log_level(int loglevel)
     daemon_log_min_rank = loglevel_to_rank(loglevel);
 }
 
-static void daemon_log_for_client(void * priv,
+static void daemon_log_for_client(void *priv,
                                   enum logtypes logtype _U_,
                                   int loglevel, const char *message)
 {

@@ -134,7 +134,7 @@ unsigned int afp_sl_uam_by_name(const char *name);
  * negative errno on failure. Read-like metadata operations return a
  * nonnegative byte count on success and negative errno on failure. */
 int afp_sl_exit(void);
-int afp_sl_status(const char * volumename, const char * servername,
+int afp_sl_status(const char *volumename, const char *servername,
                   char *text, unsigned int *remaining);
 int afp_sl_connect(struct afpc_url * url, unsigned int uam_mask,
                    afpc_server_t *id, char *loginmesg);
@@ -149,9 +149,9 @@ int afp_sl_getvolid(afpc_server_t serverid, struct afpc_url * url,
 int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
                   unsigned int volume_options, afpc_volume_t *volumeid,
                   enum afp_sl_attach_status *status);
-int afp_sl_detach(afpc_volume_t * volumeid,
+int afp_sl_detach(afpc_volume_t *volumeid,
                   struct afpc_url * url);
-int afp_sl_readdir(afpc_volume_t * volid, const char * path,
+int afp_sl_readdir(afpc_volume_t *volid, const char *path,
                    struct afpc_url * url,
                    int start, int count, unsigned int *numfiles,
                    struct afpc_file_info **fpb,
@@ -160,39 +160,39 @@ int afp_sl_getvols(afpc_server_t serverid, struct afpc_url * url,
                    unsigned int start,
                    unsigned int count, unsigned int *numvols,
                    struct afpc_volume_info * vols);
-int afp_sl_stat(afpc_volume_t * volid, const char * path,
+int afp_sl_stat(afpc_volume_t *volid, const char *path,
                 struct afpc_url * url, struct stat * stat);
-int afp_sl_open(afpc_volume_t * volid, const char * path,
+int afp_sl_open(afpc_volume_t *volid, const char *path,
                 struct afpc_url * url, unsigned int *fileid,
                 unsigned int mode);
-int afp_sl_read(afpc_volume_t * volid, unsigned int fileid,
+int afp_sl_read(afpc_volume_t *volid, unsigned int fileid,
                 unsigned int resource,
                 unsigned long long start,
                 unsigned int length, unsigned int *received,
                 unsigned int *eof, char *data);
-int afp_sl_write(afpc_volume_t * volid, unsigned int fileid,
+int afp_sl_write(afpc_volume_t *volid, unsigned int fileid,
                  unsigned int resource,
                  unsigned long long offset, unsigned int size,
                  unsigned int *written, const char *data);
-int afp_sl_creat(afpc_volume_t * volid, const char * path,
+int afp_sl_creat(afpc_volume_t *volid, const char *path,
                  struct afpc_url * url, mode_t mode);
-int afp_sl_chmod(afpc_volume_t * volid, const char * path,
+int afp_sl_chmod(afpc_volume_t *volid, const char *path,
                  struct afpc_url * url, mode_t mode);
-int afp_sl_rename(afpc_volume_t * volid, const char * path_from,
+int afp_sl_rename(afpc_volume_t *volid, const char *path_from,
                   const char *path_to, struct afpc_url * url);
-int afp_sl_unlink(afpc_volume_t * volid, const char * path,
+int afp_sl_unlink(afpc_volume_t *volid, const char *path,
                   struct afpc_url * url);
-int afp_sl_truncate(afpc_volume_t * volid, const char * path,
+int afp_sl_truncate(afpc_volume_t *volid, const char *path,
                     struct afpc_url * url, unsigned long long offset);
-int afp_sl_utime(afpc_volume_t * volid, const char * path,
+int afp_sl_utime(afpc_volume_t *volid, const char *path,
                  struct afpc_url * url, struct utimbuf * times);
-int afp_sl_mkdir(afpc_volume_t * volid, const char * path,
+int afp_sl_mkdir(afpc_volume_t *volid, const char *path,
                  struct afpc_url * url, mode_t mode);
-int afp_sl_rmdir(afpc_volume_t * volid, const char * path,
+int afp_sl_rmdir(afpc_volume_t *volid, const char *path,
                  struct afpc_url * url);
-int afp_sl_statfs(afpc_volume_t * volid, const char * path,
+int afp_sl_statfs(afpc_volume_t *volid, const char *path,
                   struct afpc_url * url, struct statvfs * stat);
-int afp_sl_close(afpc_volume_t * volid, unsigned int fileid);
+int afp_sl_close(afpc_volume_t *volid, unsigned int fileid);
 int afp_sl_serverinfo(struct afpc_url * url, struct afpc_server_info * basic);
 /* status is optional. On failure it provides password-policy detail that is
  * more specific than the returned errno. */

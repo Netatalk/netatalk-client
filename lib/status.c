@@ -15,7 +15,7 @@
 #include "dsi.h"
 #include "mapping.h"
 
-int afp_status_header(char * text, int * len)
+int afp_status_header(char *text, int *len)
 {
     int pos;
 
@@ -68,7 +68,7 @@ static void print_volume_status(struct afp_volume *v, struct afp_server *s,
     *pos_p = pos;
 }
 
-int afp_status_server(struct afp_server * s, char * text, int * len)
+int afp_status_server(struct afp_server * s, char *text, int *len)
 {
     unsigned int j;
     struct afp_volume *v;

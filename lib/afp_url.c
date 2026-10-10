@@ -26,7 +26,7 @@ void afp_default_url(struct afpc_url *url)
     url->port = 548;
 }
 
-static int check_servername(char * servername)
+static int check_servername(char *servername)
 {
     if (strchr(servername, '/')) {
         return -1;
@@ -35,7 +35,7 @@ static int check_servername(char * servername)
     return 0;
 }
 
-static int check_port(char * port)
+static int check_port(char *port)
 {
     long long ret = 0;
     errno = 0;
@@ -53,12 +53,12 @@ static int check_port(char * port)
     return 0;
 }
 
-static int check_uamname(char * uam)
+static int check_uamname(char *uam)
 {
     return !uam_string_to_bitmap(uam);
 }
 
-static void escape_string(char * string, char c)
+static void escape_string(char *string, char c)
 {
     char d;
     int inescape = 0;
@@ -92,7 +92,7 @@ static void escape_url(struct afpc_url * url)
 }
 
 
-static char *escape_strrchr(const char * haystack, int c, const char *toescape)
+static char *escape_strrchr(const char *haystack, int c, const char *toescape)
 {
     char *p;
 
@@ -116,7 +116,7 @@ static char *escape_strrchr(const char * haystack, int c, const char *toescape)
     return escape_strrchr(p, c, toescape);
 }
 
-static char *escape_strchr(const char * haystack, int c, const char * toescape)
+static char *escape_strchr(const char *haystack, int c, const char *toescape)
 {
     char *p;
     size_t diff;

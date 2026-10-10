@@ -37,7 +37,7 @@ struct afpc_transport_options {
 };
 
 typedef void (*afpc_transport_log_callback)(void *context, int loglevel,
-        const char *message);
+                                            const char *message);
 
 /* Initializes the process-wide libafpclient event loop and UAM registry.
  * Repeated calls update the logging callback without starting another loop. */

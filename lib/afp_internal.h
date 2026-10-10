@@ -284,7 +284,7 @@ static inline int afp_server_reconnect_is_in_progress(
 }
 
 static inline void afp_server_set_suspended(struct afp_server *server,
-        int suspended)
+                                            int suspended)
 {
     __atomic_store_n(&server->suspended, suspended ? 1 : 0,
                      __ATOMIC_RELEASE);
@@ -348,9 +348,9 @@ struct afp_appl {
 void afp_unixpriv_to_stat(struct afp_file_info *fp,
                           struct stat *stat);
 
-int init_uams(void) ;
+int init_uams(void);
 
-unsigned int find_uam_by_name(const char * name);
+unsigned int find_uam_by_name(const char *name);
 char *uam_bitmap_to_string(unsigned int bitmap);
 
 
@@ -371,7 +371,7 @@ struct afp_connection_request {
     struct afpc_url url;
 };
 
-int afp_list_volnames(struct afp_server * server, char * names, int max);
+int afp_list_volnames(struct afp_server * server, char *names, int max);
 
 void afp_default_url(struct afpc_url *url);
 int afp_parse_url(struct afpc_url *url, const char *text);
@@ -382,12 +382,12 @@ int afp_detect_mapping(struct afp_volume * volume);
 
 /* These are some functions that help with simple status text generation */
 
-int afp_status_header(char * text, int * len);
-int afp_status_server(struct afp_server * s, char * text, int * len);
+int afp_status_header(char *text, int *len);
+int afp_status_server(struct afp_server * s, char *text, int *len);
 
 
-struct afp_server *afp_server_full_connect(void * priv,
-        struct afp_connection_request * req);
+struct afp_server *afp_server_full_connect(void *priv,
+                                           struct afp_connection_request *req);
 
 void *just_end_it_now(void *other);
 void add_fd_and_signal(int fd);
@@ -396,7 +396,7 @@ void afp_wait_for_started_loop(void);
 
 
 struct afp_versions *pick_version(unsigned char *versions,
-                                  unsigned char requested) ;
+                                  unsigned char requested);
 int pick_uam(unsigned int u1, unsigned int u2);
 
 int afp_server_login(struct afp_server *server,
@@ -413,15 +413,15 @@ int afp_dopasswd(struct afp_server *server,
 void afp_free_server(struct afp_server **server);
 
 struct afp_server *afp_server_init(struct addrinfo * address);
-struct addrinfo *afp_get_address(void * priv, const char * hostname,
+struct addrinfo *afp_get_address(void *priv, const char *hostname,
                                  unsigned int port);
 
 
 int afp_main_loop(int command_fd);
-int afp_main_quick_startup(pthread_t * thread);
+int afp_main_quick_startup(pthread_t *thread);
 
-int afp_server_destroy(struct afp_server *s) ;
-int afp_server_reconnect(struct afp_server * s, char * mesg,
+int afp_server_destroy(struct afp_server *s);
+int afp_server_reconnect(struct afp_server * s, char *mesg,
                          unsigned int *l, unsigned int max);
 int afp_server_connect(struct afp_server *s, int full);
 /* A server identity is usable for session reuse only when FPGetSrvrInfo
@@ -451,20 +451,20 @@ int afp_connect_volume(struct afp_volume * volume, struct afp_server * server,
 int something_is_mounted(struct afp_server * server);
 int something_is_attached(struct afp_server * server);
 
-int add_cache_entry(struct afp_file_info * file) ;
-struct afp_file_info *get_cache_by_name(char * name);
+int add_cache_entry(struct afp_file_info * file);
+struct afp_file_info *get_cache_by_name(char *name);
 struct afp_server *find_server_by_address(struct addrinfo * address);
 struct afp_server *find_server_by_pointer(struct afp_server * target);
-struct afp_server *find_server_by_signature(char * signature);
-struct afp_server *find_server_by_name(char * name);
+struct afp_server *find_server_by_signature(char *signature);
+struct afp_server *find_server_by_name(char *name);
 int server_still_valid(struct afp_server * server);
 
 /* Reference-counted server lookups for multi-threaded use.
  * These atomically find and hold a reference. Caller must
  * call afp_server_release() when done with the returned pointer. */
-struct afp_server *afp_server_find_by_name_hold(char * name);
+struct afp_server *afp_server_find_by_name_hold(char *name);
 struct afp_server *afp_server_find_by_address_hold(struct addrinfo * address);
-struct afp_volume *afp_volume_find_by_pointer_hold(void * id);
+struct afp_volume *afp_volume_find_by_pointer_hold(void *id);
 
 void afp_server_hold(struct afp_server *s);
 void afp_server_release(struct afp_server *s);
@@ -482,7 +482,7 @@ int afp_unmount_all_volumes(struct afp_server * server);
 #define volume_is_readonly(x) (((x)->attributes&kReadOnly) || \
 	((x)->extra_flags & VOLUME_EXTRA_FLAGS_READONLY))
 
-int afp_opendt(struct afp_volume *volume, unsigned short * refnum);
+int afp_opendt(struct afp_volume *volume, unsigned short *refnum);
 
 int afp_closedt(struct afp_server * server, unsigned short refnum);
 
@@ -509,7 +509,7 @@ int afp_getappl(struct afp_volume *volume, unsigned int filecreator,
 int afp_getsrvrmsg(struct afp_server *server, unsigned short messagetype,
                    unsigned char utf8, unsigned char block, char *mesg);
 
-int afp_login(struct afp_server *server, const char * uaname,
+int afp_login(struct afp_server *server, const char *uaname,
               char *userauthinfo, unsigned int userauthinfo_len,
               struct afp_rx_buffer *rx);
 
@@ -518,7 +518,7 @@ int afp_loginext(struct afp_server *server, const char *uaname,
                  char *userauthinfo, unsigned int userauthinfo_len,
                  struct afp_rx_buffer *rx);
 
-int afp_changepassword(struct afp_server *server, const char * uaname,
+int afp_changepassword(struct afp_server *server, const char *uaname,
                        char *userauthinfo, unsigned int userauthinfo_len,
                        struct afp_rx_buffer *rx);
 

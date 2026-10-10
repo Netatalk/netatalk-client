@@ -52,7 +52,7 @@ static uint16_t read_uint16_be(unsigned char **p)
  * Sets *out_len to the stripped length.
  */
 static const unsigned char *strip_leading_zeros(const unsigned char *buf,
-        size_t len, size_t *out_len)
+                                                size_t len, size_t *out_len)
 {
     while (len > 1 && *buf == 0) {
         buf++;
@@ -390,7 +390,7 @@ int srp_login(struct afp_server *server, char *username, char *passwd)
     /* Strip leading zeros from S before MGF1 */
     size_t S_stripped_len;
     const unsigned char *S_stripped = strip_leading_zeros(S_binary, nbytes,
-                                      &S_stripped_len);
+                                                          &S_stripped_len);
     unsigned char K[40];
 
     if (mgf1_sha1(S_stripped, S_stripped_len, K, sizeof(K)) != 0) {
@@ -404,7 +404,7 @@ int srp_login(struct afp_server *server, char *username, char *passwd)
     /* H(N) — hash of N with leading zeros stripped */
     size_t N_stripped_len;
     const unsigned char *N_stripped = strip_leading_zeros(N_raw, N_len,
-                                      &N_stripped_len);
+                                                          &N_stripped_len);
     unsigned char H_N[SRP_SHA1_LEN];
     sha1_multi(H_N, N_stripped, N_stripped_len, NULL);
     /* H(g) — hash of g as minimal bytes */
@@ -426,9 +426,9 @@ int srp_login(struct afp_server *server, char *username, char *passwd)
     /* strip(A) and strip(B) for M1 */
     size_t A_stripped_len, B_stripped_len;
     const unsigned char *A_stripped = strip_leading_zeros(A_buf, nbytes,
-                                      &A_stripped_len);
+                                                          &A_stripped_len);
     const unsigned char *B_stripped = strip_leading_zeros(B_raw, B_len,
-                                      &B_stripped_len);
+                                                          &B_stripped_len);
     unsigned char M1[SRP_SHA1_LEN];
     sha1_multi(M1,
                xor_ng, (size_t)SRP_SHA1_LEN,

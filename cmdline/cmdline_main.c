@@ -60,7 +60,7 @@
 
 static int running = 1;
 
-extern int com_testafp(char * arg);
+extern int com_testafp(char *arg);
 
 static struct termios save_termios;
 
@@ -73,7 +73,7 @@ static struct termios save_termios;
 
 typedef struct {
     char *name;          /* User printable name of the function. */
-    int (*func)(char * arg); /* Function to call to do the job. */
+    int (*func)(char *arg);  /* Function to call to do the job. */
     char *doc;           /* Documentation for this function.  */
     int thread;          /* whether to launch as a new thread */
 } COMMAND;
@@ -120,7 +120,7 @@ static int tty_reset(int fd)
 
 /* Strip whitespace from the start and end of STRING.  Return a pointer
    into STRING. */
-static char *stripwhite(char * string)
+static char *stripwhite(char *string)
 {
     char *s, *t;
 
@@ -372,7 +372,7 @@ static COMMAND *find_command(char *name)
 }
 
 /* Execute a command line. */
-static int execute_line(char * line)
+static int execute_line(char *line)
 {
     int i;
     COMMAND *command;
