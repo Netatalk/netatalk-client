@@ -59,9 +59,8 @@ stop_afpsld() {
 
 adduser --no-create-home --disabled-password --gecos '' "$TEST_USR" > /dev/null 2>&1 || true
 echo "$TEST_USR:$TEST_PWD" | chpasswd
-[ -d /mnt/afpfs ] || mkdir /mnt/afpfs
-chmod 2755 /mnt/afpfs
-chown "$TEST_USR:$TEST_USR" /mnt/afpfs
+# Guest AFP sessions need read and traverse access to the volume.
+install -d -m 0755 -o "$TEST_USR" -g "$TEST_USR" /mnt/afpfs
 rm -f /var/lock/netatalk
 
 cat << EOF > /etc/netatalk/afp.conf
