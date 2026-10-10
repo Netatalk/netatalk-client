@@ -20,13 +20,13 @@
 struct afp_path_header_long {
     unsigned char type;
     unsigned char len;
-}  __attribute__((__packed__)) ;
+}  __attribute__((__packed__));
 
 struct afp_path_header_unicode {
     uint8_t type;
     uint32_t hint;
     uint16_t unicode;
-}  __attribute__((__packed__)) ;
+}  __attribute__((__packed__));
 
 int afp_parse_version(const char *text, int *version_out)
 {
@@ -65,7 +65,7 @@ int afp_parse_version(const char *text, int *version_out)
     return 0;
 }
 
-unsigned short utf8_to_string(char * dest, char * buf, unsigned short maxlen)
+unsigned short utf8_to_string(char *dest, char *buf, unsigned short maxlen)
 {
     return copy_from_pascal_two(dest, buf + 4, maxlen);
 }
@@ -189,7 +189,7 @@ unsigned short copy_to_pascal_two(char *dest, const char *src)
 {
     unsigned short *sendlen = (void *) dest;
     char *data = dest + 2;
-    unsigned short len ;
+    unsigned short len;
 
     if (!src) {
         dest[0] = 0;

@@ -284,7 +284,8 @@ static int command_recursive_option(char **arg)
 }
 
 static int attach_volume_with_password_prompt(afpc_server_t attach_server_id,
-        afpc_volume_t *vol_id_ptr, unsigned int volume_options);
+                                              afpc_volume_t *vol_id_ptr,
+                                              unsigned int volume_options);
 
 static unsigned int get_uam_mask_for_url(void)
 {
@@ -388,7 +389,7 @@ static int recover_session(int restore_volume, int restore_dir)
     if ((restore_volume || had_volume) && saved_volume[0] != '\0') {
         strlcpy(url.volumename, saved_volume, sizeof(url.volumename));
         ret = attach_volume_with_password_prompt(new_server_id, &new_vol_id,
-              volume_options);
+                                                 volume_options);
 
         if (ret != 0) {
             goto error;
@@ -595,7 +596,8 @@ static int cmdline_get_volpass(void)
 }
 
 static int attach_volume_with_password_prompt(afpc_server_t attach_server_id,
-        afpc_volume_t *vol_id_ptr, unsigned int volume_options)
+                                              afpc_volume_t *vol_id_ptr,
+                                              unsigned int volume_options)
 {
     enum afp_sl_attach_status status;
     int ret = -1;
@@ -815,7 +817,8 @@ static int apply_remote_posix_metadata(const char *path, const struct stat *st)
 }
 
 static int copy_local_metadata_to_remote(const char *local_path,
-        const char *remote_path, const struct stat *st)
+                                         const char *remote_path,
+                                         const struct stat *st)
 {
     unsigned int warnings = 0;
 
@@ -824,7 +827,10 @@ static int copy_local_metadata_to_remote(const char *local_path,
     }
 
     int ret = afp_sl_metadata_copy_local_to_remote(local_path,
-              transfer_metadata_mode, &vol_id, remote_path, &warnings);
+                                                   transfer_metadata_mode,
+                                                   &vol_id,
+                                                   remote_path,
+                                                   &warnings);
     metadata_warn(warnings);
 
     if (ret < 0) {
@@ -835,7 +841,8 @@ static int copy_local_metadata_to_remote(const char *local_path,
 }
 
 static int copy_remote_metadata_to_local(const char *remote_path,
-        const char *local_path, const struct stat *st)
+                                         const char *local_path,
+                                         const struct stat *st)
 {
     unsigned int warnings = 0;
 
@@ -843,8 +850,11 @@ static int copy_remote_metadata_to_local(const char *remote_path,
         return 0;
     }
 
-    int ret = afp_sl_metadata_copy_remote_to_local(&vol_id, remote_path,
-              local_path, transfer_metadata_mode, &warnings);
+    int ret = afp_sl_metadata_copy_remote_to_local(&vol_id,
+                                                   remote_path,
+                                                   local_path,
+                                                   transfer_metadata_mode,
+                                                   &warnings);
     metadata_warn(warnings);
 
     if (ret < 0) {
@@ -873,7 +883,7 @@ static int copy_remote_metadata(const char *source, const char *target,
     }
 
     int ret = afp_sl_metadata_copy_remote_to_remote(&vol_id, source, &vol_id,
-              target, &warnings);
+                                                    target, &warnings);
     metadata_warn(warnings);
 
     if (ret < 0) {
@@ -1042,13 +1052,13 @@ static int attach_named_volume(const char *volume_name)
     }
 
     ret = attach_volume_with_password_prompt(server_id, &vol_id,
-          volume_options);
+                                             volume_options);
 
     if (ret != 0
             && is_recoverable_session_error(ret)
             && recover_session(0, 0) == 0) {
         ret = attach_volume_with_password_prompt(server_id, &vol_id,
-              volume_options);
+                                                 volume_options);
     }
 
     if (ret != 0) {
@@ -1289,7 +1299,7 @@ int com_pass(char *unused)
     return 0;
 }
 
-int com_dir(char * arg)
+int com_dir(char *arg)
 {
     if (!arg) {
         arg = "";
@@ -1471,7 +1481,7 @@ out:
     return ret;
 }
 
-int com_touch(char * arg)
+int com_touch(char *arg)
 {
     char *filename = NULL;
     char *server_fullname = NULL;
@@ -1586,7 +1596,7 @@ static int chmod_remote_tree(const char *server_path, mode_t mode)
     return ret;
 }
 
-int com_chmod(char * arg)
+int com_chmod(char *arg)
 {
     char *mode_str = NULL;
     char *filename = NULL;
@@ -2313,7 +2323,7 @@ static int download_directory(const char *server_path, const char *local_path,
     return ret;
 }
 
-static int com_get_file(char * arg, unsigned long long *total)
+static int com_get_file(char *arg, unsigned long long *total)
 {
     int fd;
     struct stat stat;
@@ -2460,7 +2470,7 @@ error:
 }
 
 
-int com_view(char * arg)
+int com_view(char *arg)
 {
     unsigned long long amount_written;
     char *filename = NULL;
@@ -2485,7 +2495,7 @@ error:
     return -1;
 }
 
-int com_rename(char * arg)
+int com_rename(char *arg)
 {
     char *oldpath = NULL;
     char *newpath = NULL;
@@ -3683,7 +3693,7 @@ static int path_is_same_or_descendant(const char *parent, const char *candidate)
            && (candidate[parent_len] == '\0' || candidate[parent_len] == '/');
 }
 
-int com_copy(char * arg)
+int com_copy(char *arg)
 {
     char *source_path = NULL;
     char *target_path = NULL;
@@ -4204,7 +4214,7 @@ int com_statvfs(char *unused)
 }
 
 
-int com_lcd(char * path)
+int com_lcd(char *path)
 {
     int ret;
     char *curpath;
@@ -4544,7 +4554,7 @@ static int cmdline_server_startup(int batch_mode)
     if (url.volumename[0] != '\0') {
         unsigned int volume_options = AFP_SL_VOLUME_NO_LOCKING;
         ret = attach_volume_with_password_prompt(server_id, &vol_id,
-              volume_options);
+                                                 volume_options);
 
         if (ret != 0) {
             if (ret == -EACCES) {
@@ -4585,7 +4595,7 @@ static int cmdline_server_startup(int batch_mode)
     return 0;
 }
 
-int cmdline_batch_transfer(char * local_path, int direction, int recursive)
+int cmdline_batch_transfer(char *local_path, int direction, int recursive)
 {
     unsigned long long bytes_transferred = 0;
     int ret = -1;

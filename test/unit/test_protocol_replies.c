@@ -126,7 +126,7 @@ int main(int argc, char **argv)
     CHECK(memcmp(xattr_info.data, "ab", xattr_info.copied) == 0);
     size_t large_size = AFP_EXTATTR_DATA_MAX + 257U;
     struct listxattr_reply *large_reply = calloc(1, sizeof(*large_reply)
-                                          + large_size);
+                                                 + large_size);
     CHECK(large_reply != NULL);
     large_reply->datalength = htonl((uint32_t)large_size);
     memset(large_reply->data, 'x', large_size);

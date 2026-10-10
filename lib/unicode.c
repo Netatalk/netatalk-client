@@ -1335,7 +1335,7 @@ int UCS2toUTF8(const char16 *str16, size_t max_chars, char *dest,
             return -1;  /* Buffer too small */
         }
 
-        p = (const char*)p16;
+        p = (const char *)p16;
 
         if (*p16 < 0x0080) {
             *p8 = p[0];

@@ -67,7 +67,7 @@ static struct afp_uam uam_srp =
 
 unsigned int default_uams_mask(void)
 {
-    unsigned int uam_mask = UAM_CLEARTXTPASSWRD ;
+    unsigned int uam_mask = UAM_CLEARTXTPASSWRD;
 #ifdef HAVE_LIBGCRYPT
     uam_mask |= UAM_RANDNUMEXCHANGE | UAM_2WAYRANDNUM;
     uam_mask |= UAM_DHCAST128 | UAM_DHX2 | UAM_SRP;
@@ -148,7 +148,7 @@ static struct afp_uam *find_uam_by_bitmap(unsigned int i)
     return NULL;
 }
 
-unsigned int find_uam_by_name(const char * name)
+unsigned int find_uam_by_name(const char *name)
 {
     struct afp_uam * u = uam_base;
     const char *resolved_name = resolve_uam_shorthand(name);

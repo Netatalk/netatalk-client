@@ -115,9 +115,9 @@ int afp_moveandrename(struct afp_volume *volume,
         struct dsi_header dsi_header __attribute__((__packed__));
         uint8_t command;
         uint8_t pad;
-        uint16_t volid ;
+        uint16_t volid;
         uint32_t src_did;
-        uint32_t dst_did ;
+        uint32_t dst_did;
     } __attribute__((__packed__)) * request_packet;
     char *p;
     char *msg;
@@ -280,7 +280,7 @@ int afp_createdir_reply(struct afp_server *server _U_,
     return 0;
 }
 
-int afp_enumerate_reply(struct afp_server *server, char * buf,
+int afp_enumerate_reply(struct afp_server *server, char *buf,
                         unsigned int size, void *other)
 {
     struct {
@@ -354,14 +354,14 @@ int afp_enumerate_reply(struct afp_server *server, char * buf,
     return 0;
 }
 
-int afp_enumerateext_reply(struct afp_server *server, char * buf,
+int afp_enumerateext_reply(struct afp_server *server, char *buf,
                            unsigned int size, void *other)
 {
     /* AFP 3.0 FPEnumerateExt uses the same reply format as FPEnumerateExt2 */
     return afp_enumerateext2_reply(server, buf, size, other);
 }
 
-int afp_enumerateext2_reply(struct afp_server *server, char * buf,
+int afp_enumerateext2_reply(struct afp_server *server, char *buf,
                             unsigned int size, void *other)
 {
     struct {

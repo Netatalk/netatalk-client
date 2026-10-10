@@ -26,7 +26,7 @@ struct did_cache_entry {
     char *name;
     struct timeval time;
     struct did_cache_entry *next;
-} ;
+};
 
 int free_entire_did_cache(struct afp_volume * volume)
 {
@@ -47,7 +47,7 @@ int free_entire_did_cache(struct afp_volume * volume)
     return 0;
 }
 
-int remove_did_entry(struct afp_volume * volume, const char * name)
+int remove_did_entry(struct afp_volume *volume, const char *name)
 {
     struct did_cache_entry * d, *p = NULL;
     pthread_mutex_lock(&volume->did_cache_mutex);
@@ -183,7 +183,7 @@ unsigned char is_dir(struct afp_volume * volume,
 }
 
 static unsigned int find_dirid_by_fullname(struct afp_volume * volume,
-        char *path)
+                                           char *path)
 {
     struct did_cache_entry *p, *next;
     struct did_cache_entry **prev_ptr;
@@ -240,7 +240,7 @@ out:
 
 /* This calculates the dirid and basename.  It *always* gets the parent did. */
 
-int get_dirid(struct afp_volume * volume, const char * path,
+int get_dirid(struct afp_volume * volume, const char *path,
               char *basename, unsigned int *dirid)
 {
     const char *last_slash;
@@ -306,8 +306,8 @@ int get_dirid(struct afp_volume * volume, const char * path,
         }
     }
 
-    filebitmap = kFPNodeIDBit ;
-    dirbitmap = kFPNodeIDBit ;
+    filebitmap = kFPNodeIDBit;
+    dirbitmap = kFPNodeIDBit;
     component = path + known_parent_len;
 
     if (*component == '/') {

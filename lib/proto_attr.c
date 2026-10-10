@@ -30,8 +30,8 @@ int afp_listextattr(struct afp_volume * volume,
             struct dsi_header dsi_header __attribute__((__packed__));
             uint8_t command;
             uint8_t pad;
-            uint16_t volid ;
-            uint32_t dirid ;
+            uint16_t volid;
+            uint32_t dirid;
             uint16_t bitmap;
             uint16_t reqcount;
             uint32_t startindex;
@@ -80,9 +80,9 @@ int afp_listextattrs_reply(struct afp_server *server _U_,
 {
     const struct {
         struct dsi_header header __attribute__((__packed__));
-        uint16_t reserved ;
-        uint32_t datalength ;
-        char data[] ;
+        uint16_t reserved;
+        uint32_t datalength;
+        char data[];
     } __attribute__((__packed__)) * reply = (void *) buf;
     struct afp_extattr_info * i = x;
     unsigned int datalength;
@@ -205,10 +205,10 @@ int afp_getextattr(struct afp_volume * volume, unsigned int dirid,
             struct dsi_header dsi_header __attribute__((__packed__));
             uint8_t command;
             uint8_t pad;
-            uint16_t volid ;
-            uint32_t dirid ;
-            uint16_t bitmap ;
-            uint64_t offset ;
+            uint16_t volid;
+            uint32_t dirid;
+            uint16_t bitmap;
+            uint64_t offset;
             uint64_t reqcount;
             uint32_t maxreplysize;
         } __attribute__((__packed__)) *request_packet;
@@ -275,10 +275,10 @@ int afp_setextattr(struct afp_volume * volume, unsigned int dirid,
             struct dsi_header dsi_header __attribute__((__packed__));
             uint8_t command;
             uint8_t pad;
-            uint16_t volid ;
-            uint32_t dirid ;
-            uint16_t bitmap ;
-            uint64_t offset ;
+            uint16_t volid;
+            uint32_t dirid;
+            uint16_t bitmap;
+            uint64_t offset;
         } __attribute__((__packed__)) *request_packet;
         struct afp_server * server = volume->server;
         unsigned int pathlen = sizeof_path_header(volume) + strlen(pathname);

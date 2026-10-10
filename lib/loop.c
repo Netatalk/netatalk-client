@@ -135,7 +135,7 @@ void signal_main_thread(void)
 }
 
 static int ending = 0;
-void *just_end_it_now(void * ignore _U_)
+void *just_end_it_now(void *ignore _U_)
 {
     if (ending) {
         return NULL;
@@ -290,14 +290,14 @@ void afp_wait_for_started_loop(void)
     pthread_cond_wait(&loop_started_condition, &loop_started_mutex);
 }
 
-static void *afp_main_quick_startup_thread(void * other _U_)
+static void *afp_main_quick_startup_thread(void *other _U_)
 {
     afp_main_loop(-1);
     return NULL;
 }
 
 
-int afp_main_quick_startup(pthread_t * thread)
+int afp_main_quick_startup(pthread_t *thread)
 {
     pthread_t loop_thread;
     pthread_create(&loop_thread, NULL, afp_main_quick_startup_thread, NULL);

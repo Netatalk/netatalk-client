@@ -110,7 +110,7 @@ int parse_reply_block(struct afp_server *server _U_,
     end = buf + size;
 
     if (isdir) {
-        bitmap = dirbitmap ;
+        bitmap = dirbitmap;
     } else {
         bitmap = filebitmap;
     }

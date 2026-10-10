@@ -319,7 +319,7 @@ int afp_readext_reply(struct afp_server *server _U_,
     return 0;
 }
 
-int afp_getfiledirparms_reply(struct afp_server *server, char * buf,
+int afp_getfiledirparms_reply(struct afp_server *server, char *buf,
                               unsigned int size,
                               void *other)
 {

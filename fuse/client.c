@@ -486,7 +486,7 @@ static int copy_secret(char *dst, size_t dstlen, const char *src,
     return 0;
 }
 
-static int send_command(int sock, char * msg, int len)
+static int send_command(int sock, char *msg, int len)
 {
     return afpfsd_ipc_write_all(sock, msg, (size_t)len);
 }
@@ -544,7 +544,7 @@ static int resolve_mountpoint(const char *path, char *resolved, size_t size)
     return 0;
 }
 
-static int do_status(int argc, char ** argv)
+static int do_status(int argc, char **argv)
 {
     int c;
     int option_index = 0;
@@ -582,7 +582,7 @@ static int do_status(int argc, char ** argv)
     return 0;
 }
 
-static int do_resume(int argc, char ** argv)
+static int do_resume(int argc, char **argv)
 {
     struct afpfsd_ipc_resume_request request = {0};
 
@@ -604,7 +604,7 @@ static int do_resume(int argc, char ** argv)
     return 0;
 }
 
-static int do_suspend(int argc, char ** argv)
+static int do_suspend(int argc, char **argv)
 {
     struct afpfsd_ipc_suspend_request request = {0};
 
@@ -626,7 +626,7 @@ static int do_suspend(int argc, char ** argv)
     return 0;
 }
 
-static int do_unmount(int argc, char ** argv)
+static int do_unmount(int argc, char **argv)
 {
     struct afpfsd_ipc_unmount_request request = {0};
 
@@ -648,7 +648,7 @@ static int do_unmount(int argc, char ** argv)
     return 0;
 }
 
-static int do_mount(int argc, char ** argv)
+static int do_mount(int argc, char **argv)
 {
     int c;
     int option_index = 0;
@@ -939,7 +939,7 @@ static void mount_afpfs_usage(void)
            NETATALK_CLIENT_VERSION);
 }
 
-static int handle_mount_afpfs(int argc, char * argv[])
+static int handle_mount_afpfs(int argc, char *argv[])
 {
     struct afpfsd_ipc_mount_request * req = (struct afpfsd_ipc_mount_request *)
                                             &outgoing_buffer[1];
@@ -1146,7 +1146,7 @@ cleanup:
     return ret;
 }
 
-static int prepare_buffer(int argc, char * argv[])
+static int prepare_buffer(int argc, char *argv[])
 {
     if (argc < 2) {
         usage();

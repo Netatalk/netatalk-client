@@ -138,7 +138,7 @@ static void stat_to_darwin_attr(const struct stat *st,
 
 #endif
 
-static int fuse_readlink(const char * path, char *buf, size_t size)
+static int fuse_readlink(const char *path, char *buf, size_t size)
 {
     int ret;
     struct afp_volume * volume = fuse_get_context()->private_data;
@@ -451,7 +451,7 @@ static int fuse_flush(const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
-static int fuse_release(const char * path, struct fuse_file_info * fi)
+static int fuse_release(const char *path, struct fuse_file_info * fi)
 {
     struct afp_file_info * fp = (void *) fi->fh;
     int ret = 0;
@@ -468,7 +468,7 @@ static int fuse_release(const char * path, struct fuse_file_info * fi)
 
 static int fuse_open(const char *path, struct fuse_file_info *fi)
 {
-    struct afp_file_info * fp ;
+    struct afp_file_info * fp;
     int ret;
     struct afp_volume * volume = fuse_get_context()->private_data;
     int flags = fi->flags;
@@ -487,7 +487,7 @@ static int fuse_open(const char *path, struct fuse_file_info *fi)
 }
 
 
-static int fuse_write(const char * path, const char *data,
+static int fuse_write(const char *path, const char *data,
                       size_t size, off_t offset,
                       struct fuse_file_info *fi)
 {
@@ -504,7 +504,7 @@ static int fuse_write(const char * path, const char *data,
 }
 
 
-static int fuse_mkdir(const char * path, mode_t mode)
+static int fuse_mkdir(const char *path, mode_t mode)
 {
     int ret;
     struct afp_volume * volume = fuse_get_context()->private_data;
@@ -628,10 +628,10 @@ static int fuse_access(const char *path, int mask)
 #endif
 
 #if FUSE_NEW_API
-static int fuse_chown(const char * path, uid_t uid, gid_t gid,
+static int fuse_chown(const char *path, uid_t uid, gid_t gid,
                       struct fuse_file_info *fi _U_)
 #else
-static int fuse_chown(const char * path, uid_t uid, gid_t gid)
+static int fuse_chown(const char *path, uid_t uid, gid_t gid)
 #endif
 {
     int ret;
@@ -648,14 +648,14 @@ static int fuse_chown(const char * path, uid_t uid, gid_t gid)
 }
 
 #if FUSE_NEW_API
-static int fuse_truncate(const char * path, off_t offset,
+static int fuse_truncate(const char *path, off_t offset,
                          struct fuse_file_info *fi)
 {
     int ret = 0;
     struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** truncate of %s to %lld, fi=%p, fh=%lu",
-                   path, (long long)offset, (void*)fi, fi ? (unsigned long)fi->fh : 0UL);
+                   path, (long long)offset, (void *)fi, fi ? (unsigned long)fi->fh : 0UL);
 
     /* If we have an open file handle, use it directly instead of
      * opening/closing a new fork */
@@ -692,7 +692,7 @@ static int fuse_truncate(const char * path, off_t offset,
 }
 
 #else
-static int fuse_truncate(const char * path, off_t offset)
+static int fuse_truncate(const char *path, off_t offset)
 {
     int ret = 0;
     struct afp_volume * volume = fuse_get_context()->private_data;
@@ -704,10 +704,10 @@ static int fuse_truncate(const char * path, off_t offset)
 
 
 #if FUSE_NEW_API
-static int fuse_chmod(const char * path, mode_t mode,
+static int fuse_chmod(const char *path, mode_t mode,
                       struct fuse_file_info *fi _U_)
 #else
-static int fuse_chmod(const char * path, mode_t mode)
+static int fuse_chmod(const char *path, mode_t mode)
 #endif
 {
     struct afp_volume * volume = fuse_get_context()->private_data;
@@ -797,10 +797,10 @@ static int fuse_utimens(const char *path, const struct timespec tv[2])
 }
 
 #else
-static int fuse_utime(const char * path, struct utimbuf * timebuf)
+static int fuse_utime(const char *path, struct utimbuf *timebuf)
 {
     int ret = 0;
-    struct afp_volume * volume = fuse_get_context()->private_data;
+    struct afp_volume *volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "** utime");
     ret = ml_utime(volume, path, timebuf);
@@ -811,7 +811,7 @@ static int fuse_utime(const char * path, struct utimbuf * timebuf)
 
 static void afp_destroy(void *ignore _U_)
 {
-    struct afp_volume * volume = fuse_get_context()->private_data;
+    struct afp_volume *volume = fuse_get_context()->private_data;
 
     if (!volume || !volume->server) {
         return;
@@ -844,7 +844,7 @@ static void afp_destroy(void *ignore _U_)
     afp_unmount_volume(volume);
 }
 
-static int fuse_symlink(const char * path1, const char * path2)
+static int fuse_symlink(const char *path1, const char *path2)
 {
     struct afp_volume * volume = fuse_get_context()->private_data;
     int ret;
@@ -859,7 +859,7 @@ static int fuse_symlink(const char * path1, const char * path2)
 }
 
 #if FUSE_NEW_API
-static int fuse_rename(const char * path_from, const char * path_to,
+static int fuse_rename(const char *path_from, const char *path_to,
                        unsigned int flags)
 {
     int ret;
@@ -898,7 +898,7 @@ static int fuse_rename(const char * path_from, const char * path_to,
 }
 
 #else
-static int fuse_rename(const char * path_from, const char * path_to)
+static int fuse_rename(const char *path_from, const char *path_to)
 {
     int ret;
     struct afp_volume * volume = fuse_get_context()->private_data;

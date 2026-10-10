@@ -49,7 +49,7 @@ struct afp_versions      afp_versions[] = {
     { NULL, 0 }
 };
 
-static int afp_blank_reply(struct afp_server *server, char * buf,
+static int afp_blank_reply(struct afp_server *server, char *buf,
                            unsigned int size, void *ignored);
 static int connect_with_timeout(int fd, const struct sockaddr *addr,
                                 socklen_t addrlen, int timeout);
@@ -62,7 +62,7 @@ static void format_server_signature(const char signature[AFP_SIGNATURE_LEN],
     }
 }
 
-int (*afp_replies[])(struct afp_server * server, char * buf, unsigned int len,
+int (*afp_replies[])(struct afp_server * server, char *buf, unsigned int len,
                      void *other) = {
     NULL, afp_byterangelock_reply, afp_blank_reply, NULL,
     afp_blank_reply, NULL, afp_createdir_reply, afp_blank_reply, /* 0 - 7 */
@@ -296,7 +296,7 @@ struct afp_server *get_server_base(void)
     return server_base;
 }
 
-struct afp_server *find_server_by_signature(char * signature)
+struct afp_server *find_server_by_signature(char *signature)
 {
     struct afp_server * s;
 
@@ -309,7 +309,7 @@ struct afp_server *find_server_by_signature(char * signature)
     return NULL;
 }
 
-struct afp_server *find_server_by_name(char * name)
+struct afp_server *find_server_by_name(char *name)
 {
     for (struct afp_server * s = get_server_base(); s; s = s->next) {
         if (strcmp(s->server_name_utf8, name) == 0) {
@@ -446,7 +446,7 @@ void afp_server_release(struct afp_server *s)
     }
 }
 
-struct afp_server *afp_server_find_by_name_hold(char * name)
+struct afp_server *afp_server_find_by_name_hold(char *name)
 {
     struct afp_server * s;
     pthread_mutex_lock(&server_list_mutex);
@@ -474,7 +474,7 @@ struct afp_server *afp_server_find_by_address_hold(struct addrinfo * address)
     return s;
 }
 
-struct afp_volume *afp_volume_find_by_pointer_hold(void * id)
+struct afp_volume *afp_volume_find_by_pointer_hold(void *id)
 {
     struct afp_volume * v;
     pthread_mutex_lock(&server_list_mutex);
@@ -603,7 +603,7 @@ int afp_unmount_volume(struct afp_volume * volume)
 }
 
 
-void afp_free_server(struct afp_server ** sp)
+void afp_free_server(struct afp_server **sp)
 {
     struct dsi_request * p, *next;
     struct afp_volume * volumes;
@@ -1001,7 +1001,7 @@ error:
     return 1;
 }
 
-int afp_server_reconnect(struct afp_server * s, char * mesg,
+int afp_server_reconnect(struct afp_server * s, char *mesg,
                          unsigned int *l, unsigned int max)
 {
     int i;
@@ -1319,7 +1319,7 @@ int pick_uam(unsigned int uam2, unsigned int uam1)
     return -1;
 }
 
-int afp_list_volnames(struct afp_server * server, char * names, int max)
+int afp_list_volnames(struct afp_server * server, char *names, int max)
 {
     int len = 0;
     int i;

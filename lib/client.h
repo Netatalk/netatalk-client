@@ -20,12 +20,12 @@ struct afp_volume;
 
 struct libafpclient {
     int (*unmount_volume)(struct afp_volume * volume);
-    void (*log_for_client)(void * priv,
+    void (*log_for_client)(void *priv,
                            enum logtypes logtype, int loglevel, const char *message);
     void (*forced_ending_hook)(void);
-    int (*scan_extra_fds)(int command_fd, fd_set *set, int * max_fd);
+    int (*scan_extra_fds)(int command_fd, fd_set *set, int *max_fd);
     void (*loop_started)(void);
-} ;
+};
 
 extern struct libafpclient *libafpclient;
 
@@ -44,17 +44,17 @@ void signal_main_thread(void);
 void set_log_method(int m);
 
 /* Public logging API: message is complete text, not a printf format. */
-void log_for_client(void * priv,
+void log_for_client(void *priv,
                     enum logtypes logtype, int loglevel,
                     const char *message);
 
 /* Internal convenience for literal printf-style formats. */
-static inline void log_for_clientf(void * priv,
+static inline void log_for_clientf(void *priv,
                                    enum logtypes logtype, int loglevel,
                                    const char *format, ...)
 __attribute__((format(printf, 4, 5)));
 
-static inline void log_for_clientf(void * priv,
+static inline void log_for_clientf(void *priv,
                                    enum logtypes logtype, int loglevel,
                                    const char *format, ...)
 {
@@ -76,7 +76,7 @@ static inline void log_for_clientf(void * priv,
 #define log_for_client(...) log_for_clientf(__VA_ARGS__)
 #endif
 
-void stdout_log_for_client(void * priv,
+void stdout_log_for_client(void *priv,
                            enum logtypes logtype, int loglevel, const char *message);
 
 #endif

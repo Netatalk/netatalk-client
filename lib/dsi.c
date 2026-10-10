@@ -36,10 +36,10 @@
 /* Define DEBUG_DSI explicitly to get reams of DSI debugging information. */
 
 static int afpc_dsi_remove_from_request_queue(struct afp_server *server,
-        struct dsi_request *toremove);
+                                              struct dsi_request *toremove);
 int convert_utf8dec_to_utf8pre(const char *src, int src_len,
                                char *dest, int dest_len);
-int convert_utf8pre_to_utf8dec(const char * src, int src_len,
+int convert_utf8pre_to_utf8dec(const char *src, int src_len,
                                char *dest, int dest_len);
 
 struct dsi_attention_context {
@@ -110,7 +110,7 @@ int afpc_dsi_opensession(struct afp_server *server)
         struct dsi_header dsi_header  __attribute__((__packed__));
         uint8_t flags;
         uint8_t length;
-        uint32_t rx_quantum ;
+        uint32_t rx_quantum;
     } __attribute__((__packed__)) dsi_opensession_header;
     struct dsi_header hdr;
     afpc_dsi_setup_header(server, &hdr, DSI_DSIOpenSession);
@@ -125,7 +125,7 @@ int afpc_dsi_opensession(struct afp_server *server)
 }
 
 static int afpc_dsi_remove_from_request_queue(struct afp_server *server,
-        struct dsi_request *toremove)
+                                              struct dsi_request *toremove)
 {
     struct dsi_request *p, *prev = NULL;
 
@@ -566,7 +566,7 @@ void afpc_dsi_opensession_reply(struct afp_server * server)
     }
 }
 
-static int afpc_dsi_parse_versions(struct afp_server * server, char * msg)
+static int afpc_dsi_parse_versions(struct afp_server * server, char *msg)
 {
     unsigned char num_versions = msg[0];
     int i, j = 0;
@@ -599,7 +599,7 @@ static int afpc_dsi_parse_versions(struct afp_server * server, char * msg)
     return 0;
 }
 
-static int afpc_dsi_parse_uams(struct afp_server * server, char * msg)
+static int afpc_dsi_parse_uams(struct afp_server * server, char *msg)
 {
     unsigned char num_uams = msg[0];
     unsigned char len;
@@ -641,7 +641,7 @@ void afpc_dsi_getstatus_reply(struct afp_server * server)
         uint16_t version_offset;
         uint16_t uams_offset;
         uint16_t icon_offset;
-        uint16_t flags ;
+        uint16_t flags;
     } __attribute__((__packed__)) * reply1 = (void *) server->incoming_buffer;
     struct reply2 {
         uint16_t signature_offset;
@@ -653,7 +653,7 @@ void afpc_dsi_getstatus_reply(struct afp_server * server)
     if ((unsigned long) server->data_read < (sizeof(*reply1) + sizeof(*reply2))) {
         log_for_client(NULL, AFPFSD, LOG_ERR,
                        "Got incomplete data for getstatus");
-        return ;
+        return;
     }
 
     data = (char *) server->incoming_buffer + sizeof(struct dsi_header);
@@ -767,13 +767,13 @@ void afpc_dsi_incoming_tickle(struct afp_server * server)
 }
 
 
-void *afpc_dsi_incoming_attention(void * other)
+void *afpc_dsi_incoming_attention(void *other)
 {
     struct dsi_attention_context *context = other;
     struct afp_server * server = context->server;
     struct {
         struct dsi_header header __attribute__((__packed__));
-        uint16_t flags ;
+        uint16_t flags;
     } __attribute__((__packed__)) *packet = (void *) context->packet;
     unsigned short flags = 0;
     char mesg[AFP_LOGINMESG_LEN];
@@ -855,7 +855,7 @@ void *afpc_dsi_incoming_attention(void * other)
 
 
 struct dsi_request *afpc_dsi_find_request(struct afp_server *server,
-        unsigned short request_id)
+                                          unsigned short request_id)
 {
     struct dsi_request *p;
     pthread_mutex_lock(&server->request_queue_mutex);
@@ -1098,7 +1098,7 @@ gotenough:
         server->data_read += ret;
 
         if ((unsigned long) server->data_read < (ntohl(header->length) + sizeof(
-                    *header))) {
+                                                     *header))) {
             return 0;
         }
     }

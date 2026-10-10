@@ -22,7 +22,7 @@
 #include "utils.h"
 
 
-struct addrinfo *afp_get_address(void * priv, const char * hostname,
+struct addrinfo *afp_get_address(void *priv, const char *hostname,
                                  unsigned int port)
 {
     char port_string[6];
@@ -44,8 +44,8 @@ struct addrinfo *afp_get_address(void * priv, const char * hostname,
 }
 
 
-struct afp_server *afp_server_full_connect(void * priv,
-        struct afp_connection_request *req)
+struct afp_server *afp_server_full_connect(void *priv,
+                                           struct afp_connection_request *req)
 {
     int ret;
     struct addrinfo * address;

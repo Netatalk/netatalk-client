@@ -58,7 +58,7 @@ int afp_login_reply(struct afp_server *server _U_,
     return 0;
 }
 
-int afp_changepassword(struct afp_server *server, const char * ua_name,
+int afp_changepassword(struct afp_server *server, const char *ua_name,
                        char *userauthinfo, unsigned int userauthinfo_len,
                        struct afp_rx_buffer *rx)
 {
@@ -126,7 +126,7 @@ int afp_changepassword_reply(struct afp_server *server _U_,
     return 0;
 }
 
-int afp_login(struct afp_server *server, const char * ua_name,
+int afp_login(struct afp_server *server, const char *ua_name,
               char *userauthinfo, unsigned int userauthinfo_len,
               struct afp_rx_buffer *rx)
 {

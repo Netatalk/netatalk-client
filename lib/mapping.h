@@ -8,7 +8,7 @@
 #define AFP_MAPPING_LOGINIDS 2
 #define AFP_MAPPING_NAME 3
 
-unsigned int map_string_to_num(const char * name);
+unsigned int map_string_to_num(const char *name);
 char *get_mapping_name(struct afp_volume * volume);
 
 
