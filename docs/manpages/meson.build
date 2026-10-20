@@ -10,6 +10,8 @@ markdown_manfiles = [
     'afpgetstatus.1',
     'afpsld.1',
     'mount_afpfs.1',
+    'vfs_lantest.1',
+    'vfs_speedtest.1',
 ]
 
 if with_afpcmd
@@ -21,6 +23,13 @@ if with_fuse
         'afpc.1',
         'afpfsd.1',
         'mount_afpfs.1',
+    ]
+endif
+
+if with_perf_tools
+    manfiles += [
+        'vfs_lantest.1',
+        'vfs_speedtest.1',
     ]
 endif
 

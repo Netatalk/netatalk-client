@@ -1,0 +1,86 @@
+.Dd October 20, 2026
+.Dt VFS_SPEEDTEST 1
+.Os Netatalk Client
+.Sh NAME
+.Nm vfs_speedtest
+.Nd File transfer throughput benchmark for a mounted filesystem
+.Sh SYNOPSIS
+.Nm
+.Op Fl cD
+.Op Fl d Ar MiB
+.Op Fl f Ar operations
+.Op Fl n Ar runs
+.Op Fl q Ar KiB
+.Op Fl W Ar warmup
+.Op Fl z Ar sizes
+.Fl P Ar directory
+.Sh DESCRIPTION
+.Nm
+runs the transfers of the Netatalk server benchmark
+.Xr afp_speedtest 1
+as POSIX file operations in
+.Ar directory ,
+so that a mounted filesystem is measured end to end.
+Read, Write and Copy move the data through user space one chunk at a time;
+ServerCopy hands a whole file to
+.Xr copy_file_range 2 ,
+which an SMB3 or NFS 4.2 server, or a FUSE daemon implementing the
+operation, executes without the data crossing the mount, and which the
+kernel carries out itself otherwise.
+Runs, warmup, statistics and the CSV layout are those of
+.Xr afp_speedtest 1 ,
+so the same chart scripts read both.
+.Pp
+Every data file opens with
+.Dv O_DIRECT ;
+pass
+.Fl D
+on a plain local filesystem, which refuses it for small transfers.
+Results go to standard output, diagnostics to standard error.
+Each operation works in a directory named
+.Pa <Operation>Test- Ns Aq Ar pid
+under
+.Ar directory ,
+removed when the operation finishes.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl P Ar directory
+Directory on the mounted filesystem to run in.
+.It Fl c
+CSV output: one row per measured run, five statistics rows per operation
+and size, and, for a sweep, one summary block per operation.
+.It Fl D
+Buffered I/O in place of
+.Dv O_DIRECT .
+.It Fl d Ar MiB
+File size in MiB (default: 64).
+.It Fl f Ar operations
+Comma-separated operations among
+.Cm Read ,
+.Cm Write ,
+.Cm Copy
+and
+.Cm ServerCopy
+(default: Write).
+.It Fl n Ar runs
+Measured runs per operation and size (default: 1).
+.It Fl q Ar KiB
+Chunk size (default: 1024).
+.It Fl W Ar warmup
+Warmup runs left out of the statistics (default: 1).
+.It Fl z Ar sizes
+File size sweep, comma-separated sizes in MiB, each a multiple of 4 KiB;
+fractions name KiB sizes (4 KiB is 0.00390625).
+.El
+.Sh EXIT STATUS
+.Ex -std
+A failed file operation exits with status 2 after removing what the run
+created; a usage error exits with status 1.
+.Sh EXAMPLES
+The sweep of the Netatalk performance dashboards over a FUSE mount, as CSV:
+.Pp
+.Dl $ vfs_speedtest -c -n 20 -f Read,Write,Copy,ServerCopy -z 0.00390625,0.0078125,0.015625,0.03125,0.0625,0.125,0.25,0.5,1,2,4,8,16,32,64,128,256 -P /mnt/afpfs > speedtest.csv
+.Sh SEE ALSO
+.Xr afp_speedtest 1 ,
+.Xr mount_afpfs 1 ,
+.Xr vfs_lantest 1

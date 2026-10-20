@@ -51,7 +51,7 @@ jobs:
             ninja \
             perl
       - name: Setup
-        run: meson setup build --prefix=/usr
+        run: meson setup build --prefix=/usr -Dwith-testsuite=true
       - name: Compile
         run: meson compile -C build
       - name: Test
@@ -86,7 +86,7 @@ jobs:
             ninja \
             perl
       - name: Setup
-        run: meson setup build --prefix=/usr
+        run: meson setup build --prefix=/usr -Dwith-testsuite=true
       - name: Compile
         run: meson compile -C build
       - name: Test
@@ -123,7 +123,7 @@ jobs:
             perl-interpreter \
             readline-devel
       - name: Setup
-        run: meson setup build --prefix=/usr
+        run: meson setup build --prefix=/usr -Dwith-testsuite=true
       - name: Compile
         run: meson compile -C build
       - name: Test
@@ -160,7 +160,7 @@ jobs:
             perl-interpreter \
             readline-devel
       - name: Setup
-        run: meson setup build --prefix=/usr
+        run: meson setup build --prefix=/usr -Dwith-testsuite=true
       - name: Compile
         run: meson compile -C build
       - name: Test
@@ -197,7 +197,7 @@ jobs:
             python3-pip
           sudo python3 -m pip install --upgrade meson
       - name: Setup
-        run: meson setup build --prefix=/usr
+        run: meson setup build --prefix=/usr -Dwith-testsuite=true
       - name: Compile
         run: meson compile -C build
       - name: Test
@@ -232,7 +232,7 @@ jobs:
             perl \
             pkg-config
       - name: Setup
-        run: meson setup build --prefix=/usr
+        run: meson setup build --prefix=/usr -Dwith-testsuite=true
       - name: Compile
         run: meson compile -C build
       - name: Test

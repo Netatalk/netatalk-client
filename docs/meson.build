@@ -1,4 +1,5 @@
 readme_docs_files = [
+    'benchmarks.md',
     'developer.md',
     'features.md',
     'getting_started.md',

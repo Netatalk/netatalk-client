@@ -158,6 +158,7 @@ endif
 with_afpcmd = readline_dep.found() or libedit_readline_header != ''
 with_fuse = get_option('enable-fuse') and fuse_dep.found()
 with_crypt = gcrypt_dep.found()
+with_perf_tools = get_option('with-testsuite') and host_os == 'linux'
 
 # Check for Zeroconf discovery support. Prefer DNS-SD in the default link
 # environment (libSystem on macOS) before looking for a separate library.
@@ -395,6 +396,7 @@ summary_info = {
     'AFP control client': true,
     'AFP command line client': with_afpcmd,
     'AFP FUSE client': with_fuse,
+    'Mount benchmark tools': with_perf_tools,
     'Encrypted UAMs': with_crypt,
     'Zeroconf discovery': with_zeroconf,
     'Zeroconf backend': zeroconf_backend,

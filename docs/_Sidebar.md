@@ -4,6 +4,7 @@ Netatalk Client
 * [Getting started](getting_started.html)
 * [Features and compatibility](features.html)
 * [Developer documentation](developer.html)
+* [Benchmarking a mounted filesystem](benchmarks.html)
 * [Reporting bugs](reporting_bugs.html)
 
 Manual pages
@@ -14,3 +15,5 @@ Manual pages
 * [afpgetstatus](afpgetstatus.1.html)
 * [afpsld](afpsld.1.html)
 * [mount_afpfs](mount_afpfs.1.html)
+* [vfs_lantest](vfs_lantest.1.html)
+* [vfs_speedtest](vfs_speedtest.1.html)
