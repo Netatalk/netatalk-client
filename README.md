@@ -127,6 +127,22 @@ Use *afpcmd* in batch mode to download files from the AFP share to the local mac
         Transferred 108320 bytes in 0.015 seconds. (7200 kB/s)
     Transfer complete. 108320 bytes received.
 
+### Mount benchmarks
+
+`vfs_lantest` and `vfs_speedtest` run the workloads of the Netatalk server
+benchmarks `afp_lantest` and `afp_speedtest` as POSIX file operations on any
+mounted filesystem, so a FUSE mount of an AFP volume, a CIFS mount of a Samba
+share and a local directory are measured with the same commands and charted
+with the same Netatalk scripts:
+
+    vfs_lantest -c -n 20 -P /mnt/afpfs > lantest.csv
+    vfs_speedtest -c -n 20 -f Read,Write,Copy,ServerCopy \
+        -z 0.00390625,0.0078125,0.015625,0.03125,0.0625,0.125,0.25,0.5,1,2,4,8,16,32,64,128,256 \
+        -P /mnt/afpfs > speedtest.csv
+
+They are built on Linux with `-Dwith-testsuite=true`; see `vfs_lantest(1)`,
+`vfs_speedtest(1)` and [Benchmarking a mounted filesystem](docs/benchmarks.md).
+
 ## Differences with afpfs-ng
 
 Netatalk Client has the goal of maintaining continuity with afpfs-ng commands,

@@ -1,0 +1,131 @@
+.Dd October 20, 2026
+.Dt VFS_LANTEST 1
+.Os Netatalk Client
+.Sh NAME
+.Nm vfs_lantest
+.Nd File operation latency benchmark for a mounted filesystem
+.Sh SYNOPSIS
+.Nm
+.Op Fl cDK
+.Op Fl f Ar tests
+.Op Fl n Ar iterations
+.Op Fl q Ar KiB
+.Op Fl s Ar MiB
+.Fl P Ar directory
+.Sh DESCRIPTION
+.Nm
+runs the test set of the Netatalk server benchmark
+.Xr afp_lantest 1
+as POSIX file operations in
+.Ar directory ,
+so that a mounted filesystem is measured end to end: the kernel, the
+filesystem client and the server behind it.
+On a FUSE mount of an AFP volume that is the Netatalk client; on a CIFS
+mount it is the kernel SMB client; on a local directory it is the
+filesystem alone.
+The seventeen tests, their order, their 2000-item geometry, the
+statistics and the CSV layout are those of
+.Xr afp_lantest 1 ,
+so the same chart and history scripts read both.
+.Pp
+Every data read and write opens with
+.Dv O_DIRECT ,
+so the kernel page cache never answers for the filesystem behind the mount.
+A plain local filesystem refuses
+.Dv O_DIRECT
+for the 1024-byte transfers of the small-file tests; pass
+.Fl D
+there.
+.Pp
+Server-side copies are issued with
+.Xr copy_file_range 2 :
+an SMB3 or NFS 4.2 server, or a FUSE daemon implementing the operation,
+copies without the data crossing the mount; otherwise the kernel moves it.
+.Pp
+Results go to standard output, progress and diagnostics to standard error.
+The tests run in a directory named
+.Pa LanTest- Ns Aq Ar pid
+under
+.Ar directory ,
+which is removed at the end.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl P Ar directory
+Directory on the mounted filesystem to run in.
+.It Fl c
+CSV output: one row per test with the mean, standard deviation, minimum,
+maximum and median in milliseconds and the MB/s of the large-file tests,
+then the sum row and the aggregate block.
+.It Fl D
+Buffered I/O in place of
+.Dv O_DIRECT .
+.It Fl f Ar tests
+Comma-separated test numbers, 1 to 17 (default: all).
+The tests that use the shared 2000 files pull in their creation and
+deletion.
+.It Fl K
+The four cache-focused tests only (14 to 17).
+.It Fl n Ar iterations
+Passes over the test set, 1 to 1000 (default: 2).
+Above five, the fastest and slowest sample of every test are dropped.
+.It Fl q Ar KiB
+Chunk size of the large-file tests (default: 1024).
+.It Fl s Ar MiB
+Size of the large file (default: 100); a multiple of the chunk size.
+.El
+.Sh TESTS
+.Bl -enum -compact
+.It
+Writing one large file, one write per chunk and the close
+.It
+Reading it back, one read per chunk and the close
+.It
+Creating 2000 files with
+.Xr mknod 2
+and a stat of each
+.It
+Creating a 20x9x10 directory tree
+.It
+Open, write 1024 bytes, close, for each of the 2000 files
+.It
+Open, read 1024 bytes, close, for each
+.It
+Copying 1000 files through user space
+.It
+Copying 2000 files with
+.Xr copy_file_range 2
+.It
+Stat of each file
+.It
+Listing the directory and stat of every entry
+.It
+Lock then unlock one byte in each of the 2000 open files
+.It
+Deleting the 2000 files
+.It
+Lock then unlock 2000 byte ranges of one file
+.It
+Stat of 20 directories and their 100 files each
+.It
+Create, stat, stat, delete on 500 files, listing every tenth round
+.It
+100 walks of a 20-level directory chain, one stat per level
+.It
+Four stats of each of 500 files
+.El
+.Sh EXIT STATUS
+.Ex -std
+A failed file operation exits with status 2 after removing what the run
+created; a usage error exits with status 1.
+.Sh EXAMPLES
+Twenty passes over a FUSE mount, as CSV:
+.Pp
+.Dl $ vfs_lantest -c -n 20 -P /mnt/afpfs > lantest.csv
+.Pp
+A quick run on a local directory with a 4 MiB large file:
+.Pp
+.Dl $ vfs_lantest -D -n 2 -s 4 -P /tmp/scratch
+.Sh SEE ALSO
+.Xr afp_lantest 1 ,
+.Xr mount_afpfs 1 ,
+.Xr vfs_speedtest 1

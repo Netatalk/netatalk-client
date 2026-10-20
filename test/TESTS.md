@@ -173,3 +173,13 @@ On macOS with macFUSE, use:
 ```sh
 /sbin/umount ./afpfs_mnt
 ```
+
+---
+
+## Performance tests
+
+`test/perf/` holds `vfs_lantest` and `vfs_speedtest`, the `afp_lantest` and `afp_speedtest` workloads
+issued as POSIX file operations on any mounted filesystem, and the container the performance dashboard
+runs them in, on a FUSE mount of a Netatalk volume and on a CIFS mount of a Samba share of the same
+directory; see [test/perf/README.md](perf/README.md). On Linux with `-Dwith-testsuite=true`, `meson test` runs both
+tools against a temporary directory to check their CSV layouts and cleanup.

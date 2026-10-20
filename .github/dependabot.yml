@@ -7,6 +7,20 @@ updates:
     cooldown:
       default-days: 14
 
+  - package-ecosystem: "docker"
+    directory: "/test/perf"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 14
+    # The client build stage stays on the Alpine release of the base image it
+    # deploys into; patch updates only.
+    ignore:
+      - dependency-name: "alpine"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

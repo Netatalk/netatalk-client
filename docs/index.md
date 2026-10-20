@@ -9,6 +9,7 @@ available command-line tools.
 - [Getting started](getting_started.html)
 - [Features and compatibility](features.html)
 - [Developer documentation](developer.html)
+- [Benchmarking a mounted filesystem](benchmarks.html)
 - [Reporting bugs](reporting_bugs.html)
 
 ## Manual pages
@@ -19,3 +20,5 @@ available command-line tools.
 - [afpgetstatus — AFP server status tool](afpgetstatus.1.html)
 - [afpsld — stateless AFP daemon](afpsld.1.html)
 - [mount_afpfs — FUSE AFP filesystem mount command](mount_afpfs.1.html)
+- [vfs_lantest — file operation latency benchmark for a mount](vfs_lantest.1.html)
+- [vfs_speedtest — file transfer throughput benchmark for a mount](vfs_speedtest.1.html)

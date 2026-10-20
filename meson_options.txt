@@ -51,3 +51,9 @@ option(
     value: '',
     description: 'Set the destination for website documentation exports (admin use only)',
 )
+option(
+    'with-testsuite',
+    type: 'boolean',
+    value: false,
+    description: 'Compile the mount benchmark tools vfs_lantest and vfs_speedtest (Linux only)',
+)
