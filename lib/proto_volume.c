@@ -252,27 +252,6 @@ int afp_getvolparms_reply(struct afp_server *server, char *buf,
     return 0;
 }
 
-int afp_flush(struct afp_volume * volume)
-{
-    struct {
-        struct dsi_header dsi_header __attribute__((__packed__));
-        uint8_t command;
-        uint8_t pad;
-        uint16_t volid __attribute__((__packed__));
-    }  __attribute__((__packed__)) afp_flush_request;
-    int ret;
-    struct dsi_header hdr;
-    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
-    memcpy(&afp_flush_request.dsi_header, &hdr, sizeof(hdr));
-    afp_flush_request.command = afpFlush;
-    afp_flush_request.pad = 0;
-    afp_flush_request.volid = htons(volume->volid);
-    ret = afpc_dsi_send(volume->server, (char *) &afp_flush_request,
-                        sizeof(afp_flush_request), DSI_DEFAULT_TIMEOUT,
-                        afpFlush, (void *) volume);
-    return ret;
-}
-
 int afp_getvolparms(struct afp_volume * volume, unsigned short bitmap)
 {
     struct {

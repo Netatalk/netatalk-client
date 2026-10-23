@@ -48,8 +48,8 @@ struct afp_server *afp_server_complete_connection(
     }
 
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "afp_server_complete_connection -- DSI session: tx_quantum=%u (max write size)",
-                   server->tx_quantum);
+                   "afp_server_complete_connection -- DSI session: quantum=%u",
+                   server->quantum);
 
     /* Figure out what version we're using */
     if (((server->using_version =

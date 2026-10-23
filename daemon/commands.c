@@ -404,7 +404,7 @@ static unsigned char process_status(struct daemon_client * c)
         }
 
         /* We need a temp buffer because afp_status_server overwrites the buffer */
-        char temp_buf[4096];
+        char temp_buf[16384];
         int temp_len = sizeof(temp_buf);
         afp_status_server(s, temp_buf, &temp_len);
         int written = snprintf(output_buffer + output_len, s_len, "%s", temp_buf);
@@ -981,7 +981,7 @@ static unsigned char process_read(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_read(v, NULL, data, request->length, request->start, fp, (int *)&eof);
+    ret = ml_read(v, data, request->length, request->start, fp, (int *)&eof);
 
     if (ret > 0) {
         received = ret;
@@ -1073,7 +1073,7 @@ static unsigned char process_write(struct daemon_client * c)
     }
 
     /* Perform the write operation - ml_write wants uid/gid, using 0 for now */
-    ret = ml_write(v, NULL, data, request->size, request->offset, fp, 0, 0);
+    ret = ml_write(v, data, request->size, request->offset, fp, 0, 0);
 
     if (ret > 0) {
         written = ret;
@@ -1138,7 +1138,7 @@ static unsigned char process_creat(struct daemon_client * c)
 
     log_for_client((void *) c, AFPFSD, LOG_DEBUG, "Creating file '%s' mode=%04o",
                    path, request->mode);
-    ret = ml_creat(v, path, request->mode);
+    ret = ml_creat(v, path, request->mode, NULL);
 
     if (ret < 0) {
         if (ret == -EEXIST) {

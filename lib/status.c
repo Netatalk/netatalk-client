@@ -150,11 +150,11 @@ int afp_status_server(struct afp_server * s, char *text, int *len)
                     "\n"
                     "    signature: %s\n"
                     "    transmit delay: %ums\n"
-                    "    quantums: %u(tx) %u(rx)\n"
+                    "    quantum: %u\n"
                     "    last request id: %d in queue: %" PRIu64 "\n",
                     signature_string,
                     s->tx_delay,
-                    s->tx_quantum, s->rx_quantum,
+                    s->quantum,
                     s->lastrequestid, s->stats.requests_pending);
 
     pthread_mutex_lock(&s->request_queue_mutex);
@@ -172,7 +172,18 @@ int afp_status_server(struct afp_server * s, char *text, int *len)
                     s->stats.rx_bytes, s->stats.tx_bytes,
                     s->stats.runt_packets);
 
-    if (*len == 0) {
+    for (j = 0; j <= UINT8_MAX && pos < *len; j++) {
+        if (s->stats.commands[j]) {
+            pos += snprintf(text + pos, *len - pos,
+                            "    %s: %" PRIu64 "\n",
+                            afp_get_command_name((unsigned char) j),
+                            s->stats.commands[j]);
+        }
+    }
+
+    /* A truncated line leaves pos past the end of the text. */
+    if (pos >= *len) {
+        pos = *len > 0 ? *len - 1 : 0;
         goto out;
     }
 

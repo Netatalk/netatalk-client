@@ -121,6 +121,26 @@ and
 .It Fl O Ar flags , Fl -options Ar flags
 Pass a comma-separated set of FUSE mount options to the mount operation.
 Consult the FUSE documentation for supported flags.
+.It Fl -flush-on-close
+Flush a file written through the mount to the server's disk when the
+kernel releases it after its last descriptor is closed, or at unmount at
+the latest, with FPSyncFork, or with FPFlushFork below AFP 3.1 and on a
+server that refuses FPSyncFork.
+On Linux the release follows
+.Xr close 2 ,
+which neither waits for the flush nor reports its failure.
+A resource fork set or removed as an extended attribute is flushed before
+the call returns, which reports a failed flush.
+By default the client flushes for
+.Xr fsync 2 ,
+.Xr fdatasync 2
+and, on Linux, writes and copies to a file opened with
+.Dv O_SYNC
+or
+.Dv O_DSYNC ,
+and on Time Capsule, AirPort and Mac servers also when a written resource
+fork is closed and before a read of a file written through another
+descriptor.
 .El
 .Pp
 For a direct mount, specify both

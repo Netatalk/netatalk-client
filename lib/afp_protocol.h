@@ -295,6 +295,14 @@ enum {
 #define kFPGetUserInfo_USER_ID 1
 #define kFPGetUserInfo_PRI_GROUPID 2
 
+/* AFP Reference: Constants > AFP Protocol Constants > File and Directory
+   Attributes Bitmap.  The inhibit bits. */
+enum {
+    kFPWriteInhibitBit = 0x20,
+    kFPRenameInhibitBit = 0x80,
+    kFPDeleteInhibitBit = 0x100
+};
+
 /* AFP Reference: Constants > AFP Protocol Constants > Server Flags Bitmap */
 enum {
     kSupportsCopyfile = 0x01,

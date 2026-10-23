@@ -202,6 +202,65 @@ int afp_delete(struct afp_volume * volume,
     return ret;
 }
 
+/* FPCopyFile: the server copies the file srcname in srcdid, with its
+ * resource fork and extended attributes, to a new file dstname in dstdid
+ * of the same volume.  The destination must not exist.  wait is the reply
+ * timeout in seconds: the server copies the data before it answers. */
+int afp_copyfile(struct afp_volume * volume,
+                 unsigned int srcdid, char *srcname,
+                 unsigned int dstdid, char *dstname, int wait)
+{
+    struct {
+        struct dsi_header dsi_header __attribute__((__packed__));
+        uint8_t command;
+        uint8_t pad;
+        uint16_t srcvolid;
+        uint32_t srcdid;
+        uint16_t dstvolid;
+        uint32_t dstdid;
+    }  __attribute__((__packed__)) *request_packet;
+    struct afp_server * server = volume->server;
+    unsigned int header_len = sizeof_path_header(volume);
+    size_t len = sizeof(*request_packet) + 3 * header_len
+                 + strlen(srcname) + strlen(dstname);
+    char *pathptr, *msg;
+    int ret;
+
+    if ((msg = malloc(len)) == NULL) {
+        log_for_client(NULL, AFPFSD, LOG_ERR,
+                       "Out of memory in afp_copyfile");
+        return -1;
+    }
+
+    request_packet = (void *) msg;
+    struct dsi_header hdr;
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
+    memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
+    request_packet->command = afpCopyFile;
+    request_packet->pad = 0;
+    request_packet->srcvolid = htons(volume->volid);
+    request_packet->srcdid = htonl(srcdid);
+    request_packet->dstvolid = htons(volume->volid);
+    request_packet->dstdid = htonl(dstdid);
+    /* Source path, then the destination directory as an empty path under
+     * dstdid, then the new name. */
+    pathptr = msg + sizeof(*request_packet);
+    copy_path(volume, pathptr, srcname, strlen(srcname));
+    unixpath_to_afppath(volume, pathptr);
+    pathptr += header_len + strlen(srcname);
+    copy_path(volume, pathptr, "", 0);
+    pathptr += header_len;
+    copy_path(volume, pathptr, dstname, strlen(dstname));
+    unixpath_to_afppath(volume, pathptr);
+    ret = afpc_dsi_send(server, (char *) request_packet, (int) len, wait,
+                        afpCopyFile, NULL);
+    free(msg);
+    return ret;
+}
+
+
+/* The slowest link reads keep working over. */
+#define AFP_READ_BYTES_PER_SECOND (32U * 1024U)
 
 int afp_read(struct afp_volume * volume, unsigned short forkid,
              uint32_t offset,
@@ -230,7 +289,9 @@ int afp_read(struct afp_volume * volume, unsigned short forkid,
     readext_packet.newlinemask = 0;
     readext_packet.newlinechar = 0;
     rc = afpc_dsi_send(volume->server, (char *) &readext_packet,
-                       sizeof(readext_packet), DSI_DEFAULT_TIMEOUT,
+                       sizeof(readext_packet),
+                       afpc_dsi_transfer_wait(volume->server, count,
+                                              AFP_READ_BYTES_PER_SECOND),
                        afpRead, (void *) rx);
     return rc;
 }
@@ -286,7 +347,9 @@ int afp_readext(struct afp_volume * volume, unsigned short forkid,
     readext_packet.offset = hton64(offset);
     readext_packet.reqcount = hton64(count);
     rc = afpc_dsi_send(volume->server, (char *) &readext_packet,
-                       sizeof(readext_packet), DSI_DEFAULT_TIMEOUT,
+                       sizeof(readext_packet),
+                       afpc_dsi_transfer_wait(volume->server, count,
+                                              AFP_READ_BYTES_PER_SECOND),
                        afpReadExt, (void *) rx);
     return rc;
 }

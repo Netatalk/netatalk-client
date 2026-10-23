@@ -121,6 +121,8 @@ int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
         vol = &server->volumes[i];
         vol->flags = *p;
         vol->server = server;
+        pthread_mutex_init(&vol->open_forks_mutex, NULL);
+        pthread_rwlock_init(&vol->open_lock, NULL);
         p++;
         p += copy_from_pascal(vol->volume_name, p,
                               sizeof(vol->volume_name)) + 1;

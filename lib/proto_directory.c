@@ -35,15 +35,30 @@ typedef struct ext2_reply_entry {
  */
 #define AFP_ENUMERATE_MAX_REPLY_SIZE INT16_MAX
 
-static unsigned int enumerate_max_reply_size(struct afp_server *server)
-{
-    unsigned int max_payload;
+/* The file and directory bitmaps and the entry count that open an
+ * enumerate reply, kept out of the offered MaxReplySize so a server that
+ * counts them outside it still fits the receive buffer. */
+#define AFP_ENUMERATE_REPLY_HEADER_BYTES 6
 
-    if (server->bufsize <= (int)sizeof(struct dsi_header)) {
+/* The slowest link listings keep working over: a 32 KiB page per 5 s. */
+#define AFP_ENUMERATE_BYTES_PER_SECOND (AFP_ENUMERATE_MAX_REPLY_SIZE / 5U)
+
+/* The bytes of entries an enumerate reply fits in the receive buffer. */
+static unsigned int enumerate_max_payload(struct afp_server *server)
+{
+    const int reserved = sizeof(struct dsi_header)
+                         + AFP_ENUMERATE_REPLY_HEADER_BYTES;
+
+    if (server->bufsize <= reserved) {
         return 0;
     }
 
-    max_payload = server->bufsize - sizeof(struct dsi_header);
+    return server->bufsize - reserved;
+}
+
+static unsigned int enumerate_max_reply_size(struct afp_server *server)
+{
+    unsigned int max_payload = enumerate_max_payload(server);
     return min(AFP_ENUMERATE_MAX_REPLY_SIZE, max_payload);
 }
 
@@ -582,6 +597,7 @@ int afp_enumerateext2(
     int rc;
     struct afp_file_info * files = NULL;
     struct afp_server * server = volume->server;
+    unsigned int payload = enumerate_max_payload(server);
     char *path;
     len = sizeof_path_header(volume) + strlen(pathname) +
           sizeof(*afp_enumerateext2_request_packet);
@@ -604,11 +620,12 @@ int afp_enumerateext2(
     afp_enumerateext2_request_packet->dirbitmap = htons(dirbitmap);
     afp_enumerateext2_request_packet->reqcount = htons(reqcount);
     afp_enumerateext2_request_packet->startindex = htonl(startindex);
-    afp_enumerateext2_request_packet->maxreplysize =
-        htonl(enumerate_max_reply_size(server));
+    afp_enumerateext2_request_packet->maxreplysize = htonl(payload);
     copy_path(volume, path, pathname, strlen(pathname));
     unixpath_to_afppath(volume, path);
-    rc = afpc_dsi_send(server, data, len, DSI_DEFAULT_TIMEOUT,
+    rc = afpc_dsi_send(server, data, len,
+                       afpc_dsi_transfer_wait(server, payload,
+                                              AFP_ENUMERATE_BYTES_PER_SECOND),
                        afpEnumerateExt2, (void **) &files);
     *file_p = files;
     free(data);

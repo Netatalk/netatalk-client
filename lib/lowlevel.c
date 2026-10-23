@@ -242,6 +242,7 @@ int ll_open(struct afp_volume * volume,
     int dsi_ret;
     int rc;
     unsigned int resource = fp->resource;
+    unsigned short bitmap = 0;
     unsigned char aflags = 0;
     /* O_RDONLY is 0, so we need to check access mode bits properly */
     int access_mode = flags & O_ACCMODE;
@@ -341,11 +342,26 @@ int ll_open(struct afp_volume * volume,
 
     /* These are client-side open state, not AFP reply parameters.  Set them
      * after the AFP 2.x parameter query, whose reply parser clears fp. */
-    fp->sync = (unsigned char)(flags & O_SYNC);
+    fp->sync = (flags & O_SYNC) != 0;
     fp->writable = (aflags & AFP_OPENFORK_ALLOWWRITE) ? 1 : 0;
     fp->dirty = 0;
-    dsi_ret = afp_openfork(volume, resource ? 1 : 0, fp->did,
-                           aflags, fp->basename, fp);
+
+    /* The open reports the data fork's length, which bounds a flush's wait,
+     * and the node ID a server copy checks the name against. */
+    if (!resource && afp_server_reports_fork_length(volume->server)) {
+        bitmap = kFPExtDataForkLenBit
+                 | (afp_server_copies_files(volume->server) ? kFPNodeIDBit : 0);
+    }
+
+    pthread_rwlock_rdlock(&volume->open_lock);
+    dsi_ret = afp_openfork(volume, resource ? 1 : 0, fp->did, aflags, bitmap,
+                           fp->basename, fp);
+
+    if (dsi_ret == kFPNoErr) {
+        add_opened_fork(volume, fp);
+    }
+
+    pthread_rwlock_unlock(&volume->open_lock);
 
     switch (dsi_ret) {
     case kFPAccessDenied:
@@ -390,8 +406,6 @@ int ll_open(struct afp_volume * volume,
         goto error;
     }
 
-    add_opened_fork(volume, fp);
-
     /* Handle O_TRUNC flag: truncate existing files (but not newly created ones) */
     /* Skip truncation if O_CREAT was set (file just created, already empty) */
     if ((flags & O_TRUNC) && !(flags & O_CREAT)) {
@@ -400,6 +414,10 @@ int ll_open(struct afp_volume * volume,
         if (ret != 0) {
             goto error;
         }
+
+        /* A truncation changes the fork as a write does. */
+        fp->size = 0;
+        fp->dirty = 1;
     }
 
     return 0;
@@ -415,13 +433,18 @@ int ll_read(struct afp_volume * volume,
     size_t totalsize = 0;
     int ret = 0;
     int rc;
-    unsigned int rx_quantum = volume->server->rx_quantum;
+    unsigned int quantum = volume->server->quantum;
     int locked = 0;
     struct afp_rx_buffer buffer;
     *eof = 0;
 
     if (!fp) {
         return -EBADF;
+    }
+
+    /* Fork 0: a server-side copy has the handle's fork closed, or lost it. */
+    if (fp->forkid == 0) {
+        return -EIO;
     }
 
     if (size == 0) {
@@ -436,11 +459,15 @@ int ll_read(struct afp_volume * volume,
         return -EINVAL;
     }
 
-    flush_dirty_forks_for_file(volume, fp);
+    /* A compatibility measure for Time Capsule and Apple servers: the
+     * file's other dirty forks of this kind are flushed before a read. */
+    if (afp_server_is_apple(volume->server)) {
+        flush_dirty_forks_for_file(volume, fp);
+    }
 
-    if (rx_quantum == 0) {
+    if (quantum == 0) {
         log_for_client(NULL, AFPFSD, LOG_ERR,
-                       "ll_read: rx_quantum is 0, cannot read");
+                       "ll_read: quantum is 0, cannot read");
         return -EIO;
     }
 
@@ -455,7 +482,7 @@ int ll_read(struct afp_volume * volume,
 
     while (totalsize < size) {
         size_t remaining = size - totalsize;
-        size_t chunksize = min((size_t)rx_quantum, remaining);
+        size_t chunksize = min((size_t)quantum, remaining);
         uint64_t read_offset = (uint64_t)offset + totalsize;
         buffer.data = buf + totalsize;
         buffer.maxsize = (unsigned int)chunksize;
@@ -484,11 +511,6 @@ int ll_read(struct afp_volume * volume,
             ret = EBUSY;
             goto error;
 
-        case kFPMiscErr:
-        case kFPParamErr:
-            ret = EIO;
-            goto error;
-
         case kFPEOFErr:
             *eof = 1;
             totalsize += buffer.size;
@@ -496,6 +518,12 @@ int ll_read(struct afp_volume * volume,
 
         case kFPNoErr:
             break;
+
+        default:
+            /* Any other error, or a request that timed out or never left,
+             * reads nothing; a short count would read as the file's end. */
+            ret = EIO;
+            goto error;
         }
 
         if (buffer.size == 0) {
@@ -534,7 +562,7 @@ int ll_readdir(struct afp_volume * volume, const char *path,
                struct afp_file_info **fb, int resource)
 {
     struct afp_file_info * p, *filebase = NULL, *base, *last = NULL;
-    unsigned short reqcount = 256; /* Get them in batches of 256 */
+    unsigned short reqcount = 256;
     unsigned long startindex = 1;
     int rc = 0, ret = 0, exit = 0;
     unsigned int filebitmap, dirbitmap;
@@ -597,8 +625,10 @@ int ll_readdir(struct afp_volume * volume, const char *path,
                                   filebitmap, dirbitmap, reqcount,
                                   startindex, basename, &base);
         } else {
+            /* More entries than any reply holds, so the reply budget sizes
+             * the page, within the signed range Apple servers read. */
             rc = afp_enumerateext2(volume, dirid,
-                                   filebitmap, dirbitmap, reqcount,
+                                   filebitmap, dirbitmap, INT16_MAX,
                                    startindex, basename, &base);
         }
 
@@ -828,7 +858,7 @@ int ll_write(struct afp_volume * volume,
 {
     int ret, err = 0;
     uint64_t sizetowrite;
-    unsigned int max_packet_size = volume->server->tx_quantum;
+    unsigned int max_packet_size = volume->server->quantum;
     off_t o = 0;
     int locked = 0;
     *totalwritten = 0;
@@ -837,11 +867,23 @@ int ll_write(struct afp_volume * volume,
         return -EBADF;
     }
 
-    /* Sanity check: tx_quantum must be non-zero */
+    /* Fork 0: a server-side copy has the handle's fork closed, or lost it. */
+    if (fp->forkid == 0) {
+        return -EIO;
+    }
+
+    /* No quantum before DSIOpenSession. */
     if (max_packet_size == 0) {
         log_for_client(NULL, AFPFSD, LOG_ERR,
-                       "ll_write: tx_quantum is 0, cannot write");
+                       "ll_write: quantum is 0, cannot write");
         return -EIO;
+    }
+
+    /* FPWrite's offset and its reply's are 32 bits, so a write that reaches
+     * 4 GiB can neither be addressed nor confirmed. */
+    if (volume->server->using_version->av_number < 30
+            && (uint64_t) offset + size >= AFP_MAX_AFP2_FILESIZE) {
+        return -EFBIG;
     }
 
     /* Get a lock */
@@ -926,9 +968,6 @@ int ll_write(struct afp_volume * volume,
 
         *totalwritten += written;
         o += written;
-    }
-
-    if (*totalwritten > 0) {
         fp->dirty = 1;
     }
 

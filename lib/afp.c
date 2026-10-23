@@ -65,7 +65,7 @@ static void format_server_signature(const char signature[AFP_SIGNATURE_LEN],
 int (*afp_replies[])(struct afp_server * server, char *buf, unsigned int len,
                      void *other) = {
     NULL, afp_byterangelock_reply, afp_blank_reply, NULL,
-    afp_blank_reply, NULL, afp_createdir_reply, afp_blank_reply, /* 0 - 7 */
+    afp_blank_reply, afp_blank_reply, afp_createdir_reply, afp_blank_reply, /* 0 - 7 */
     afp_blank_reply, afp_enumerate_reply, afp_blank_reply, afp_blank_reply,
     NULL, NULL, NULL, NULL,                       /* 8 - 15 */
     afp_getsrvrparms_reply, afp_getvolparms_reply, afp_login_reply, afp_login_reply,
@@ -539,7 +539,6 @@ int afp_detach_volume(struct afp_volume * volume)
 
     server = volume->server;
     volume->attached = AFP_VOLUME_DETACHING;
-    afp_flush(volume);
     free_entire_did_cache(volume);
     remove_fork_list(volume);
 
@@ -1244,8 +1243,7 @@ int afp_server_connect(struct afp_server *server, int full)
         return 0;
     }
 
-    /* Get the status, and calculate the transmit time.  We use this to
-    * calculate our rx quantum. */
+    /* Get the status, and time the exchange into tx_delay. */
     gettimeofday(&t1, NULL);
 
     if ((error = afpc_dsi_getstatus(server)) != 0) {
@@ -1261,10 +1259,6 @@ int afp_server_connect(struct afp_server *server, int full)
         server->tx_delay = (t2.tv_usec - t1.tv_usec) / 1000;
     }
 
-    /* Calculate the quantum based on our tx_delay and a threshold */
-    /* For now, we'll just set a default */
-    /* This is the default in 10.4.x where x > 7 */
-    server->rx_quantum = 128 * 1024;
     return 0;
 error:
     return -error;

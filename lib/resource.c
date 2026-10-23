@@ -16,6 +16,7 @@
 #include "afp_protocol.h"
 #include "compat.h"
 #include "did.h"
+#include "dsi.h"
 #include "forklist.h"
 #include "lowlevel.h"
 #include "midlevel.h"
@@ -231,10 +232,12 @@ int appledouble_close(struct afp_volume * volume, struct afp_file_info * fp)
 
     switch (fp->resource) {
     case AFP_META_RESOURCE:
-        ret = kFPNoErr;
+        ret = ml_close_flush(volume, fp);
 
-        if (fp->dirty) {
-            ret = afp_flushfork(volume, fp->forkid);
+        if (ret == 0 && fp->dirty && afp_server_is_apple(volume->server)
+                && afp_flushfork(volume, fp->forkid,
+                                 DSI_DEFAULT_TIMEOUT) != kFPNoErr) {
+            ret = -EIO;
         }
 
         switch (afp_closefork(volume, fp->forkid)) {
@@ -249,7 +252,7 @@ int appledouble_close(struct afp_volume * volume, struct afp_file_info * fp)
         }
 
         remove_opened_fork(volume, fp);
-        return ret == kFPNoErr ? 0 : -EIO;
+        return ret;
 
     case AFP_META_APPLEDOUBLE:
         return -EBADF;
@@ -375,6 +378,7 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
     int tocopy;
     int ret;
     struct afp_comment comment;
+    struct afp_file_info info;
     *amount_read = 0;
     *eof = 0;
 
@@ -398,7 +402,8 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
         }
 
         ret = ll_get_directory_entry(volume, fp->basename, fp->did,
-                                     kFPFinderInfoBit, kFPFinderInfoBit, fp);
+                                     kFPFinderInfoBit, kFPFinderInfoBit,
+                                     &info);
 
         switch (ret) {
         case kFPNoErr:
@@ -419,7 +424,7 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
         }
 
         tocopy = min(size, (32 - (unsigned long) offset));
-        memcpy(buf, fp->finderinfo + offset, tocopy);
+        memcpy(buf, info.finderinfo + offset, tocopy);
 
         if (offset + tocopy == 32) {
             *eof = 1;
@@ -507,7 +512,7 @@ int appledouble_truncate(struct afp_volume * volume, const char *path,
         }
 
         ret = afp_openfork(volume, 1, dirid,
-                           AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE,
+                           AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE, 0,
                            basename, &fp);
 
         if (ret != kFPNoErr) {

@@ -11,13 +11,14 @@
 
 #include "afp_internal.h"
 #include "afp_protocol.h"
+#include "afp_replies.h"
 #include "compat.h"
 #include "dsi.h"
 #include "dsi_protocol.h"
 #include "utils.h"
 
 int afp_setforkparms(struct afp_volume * volume,
-                     unsigned short forkid, unsigned short bitmap, unsigned long len)
+                     unsigned short forkid, unsigned short bitmap, uint64_t len)
 {
     /* The implementation here deserves some explanation.
      * If the function is called with an extended size, use 64 bits.
@@ -63,14 +64,15 @@ int afp_setforkparms(struct afp_volume * volume,
         request32.pad = 0;
         request32.forkid = htons(forkid);
         request32.bitmap = htons(bitmap);
-        request32.newlen = htonl(len);
+        request32.newlen = htonl((uint32_t) len);
         return afpc_dsi_send(volume->server, (char *) &request32,
                              sizeof(request32), DSI_DEFAULT_TIMEOUT, afpSetForkParms, NULL);
     }
 }
 
-int afp_closefork(struct afp_volume * volume,
-                  unsigned short forkid)
+/* A command whose only parameter is the fork. */
+static int afp_fork_command(struct afp_volume * volume, unsigned char command,
+                            unsigned short forkid, int wait)
 {
     struct {
         struct dsi_header dsi_header __attribute__((__packed__));
@@ -81,37 +83,39 @@ int afp_closefork(struct afp_volume * volume,
     struct dsi_header hdr;
     afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
     memcpy(&request_packet.dsi_header, &hdr, sizeof(struct dsi_header));
-    request_packet.command = afpCloseFork;
+    request_packet.command = command;
     request_packet.pad = 0;
     request_packet.forkid = htons(forkid);
     return afpc_dsi_send(volume->server, (char *) &request_packet,
-                         sizeof(request_packet), DSI_DEFAULT_TIMEOUT, afpCloseFork, NULL);
+                         sizeof(request_packet), wait, command, NULL);
+}
+
+int afp_closefork(struct afp_volume * volume,
+                  unsigned short forkid)
+{
+    return afp_fork_command(volume, afpCloseFork, forkid, DSI_DEFAULT_TIMEOUT);
 }
 
 
 int afp_flushfork(struct afp_volume * volume,
-                  unsigned short forkid)
+                  unsigned short forkid, int wait)
 {
-    struct {
-        struct dsi_header dsi_header __attribute__((__packed__));
-        uint8_t command;
-        uint8_t pad;
-        uint16_t forkid;
-    }  __attribute__((__packed__)) request_packet;
-    struct dsi_header hdr;
-    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
-    memcpy(&request_packet.dsi_header, &hdr, sizeof(struct dsi_header));
-    request_packet.command = afpFlushFork;
-    request_packet.pad = 0;
-    request_packet.forkid = htons(forkid);
-    return afpc_dsi_send(volume->server, (char *) &request_packet,
-                         sizeof(request_packet), DSI_DEFAULT_TIMEOUT, afpFlushFork, NULL);
+    return afp_fork_command(volume, afpFlushFork, forkid, wait);
 }
 
-int afp_openfork_reply(struct afp_server *server _U_,
+/* Unlike FPFlushFork, which Netatalk answers with success whatever its
+ * fsync(2) of the fork returns, FPSyncFork reports a failed one. */
+int afp_syncfork(struct afp_volume * volume, unsigned short forkid, int wait)
+{
+    return afp_fork_command(volume, afpSyncFork, forkid, wait);
+}
+
+int afp_openfork_reply(struct afp_server *server,
                        char *buf, unsigned int size, void *x)
 {
     struct afp_file_info *fp = (struct afp_file_info *)x;
+    struct afp_file_info params;
+    unsigned short bitmap;
     struct {
         struct dsi_header header __attribute__((__packed__));
         uint16_t bitmap;
@@ -129,16 +133,30 @@ int afp_openfork_reply(struct afp_server *server _U_,
         }
 
         fp->forkid = ntohs(reply.forkid);
+        bitmap = ntohs(reply.bitmap);
+
+        if (bitmap && parse_reply_block(server, buf + sizeof(reply),
+                                        size - sizeof(reply), 0, bitmap, 0,
+                                        &params) == 0) {
+            if (bitmap & kFPNodeIDBit) {
+                fp->fileid = params.fileid;
+            }
+
+            if (bitmap & kFPExtDataForkLenBit) {
+                fp->size = params.size;
+            }
+        }
     }
 
-    /* We end up ignoring the reply bitmap */
     return 0;
 }
 
+/* bitmap asks for the opened file's node ID or data fork length in fp. */
 int afp_openfork(struct afp_volume * volume,
                  unsigned char forktype,
                  unsigned int dirid,
                  unsigned short accessmode,
+                 unsigned short bitmap,
                  char *filename,
                  struct afp_file_info * fp)
 {
@@ -170,7 +188,7 @@ int afp_openfork(struct afp_volume * volume,
     afp_openfork_request->command = afpOpenFork;
     afp_openfork_request->forktype = forktype ? AFP_FORKTYPE_RESOURCE :
                                      AFP_FORKTYPE_DATA;
-    afp_openfork_request->bitmap = 0;
+    afp_openfork_request->bitmap = htons(bitmap);
     afp_openfork_request->volid = htons(volume->volid);
     afp_openfork_request->dirid = htonl(dirid);
     afp_openfork_request->accessmode = htons(accessmode);
