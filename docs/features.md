@@ -290,6 +290,19 @@ being developed as a companion client to the Netatalk AFP server project.
 You must use Netatalk 2.0.4 or later because earlier versions of the server has
 broken Unix privilege support, notably when setting the execute bit.
 
+On 64-bit Linux, copying a whole file whose data fork is 512 KiB or more,
+and before Netatalk 4.5 with at most 1 GiB in both forks, into a new file with
+`copy_file_range(2)`, as `cp` does, runs on a Netatalk server on AFP 3.4 as
+one `FPCopyFile`. Such a copy carries the
+source's resource fork, extended attributes, Finder information and creation
+date; the new file keeps its own mode and takes the time of the copy as its
+modification time. Before 4.5, afpd drops a session whose command runs past
+its idle limit, 2 minutes by default, so the 1 GiB holds on a server that
+copies faster than about 9 MB/s. A file of 4 GiB or more goes to the server
+only with libfuse 3.18 or later, on a kernel with FUSE's 64-bit copy. A copy
+of any other size, or of part of a file, moves only the data, through the
+client.
+
 ### NAS devices by LaCie, Synology, and other vendors
 
 Historically, most NAS devices with AFP support have bundled Netatalk 2.x or 3.x,

@@ -6,6 +6,11 @@
  *
  */
 
+/*!
+ * @file
+ * @brief afpc fs and mount_afpfs: FUSE manager requests from command lines
+ */
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -372,6 +377,9 @@ done:
 }
 
 
+/*!
+ * @brief Print the usage of afpc fs
+ */
 static void usage(void)
 {
     printf(
@@ -394,6 +402,7 @@ static void usage(void)
         "         -m, --map <mapname>        : use this uid/gid mapping method, one of:\n"
         "                                      common, loginids\n"
         "         -O, --options <flags>      : FUSE mount options; see the fuse man page\n"
+        "         -F, --flush-on-close       : flush a written file at its last close\n"
         "\n"
         "    unmount <mountpoint> : unmount the specified mountpoint\n"
         "    status [mountpoint]  : get status of the AFP daemon;\n"
@@ -648,6 +657,16 @@ static int do_unmount(int argc, char **argv)
     return 0;
 }
 
+/*!
+ * @brief Build the mount request of afpc fs mount from its command line
+ *
+ * Prompts for a password given as "-", or left empty with a user name.
+ *
+ * @param[in] argc  argument count
+ * @param[in] argv  the arguments, the word mount first
+ * @returns 0 with the request in outgoing_buffer, or -1 for bad arguments or
+ *          a failed lookup or prompt
+ */
 static int do_mount(int argc, char **argv)
 {
     int c;
@@ -655,6 +674,7 @@ static int do_mount(int argc, char **argv)
     struct afpfsd_ipc_mount_request request = {0};
     int optnum = 0;
     int port_override = 0;
+    int flush_on_close = 0;
     unsigned int uam_mask = default_uams_mask();
     const char *service_name = NULL;
     const char *volume_name = NULL;
@@ -670,6 +690,7 @@ static int do_mount(int argc, char **argv)
         {"options", 1, 0, 'O'},
         {"service", 1, 0, 's'},
         {"volume", 1, 0, OPT_VOLUME},
+        {"flush-on-close", 0, 0, 'F'},
         {0, 0, 0, 0},
     };
 
@@ -686,7 +707,7 @@ static int do_mount(int argc, char **argv)
 
     while (1) {
         optnum++;
-        c = getopt_long(argc, argv, "a:f:m:O:o:P:p:s:u:", long_options,
+        c = getopt_long(argc, argv, "a:Ff:m:O:o:P:p:s:u:", long_options,
                         &option_index);
 
         if (c == -1) {
@@ -696,6 +717,10 @@ static int do_mount(int argc, char **argv)
         switch (c) {
         case OPT_VOLUME:
             volume_name = optarg;
+            break;
+
+        case 'F':
+            flush_on_close = 1;
             break;
 
         case 'a':
@@ -838,6 +863,10 @@ static int do_mount(int argc, char **argv)
     request.uam_mask = uam_mask;
     request.volume_options = DEFAULT_MOUNT_FLAGS;
 
+    if (flush_on_close) {
+        request.volume_options |= VOLUME_EXTRA_FLAGS_FLUSH_ON_CLOSE;
+    }
+
     if (!list_volumes_only
             && resolve_mountpoint(argv[optnum], request.mountpoint, 255) < 0) {
         printf("Failed to resolve mount point\n");
@@ -939,6 +968,16 @@ static void mount_afpfs_usage(void)
            NETATALK_CLIENT_VERSION);
 }
 
+/*!
+ * @brief Build the mount request of mount_afpfs from its command line
+ *
+ * Takes an AFP URL and a mount point, after -o options such as volpass, ro,
+ * and flush_on_close.
+ *
+ * @param[in] argc  argument count
+ * @param[in] argv  mount_afpfs's arguments
+ * @returns 0 with the request in outgoing_buffer, -1 for bad arguments
+ */
 static int handle_mount_afpfs(int argc, char *argv[])
 {
     struct afpfsd_ipc_mount_request * req = (struct afpfsd_ipc_mount_request *)
@@ -948,6 +987,7 @@ static int handle_mount_afpfs(int argc, char *argv[])
     char volpass[AFP_VOLPASS_LEN + 1] = {0};
     int have_volpass = 0;
     int readonly = 0;
+    int flush_on_close = 0;
     int ret = -1;
     char *temp_url = NULL;
 
@@ -1024,6 +1064,8 @@ static int handle_mount_afpfs(int argc, char *argv[])
                 /* Don't do anything */
             } else if (strcmp(command, "ro") == 0) {
                 readonly = 1;
+            } else if (strcmp(command, "flush_on_close") == 0) {
+                flush_on_close = 1;
             } else {
                 printf("Unknown option %s, skipping\n", command);
             }
@@ -1057,6 +1099,10 @@ static int handle_mount_afpfs(int argc, char *argv[])
 
     if (readonly) {
         req->volume_options |= VOLUME_EXTRA_FLAGS_READONLY;
+    }
+
+    if (flush_on_close) {
+        req->volume_options |= VOLUME_EXTRA_FLAGS_FLUSH_ON_CLOSE;
     }
 
     req->uam_mask = uam_mask;

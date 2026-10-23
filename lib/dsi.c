@@ -6,6 +6,11 @@
  *
  */
 
+/*!
+ * @file
+ * @brief DSI framing, the request queue and reply dispatch of a session
+ */
+
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -243,20 +248,89 @@ int afpc_dsi_send(struct afp_server *server, char *msg, int size, int wait,
                                     other, NULL, NULL);
 }
 
+/*!
+ * @brief Compute the wait for a reply whose data moves at bytes_per_second
+ *
+ * @param[in] server            server with the default reply timeout
+ * @param[in] bytes             bytes the command or its reply carries
+ * @param[in] bytes_per_second  slowest rate to wait for, above 0
+ * @returns the default timeout plus a second per bytes_per_second bytes, the
+ *          addition capped at DSI_MAX_TRANSFER_WAIT
+ */
+int afpc_dsi_transfer_wait(const struct afp_server *server, uint64_t bytes,
+                           unsigned int bytes_per_second)
+{
+    return server->dsi_default_timeout
+           + (int) min(bytes / bytes_per_second, DSI_MAX_TRANSFER_WAIT);
+}
+
+/*!
+ * @brief Set a written request's deadline
+ *
+ * Since afpd answers a session's requests in order, a request's deadline
+ * adds the waits of those written ahead and still awaited to its own. A
+ * server that answers out of order only waits longer than it needs. The
+ * caller holds send_mutex.
+ *
+ * @param[in]     server   server whose request queue to read
+ * @param[in,out] request  request just written, with a wait above 0
+ */
+void afpc_dsi_set_deadline(struct afp_server *server,
+                           struct dsi_request *request)
+{
+    struct timeval tv;
+    time_t wait = request->wait;
+    gettimeofday(&tv, NULL);
+    pthread_mutex_lock(&server->request_queue_mutex);
+
+    /* Under send_mutex, only a request written ahead of this one has a
+     * deadline. An answered one has a wait of 0. */
+    for (const struct dsi_request *p = server->command_requests;
+            p; p = p->next) {
+        if (p->deadline.tv_sec != 0) {
+            wait += p->wait;
+        }
+    }
+
+    pthread_mutex_unlock(&server->request_queue_mutex);
+    request->deadline.tv_sec = tv.tv_sec + wait;
+    request->deadline.tv_nsec = tv.tv_usec * 1000;
+}
+
+/*!
+ * @brief Send a DSI request and wait for its reply
+ *
+ * First reconnects a disconnected session that is not suspended and that no
+ * other thread is reconnecting. The request joins the queue the receiver
+ * matches replies against. A request whose wait expires leaves the queue, so
+ * its late reply matches no request.
+ *
+ * @param[in]     server         server to send to
+ * @param[in,out] msg            request frame, DSI header first, whose
+ *                               length field the call sets
+ * @param[in]     size           bytes of msg
+ * @param[in]     wait           seconds to wait for the reply,
+ *                               DSI_DEFAULT_TIMEOUT for the server's
+ *                               default, 0 for no wait, -1 for no limit
+ * @param[in]     subcommand     AFP command, or the DSI command of DSI's own
+ *                               exchanges
+ * @param[in,out] other          destination of the reply's contents
+ * @param[in]     reply_handler  parser of the reply, or NULL for the
+ *                               command's own
+ * @param[in,out] stream_buffer  buffer that receives a read's data, or NULL
+ *                               for other
+ * @returns the reply's result, 0 without a wait, ETIMEDOUT once it expires,
+ *          -EIO for an unusable session, -1 for a request not queued or
+ *          written
+ */
 int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
                              int wait, unsigned char subcommand, void *other,
                              afpc_dsi_reply_handler reply_handler,
                              struct afp_rx_buffer *stream_buffer)
 {
-    /* For wait:
-     * -1: wait forever
-     *  0: don't wait
-     * x>n: wait for N seconds */
     struct dsi_header  *header = (struct dsi_header *) msg;
     struct dsi_request * new_request, *p;
     int rc = 0;
-    struct timespec ts;
-    struct timeval tv;
     header->length = htonl(size - sizeof(struct dsi_header));
 
     if (!server || !server_still_valid(server)) {
@@ -371,6 +445,17 @@ int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
     }
 
     server->stats.tx_bytes += size;
+
+    /* DSICommand frames carry AFP requests, and DSIWrite frames carry
+     * writes. Status, session, and tickle exchanges are DSI's own. */
+    if (header->command == DSI_DSICommand || header->command == DSI_DSIWrite) {
+        server->stats.commands[subcommand]++;
+    }
+
+    if (new_request->wait > 0) {
+        afpc_dsi_set_deadline(server, new_request);
+    }
+
     pthread_mutex_unlock(&server->send_mutex);
 #ifdef DEBUG_DSI
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "=== Waiting for response for %d %s",
@@ -406,16 +491,12 @@ int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
                        afp_get_command_name(new_request->subcommand),
                        new_request->wait);
 #endif
-        gettimeofday(&tv, NULL);
-        ts.tv_sec = tv.tv_sec;
-        ts.tv_sec += new_request->wait;
-        ts.tv_nsec = tv.tv_usec * 1000;
         pthread_mutex_lock(&new_request->waiting_mutex);
 
         while (new_request->done_waiting == 0) {
             rc = pthread_cond_timedwait(
                      &new_request->waiting_cond,
-                     &new_request->waiting_mutex, &ts);
+                     &new_request->waiting_mutex, &new_request->deadline);
 
             if (rc == ETIMEDOUT) {
                 break;
@@ -514,18 +595,29 @@ int afpc_dsi_command_reply(struct afp_server* server, unsigned short subcommand,
 }
 
 
-/* Default tx_quantum if server doesn't provide one (64KB is conservative) */
-#define DSI_DEFAULT_TX_QUANTUM 65536
+/* This is the quantum of a server that advertises none or one out of range. */
+#define DSI_DEFAULT_QUANTUM (1024U * 1024U)
+/* The cap stays far below the int that holds a request frame's size. */
+#define DSI_MAX_QUANTUM (256U * 1024U * 1024U)
 
+/*!
+ * @brief Read the session options of a DSIOpenSession reply
+ *
+ * Takes the server's request quantum, or DSI_DEFAULT_QUANTUM when it sends
+ * none, 0, or one above DSI_MAX_QUANTUM. Also takes the replay cache size
+ * when the server offers one.
+ *
+ * @param[in,out] server  server whose receive buffer holds the reply
+ */
 void afpc_dsi_opensession_reply(struct afp_server * server)
 {
     const char *p;
     int offset;
     uint8_t option_type, option_len;
-    /* Parse DSI OpenSession reply options properly.
-     * Format: repeated [option_type (1 byte), option_len (1 byte), data (option_len bytes)]
-     * Option 0 = Server Request Quantum (tx_quantum) */
-    server->tx_quantum = 0;  /* Will be set if server provides it */
+    unsigned int quantum = 0;
+    /* The loop parses a DSIOpenSession reply's repeated options: an
+     * option_type of 1 byte, an option_len of 1 byte, and option_len bytes
+     * of data. Option 0 is the server request quantum. */
     offset = sizeof(struct dsi_header);
     p = server->incoming_buffer + offset;
 
@@ -538,10 +630,9 @@ void afpc_dsi_opensession_reply(struct afp_server * server)
         }
 
         if (option_type == 0 && option_len == 4) {
-            /* Option 0: Server Request Quantum (tx_quantum) */
-            uint32_t quantum;
-            memcpy(&quantum, p + 2, 4);
-            server->tx_quantum = ntohl(quantum);
+            uint32_t wire;
+            memcpy(&wire, p + 2, 4);
+            quantum = ntohl(wire);
         } else if (option_type == kServerReplayCacheSize && option_len == 4) {
             /* Option for replay cache */
             uint32_t cache_size;
@@ -557,13 +648,16 @@ void afpc_dsi_opensession_reply(struct afp_server * server)
         p += 2 + option_len;
     }
 
-    /* Ensure tx_quantum has a sensible default if server didn't provide one */
-    if (server->tx_quantum == 0) {
-        server->tx_quantum = DSI_DEFAULT_TX_QUANTUM;
+    if (quantum == 0 || quantum > DSI_MAX_QUANTUM) {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
-                       "Server did not provide tx_quantum, using default: %u",
-                       server->tx_quantum);
+                       "Server quantum %u unusable, using %u",
+                       quantum, DSI_DEFAULT_QUANTUM);
+        quantum = DSI_DEFAULT_QUANTUM;
     }
+
+    /* During a reconnect, other threads read the old quantum until this
+     * assignment. */
+    server->quantum = quantum;
 }
 
 static int afpc_dsi_parse_versions(struct afp_server * server, char *msg)
@@ -748,13 +842,18 @@ void afpc_dsi_getstatus_reply(struct afp_server * server)
 }
 
 
+/*!
+ * @brief Treat the server's DSICloseSession as a transport loss
+ *
+ * @param[in,out] server  server that closed the session
+ */
 void afpc_dsi_incoming_closesession(struct afp_server *server)
 {
-    /* This runs on the DSI receiver.  Detaching a volume sends synchronous
-     * AFP Flush/Close requests, whose replies cannot be received until this
-     * handler returns.  It also tears down FUSE-owned open-fork records.
-     * A server-initiated close therefore means transport loss only: preserve
-     * the local volume state so a later reconnect can recover it. */
+    /* This runs on the DSI receiver. Detaching a volume closes its forks
+     * with synchronous requests, whose replies the receiver cannot read
+     * until this handler returns, and frees FUSE-owned open-fork records. A
+     * close from the server therefore means transport loss only: the handler
+     * keeps the local volume state, so a later reconnect can recover it. */
     loop_disconnect(server);
 }
 

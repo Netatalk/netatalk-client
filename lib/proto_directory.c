@@ -6,6 +6,11 @@
  *
  */
 
+/*!
+ * @file
+ * @brief AFP directory requests, the enumerate commands, and their replies
+ */
+
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
@@ -35,15 +40,44 @@ typedef struct ext2_reply_entry {
  */
 #define AFP_ENUMERATE_MAX_REPLY_SIZE INT16_MAX
 
-static unsigned int enumerate_max_reply_size(struct afp_server *server)
-{
-    unsigned int max_payload;
+/* The file and directory bitmaps and the entry count open an enumerate
+ * reply. The offered MaxReplySize excludes them, so a server's reply that
+ * counts them outside MaxReplySize still fits the receive buffer. */
+#define AFP_ENUMERATE_REPLY_HEADER_BYTES 6
 
-    if (server->bufsize <= (int)sizeof(struct dsi_header)) {
+/* A listing's wait allows for a link as slow as a 32 KiB page per 5 s. */
+#define AFP_ENUMERATE_BYTES_PER_SECOND (AFP_ENUMERATE_MAX_REPLY_SIZE / 5U)
+
+/*!
+ * @brief Compute how many bytes of entries an enumerate reply may carry
+ *
+ * @param[in] server  server whose receive buffer takes the reply
+ * @returns the receive buffer less the DSI header and the reply's own
+ *          header, 0 when the buffer holds no more
+ */
+static unsigned int enumerate_max_payload(struct afp_server *server)
+{
+    const int reserved = sizeof(struct dsi_header)
+                         + AFP_ENUMERATE_REPLY_HEADER_BYTES;
+
+    if (server->bufsize <= reserved) {
         return 0;
     }
 
-    max_payload = server->bufsize - sizeof(struct dsi_header);
+    return server->bufsize - reserved;
+}
+
+/*!
+ * @brief Compute the reply size FPEnumerate and FPEnumerateExt may offer
+ *
+ * Their MaxReplySize field is a signed 16-bit value.
+ *
+ * @param[in] server  server whose receive buffer takes the reply
+ * @returns enumerate_max_payload(), capped at AFP_ENUMERATE_MAX_REPLY_SIZE
+ */
+static unsigned int enumerate_max_reply_size(struct afp_server *server)
+{
+    unsigned int max_payload = enumerate_max_payload(server);
     return min(AFP_ENUMERATE_MAX_REPLY_SIZE, max_payload);
 }
 
@@ -556,6 +590,23 @@ int afp_enumerateext(
     return rc;
 }
 
+/*!
+ * @brief List a page of a directory with FPEnumerateExt2
+ *
+ * Offers the receive buffer less the headers as the reply's 32-bit budget.
+ * The reply's wait grows with that budget.
+ *
+ * @param[in]  volume      volume of the directory
+ * @param[in]  dirid       parent of the directory
+ * @param[in]  filebitmap  parameters to read for each file
+ * @param[in]  dirbitmap   parameters to read for each directory
+ * @param[in]  reqcount    the cap on entries to return
+ * @param[in]  startindex  index of the first entry, from 1
+ * @param[in]  pathname    AFP name of the directory in dirid
+ * @param[out] file_p      the page's entries, a list the caller frees
+ * @returns the server's AFP result, kFPObjectNotFound past the last entry,
+ *          or afpc_dsi_send()'s error when the request fails
+ */
 int afp_enumerateext2(
     struct afp_volume * volume,
     unsigned int dirid,
@@ -582,6 +633,7 @@ int afp_enumerateext2(
     int rc;
     struct afp_file_info * files = NULL;
     struct afp_server * server = volume->server;
+    unsigned int payload = enumerate_max_payload(server);
     char *path;
     len = sizeof_path_header(volume) + strlen(pathname) +
           sizeof(*afp_enumerateext2_request_packet);
@@ -604,11 +656,12 @@ int afp_enumerateext2(
     afp_enumerateext2_request_packet->dirbitmap = htons(dirbitmap);
     afp_enumerateext2_request_packet->reqcount = htons(reqcount);
     afp_enumerateext2_request_packet->startindex = htonl(startindex);
-    afp_enumerateext2_request_packet->maxreplysize =
-        htonl(enumerate_max_reply_size(server));
+    afp_enumerateext2_request_packet->maxreplysize = htonl(payload);
     copy_path(volume, path, pathname, strlen(pathname));
     unixpath_to_afppath(volume, path);
-    rc = afpc_dsi_send(server, data, len, DSI_DEFAULT_TIMEOUT,
+    rc = afpc_dsi_send(server, data, len,
+                       afpc_dsi_transfer_wait(server, payload,
+                                              AFP_ENUMERATE_BYTES_PER_SECOND),
                        afpEnumerateExt2, (void **) &files);
     *file_p = files;
     free(data);

@@ -386,9 +386,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Run vfs_speedtest on both mounts (CSV output)
         run: |
-          # ServerCopy is one copy_file_range per run: the kernel carries it
-          # out through FUSE until the client offloads it, and the Samba
-          # server executes it as a server-side copy.
+          # ServerCopy copies with copy_file_range: on the AFP mount the FUSE
+          # client copies a whole data fork of 512 KiB and up on the server.
+          # It copies other sizes itself, sixteen quanta per call, and on the
+          # SMB mount Samba executes the call as a server-side copy.
           sudo modprobe cifs || true
           lscpu -e=CPU,CORE,SOCKET,ONLINE
           mkdir -p "$RUNNER_TEMP/results"

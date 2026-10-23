@@ -6,6 +6,11 @@
  *
  */
 
+/*!
+ * @file
+ * @brief Address lookup and the full connection of a server, through login
+ */
+
 #include <sys/socket.h>
 #include <errno.h>
 #include <netdb.h>
@@ -44,6 +49,17 @@ struct addrinfo *afp_get_address(void *priv, const char *hostname,
 }
 
 
+/*!
+ * @brief Connect to a server and log in, as a mount or a session needs
+ *
+ * A status-only connection runs first, and the session connection reuses the
+ * status it read.
+ *
+ * @param[in]     priv  the caller's context for log messages
+ * @param[in,out] req   the server's URL, the login it asks for, and its UAM
+ *                      mask, which can change to guest
+ * @returns the connected server, or NULL with errno set
+ */
 struct afp_server *afp_server_full_connect(void *priv,
                                            struct afp_connection_request *req)
 {
@@ -58,7 +74,6 @@ struct afp_server *afp_server_full_connect(void *priv,
     char server_name[AFP_SERVER_NAME_LEN];
     char server_name_utf8[AFP_SERVER_NAME_UTF8_LEN];
     char server_name_printable[AFP_SERVER_NAME_UTF8_LEN];
-    unsigned int rx_quantum;
     char icon[AFP_SERVER_ICON_LEN];
 
     if ((address = afp_get_address(priv, req->url.servername,
@@ -97,7 +112,6 @@ struct afp_server *afp_server_full_connect(void *priv,
            AFP_SERVER_NAME_UTF8_LEN);
     memcpy(server_name_printable, &tmpserver->server_name_printable,
            AFP_SERVER_NAME_UTF8_LEN);
-    rx_quantum = tmpserver->rx_quantum;
     afp_server_remove(tmpserver);
     s = afp_server_init(address);
 
@@ -136,7 +150,6 @@ struct afp_server *afp_server_full_connect(void *priv,
            AFP_SERVER_NAME_UTF8_LEN);
     memcpy(s->machine_type, machine_type, AFP_MACHINETYPE_LEN);
     memcpy(s->icon, icon, AFP_SERVER_ICON_LEN);
-    s->rx_quantum = rx_quantum;
     afp_server_identify(s);
 
     /* if our user and password strings are both empty, or if the username

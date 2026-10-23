@@ -6,6 +6,11 @@
  *
  */
 
+/*!
+ * @file
+ * @brief The FUSE manager daemon and the mount daemons it starts
+ */
+
 #ifdef HAVE_LIBBSD
 #include <bsd/string.h>
 #endif
@@ -419,6 +424,31 @@ static int connect_to_child_socket(const char *socket_path,
     return child_sock;
 }
 
+/*!
+ * @brief Send a command and its request to a mount's daemon in one write
+ *
+ * The daemon takes a message with a single read(2).
+ *
+ * @param[in] child_sock  connected socket of the mount's daemon
+ * @param[in] command     the command byte
+ * @param[in] request     the command's request
+ * @param[in] length      bytes of request, up to a status request's length
+ * @returns 0, or -1 when the request is too long or the write fails
+ */
+static int send_child_command(int child_sock, unsigned char command,
+                              const void *request, size_t length)
+{
+    char message[1 + sizeof(struct afpfsd_ipc_status_request)];
+
+    if (length >= sizeof(message)) {
+        return -1;
+    }
+
+    message[0] = (char) command;
+    memcpy(message + 1, request, length);
+    return afpfsd_ipc_write_all(child_sock, message, length + 1);
+}
+
 /* Forward response from child daemon to client */
 static int forward_child_response(int child_sock, int client_fd)
 {
@@ -596,6 +626,16 @@ static int start_mount_daemon(char *socket_id, const char *mountpoint,
     return 0;
 }
 
+/*!
+ * @brief Execute one command a client sends the FUSE manager
+ *
+ * Starts a mount's daemon, answers a ping or a status for every mount, and
+ * forwards a mount's status, suspend, or resume to its daemon.
+ *
+ * @param[in] client_fd  connected socket of the client
+ * @returns 0, -1 when the exchange or the command fails, or -2 when the
+ *          client asks the manager to exit
+ */
 static int handle_manager_command(int client_fd)
 {
     unsigned char command;
@@ -702,10 +742,8 @@ static int handle_manager_command(int client_fd)
             }
 
             /* Send command to child */
-            unsigned char cmd = AFPFSD_IPC_COMMAND_STATUS;
-
-            if (afpfsd_ipc_write_all(child_sock, &cmd, sizeof(cmd)) < 0 ||
-                    afpfsd_ipc_write_all(child_sock, &req, sizeof(req)) < 0) {
+            if (send_child_command(child_sock, AFPFSD_IPC_COMMAND_STATUS,
+                                   &req, sizeof(req)) < 0) {
                 log_for_client(NULL, AFPFSD, LOG_WARNING,
                                "Failed to send status command to child daemon");
 
@@ -910,8 +948,7 @@ static int handle_manager_command(int client_fd)
         }
 
         /* Send command to child */
-        if (afpfsd_ipc_write_all(child_sock, &command, sizeof(command)) < 0 ||
-                afpfsd_ipc_write_all(child_sock, &req, sizeof(req)) < 0) {
+        if (send_child_command(child_sock, command, &req, sizeof(req)) < 0) {
             log_for_client(NULL, AFPFSD, LOG_WARNING,
                            "Failed to send suspend/resume command to child daemon");
 

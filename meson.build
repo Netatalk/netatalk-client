@@ -337,6 +337,16 @@ if with_fuse
     else
         cflags += '-DFUSE_NEW_API=0'
     endif
+
+    # From 3.4, libfuse passes copy_file_range(2) to the filesystem.
+    if cc.has_member(
+        'struct fuse_operations',
+        'copy_file_range',
+        prefix: '#define FUSE_USE_VERSION 35\n#include <fuse.h>',
+        dependencies: fuse_dep,
+    )
+        cflags += '-DHAVE_FUSE_COPY_FILE_RANGE=1'
+    endif
 endif
 
 incdir = include_directories(['.', 'include', include_dirs])

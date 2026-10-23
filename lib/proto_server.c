@@ -6,6 +6,11 @@
  *
  */
 
+/*!
+ * @file
+ * @brief AFP server parameter, message, and sleep requests, and their replies
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -72,6 +77,18 @@ int afp_getsrvrparms(struct afp_server *server)
 }
 
 
+/*!
+ * @brief Parse an FPGetSrvrParms reply into the server's time and volumes
+ *
+ * Builds the volume list with each volume's locks initialized. An AFP 2
+ * server's local time sets the offset that corrects later dates.
+ *
+ * @param[in,out] server  server of the session, which receives the volumes
+ * @param[in]     msg     the reply, DSI header first
+ * @param[in]     size    bytes of msg
+ * @param[in]     ignore  unused
+ * @returns 0, or -1 for a reply cut short
+ */
 int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
                            unsigned int size, void *ignore _U_)
 {
@@ -121,6 +138,8 @@ int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
         vol = &server->volumes[i];
         vol->flags = *p;
         vol->server = server;
+        pthread_mutex_init(&vol->open_forks_mutex, NULL);
+        pthread_rwlock_init(&vol->open_lock, NULL);
         p++;
         p += copy_from_pascal(vol->volume_name, p,
                               sizeof(vol->volume_name)) + 1;

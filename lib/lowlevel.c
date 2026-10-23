@@ -9,6 +9,11 @@
     See the file COPYING.
 */
 
+/*!
+ * @file
+ * @brief Fork and directory requests for data forks and AppleDouble metadata
+ */
+
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
@@ -234,6 +239,18 @@ int ll_get_directory_entry(struct afp_volume * volume,
 
 
 
+/*!
+ * @brief Open the data or resource fork that fp names
+ *
+ * O_TRUNC empties the file only when the flags lack O_CREAT.
+ *
+ * @param[in]     volume  volume of the file
+ * @param[in]     path    unused
+ * @param[in]     flags   open(2) flags
+ * @param[in,out] fp      the fork to open with its directory, name, and fork
+ *                        type set, and the open fills in the rest
+ * @returns 0, or a negative errno
+ */
 int ll_open(struct afp_volume * volume,
             const char *path _U_, int flags,
             struct afp_file_info *fp)
@@ -242,6 +259,7 @@ int ll_open(struct afp_volume * volume,
     int dsi_ret;
     int rc;
     unsigned int resource = fp->resource;
+    unsigned short bitmap = 0;
     unsigned char aflags = 0;
     /* O_RDONLY is 0, so we need to check access mode bits properly */
     int access_mode = flags & O_ACCMODE;
@@ -341,11 +359,26 @@ int ll_open(struct afp_volume * volume,
 
     /* These are client-side open state, not AFP reply parameters.  Set them
      * after the AFP 2.x parameter query, whose reply parser clears fp. */
-    fp->sync = (unsigned char)(flags & O_SYNC);
+    fp->sync = (flags & O_SYNC) != 0;
     fp->writable = (aflags & AFP_OPENFORK_ALLOWWRITE) ? 1 : 0;
     fp->dirty = 0;
-    dsi_ret = afp_openfork(volume, resource ? 1 : 0, fp->did,
-                           aflags, fp->basename, fp);
+
+    /* The open reports the node ID a server copy checks the name against,
+     * and the data fork's length, which bounds a flush's wait. */
+    if (!resource && afp_server_reports_fork_length(volume->server)) {
+        bitmap = kFPExtDataForkLenBit
+                 | (afp_server_copies_files(volume->server) ? kFPNodeIDBit : 0);
+    }
+
+    pthread_rwlock_rdlock(&volume->open_lock);
+    dsi_ret = afp_openfork(volume, resource ? 1 : 0, fp->did, aflags, bitmap,
+                           fp->basename, fp);
+
+    if (dsi_ret == kFPNoErr) {
+        add_opened_fork(volume, fp);
+    }
+
+    pthread_rwlock_unlock(&volume->open_lock);
 
     switch (dsi_ret) {
     case kFPAccessDenied:
@@ -390,8 +423,6 @@ int ll_open(struct afp_volume * volume,
         goto error;
     }
 
-    add_opened_fork(volume, fp);
-
     /* Handle O_TRUNC flag: truncate existing files (but not newly created ones) */
     /* Skip truncation if O_CREAT was set (file just created, already empty) */
     if ((flags & O_TRUNC) && !(flags & O_CREAT)) {
@@ -400,6 +431,10 @@ int ll_open(struct afp_volume * volume,
         if (ret != 0) {
             goto error;
         }
+
+        /* A truncation changes the fork as a write does. */
+        fp->size = 0;
+        fp->dirty = 1;
     }
 
     return 0;
@@ -408,6 +443,23 @@ error:
 }
 
 
+/*!
+ * @brief Read from an open fork, a quantum per request
+ *
+ * On an Apple server, first flushes the file's other dirty forks of the same
+ * kind. Only kFPEOFErr marks the fork's end: the read continues where a
+ * short reply ends.
+ *
+ * @param[in]     volume  volume of the fork
+ * @param[out]    buf     receives the bytes
+ * @param[in]     size    capacity of buf, of which the read uses up to
+ *                        INT_MAX
+ * @param[in]     offset  byte offset to read from
+ * @param[in,out] fp      the open fork
+ * @param[out]    eof     set to 1 when the read reaches the end of the fork
+ * @returns bytes read, or a negative errno, -EIO for a handle without a fork
+ *          or a request that fails otherwise
+ */
 int ll_read(struct afp_volume * volume,
             char *buf, size_t size, off_t offset,
             struct afp_file_info *fp, int *eof)
@@ -415,13 +467,19 @@ int ll_read(struct afp_volume * volume,
     size_t totalsize = 0;
     int ret = 0;
     int rc;
-    unsigned int rx_quantum = volume->server->rx_quantum;
+    unsigned int quantum = volume->server->quantum;
     int locked = 0;
     struct afp_rx_buffer buffer;
     *eof = 0;
 
     if (!fp) {
         return -EBADF;
+    }
+
+    /* Fork 0: a server-side copy keeps the handle's fork closed, or leaves
+     * the handle without one. */
+    if (fp->forkid == 0) {
+        return -EIO;
     }
 
     if (size == 0) {
@@ -436,11 +494,15 @@ int ll_read(struct afp_volume * volume,
         return -EINVAL;
     }
 
-    flush_dirty_forks_for_file(volume, fp);
+    /* As a compatibility measure for Apple servers, Time Capsule included, a
+     * read first flushes the file's other dirty forks of this kind. */
+    if (afp_server_is_apple(volume->server)) {
+        flush_dirty_forks_for_file(volume, fp);
+    }
 
-    if (rx_quantum == 0) {
+    if (quantum == 0) {
         log_for_client(NULL, AFPFSD, LOG_ERR,
-                       "ll_read: rx_quantum is 0, cannot read");
+                       "ll_read: quantum is 0, cannot read");
         return -EIO;
     }
 
@@ -455,7 +517,7 @@ int ll_read(struct afp_volume * volume,
 
     while (totalsize < size) {
         size_t remaining = size - totalsize;
-        size_t chunksize = min((size_t)rx_quantum, remaining);
+        size_t chunksize = min((size_t)quantum, remaining);
         uint64_t read_offset = (uint64_t)offset + totalsize;
         buffer.data = buf + totalsize;
         buffer.maxsize = (unsigned int)chunksize;
@@ -484,11 +546,6 @@ int ll_read(struct afp_volume * volume,
             ret = EBUSY;
             goto error;
 
-        case kFPMiscErr:
-        case kFPParamErr:
-            ret = EIO;
-            goto error;
-
         case kFPEOFErr:
             *eof = 1;
             totalsize += buffer.size;
@@ -496,6 +553,12 @@ int ll_read(struct afp_volume * volume,
 
         case kFPNoErr:
             break;
+
+        default:
+            /* Any other error, or a request that timed out or never left,
+             * reads nothing. A short count would read as the file's end. */
+            ret = EIO;
+            goto error;
         }
 
         if (buffer.size == 0) {
@@ -530,11 +593,25 @@ error:
 
 
 
+/*!
+ * @brief List the directory at path, a page per request
+ *
+ * From AFP 3.1, FPEnumerateExt2 asks for more entries than a reply holds, so
+ * the reply budget sizes the page. Older versions use FPEnumerateExt or
+ * FPEnumerate. The listing returns names in precomposed UTF-8.
+ *
+ * @param[in]  volume    volume of the directory
+ * @param[in]  path      AFP path of the directory
+ * @param[out] fb        the entries, a list the caller frees
+ * @param[in]  resource  1 for the files' resource fork lengths, 0 for their
+ *                       data fork lengths
+ * @returns 0, or a negative errno
+ */
 int ll_readdir(struct afp_volume * volume, const char *path,
                struct afp_file_info **fb, int resource)
 {
     struct afp_file_info * p, *filebase = NULL, *base, *last = NULL;
-    unsigned short reqcount = 256; /* Get them in batches of 256 */
+    unsigned short reqcount = 256;
     unsigned long startindex = 1;
     int rc = 0, ret = 0, exit = 0;
     unsigned int filebitmap, dirbitmap;
@@ -597,8 +674,11 @@ int ll_readdir(struct afp_volume * volume, const char *path,
                                   filebitmap, dirbitmap, reqcount,
                                   startindex, basename, &base);
         } else {
+            /* The count asks for more entries than any reply holds, within
+             * the signed range Apple servers read, so the reply budget sizes
+             * the page. */
             rc = afp_enumerateext2(volume, dirid,
-                                   filebitmap, dirbitmap, reqcount,
+                                   filebitmap, dirbitmap, INT16_MAX,
                                    startindex, basename, &base);
         }
 
@@ -822,13 +902,29 @@ int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
 }
 
 
+/*!
+ * @brief Write to an open fork, a quantum per request
+ *
+ * Refuses a write that would reach 4 GiB on AFP 2, because FPWrite's offsets
+ * are 32 bits. afpd reads them signed and refuses one past 2 GiB itself. The
+ * fork is dirty after each chunk the server acknowledges.
+ *
+ * @param[in]     volume        volume of the fork
+ * @param[in]     data          bytes to write
+ * @param[in]     size          length of data
+ * @param[in]     offset        byte offset to write at
+ * @param[in,out] fp            the open fork
+ * @param[out]    totalwritten  bytes written, also when a chunk fails
+ * @returns 0, or a negative errno, -EFBIG on AFP 2 at 4 GiB and -EIO for a
+ *          handle without a fork
+ */
 int ll_write(struct afp_volume * volume,
              const char *data, size_t size, off_t offset,
              struct afp_file_info * fp, size_t *totalwritten)
 {
     int ret, err = 0;
     uint64_t sizetowrite;
-    unsigned int max_packet_size = volume->server->tx_quantum;
+    unsigned int max_packet_size = volume->server->quantum;
     off_t o = 0;
     int locked = 0;
     *totalwritten = 0;
@@ -837,11 +933,24 @@ int ll_write(struct afp_volume * volume,
         return -EBADF;
     }
 
-    /* Sanity check: tx_quantum must be non-zero */
+    /* Fork 0: a server-side copy keeps the handle's fork closed, or leaves
+     * the handle without one. */
+    if (fp->forkid == 0) {
+        return -EIO;
+    }
+
+    /* The session has no quantum before DSIOpenSession. */
     if (max_packet_size == 0) {
         log_for_client(NULL, AFPFSD, LOG_ERR,
-                       "ll_write: tx_quantum is 0, cannot write");
+                       "ll_write: quantum is 0, cannot write");
         return -EIO;
+    }
+
+    /* FPWrite's offset and its reply's are 32 bits, so a write that reaches
+     * 4 GiB can neither be addressed nor acknowledged. */
+    if (volume->server->using_version->av_number < 30
+            && (uint64_t) offset + size >= AFP_MAX_AFP2_FILESIZE) {
+        return -EFBIG;
     }
 
     /* Get a lock */
@@ -926,9 +1035,6 @@ int ll_write(struct afp_volume * volume,
 
         *totalwritten += written;
         o += written;
-    }
-
-    if (*totalwritten > 0) {
         fp->dirty = 1;
     }
 

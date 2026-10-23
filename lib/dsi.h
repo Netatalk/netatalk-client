@@ -1,3 +1,8 @@
+/*!
+ * @file
+ * @brief DSI requests and reply waits of a session
+ */
+
 #ifndef AFPCLIENT_DSI_H
 #define AFPCLIENT_DSI_H
 
@@ -11,6 +16,7 @@ struct dsi_request {
     unsigned char subcommand;
     void *other;
     int wait;
+    struct timespec deadline;
     int done_waiting;
     int ignore_replies;
     pthread_cond_t waiting_cond;
@@ -32,6 +38,10 @@ int afpc_dsi_opensession(struct afp_server *server);
 
 int afpc_dsi_send(struct afp_server *server, char *msg, int size, int wait,
                   unsigned char subcommand, void *other);
+int afpc_dsi_transfer_wait(const struct afp_server *server, uint64_t bytes,
+                           unsigned int bytes_per_second);
+void afpc_dsi_set_deadline(struct afp_server *server,
+                           struct dsi_request *request);
 int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
                              int wait, unsigned char subcommand, void *other,
                              afpc_dsi_reply_handler reply_handler,
@@ -49,6 +59,8 @@ void afpc_dsi_incoming_closesession(struct afp_server *server);
 #define DSI_OPENVOLUME_TIMEOUT 20
 #define DSI_LOGIN_TIMEOUT 20
 #define DSI_TIMECAPSULE_DEFAULT_TIMEOUT 30
+/* The most a reply's wait grows with its bytes, far inside a 32-bit time_t */
+#define DSI_MAX_TRANSFER_WAIT (7 * 24 * 3600)
 
 #define GETSTATUS_BUF_SIZE 1024
 

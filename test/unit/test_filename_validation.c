@@ -121,8 +121,36 @@ int main(int argc, char **argv)
         CHECK(convert_path_to_afp(kFPLongName, legacy_long_name,
                                   legacy_long_source,
                                   sizeof(legacy_long_name)) < 0);
+        /* U+00E9 decomposes to "e" U+0301, three bytes and a terminator:
+         * a 3-byte buffer is a failure, a 4-byte buffer the exact fit. */
+        CHECK(convert_path_to_afp(kFPUTF8Name, legacy_name, "\xc3\xa9",
+                                  3) < 0);
+        CHECK(convert_path_to_afp(kFPUTF8Name, legacy_name, "\xc3\xa9",
+                                  4) == 0);
+        CHECK(strcmp(legacy_name, "e\xcc\x81") == 0);
     }
 
+    /* U+0390 grows most, two bytes to six: 255 of them need three bytes per
+     * source byte, below the four convert_path_to_afp_alloc() allows. */
+    {
+        char decomposed_source[1U + 255U * 2U + 1U];
+        char *decomposed;
+        size_t source_len = sizeof(decomposed_source) - 1U;
+        decomposed_source[0] = '/';
+
+        for (size_t i = 0; i < 255U; i++) {
+            decomposed_source[1U + i * 2U] = (char)0xce;
+            decomposed_source[2U + i * 2U] = (char)0x90;
+        }
+
+        decomposed_source[source_len] = '\0';
+        decomposed = malloc(source_len * 3U + 1U);
+        CHECK(decomposed != NULL);
+        CHECK(convert_path_to_afp(kFPUTF8Name, decomposed, decomposed_source,
+                                  (int)(source_len * 3U + 1U)) == 0);
+        CHECK(strlen(decomposed) == 1U + 255U * 6U);
+        free(decomposed);
+    }
     CHECK(sizeof_path_header(&utf8_volume) == 7);
     CHECK(sizeof_path_header(&legacy_volume) == 2);
     copy_path(&utf8_volume, utf8_path, "abc", 3);

@@ -7,6 +7,11 @@
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
  */
 
+/*!
+ * @file
+ * @brief The command handlers of afpsld, the stateless daemon
+ */
+
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -352,6 +357,13 @@ static int volopen(struct daemon_client * c, struct afp_volume * volume)
     return rc;
 }
 
+/*!
+ * @brief Answer an afpsld status request with the status text
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0 once it sends the response, or AFPSL_IPC_RESULT_ERROR to close
+ *          the connection when it can build none
+ */
 static unsigned char process_status(struct daemon_client * c)
 {
     struct afpsl_ipc_status_request * req = (void *) c->complete_packet;
@@ -404,7 +416,7 @@ static unsigned char process_status(struct daemon_client * c)
         }
 
         /* We need a temp buffer because afp_status_server overwrites the buffer */
-        char temp_buf[4096];
+        char temp_buf[16384];
         int temp_len = sizeof(temp_buf);
         afp_status_server(s, temp_buf, &temp_len);
         int written = snprintf(output_buffer + output_len, s_len, "%s", temp_buf);
@@ -909,6 +921,13 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld read request with data from an open file
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0 once it sends the response, or AFPSL_IPC_RESULT_ERROR to close
+ *          the connection when it can build none
+ */
 static unsigned char process_read(struct daemon_client * c)
 {
     struct afpsl_ipc_read_response * response;
@@ -981,7 +1000,7 @@ static unsigned char process_read(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_read(v, NULL, data, request->length, request->start, fp, (int *)&eof);
+    ret = ml_read(v, data, request->length, request->start, fp, (int *)&eof);
 
     if (ret > 0) {
         received = ret;
@@ -1006,6 +1025,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld write request by writing to an open file
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result
+ */
 static unsigned char process_write(struct daemon_client * c)
 {
     struct afpsl_ipc_write_response response;
@@ -1073,7 +1098,7 @@ static unsigned char process_write(struct daemon_client * c)
     }
 
     /* Perform the write operation - ml_write wants uid/gid, using 0 for now */
-    ret = ml_write(v, NULL, data, request->size, request->offset, fp, 0, 0);
+    ret = ml_write(v, data, request->size, request->offset, fp, 0, 0);
 
     if (ret > 0) {
         written = ret;
@@ -1099,6 +1124,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld create request by creating a file at its path
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result
+ */
 static unsigned char process_creat(struct daemon_client * c)
 {
     struct afpsl_ipc_creat_response response;
@@ -1138,7 +1169,7 @@ static unsigned char process_creat(struct daemon_client * c)
 
     log_for_client((void *) c, AFPFSD, LOG_DEBUG, "Creating file '%s' mode=%04o",
                    path, request->mode);
-    ret = ml_creat(v, path, request->mode);
+    ret = ml_creat(v, path, request->mode, NULL);
 
     if (ret < 0) {
         if (ret == -EEXIST) {

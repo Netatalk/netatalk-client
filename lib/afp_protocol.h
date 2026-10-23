@@ -1,3 +1,8 @@
+/*!
+ * @file
+ * @brief AFP constants: commands, parameter bitmaps, and result codes
+ */
+
 #ifndef _AFP_PROTOCOL_H_
 #define _AFP_PROTOCOL_H_
 
@@ -294,6 +299,13 @@ enum {
 /* AFP Reference: FPGetUserInfo > Parameters > Bitmap */
 #define kFPGetUserInfo_USER_ID 1
 #define kFPGetUserInfo_PRI_GROUPID 2
+
+/* Inhibit bits of the File and Directory Attributes Bitmap, AFP Reference */
+enum {
+    kFPWriteInhibitBit = 0x20,
+    kFPRenameInhibitBit = 0x80,
+    kFPDeleteInhibitBit = 0x100
+};
 
 /* AFP Reference: Constants > AFP Protocol Constants > Server Flags Bitmap */
 enum {

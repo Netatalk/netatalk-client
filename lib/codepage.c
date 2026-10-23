@@ -10,6 +10,11 @@
  *
  */
 
+/*!
+ * @file
+ * @brief Name conversion between client UTF-8 and the AFP name encodings
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -271,13 +276,19 @@ int convert_path_to_unix(char encoding, char *dest,
     return 0;
 }
 
-/*
- * convert_path_to_afp()
+/*!
+ * @brief Convert a UTF-8 path to an AFP path in the volume's name encoding
  *
- * Given a null terminated source, converts the path to an AFP path
- * given the encoding.
+ * UTF-8 volumes take the decomposed form, except a path with a supplementary
+ * character, which passes unchanged. A Mac Roman volume refuses a name the
+ * encoding cannot hold and a result longer than 255 bytes.
+ *
+ * @param[in]  encoding  kFPUTF8Name or kFPLongName
+ * @param[out] dest      receives the AFP path
+ * @param[in]  src       NUL-terminated UTF-8 path
+ * @param[in]  dest_len  capacity of dest
+ * @returns 0, or -1 when the path does not convert or fit
  */
-
 int convert_path_to_afp(char encoding, char *dest,
                         const char *src, int dest_len)
 {
@@ -287,7 +298,7 @@ int convert_path_to_afp(char encoding, char *dest,
         return -1;
     }
 
-    memset(dest, 0, dest_len);
+    dest[0] = '\0';
     src_len = (int)strnlen(src, (size_t)dest_len);
 
     switch (encoding) {
@@ -297,8 +308,10 @@ int convert_path_to_afp(char encoding, char *dest,
             return -1;
         }
 
-        if (!dest[0] && src_len > 0) {
-            convert_utf8pre_to_utf8dec(src, src_len, dest, dest_len);
+        if (!dest[0] && src_len > 0
+                && convert_utf8pre_to_utf8dec(src, src_len, dest,
+                                              dest_len) < 0) {
+            return -1;
         }
 
         break;

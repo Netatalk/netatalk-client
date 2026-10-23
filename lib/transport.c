@@ -11,6 +11,11 @@
  *
  */
 
+/*!
+ * @file
+ * @brief The public transport: one AFP session that library consumers drive
+ */
+
 #include <errno.h>
 #include <limits.h>
 #include <pthread.h>
@@ -259,16 +264,28 @@ int afpc_transport_socket(const struct afpc_transport *transport)
     return transport && transport->server ? transport->server->fd : -1;
 }
 
+/*!
+ * @brief Report the largest write one request may carry
+ *
+ * @param[in] transport  the transport
+ * @returns the session's quantum, 0 without a session
+ */
 unsigned int afpc_transport_tx_quantum(
     const struct afpc_transport *transport)
 {
-    return transport && transport->server ? transport->server->tx_quantum : 0;
+    return transport && transport->server ? transport->server->quantum : 0;
 }
 
+/*!
+ * @brief Report the largest read one request may ask for
+ *
+ * @param[in] transport  the transport
+ * @returns the session's quantum, 0 without a session
+ */
 unsigned int afpc_transport_rx_quantum(
     const struct afpc_transport *transport)
 {
-    return transport && transport->server ? transport->server->rx_quantum : 0;
+    return transport && transport->server ? transport->server->quantum : 0;
 }
 
 unsigned int afpc_transport_attention_quantum(
@@ -344,6 +361,27 @@ static size_t raw_read_size(const void *payload, size_t payload_len,
     return 0;
 }
 
+/*!
+ * @brief Send an AFP command the caller built and take its reply
+ *
+ * A read's reply lands in a buffer of up to a quantum, or of reply_capacity
+ * when that is larger. Any other reply's payload fills reply up to
+ * reply_capacity.
+ *
+ * @param[in]  transport       the transport
+ * @param[in]  payload         the AFP request, command byte first
+ * @param[in]  payload_len     bytes of payload
+ * @param[in]  dsi_command     DSI command to frame it in
+ * @param[in]  data_offset     the DSI header's data offset, for a write
+ * @param[in]  timeout         seconds to wait, 0 for
+ *                             AFPC_DEFAULT_RAW_TIMEOUT
+ * @param[out] afp_result      the server's AFP result, or NULL
+ * @param[out] reply           receives the reply's payload
+ * @param[in]  reply_capacity  capacity of reply
+ * @param[out] reply_len       bytes of reply filled, or NULL
+ * @returns 0 when the server answered, whatever its AFP result, -EIO when
+ *          the session fails, or another negative errno
+ */
 int afpc_transport_raw_command(struct afpc_transport *transport,
                                const void *payload, size_t payload_len,
                                unsigned char dsi_command,
@@ -394,9 +432,9 @@ int afpc_transport_raw_command(struct afpc_transport *transport,
         requested = raw_read_size(payload, payload_len, subcommand);
         read_capacity = requested;
 
-        if (transport->server->rx_quantum
-                && read_capacity > transport->server->rx_quantum) {
-            read_capacity = transport->server->rx_quantum;
+        if (transport->server->quantum
+                && read_capacity > transport->server->quantum) {
+            read_capacity = transport->server->quantum;
         }
 
         if (read_capacity < reply_capacity) {
