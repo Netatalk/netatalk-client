@@ -6,23 +6,38 @@
  *
  */
 
+/*!
+ * @file
+ * @brief AFP fork requests and the parsing of their replies
+ */
+
 #include <stdlib.h>
 #include <string.h>
 
 #include "afp_internal.h"
 #include "afp_protocol.h"
+#include "afp_replies.h"
 #include "compat.h"
 #include "dsi.h"
 #include "dsi_protocol.h"
 #include "utils.h"
 
+/*!
+ * @brief Set an open fork's length with FPSetForkParms
+ *
+ * With an extended length bit in bitmap, the request carries a 64-bit
+ * length. Otherwise it carries the low 32 bits.
+ *
+ * @param[in] volume  volume of the fork
+ * @param[in] forkid  the open fork
+ * @param[in] bitmap  the fork's length bit
+ * @param[in] len     the new length
+ * @returns the server's AFP result, or afpc_dsi_send()'s error when the
+ *          request fails
+ */
 int afp_setforkparms(struct afp_volume * volume,
-                     unsigned short forkid, unsigned short bitmap, unsigned long len)
+                     unsigned short forkid, unsigned short bitmap, uint64_t len)
 {
-    /* The implementation here deserves some explanation.
-     * If the function is called with an extended size, use 64 bits.
-     * otherwise, 32.
-     */
     struct dsi_header hdr;
     afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
 
@@ -63,55 +78,107 @@ int afp_setforkparms(struct afp_volume * volume,
         request32.pad = 0;
         request32.forkid = htons(forkid);
         request32.bitmap = htons(bitmap);
-        request32.newlen = htonl(len);
+        request32.newlen = htonl((uint32_t) len);
         return afpc_dsi_send(volume->server, (char *) &request32,
                              sizeof(request32), DSI_DEFAULT_TIMEOUT, afpSetForkParms, NULL);
     }
 }
 
+/*!
+ * @brief Send a fork command whose only parameter is the fork
+ *
+ * @param[in] volume   volume of the fork
+ * @param[in] command  FPCloseFork, FPFlushFork, or FPSyncFork
+ * @param[in] forkid   the open fork
+ * @param[in] wait     seconds to wait for the reply, as afpc_dsi_send() takes
+ * @returns the server's AFP result, or afpc_dsi_send()'s error when the
+ *          request fails
+ */
+static int afp_fork_command(struct afp_volume * volume, unsigned char command,
+                            unsigned short forkid, int wait)
+{
+    struct {
+        struct dsi_header dsi_header __attribute__((__packed__));
+        uint8_t command;
+        uint8_t pad;
+        uint16_t forkid;
+    }  __attribute__((__packed__)) request_packet;
+    struct dsi_header hdr;
+    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
+    memcpy(&request_packet.dsi_header, &hdr, sizeof(struct dsi_header));
+    request_packet.command = command;
+    request_packet.pad = 0;
+    request_packet.forkid = htons(forkid);
+    return afpc_dsi_send(volume->server, (char *) &request_packet,
+                         sizeof(request_packet), wait, command, NULL);
+}
+
+/*!
+ * @brief Close an open fork with FPCloseFork
+ *
+ * @param[in] volume  volume of the fork
+ * @param[in] forkid  the open fork
+ * @returns the server's AFP result, or afpc_dsi_send()'s error when the
+ *          request fails
+ */
 int afp_closefork(struct afp_volume * volume,
                   unsigned short forkid)
 {
-    struct {
-        struct dsi_header dsi_header __attribute__((__packed__));
-        uint8_t command;
-        uint8_t pad;
-        uint16_t forkid;
-    }  __attribute__((__packed__)) request_packet;
-    struct dsi_header hdr;
-    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
-    memcpy(&request_packet.dsi_header, &hdr, sizeof(struct dsi_header));
-    request_packet.command = afpCloseFork;
-    request_packet.pad = 0;
-    request_packet.forkid = htons(forkid);
-    return afpc_dsi_send(volume->server, (char *) &request_packet,
-                         sizeof(request_packet), DSI_DEFAULT_TIMEOUT, afpCloseFork, NULL);
+    return afp_fork_command(volume, afpCloseFork, forkid, DSI_DEFAULT_TIMEOUT);
 }
 
 
+/*!
+ * @brief Flush an open fork with FPFlushFork
+ *
+ * afpd answers with success whatever its fsync(2) of the fork returns.
+ *
+ * @param[in] volume  volume of the fork
+ * @param[in] forkid  the open fork
+ * @param[in] wait    seconds to wait for the reply
+ * @returns the server's AFP result, or afpc_dsi_send()'s error when the
+ *          request fails
+ */
 int afp_flushfork(struct afp_volume * volume,
-                  unsigned short forkid)
+                  unsigned short forkid, int wait)
 {
-    struct {
-        struct dsi_header dsi_header __attribute__((__packed__));
-        uint8_t command;
-        uint8_t pad;
-        uint16_t forkid;
-    }  __attribute__((__packed__)) request_packet;
-    struct dsi_header hdr;
-    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
-    memcpy(&request_packet.dsi_header, &hdr, sizeof(struct dsi_header));
-    request_packet.command = afpFlushFork;
-    request_packet.pad = 0;
-    request_packet.forkid = htons(forkid);
-    return afpc_dsi_send(volume->server, (char *) &request_packet,
-                         sizeof(request_packet), DSI_DEFAULT_TIMEOUT, afpFlushFork, NULL);
+    return afp_fork_command(volume, afpFlushFork, forkid, wait);
 }
 
-int afp_openfork_reply(struct afp_server *server _U_,
+/*!
+ * @brief Flush an open fork with FPSyncFork
+ *
+ * afpd reports a failed fsync(2) of the fork in the result.
+ *
+ * @param[in] volume  volume of the fork
+ * @param[in] forkid  the open fork
+ * @param[in] wait    seconds to wait for the reply
+ * @returns the server's AFP result, or afpc_dsi_send()'s error when the
+ *          request fails
+ */
+int afp_syncfork(struct afp_volume * volume, unsigned short forkid, int wait)
+{
+    return afp_fork_command(volume, afpSyncFork, forkid, wait);
+}
+
+/*!
+ * @brief Parse an FPOpenFork reply into the open fork's record
+ *
+ * Takes the fork number and the requested node ID and data fork length from
+ * a successful reply.
+ *
+ * @param[in]     server  server of the session
+ * @param[in]     buf     the reply, DSI header first
+ * @param[in]     size    bytes of buf
+ * @param[in,out] x       the fork's struct afp_file_info
+ * @returns 0, or -1 for a reply too short for the fork number
+ */
+int afp_openfork_reply(struct afp_server *server,
                        char *buf, unsigned int size, void *x)
 {
     struct afp_file_info *fp = (struct afp_file_info *)x;
+    struct afp_file_info params;
+    unsigned short bitmap;
     struct {
         struct dsi_header header __attribute__((__packed__));
         uint16_t bitmap;
@@ -129,16 +196,44 @@ int afp_openfork_reply(struct afp_server *server _U_,
         }
 
         fp->forkid = ntohs(reply.forkid);
+        bitmap = ntohs(reply.bitmap);
+
+        if (bitmap && parse_reply_block(server, buf + sizeof(reply),
+                                        size - sizeof(reply), 0, bitmap, 0,
+                                        &params) == 0) {
+            if (bitmap & kFPNodeIDBit) {
+                fp->fileid = params.fileid;
+            }
+
+            if (bitmap & kFPExtDataForkLenBit) {
+                fp->size = params.size;
+            }
+        }
     }
 
-    /* We end up ignoring the reply bitmap */
     return 0;
 }
 
+/*!
+ * @brief Open a data or resource fork with FPOpenFork
+ *
+ * @param[in]     volume      volume of the file
+ * @param[in]     forktype    1 for the resource fork, 0 for the data fork
+ * @param[in]     dirid       directory of the file
+ * @param[in]     accessmode  AFP_OPENFORK_ALLOWREAD and AFP_OPENFORK_ALLOWWRITE
+ *                            bits
+ * @param[in]     bitmap      file parameters to read into fp, the node ID or
+ *                            the data fork length
+ * @param[in]     filename    AFP name of the file in dirid
+ * @param[in,out] fp          receives the fork number and those parameters
+ * @returns the server's AFP result, afpc_dsi_send()'s error when the request
+ *          fails, or -1 when it cannot be built
+ */
 int afp_openfork(struct afp_volume * volume,
                  unsigned char forktype,
                  unsigned int dirid,
                  unsigned short accessmode,
+                 unsigned short bitmap,
                  char *filename,
                  struct afp_file_info * fp)
 {
@@ -170,7 +265,7 @@ int afp_openfork(struct afp_volume * volume,
     afp_openfork_request->command = afpOpenFork;
     afp_openfork_request->forktype = forktype ? AFP_FORKTYPE_RESOURCE :
                                      AFP_FORKTYPE_DATA;
-    afp_openfork_request->bitmap = 0;
+    afp_openfork_request->bitmap = htons(bitmap);
     afp_openfork_request->volid = htons(volume->volid);
     afp_openfork_request->dirid = htonl(dirid);
     afp_openfork_request->accessmode = htons(accessmode);

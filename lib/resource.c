@@ -6,6 +6,11 @@
  *
  */
 
+/*!
+ * @file
+ * @brief The .AppleDouble pseudo-files that expose a file's metadata
+ */
+
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +21,7 @@
 #include "afp_protocol.h"
 #include "compat.h"
 #include "did.h"
+#include "dsi.h"
 #include "forklist.h"
 #include "lowlevel.h"
 #include "midlevel.h"
@@ -225,16 +231,30 @@ int appledouble_unlink(struct afp_volume * volume, const char *path)
     return -EPERM;
 }
 
+/*!
+ * @brief Close an AppleDouble pseudo-file
+ *
+ * Flushes a written resource fork first, on a flush_on_close mount or with
+ * FPFlushFork on an Apple server. The fork then closes and leaves the
+ * volume's open-fork list.
+ *
+ * @param[in]     volume  volume of the file
+ * @param[in,out] fp      the open pseudo-file
+ * @returns 0 or the flush's result, -EIO when the close fails, or -EBADF for
+ *          the .AppleDouble directory
+ */
 int appledouble_close(struct afp_volume * volume, struct afp_file_info * fp)
 {
     int ret;
 
     switch (fp->resource) {
     case AFP_META_RESOURCE:
-        ret = kFPNoErr;
+        ret = ml_close_flush(volume, fp);
 
-        if (fp->dirty) {
-            ret = afp_flushfork(volume, fp->forkid);
+        if (ret == 0 && fp->dirty && afp_server_is_apple(volume->server)
+                && afp_flushfork(volume, fp->forkid,
+                                 DSI_DEFAULT_TIMEOUT) != kFPNoErr) {
+            ret = -EIO;
         }
 
         switch (afp_closefork(volume, fp->forkid)) {
@@ -249,7 +269,7 @@ int appledouble_close(struct afp_volume * volume, struct afp_file_info * fp)
         }
 
         remove_opened_fork(volume, fp);
-        return ret == kFPNoErr ? 0 : -EIO;
+        return ret;
 
     case AFP_META_APPLEDOUBLE:
         return -EBADF;
@@ -368,6 +388,19 @@ int appledouble_write(struct afp_volume * volume, struct afp_file_info *fp,
     return 0;
 }
 
+/*!
+ * @brief Read an AppleDouble pseudo-file
+ *
+ * @param[in]     volume       volume of the file
+ * @param[in,out] fp           the open pseudo-file
+ * @param[out]    buf          receives the bytes
+ * @param[in]     size         capacity of buf
+ * @param[in]     offset       byte offset to read from
+ * @param[out]    amount_read  bytes read
+ * @param[out]    eof          set to 1 when the read reaches the end
+ * @returns 1 when the read is a pseudo-file's, 0 for another file, or a
+ *          negative errno
+ */
 int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
                      char *buf, size_t size, off_t offset, size_t *amount_read,
                      int *eof)
@@ -375,6 +408,7 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
     int tocopy;
     int ret;
     struct afp_comment comment;
+    struct afp_file_info info;
     *amount_read = 0;
     *eof = 0;
 
@@ -398,7 +432,8 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
         }
 
         ret = ll_get_directory_entry(volume, fp->basename, fp->did,
-                                     kFPFinderInfoBit, kFPFinderInfoBit, fp);
+                                     kFPFinderInfoBit, kFPFinderInfoBit,
+                                     &info);
 
         switch (ret) {
         case kFPNoErr:
@@ -419,7 +454,7 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
         }
 
         tocopy = min(size, (32 - (unsigned long) offset));
-        memcpy(buf, fp->finderinfo + offset, tocopy);
+        memcpy(buf, info.finderinfo + offset, tocopy);
 
         if (offset + tocopy == 32) {
             *eof = 1;
@@ -487,6 +522,18 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
     return 0;
 }
 
+/*!
+ * @brief Truncate the AppleDouble pseudo-file at path
+ *
+ * Empties a resource fork, whatever offset asks for. Finder information and
+ * comments accept the call without a request.
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] path    UTF-8 path of the pseudo-file
+ * @param[in] offset  unused
+ * @returns 1 when path is a pseudo-file's, 0 for another file, or a negative
+ *          errno
+ */
 int appledouble_truncate(struct afp_volume * volume, const char *path,
                          int offset _U_)
 {
@@ -507,7 +554,7 @@ int appledouble_truncate(struct afp_volume * volume, const char *path,
         }
 
         ret = afp_openfork(volume, 1, dirid,
-                           AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE,
+                           AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE, 0,
                            basename, &fp);
 
         if (ret != kFPNoErr) {

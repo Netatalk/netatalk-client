@@ -5,6 +5,11 @@
  *
  */
 
+/*!
+ * @file
+ * @brief The steps of a connection after the socket: session, version, login
+ */
+
 #include <errno.h>
 #include <string.h>
 #include <sys/time.h>
@@ -19,6 +24,23 @@
 #include "users.h"
 #include "utils.h"
 
+/*!
+ * @brief Open the DSI session, log in, and read the server's parameters
+ *
+ * The password is wiped as soon as the login returns, whether or not it
+ * succeeded.
+ *
+ * @param[in]     priv               the caller's context for log messages
+ * @param[in,out] server             server with a connected socket
+ * @param[in]     versions           the AFP versions the server offers
+ * @param[in]     uams               the UAMs the server offers
+ * @param[in]     username           the user to log in as
+ * @param[in]     password           the user's password
+ * @param[in]     requested_version  the highest AFP version to use, 0 for
+ *                                   the highest both sides support
+ * @param[in]     uam_mask           the UAMs the caller allows
+ * @returns server, or NULL with errno set and the server removed
+ */
 struct afp_server *afp_server_complete_connection(
     void *priv,
     struct afp_server * server,
@@ -48,8 +70,8 @@ struct afp_server *afp_server_complete_connection(
     }
 
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "afp_server_complete_connection -- DSI session: tx_quantum=%u (max write size)",
-                   server->tx_quantum);
+                   "afp_server_complete_connection -- DSI session: quantum=%u",
+                   server->quantum);
 
     /* Figure out what version we're using */
     if (((server->using_version =

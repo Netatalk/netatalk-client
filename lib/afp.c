@@ -7,6 +7,11 @@
  *
  */
 
+/*!
+ * @file
+ * @brief Servers and volumes: connecting, attaching, detaching, server list
+ */
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -65,7 +70,7 @@ static void format_server_signature(const char signature[AFP_SIGNATURE_LEN],
 int (*afp_replies[])(struct afp_server * server, char *buf, unsigned int len,
                      void *other) = {
     NULL, afp_byterangelock_reply, afp_blank_reply, NULL,
-    afp_blank_reply, NULL, afp_createdir_reply, afp_blank_reply, /* 0 - 7 */
+    afp_blank_reply, afp_blank_reply, afp_createdir_reply, afp_blank_reply, /* 0 - 7 */
     afp_blank_reply, afp_enumerate_reply, afp_blank_reply, afp_blank_reply,
     NULL, NULL, NULL, NULL,                       /* 8 - 15 */
     afp_getsrvrparms_reply, afp_getvolparms_reply, afp_login_reply, afp_login_reply,
@@ -529,6 +534,15 @@ int something_is_attached(struct afp_server * server)
     return 0;
 }
 
+/*!
+ * @brief Detach a volume at unmount
+ *
+ * Closes the forks still open. Once no volume of the server stays attached,
+ * the server logs out and is removed, unless afpsld turned that off.
+ *
+ * @param[in,out] volume  the attached volume
+ * @returns 0, or -1 for NULL
+ */
 int afp_detach_volume(struct afp_volume * volume)
 {
     struct afp_server * server;
@@ -539,7 +553,6 @@ int afp_detach_volume(struct afp_volume * volume)
 
     server = volume->server;
     volume->attached = AFP_VOLUME_DETACHING;
-    afp_flush(volume);
     free_entire_did_cache(volume);
     remove_fork_list(volume);
 
@@ -1133,6 +1146,18 @@ error:
 }
 
 
+/*!
+ * @brief Connect a server's socket to the first of its addresses that answers
+ *
+ * Each connection starts a new generation, so replies of an older one are
+ * dropped. With full, the status exchange's time also sets tx_delay.
+ *
+ * @param[in,out] server  server to connect
+ * @param[in]     full    1 to read the server's status and identify the
+ *                        server, 0 not
+ * @returns 0, a negative errno when no address connects, or the negated
+ *          result of a failed status read, positive unless it timed out
+ */
 int afp_server_connect(struct afp_server *server, int full)
 {
     int 	error = 0;
@@ -1244,8 +1269,7 @@ int afp_server_connect(struct afp_server *server, int full)
         return 0;
     }
 
-    /* Get the status, and calculate the transmit time.  We use this to
-    * calculate our rx quantum. */
+    /* This reads the status and times the exchange into tx_delay. */
     gettimeofday(&t1, NULL);
 
     if ((error = afpc_dsi_getstatus(server)) != 0) {
@@ -1261,10 +1285,6 @@ int afp_server_connect(struct afp_server *server, int full)
         server->tx_delay = (t2.tv_usec - t1.tv_usec) / 1000;
     }
 
-    /* Calculate the quantum based on our tx_delay and a threshold */
-    /* For now, we'll just set a default */
-    /* This is the default in 10.4.x where x > 7 */
-    server->rx_quantum = 128 * 1024;
     return 0;
 error:
     return -error;

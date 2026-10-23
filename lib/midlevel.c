@@ -8,6 +8,11 @@
     See the file COPYING.
 */
 
+/*!
+ * @file
+ * @brief POSIX file operations on a volume, carried out with AFP requests
+ */
+
 #include <sys/stat.h>
 #include <string.h>
 #include <errno.h>
@@ -20,6 +25,7 @@
 
 #include "afp_internal.h"
 #include "did.h"
+#include "dsi.h"
 #include "codepage.h"
 #include "compat.h"
 #include "lowlevel.h"
@@ -34,33 +40,45 @@
 
 #define min(a,b) (((a)<(b)) ? (a) : (b))
 
+/*!
+ * @brief Convert a path to the volume's AFP encoding in a buffer of its size
+ *
+ * @param[in]  encoding        the volume's path encoding
+ * @param[in]  path            UTF-8 path
+ * @param[out] converted_path  the converted path, which the caller frees
+ * @returns 0, -EINVAL for a path that does not convert, -ENAMETOOLONG, or
+ *          -ENOMEM
+ */
 static int convert_path_to_afp_alloc(char encoding, const char *path,
                                      char **converted_path)
 {
     char *converted;
     struct afpc_path owned = { 0 };
+    size_t len;
+    size_t converted_len;
     int ret;
 
     if (!path || !converted_path) {
         return -EINVAL;
     }
 
-    ret = afpc_path_validate(path, AFPC_MAX_UTF8_PATH_BYTES, NULL);
+    ret = afpc_path_validate(path, AFPC_MAX_UTF8_PATH_BYTES, &len);
 
     if (ret) {
         return ret;
     }
 
-    /* Unicode normalization can expand UTF-8.  Give the converter the full
-     * AFP wire capacity, then retain only the owned, exact-size result. */
-    converted = malloc(AFPC_MAX_UTF8_PATH_STORAGE);
+    /* No decomposition grows past three times its UTF-8 length (U+0390,
+     * two bytes to six): four times the source and a terminator hold it. */
+    converted_len = len * 4U + 1U;
+    converted = malloc(converted_len);
 
     if (!converted) {
         return -ENOMEM;
     }
 
     if (convert_path_to_afp(encoding, converted, path,
-                            AFPC_MAX_UTF8_PATH_STORAGE)) {
+                            (int) converted_len)) {
         free(converted);
         return -EINVAL;
     }
@@ -348,7 +366,20 @@ error:
 
 
 
-int ml_creat(struct afp_volume * volume, const char *path, mode_t mode)
+/*!
+ * @brief Create a file at path with FPCreateFile, unless one exists
+ *
+ * The soft create leaves an existing file as it is, and the call still
+ * succeeds. A path to an AppleDouble pseudo-file needs no request.
+ *
+ * @param[in]  volume   volume of the path
+ * @param[in]  path     UTF-8 path of the new file
+ * @param[in]  mode     unused, as FPCreateFile carries no mode
+ * @param[out] created  set to 1 when this call made the file, or NULL
+ * @returns 0, or a negative errno
+ */
+int ml_creat(struct afp_volume * volume, const char *path, mode_t mode,
+             unsigned char *created)
 {
     int ret;
     char basename[AFPC_MAX_NAME_BYTES];
@@ -400,10 +431,16 @@ int ml_creat(struct afp_volume * volume, const char *path, mode_t mode)
 
     switch (rc) {
     case kFPNoErr:
+        if (created) {
+            *created = 1;
+        }
+
+        ret = 0;
+        break;
+
     case kFPObjectExists:
-        /* kFPSoftCreate may succeed for an existing file.  Treat an explicit
-         * kFPObjectExists the same way so retry after transient create/open
-         * races can continue into the caller's open path. */
+        /* A retry after a transient create/open race continues into the
+         * caller's open path. */
         ret = 0;
         break;
 
@@ -480,25 +517,24 @@ done:
     return ret;
 }
 
-int ml_read(struct afp_volume * volume, const char *path,
+/*!
+ * @brief Read from an open fork
+ *
+ * @param[in]     volume  volume of the fork
+ * @param[out]    buf     receives the bytes
+ * @param[in]     size    capacity of buf
+ * @param[in]     offset  byte offset to read from
+ * @param[in,out] fp      the open fork, or an AppleDouble pseudo-file
+ * @param[out]    eof     set to 1 when the read reaches the end of the fork
+ * @returns bytes read, or a negative errno
+ */
+int ml_read(struct afp_volume * volume,
             char *buf, size_t size, off_t offset,
             struct afp_file_info *fp, int *eof)
 {
     int ret = 0;
-    char *converted_path;
     size_t amount_copied = 0;
     *eof = 0;
-
-    if (path) {
-        ret = convert_path_to_afp_alloc(volume->path_encoding, path,
-                                        &converted_path);
-
-        if (ret) {
-            return ret;
-        }
-
-        free(converted_path);
-    }
 
     if (fp->resource) {
         ret = appledouble_read(volume, fp, buf, size, offset, &amount_copied, eof);
@@ -789,10 +825,22 @@ int ml_mkdir(struct afp_volume * vol, const char *path, mode_t mode)
     return -ret;
 }
 
+/*!
+ * @brief Close an open fork and take it off the volume's open-fork list
+ *
+ * A flush_on_close mount flushes a written fork first. A handle that a
+ * failed server-side copy left without a fork closes without a request.
+ *
+ * @param[in]     volume  volume of the fork
+ * @param[in]     path    UTF-8 path of the file, only checked, or NULL
+ * @param[in,out] fp      the open fork
+ * @returns the flush's result, 0 without one, or a negative errno
+ */
 int ml_close(struct afp_volume * volume, const char *path,
              struct afp_file_info * fp)
 {
     int ret = 0;
+    int synced = 0;
     char *converted_path = NULL;
 
     if (path) {
@@ -826,6 +874,14 @@ int ml_close(struct afp_volume * volume, const char *path,
         return ret;
     }
 
+    /* Fork 0: a failed server-side copy leaves the handle without a fork. */
+    if (fp->forkid == 0) {
+        free(converted_path);
+        return 0;
+    }
+
+    synced = ml_close_flush(volume, fp);
+
     switch (afp_closefork(volume, fp->forkid)) {
     case kFPNoErr:
         break;
@@ -841,7 +897,78 @@ int ml_close(struct afp_volume * volume, const char *path,
     remove_opened_fork(volume, fp);
 error:
     free(converted_path);
-    return -ret;
+    return ret ? -ret : synced;
+}
+
+/* The write speed of the slowest disk the server flushes or copies to. */
+#define AFP_DISK_BYTES_PER_SECOND (1024U * 1024U)
+
+/*!
+ * @brief Flush an open data or resource fork to the server's disk
+ *
+ * From AFP 3.1 it sends FPSyncFork, and FPFlushFork below that or to a
+ * server that refuses FPSyncFork. A pseudo-file other than a resource fork
+ * has nothing to flush.
+ *
+ * @param[in]     volume  volume of the fork
+ * @param[in,out] fp      the open fork, dirty again if the flush fails or a
+ *                        write lands during it
+ * @returns 0, -EACCES when the server denies access, or -EIO for any other
+ *          failure, also for a handle without a fork
+ */
+int ml_fsync(struct afp_volume * volume, struct afp_file_info * fp)
+{
+    unsigned char was_dirty = fp->dirty;
+    int wait;
+    int rc;
+
+    if (fp->resource > AFP_META_RESOURCE) {
+        return 0;
+    }
+
+    if (fp->forkid == 0) {
+        return -EIO;
+    }
+
+    /* A write that completes during the flush marks the fork again. */
+    fp->dirty = 0;
+    /* The reply follows the server's fsync(2) of what the fork holds. */
+    wait = afpc_dsi_transfer_wait(volume->server, fp->size,
+                                  AFP_DISK_BYTES_PER_SECOND);
+    /* A server without FPSyncFork answers kFPCallNotSupported. */
+    rc = volume->server->using_version->av_number >= 31
+         ? afp_syncfork(volume, fp->forkid, wait) : kFPCallNotSupported;
+
+    if (rc == kFPCallNotSupported) {
+        rc = afp_flushfork(volume, fp->forkid, wait);
+    }
+
+    if (rc == kFPNoErr) {
+        return 0;
+    }
+
+    if (was_dirty) {
+        fp->dirty = 1;
+    }
+
+    return rc == kFPAccessDenied ? -EACCES : -EIO;
+}
+
+/*!
+ * @brief Flush a written fork as its file closes, on a flush_on_close mount
+ *
+ * @param[in]     volume  volume of the fork
+ * @param[in,out] fp      the open fork
+ * @returns 0 with nothing to flush, otherwise the result of ml_fsync()
+ */
+int ml_close_flush(struct afp_volume * volume, struct afp_file_info * fp)
+{
+    if (!fp->dirty
+            || !(volume->extra_flags & VOLUME_EXTRA_FLAGS_FLUSH_ON_CLOSE)) {
+        return 0;
+    }
+
+    return ml_fsync(volume, fp);
 }
 
 int ml_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf)
@@ -875,7 +1002,22 @@ int ml_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf)
     return ret;
 }
 
-int ml_write(struct afp_volume * volume, const char *path,
+/*!
+ * @brief Write to an open fork
+ *
+ * The fork's recorded length grows when the write ends past it.
+ *
+ * @param[in]     volume  volume of the fork
+ * @param[in]     data    bytes to write
+ * @param[in]     size    length of data
+ * @param[in]     offset  byte offset to write at
+ * @param[in,out] fp      the open fork, or an AppleDouble pseudo-file
+ * @param[in]     uid     caller's user ID, recorded on a volume with Unix
+ *                        privileges
+ * @param[in]     gid     caller's group ID, recorded with uid
+ * @returns bytes written, or a negative errno
+ */
+int ml_write(struct afp_volume * volume,
              const char *data, size_t size, off_t offset,
              struct afp_file_info * fp, uid_t uid,
              gid_t gid)
@@ -887,27 +1029,10 @@ int ml_write(struct afp_volume * volume, const char *path,
     unsigned char flags = 0;
     unsigned int max_packet_size = volume->server->tx_quantum;
 #endif
-    char *converted_path;
 
     /* TODO:
        - handle nonblocking IO correctly
     */
-    if ((volume->server->using_version->av_number < 30) &&
-            (size > AFP_MAX_AFP2_FILESIZE)) {
-        return -EFBIG;
-    }
-
-    if (path) {
-        ret = convert_path_to_afp_alloc(volume->path_encoding, path,
-                                        &converted_path);
-
-        if (ret) {
-            return ret;
-        }
-
-        free(converted_path);
-    }
-
     if (volume_is_readonly(volume)) {
         return -EACCES;
     }
@@ -953,6 +1078,368 @@ int ml_write(struct afp_volume * volume, const char *path,
     return totalwritten;
 }
 
+/* The offload sends seven requests where a copy through the client sends
+ * two. Below about 2.5 times a link's bandwidth-delay product, the five
+ * extra round trips cost more than the data's two crossings. That is about
+ * 400 KiB on loopback, and 500 KB on 400 Mbit/s Wi-Fi with 4 ms round trips. */
+#define AFP_COPY_OFFLOAD_MIN_BYTES (512U * 1024U)
+/* The cap counts both forks and applies where a long command drops the
+ * session. On a server that copies faster than about 9 MB/s, 1 GiB stays
+ * inside afpd's idle limit, 2 minutes by default. */
+#define AFP_COPY_OFFLOAD_MAX_BYTES (1024ULL * 1024 * 1024)
+/* A copy through the client returns after this count of quanta, so one call
+ * is a bounded run of requests. The caller continues from there. */
+#define AFP_COPY_QUANTA_PER_CALL 16U
+/* A copy inherits these attributes, which would refuse the reopen for
+ * writing, a rename, or a delete of it. */
+#define AFP_COPY_INHIBIT_ATTRIBUTES \
+    (kFPWriteInhibitBit | kFPRenameInhibitBit | kFPDeleteInhibitBit)
+
+/*!
+ * @brief Read the file at a fork's name and test whether it is the fork's
+ *
+ * FPCopyFile and FPDelete go by name, so the file there must have the node
+ * ID the fork's open reported.
+ *
+ * @param[in]  volume  volume of the fork
+ * @param[in]  fp      the open fork
+ * @param[in]  bitmap  file parameters to read, with the node ID added
+ * @param[out] params  the parameters of the file at the name
+ * @returns 1 when the name holds the file fp opened, 0 otherwise
+ */
+static int fork_still_named(struct afp_volume *volume,
+                            struct afp_file_info *fp, unsigned int bitmap,
+                            struct afp_file_info *params)
+{
+    return fp->fileid != 0
+           && afp_getfiledirparms(volume, fp->did, bitmap | kFPNodeIDBit, 0,
+                                  fp->basename, params) == kFPNoErr
+           && params->fileid == fp->fileid;
+}
+
+/*!
+ * @brief Leave a handle without a fork
+ *
+ * The handle leaves the volume's open-fork list and keeps fork number 0, for
+ * which the client sends no request.
+ *
+ * @param[in]     volume  volume of the fork
+ * @param[in,out] fp      the handle
+ * @returns -EIO
+ */
+static ssize_t copy_lost_fork(struct afp_volume *volume,
+                              struct afp_file_info *fp)
+{
+    remove_opened_fork(volume, fp);
+    fp->forkid = 0;
+    return -EIO;
+}
+
+/*!
+ * @brief Replace the empty destination with FPCopyFile's copy and reopen it
+ *
+ * When the server makes no copy, the handle ends up open on an empty file at
+ * the name, its own or a new one, for the copy through the client.
+ *
+ * @param[in]     volume  volume of both forks
+ * @param[in]     fp_in   the source's open data fork
+ * @param[in,out] fp_out  the destination's open data fork, reopened here
+ * @param[in]     src     the source's parameters
+ * @param[in,out] dst     the destination's parameters, whose mode and time
+ *                        the new file takes
+ * @returns the bytes copied, 0 when the server made no copy, or -EIO with
+ *          the handle left without a fork
+ */
+static ssize_t copy_into_destination(struct afp_volume *volume,
+                                     struct afp_file_info *fp_in,
+                                     struct afp_file_info *fp_out,
+                                     const struct afp_file_info *src,
+                                     struct afp_file_info *dst)
+{
+    unsigned short bitmap;
+    int deleted;
+    int exists = 0;
+    int rc;
+
+    if (afp_closefork(volume, fp_out->forkid) != kFPNoErr) {
+        return copy_lost_fork(volume, fp_out);
+    }
+
+    fp_out->forkid = 0;
+    rc = afp_delete(volume, fp_out->did, fp_out->basename);
+    deleted = rc == kFPNoErr;
+
+    if (deleted) {
+        rc = afp_copyfile(volume, fp_in->did, fp_in->basename, fp_out->did,
+                          fp_out->basename,
+                          afpc_dsi_transfer_wait(volume->server,
+                                                 src->size + src->resourcesize,
+                                                 AFP_DISK_BYTES_PER_SECOND));
+    }
+
+    /* The name holds a file, never truncated. It is a copy whose reply timed
+     * out, the file a refused delete left, or a new empty one for a copy
+     * through the client. */
+    if (rc != kFPNoErr) {
+        switch (afp_createfile(volume, kFPSoftCreate, fp_out->did,
+                               fp_out->basename)) {
+        case kFPNoErr:
+            break;
+
+        case kFPObjectExists:
+            exists = 1;
+            break;
+
+        default:
+            return copy_lost_fork(volume, fp_out);
+        }
+    }
+
+    /* A reply without the node ID leaves 0, never the deleted file's. */
+    fp_out->fileid = 0;
+
+    /* The fork opens read-write, as every writable fork does. A mode without
+     * the owner's write permission would refuse that open. */
+    if (afp_openfork(volume, 0, fp_out->did,
+                     AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE,
+                     kFPNodeIDBit | kFPExtDataForkLenBit, fp_out->basename,
+                     fp_out) != kFPNoErr) {
+        return copy_lost_fork(volume, fp_out);
+    }
+
+    /* After the delete, a file found is a late copy or another client's.
+     * Without the delete, the name must still hold this handle's file. */
+    if (exists) {
+        if (deleted && rc == ETIMEDOUT && fp_out->size == src->size) {
+            rc = kFPNoErr;
+        } else if (deleted || fp_out->fileid != dst->fileid) {
+            afp_closefork(volume, fp_out->forkid);
+            return copy_lost_fork(volume, fp_out);
+        }
+    }
+
+    /* A new file at the name keeps the destination's mode and takes the time
+     * of the copy, as a newly written file would. */
+    if (deleted || !exists) {
+        bitmap = dst->unixprivs.permissions ? kFPUnixPrivsBit : 0;
+
+        if (rc == kFPNoErr) {
+            bitmap |= kFPModDateBit;
+            dst->modification_date = time(NULL);
+        }
+
+        if (bitmap && afp_setfiledirparms(volume, fp_out->did,
+                                          fp_out->basename, bitmap,
+                                          dst) != kFPNoErr) {
+            log_for_client(NULL, AFPFSD, LOG_WARNING,
+                           "copy to %s kept the server's mode or date",
+                           fp_out->basename);
+        }
+    }
+
+    if (rc != kFPNoErr) {
+        return 0;
+    }
+
+    fp_out->dirty = 1;
+    return (ssize_t) src->size;
+}
+
+/*!
+ * @brief Copy a whole data fork on the server with FPCopyFile
+ *
+ * Holds the volume's open_lock for writing from the check of the names until
+ * the destination's fork is reopened or lost.
+ *
+ * @param[in]     volume   volume of both forks
+ * @param[in]     fp_in    the source's open fork
+ * @param[in]     off_in   offset in the source, 0 to qualify
+ * @param[in,out] fp_out   the destination's open fork
+ * @param[in]     off_out  offset in the destination, 0 to qualify
+ * @param[in]     len      bytes to copy, the source's whole data fork
+ * @returns the bytes copied, 0 with the fork open when the server made no
+ *          copy, or -EIO with the handle left without a fork
+ */
+static ssize_t copy_range_on_server(struct afp_volume *volume,
+                                    struct afp_file_info *fp_in,
+                                    off_t off_in,
+                                    struct afp_file_info *fp_out,
+                                    off_t off_out, size_t len)
+{
+    unsigned int unix_privs = volume->extra_flags
+                              & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX;
+    uint64_t cap = afp_server_drops_long_commands(volume->server)
+                   ? AFP_COPY_OFFLOAD_MAX_BYTES : UINT64_MAX;
+    struct afp_file_info src;
+    struct afp_file_info dst;
+    ssize_t copied;
+
+    if (fp_in->resource != AFP_META_NONE || fp_out->resource != AFP_META_NONE
+            || fp_in->forkid == 0 || fp_out->forkid == 0 || !fp_out->created
+            || fp_out->size != 0 || off_in != 0 || off_out != 0
+            || len < AFP_COPY_OFFLOAD_MIN_BYTES || len > cap
+            || !afp_server_copies_files(volume->server)) {
+        return 0;
+    }
+
+    /* Every ll_open() in flight has listed its record once this returns. */
+    pthread_rwlock_wrlock(&volume->open_lock);
+
+    /* A source whose length differs from len goes through the client. It may
+     * be another file exchanged into the name, or a fork that changed since
+     * the caller sized the copy. The cap counts both forks. */
+    if (other_fork_open(volume, fp_out)
+            || !fork_still_named(volume, fp_in,
+                                 kFPAttributeBit | kFPExtDataForkLenBit
+                                 | kFPExtRsrcForkLenBit, &src)
+            || src.size != len
+            || src.resourcesize > cap - src.size
+            || (src.attributes & AFP_COPY_INHIBIT_ATTRIBUTES)
+            || !fork_still_named(volume, fp_out,
+                                 kFPExtDataForkLenBit | kFPExtRsrcForkLenBit
+                                 | (unix_privs ? kFPUnixPrivsBit : 0),
+                                 &dst)
+            || dst.size != 0 || dst.resourcesize != 0) {
+        copied = 0;
+    } else {
+        copied = copy_into_destination(volume, fp_in, fp_out, &src, &dst);
+    }
+
+    pthread_rwlock_unlock(&volume->open_lock);
+    return copied;
+}
+
+/*!
+ * @brief Copy through the client, a read and a write per quantum
+ *
+ * One call copies up to sixteen quanta. The caller continues from there.
+ *
+ * @param[in]     volume   volume of both forks
+ * @param[in]     fp_in    the source's open fork
+ * @param[in]     off_in   offset in the source
+ * @param[in,out] fp_out   the destination's open fork
+ * @param[in]     off_out  offset in the destination
+ * @param[in]     len      the cap on bytes to copy
+ * @param[in]     uid      caller's user ID, for the writes
+ * @param[in]     gid      caller's group ID, for the writes
+ * @returns the bytes copied if any, else the read's or the write's error, or
+ *          0 at the source's end
+ */
+static ssize_t copy_range_through_client(struct afp_volume *volume,
+                                         struct afp_file_info *fp_in,
+                                         off_t off_in,
+                                         struct afp_file_info *fp_out,
+                                         off_t off_out, size_t len,
+                                         uid_t uid, gid_t gid)
+{
+    unsigned long long quantum = volume->server->quantum;
+    size_t copied = 0;
+    char *buf;
+    int eof = 0;
+    int ret = 0;
+    /* The length stays within INT_MAX, inside the 32-bit count of the
+     * caller's reply. */
+    len = min(len, min((unsigned long long) INT_MAX,
+                       AFP_COPY_QUANTA_PER_CALL * quantum));
+
+    if ((buf = malloc(min(len, quantum))) == NULL) {
+        return -ENOMEM;
+    }
+
+    while (copied < len && !eof) {
+        ret = ml_read(volume, buf, min(len - copied, quantum),
+                      off_in + (off_t) copied, fp_in, &eof);
+
+        if (ret <= 0) {
+            break;
+        }
+
+        ret = ml_write(volume, buf, (size_t) ret, off_out + (off_t) copied,
+                       fp_out, uid, gid);
+
+        if (ret <= 0) {
+            break;
+        }
+
+        copied += (size_t) ret;
+    }
+
+    free(buf);
+    return copied ? (ssize_t) copied : ret;
+}
+
+/*!
+ * @brief Copy up to len bytes from one open fork to another
+ *
+ * A whole data fork copies on the server with FPCopyFile where it qualifies.
+ * Anything else goes through the client. A copy into an O_SYNC or O_DSYNC
+ * file ends with a flush.
+ *
+ * @param[in]     volume   volume of both forks
+ * @param[in]     fp_in    the source's open fork
+ * @param[in]     off_in   offset in the source
+ * @param[in,out] fp_out   the destination's open fork, opened for writing
+ * @param[in]     off_out  offset in the destination
+ * @param[in]     len      the cap on bytes to copy
+ * @param[in]     uid      caller's user ID
+ * @param[in]     gid      caller's group ID
+ * @returns the bytes copied, 0 at the source's end, -EOPNOTSUPP for a
+ *          pseudo-file other than a resource fork, or another negative errno
+ */
+ssize_t ml_copy_range(struct afp_volume * volume,
+                      struct afp_file_info *fp_in, off_t off_in,
+                      struct afp_file_info *fp_out, off_t off_out,
+                      size_t len, uid_t uid, gid_t gid)
+{
+    ssize_t copied;
+
+    /* Pseudo-files other than a resource fork have no fork to copy. Linux
+     * copies them itself. */
+    if (fp_in->resource > AFP_META_RESOURCE
+            || fp_out->resource > AFP_META_RESOURCE) {
+        return -EOPNOTSUPP;
+    }
+
+    if (!fp_out->writable || volume_is_readonly(volume)) {
+        return -EBADF;
+    }
+
+    if (len == 0) {
+        return 0;
+    }
+
+    copied = copy_range_on_server(volume, fp_in, off_in, fp_out, off_out,
+                                  len);
+
+    if (copied == 0) {
+        copied = copy_range_through_client(volume, fp_in, off_in, fp_out,
+                                           off_out, len, uid, gid);
+    }
+
+    /* A copy into an O_SYNC or O_DSYNC file ends with a flush, as the
+     * kernel's writes to one do. */
+    if (copied > 0 && fp_out->sync) {
+        int rc = ml_fsync(volume, fp_out);
+
+        if (rc < 0) {
+            return rc;
+        }
+    }
+
+    return copied;
+}
+
+/*!
+ * @brief Read the target of the symbolic link at path
+ *
+ * The link's data fork holds the target, read back as precomposed UTF-8.
+ *
+ * @param[in]  vol   volume of the link
+ * @param[in]  path  UTF-8 path of the link
+ * @param[out] buf   receives the target
+ * @param[in]  size  capacity of buf
+ * @returns 0, or a negative errno
+ */
 int ml_readlink(struct afp_volume * vol, const char *path,
                 char *buf, size_t size)
 {
@@ -989,7 +1476,7 @@ int ml_readlink(struct afp_volume * vol, const char *path,
     get_dirid(vol, converted_path, basename, &dirid);
     /* Open the fork */
     rc = afp_openfork(vol, 0, dirid,
-                      AFP_OPENFORK_ALLOWWRITE | AFP_OPENFORK_ALLOWREAD,
+                      AFP_OPENFORK_ALLOWWRITE | AFP_OPENFORK_ALLOWREAD, 0,
                       basename, &fp);
 
     switch (rc) {
@@ -1323,10 +1810,39 @@ out:
     return -ret;
 }
 
-int ml_setfork_size(struct afp_volume * vol, unsigned short forkid,
-                    unsigned int resource, uint64_t size)
+/*!
+ * @brief Set the length of an open handle's data or resource fork
+ *
+ * The fork is then dirty, as after a write. A pseudo-file other than a
+ * resource fork has no fork to set.
+ *
+ * @param[in]     vol     volume of the fork
+ * @param[in,out] fp      the open fork
+ * @param[in]     offset  the new length
+ * @returns 0, or a negative errno, -EIO for a handle without a fork
+ */
+int ml_ftruncate(struct afp_volume * vol, struct afp_file_info * fp,
+                 off_t offset)
 {
-    return -ll_setfork_size(vol, forkid, resource, size);
+    int ret;
+
+    if (fp->resource > AFP_META_RESOURCE) {
+        return 0;
+    }
+
+    if (fp->forkid == 0) {
+        return -EIO;
+    }
+
+    ret = -ll_setfork_size(vol, fp->forkid, fp->resource == AFP_META_RESOURCE,
+                           offset);
+
+    if (ret == 0) {
+        fp->size = offset;
+        fp->dirty = 1;
+    }
+
+    return ret;
 }
 
 
@@ -1405,6 +1921,17 @@ int ml_utime(struct afp_volume * vol, const char *path,
 }
 
 
+/*!
+ * @brief Create a symbolic link at path2 that points to path1
+ *
+ * The link is a file whose data fork holds the target and whose Finder
+ * information carries type slnk and creator rhap. AFP 2 has no links.
+ *
+ * @param[in] vol    volume of the link
+ * @param[in] path1  the link's target
+ * @param[in] path2  UTF-8 path of the new link
+ * @returns 0, or a negative errno, -ENOSYS below AFP 3
+ */
 int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
 {
     int ret;
@@ -1500,7 +2027,7 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
     /* Open the fork */
     rc = afp_openfork(vol, 0,
                       dirid2,
-                      AFP_OPENFORK_ALLOWWRITE | AFP_OPENFORK_ALLOWREAD,
+                      AFP_OPENFORK_ALLOWWRITE | AFP_OPENFORK_ALLOWREAD, 0,
                       basename2, &fp);
 
     switch (rc) {
@@ -2154,6 +2681,19 @@ int ml_getresourcefork(struct afp_volume * volume, const char *path,
     return (int)total;
 }
 
+/*!
+ * @brief Write the resource fork of path when its extended attribute is set
+ *
+ * A write of nothing at position 0 empties the fork. The fork is dirty
+ * afterwards, so a flush_on_close mount flushes it before the call returns.
+ *
+ * @param[in] volume    volume of the file
+ * @param[in] path      UTF-8 path of the file
+ * @param[in] value     bytes to write, or NULL when size is 0
+ * @param[in] size      length of value
+ * @param[in] position  offset in the fork to write at
+ * @returns 0, or a negative errno
+ */
 int ml_setresourcefork(struct afp_volume * volume, const char *path,
                        const void *value, size_t size, off_t position)
 {
@@ -2189,6 +2729,7 @@ int ml_setresourcefork(struct afp_volume * volume, const char *path,
         }
 
         fp.resourcesize = 0;
+        fp.dirty = 1;
     }
 
     if (size > 0) {
@@ -2237,6 +2778,17 @@ int ml_setresourcefork_flags(struct afp_volume * volume, const char *path,
     return ml_setresourcefork(volume, path, value, size, position);
 }
 
+/*!
+ * @brief Set the length of the resource fork of path
+ *
+ * The fork is dirty afterwards, so a flush_on_close mount flushes it before
+ * the call returns.
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] path    UTF-8 path of the file
+ * @param[in] size    the new length, up to INT_MAX
+ * @returns 0, or a negative errno
+ */
 int ml_truncateresourcefork(struct afp_volume * volume, const char *path,
                             uint64_t size)
 {
@@ -2263,6 +2815,11 @@ int ml_truncateresourcefork(struct afp_volume * volume, const char *path,
     }
 
     ret = ll_setfork_size(volume, fp.forkid, 1, size);
+
+    if (ret == 0) {
+        fp.dirty = 1;
+    }
+
     close_ret = appledouble_close(volume, &fp);
 
     if (ret != 0) {

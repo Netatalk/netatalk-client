@@ -509,8 +509,7 @@ static void run_copy(void)
 }
 
 /*!
- * @brief ServerCopy test: one copy_file_range() of Source into a fresh
- * Destination per run, the call alone timed
+ * @brief ServerCopy: time a copy_file_range() run, Source to new Destination
  */
 static void run_servercopy(void)
 {
