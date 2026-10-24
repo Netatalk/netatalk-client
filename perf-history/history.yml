@@ -3,432 +3,432 @@ lantest.avg_op_time_us:
   ts: '2026-10-21T08:06:52Z'
   value: 254
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 145
+  ts: '2026-10-24T04:40:00Z'
+  value: 83
 lantest.avg_total_runtime_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 14330
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 8191
+  ts: '2026-10-24T04:40:00Z'
+  value: 4668
 lantest.byte_range_lock_unlock_2000_ranges_in_one_fork.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 3
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 2
+  ts: '2026-10-24T04:40:00Z'
+  value: 1
 lantest.cache_validation_500_files_x_4_lookups.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 4
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
+  ts: '2026-10-24T04:40:00Z'
   value: 3
 lantest.copying_1000_files_client_side_r_w.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 1941
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1012
+  ts: '2026-10-24T04:40:00Z'
+  value: 563
 lantest.copying_2000_files_server_side.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 4041
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 2129
+  ts: '2026-10-24T04:40:00Z'
+  value: 1195
 lantest.create_2000_dirs_tree_20_9_10.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 1222
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 938
+  ts: '2026-10-24T04:40:00Z'
+  value: 571
 lantest.creating_2000_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 1585
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1100
+  ts: '2026-10-24T04:40:00Z'
+  value: 619
 lantest.deep_path_traversal_20_levels_x_100_walks.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 12
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 11
+  ts: '2026-10-24T04:40:00Z'
+  value: 8
 lantest.deleting_2000_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 1002
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 592
+  ts: '2026-10-24T04:40:00Z'
+  value: 372
 lantest.directory_cache_hits_20_dirs_x_100_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 148
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 47
+  ts: '2026-10-24T04:40:00Z'
+  value: 6
 lantest.enumerate_dir_with_2000_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 21
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 21
+  ts: '2026-10-24T04:40:00Z'
+  value: 16
 lantest.lock_then_unlock_2000_open_forks.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 4
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 3
+  ts: '2026-10-24T04:40:00Z'
+  value: 2
 lantest.mixed_cache_operations_create_stat_enum_delete_on_500_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 561
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 419
+  ts: '2026-10-24T04:40:00Z'
+  value: 235
 lantest.open_read_1024_bytes_close_2000_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 1427
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 671
+  ts: '2026-10-24T04:40:00Z'
+  value: 380
 lantest.open_write_1024_bytes_close_2000_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 1812
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 864
+  ts: '2026-10-24T04:40:00Z'
+  value: 486
 lantest.reading_one_large_file.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 127
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 85
+  ts: '2026-10-24T04:40:00Z'
+  value: 64
 lantest.stat_lookup_getparams_2000_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 277
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 175
+  ts: '2026-10-24T04:40:00Z'
+  value: 58
 lantest.writing_one_large_file.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 143
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 119
+  ts: '2026-10-24T04:40:00Z'
+  value: 89
 smb_lantest.avg_op_time_us:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 386
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 407
+  ts: '2026-10-24T04:40:00Z'
+  value: 249
 smb_lantest.avg_total_runtime_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 21738
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 22933
+  ts: '2026-10-24T04:40:00Z'
+  value: 14087
 smb_lantest.byte_range_lock_unlock_2000_ranges_in_one_fork.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 19
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 16
+  ts: '2026-10-24T04:40:00Z'
+  value: 11
 smb_lantest.cache_validation_500_files_x_4_lookups.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 5
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
+  ts: '2026-10-24T04:40:00Z'
   value: 4
 smb_lantest.copying_1000_files_client_side_r_w.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 2926
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 3127
+  ts: '2026-10-24T04:40:00Z'
+  value: 1884
 smb_lantest.copying_2000_files_server_side.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 6625
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 6984
+  ts: '2026-10-24T04:40:00Z'
+  value: 4641
 smb_lantest.create_2000_dirs_tree_20_9_10.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 1948
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 2050
+  ts: '2026-10-24T04:40:00Z'
+  value: 1151
 smb_lantest.creating_2000_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 3936
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 4212
+  ts: '2026-10-24T04:40:00Z'
+  value: 2668
 smb_lantest.deep_path_traversal_20_levels_x_100_walks.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 14
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 13
+  ts: '2026-10-24T04:40:00Z'
+  value: 10
 smb_lantest.deleting_2000_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 2116
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 2179
+  ts: '2026-10-24T04:40:00Z'
+  value: 1216
 smb_lantest.directory_cache_hits_20_dirs_x_100_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 146
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 185
+  ts: '2026-10-24T04:40:00Z'
+  value: 5
 smb_lantest.enumerate_dir_with_2000_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 48
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 48
+  ts: '2026-10-24T04:40:00Z'
+  value: 34
 smb_lantest.lock_then_unlock_2000_open_forks.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 7
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 5
+  ts: '2026-10-24T04:40:00Z'
+  value: 4
 smb_lantest.mixed_cache_operations_create_stat_enum_delete_on_500_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 842
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 869
+  ts: '2026-10-24T04:40:00Z'
+  value: 542
 smb_lantest.open_read_1024_bytes_close_2000_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 957
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 990
+  ts: '2026-10-24T04:40:00Z'
+  value: 612
 smb_lantest.open_write_1024_bytes_close_2000_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 1617
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1675
+  ts: '2026-10-24T04:40:00Z'
+  value: 1023
 smb_lantest.reading_one_large_file.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 85
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 82
+  ts: '2026-10-24T04:40:00Z'
+  value: 58
 smb_lantest.stat_lookup_getparams_2000_files.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 356
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 401
+  ts: '2026-10-24T04:40:00Z'
+  value: 155
 smb_lantest.writing_one_large_file.mean_ms:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 91
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 93
+  ts: '2026-10-24T04:40:00Z'
+  value: 69
 smb_speedtest.copy.avg_max_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 463
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 681
+  ts: '2026-10-24T04:40:00Z'
+  value: 597
 smb_speedtest.copy.avg_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 446
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 642
+  ts: '2026-10-24T04:40:00Z'
+  value: 580
 smb_speedtest.copy.peak_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 678
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 985
+  ts: '2026-10-24T04:40:00Z'
+  value: 865
 smb_speedtest.read.avg_max_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 891
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1328
+  ts: '2026-10-24T04:40:00Z'
+  value: 1123
 smb_speedtest.read.avg_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 844
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1207
+  ts: '2026-10-24T04:40:00Z'
+  value: 1079
 smb_speedtest.read.peak_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 1239
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1949
+  ts: '2026-10-24T04:40:00Z'
+  value: 1602
 smb_speedtest.servercopy.avg_max_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 1773
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 2508
+  ts: '2026-10-24T04:40:00Z'
+  value: 2295
 smb_speedtest.servercopy.avg_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 1721
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 2336
+  ts: '2026-10-24T04:40:00Z'
+  value: 2237
 smb_speedtest.servercopy.peak_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 3201
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 5087
+  ts: '2026-10-24T04:40:00Z'
+  value: 4189
 smb_speedtest.write.avg_max_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 974
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1407
+  ts: '2026-10-24T04:40:00Z'
+  value: 1252
 smb_speedtest.write.avg_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 931
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1327
+  ts: '2026-10-24T04:40:00Z'
+  value: 1198
 smb_speedtest.write.peak_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 1389
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 2002
+  ts: '2026-10-24T04:40:00Z'
+  value: 1808
 speedtest.copy.avg_max_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 300
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 624
+  ts: '2026-10-24T04:40:00Z'
+  value: 484
 speedtest.copy.avg_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 291
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 598
+  ts: '2026-10-24T04:40:00Z'
+  value: 472
 speedtest.copy.peak_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 437
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 881
+  ts: '2026-10-24T04:40:00Z'
+  value: 691
 speedtest.read.avg_max_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 592
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1541
+  ts: '2026-10-24T04:40:00Z'
+  value: 1148
 speedtest.read.avg_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 574
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1444
+  ts: '2026-10-24T04:40:00Z'
+  value: 1106
 speedtest.read.peak_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 823
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 2035
+  ts: '2026-10-24T04:40:00Z'
+  value: 1597
 speedtest.servercopy.avg_max_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 100
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1708
+  ts: '2026-10-24T04:40:00Z'
+  value: 1873
 speedtest.servercopy.avg_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 98
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1637
+  ts: '2026-10-24T04:40:00Z'
+  value: 1834
 speedtest.servercopy.peak_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 121
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 4209
+  ts: '2026-10-24T04:40:00Z'
+  value: 4190
 speedtest.write.avg_max_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 663
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1101
+  ts: '2026-10-24T04:40:00Z'
+  value: 891
 speedtest.write.avg_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 644
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1049
+  ts: '2026-10-24T04:40:00Z'
+  value: 860
 speedtest.write.peak_mean_mbs:
 - pr: 385
   ts: '2026-10-21T08:06:52Z'
   value: 996
 - pr: 388
-  ts: '2026-10-24T02:01:34Z'
-  value: 1581
+  ts: '2026-10-24T04:40:00Z'
+  value: 1290
