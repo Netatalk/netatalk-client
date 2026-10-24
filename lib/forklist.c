@@ -13,6 +13,8 @@
 #include <string.h>
 
 #include "afp_internal.h"
+#include "dsi.h"
+#include "midlevel.h"
 #include "utils.h"
 
 struct dirty_fork_record {
@@ -21,6 +23,13 @@ struct dirty_fork_record {
     unsigned int resource;
     char basename[AFPC_MAX_NAME_BYTES];
 };
+
+/* Whether p's record names the file basename in directory did. */
+static int names_file(const struct afp_file_info *p, unsigned int did,
+                      const char *basename)
+{
+    return p->did == did && strcmp(p->basename, basename) == 0;
+}
 
 void add_opened_fork(struct afp_volume * volume, struct afp_file_info * fp)
 {
@@ -71,8 +80,8 @@ void flush_dirty_forks_for_file(struct afp_volume * volume,
         size_t new_capacity;
 
         if (p == fp || !p->writable || !p->dirty ||
-                p->resource != fp->resource || p->did != fp->did ||
-                strcmp(p->basename, fp->basename) != 0) {
+                p->resource != fp->resource ||
+                !names_file(p, fp->did, fp->basename)) {
             continue;
         }
 
@@ -103,7 +112,7 @@ void flush_dirty_forks_for_file(struct afp_volume * volume,
     pthread_mutex_unlock(&volume->open_forks_mutex);
 
     for (size_t i = 0; i < count; i++) {
-        int rc = afp_flushfork(volume, records[i].forkid);
+        int rc = afp_flushfork(volume, records[i].forkid, DSI_DEFAULT_TIMEOUT);
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "flush_dirty_forks_for_file: flushed dirty fork %u with rc=%d",
                        records[i].forkid, rc);
@@ -118,8 +127,7 @@ void flush_dirty_forks_for_file(struct afp_volume * volume,
                     p; p = p->largelist_next) {
                 if (p->forkid == records[i].forkid &&
                         p->resource == records[i].resource &&
-                        p->did == records[i].did &&
-                        strcmp(p->basename, records[i].basename) == 0) {
+                        names_file(p, records[i].did, records[i].basename)) {
                     p->dirty = 1;
                     break;
                 }
@@ -132,6 +140,25 @@ void flush_dirty_forks_for_file(struct afp_volume * volume,
     free(records);
 }
 
+/* Whether a record other than fp on the volume's open-fork list names fp's
+ * file. */
+int other_fork_open(struct afp_volume * volume, struct afp_file_info * fp)
+{
+    int found = 0;
+    pthread_mutex_lock(&volume->open_forks_mutex);
+
+    for (struct afp_file_info *p = volume->open_forks;
+            p; p = p->largelist_next) {
+        if (p != fp && names_file(p, fp->did, fp->basename)) {
+            found = 1;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&volume->open_forks_mutex);
+    return found;
+}
+
 void remove_fork_list(struct afp_volume * volume)
 {
     struct afp_file_info * p, *next;
@@ -139,7 +166,8 @@ void remove_fork_list(struct afp_volume * volume)
 
     for (p = volume->open_forks; p; p = next) {
         next = p->largelist_next;
-        afp_flushfork(volume, p->forkid);
+        /* The kernel drops the releases it has not sent by the unmount. */
+        ml_close_flush(volume, p);
         afp_closefork(volume, p->forkid);
         volume->open_forks = p->largelist_next;
         free(p);

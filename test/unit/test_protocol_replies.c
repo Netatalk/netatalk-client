@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "lib/afp_internal.h"
@@ -93,6 +94,37 @@ int main(int argc, char **argv)
     CHECK(afp_server_has_valid_signature(&server));
     server.flags = 0;
     CHECK(afp_server_has_valid_signature(&server));
+    server.dsi_default_timeout = 5;
+    CHECK(afpc_dsi_transfer_wait(&server, UINT64_C(3) << 20, 1U << 20) == 8);
+    CHECK(afpc_dsi_transfer_wait(&server, UINT64_MAX, 1U << 20)
+          == 5 + DSI_MAX_TRANSFER_WAIT);
+    {
+        /* Ahead in the queue: two written requests, the first due long
+         * after its wait, and one not written yet. */
+        struct afp_server queue_server;
+        struct dsi_request queue[3];
+        struct dsi_request request;
+        struct timeval now;
+        memset(&queue_server, 0, sizeof(queue_server));
+        memset(queue, 0, sizeof(queue));
+        memset(&request, 0, sizeof(request));
+        pthread_mutex_init(&queue_server.request_queue_mutex, NULL);
+        gettimeofday(&now, NULL);
+        queue[0].wait = 5;
+        queue[0].deadline.tv_sec = now.tv_sec + 1000;
+        queue[0].next = &queue[1];
+        queue[1].wait = 37;
+        queue[1].deadline.tv_sec = now.tv_sec;
+        queue[1].next = &queue[2];
+        queue[2].wait = 5;
+        queue[2].next = &request;
+        request.wait = 5;
+        queue_server.command_requests = queue;
+        afpc_dsi_set_deadline(&queue_server, &request);
+        CHECK(request.deadline.tv_sec - now.tv_sec >= 47
+              && request.deadline.tv_sec - now.tv_sec <= 48);
+        pthread_mutex_destroy(&queue_server.request_queue_mutex);
+    }
     memset(reply, 0, sizeof(reply));
     wire32 = htonl(1234);
     memcpy(reply + sizeof(reply) - sizeof(wire32), &wire32, sizeof(wire32));

@@ -262,13 +262,13 @@ int afpc_transport_socket(const struct afpc_transport *transport)
 unsigned int afpc_transport_tx_quantum(
     const struct afpc_transport *transport)
 {
-    return transport && transport->server ? transport->server->tx_quantum : 0;
+    return transport && transport->server ? transport->server->quantum : 0;
 }
 
 unsigned int afpc_transport_rx_quantum(
     const struct afpc_transport *transport)
 {
-    return transport && transport->server ? transport->server->rx_quantum : 0;
+    return transport && transport->server ? transport->server->quantum : 0;
 }
 
 unsigned int afpc_transport_attention_quantum(
@@ -394,9 +394,9 @@ int afpc_transport_raw_command(struct afpc_transport *transport,
         requested = raw_read_size(payload, payload_len, subcommand);
         read_capacity = requested;
 
-        if (transport->server->rx_quantum
-                && read_capacity > transport->server->rx_quantum) {
-            read_capacity = transport->server->rx_quantum;
+        if (transport->server->quantum
+                && read_capacity > transport->server->quantum) {
+            read_capacity = transport->server->quantum;
         }
 
         if (read_capacity < reply_capacity) {

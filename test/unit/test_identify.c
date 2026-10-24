@@ -1,9 +1,19 @@
+#include <stdio.h>
+#include <string.h>
+
 #include "lib/afp_internal.h"
 #include "tap.h"
 
 int main(int argc, char **argv)
 {
+    struct afp_versions afp22 = { "AFP2.2", 22 };
+    struct afp_versions afp30 = { "AFP3.0", 30 };
+    struct afp_versions afp33 = { "AFP3.3", 33 };
+    struct afp_versions afp34 = { "AFP3.4", 34 };
+    struct afp_server server;
+    struct afpc_server_version version;
     test_tap_init(argc, argv);
+    memset(&server, 0, sizeof(server));
     CHECK(afp_identify_machine_type(NULL) == AFPC_SERVER_TYPE_UNKNOWN);
     CHECK(afp_identify_machine_type("") == AFPC_SERVER_TYPE_UNKNOWN);
     CHECK(afp_identify_machine_type("Netatalk") == AFPC_SERVER_TYPE_NETATALK);
@@ -11,7 +21,68 @@ int main(int argc, char **argv)
     CHECK(afp_identify_machine_type("Mac mini") == AFPC_SERVER_TYPE_MACINTOSH);
     CHECK(afp_identify_machine_type("iMac") == AFPC_SERVER_TYPE_MACINTOSH);
     CHECK(afp_identify_machine_type("Xserve") == AFPC_SERVER_TYPE_MACINTOSH);
+    CHECK(afp_identify_machine_type("PowerMac7,3")
+          == AFPC_SERVER_TYPE_MACINTOSH);
+    CHECK(afp_identify_machine_type("PowerBook6,8")
+          == AFPC_SERVER_TYPE_MACINTOSH);
+    CHECK(afp_identify_machine_type("RackMac3,1")
+          == AFPC_SERVER_TYPE_MACINTOSH);
+    CHECK(afp_identify_machine_type("iBook") == AFPC_SERVER_TYPE_MACINTOSH);
+    CHECK(afp_identify_machine_type("eMac") == AFPC_SERVER_TYPE_MACINTOSH);
+    CHECK(afp_identify_machine_type("VMware7,1") == AFPC_SERVER_TYPE_MACINTOSH);
     CHECK(afp_identify_machine_type("TimeCapsule") == AFPC_SERVER_TYPE_TIMECAPSULE);
     CHECK(afp_identify_machine_type("Windows NT") == AFPC_SERVER_TYPE_WINDOWS);
+    server.server_type = AFPC_SERVER_TYPE_TIMECAPSULE;
+    CHECK(afp_server_is_apple(&server));
+    server.server_type = AFPC_SERVER_TYPE_AIRPORT;
+    CHECK(afp_server_is_apple(&server));
+    server.server_type = AFPC_SERVER_TYPE_MACINTOSH;
+    server.using_version = &afp34;
+    CHECK(afp_server_is_apple(&server));
+    CHECK(!afp_server_copies_files(&server));
+    CHECK(!afp_server_reports_fork_length(&server));
+    server.server_type = AFPC_SERVER_TYPE_NETATALK;
+    CHECK(!afp_server_is_apple(&server));
+    CHECK(afp_server_copies_files(&server));
+    CHECK(afp_server_reports_fork_length(&server));
+    server.using_version = &afp33;
+    CHECK(!afp_server_copies_files(&server));
+    server.using_version = &afp30;
+    CHECK(afp_server_reports_fork_length(&server));
+    server.using_version = &afp22;
+    CHECK(!afp_server_reports_fork_length(&server));
+    server.server_type = AFPC_SERVER_TYPE_UNKNOWN;
+    CHECK(!afp_server_is_apple(&server));
+    CHECK(server_version_parse("4.7.0dev", &version) == 0
+          && version.major == 4 && version.minor == 7 && version.patch == 0);
+    CHECK(server_version_parse("3.1.12", &version) == 0
+          && version.major == 3 && version.minor == 1 && version.patch == 12);
+    CHECK(server_version_parse("4.6", &version) == 0
+          && version.major == 4 && version.minor == 6 && version.patch == 0);
+    CHECK(server_version_parse("", &version) == -1 && version.major == 0);
+    CHECK(server_version_parse("dev", &version) == -1);
+    CHECK(server_version_parse("4.10.0", &version) == 0
+          && server_version_at_least(&version, 4, 5, 0));
+    CHECK(server_version_parse("4.4.9", &version) == 0
+          && !server_version_at_least(&version, 4, 5, 0));
+    CHECK(server_version_parse("4.5.0", &version) == 0
+          && server_version_at_least(&version, 4, 5, 0)
+          && !server_version_at_least(&version, 4, 5, 1));
+    snprintf(server.machine_type, sizeof(server.machine_type),
+             "Netatalk4.2.3");
+    afp_server_identify(&server);
+    CHECK(server.server_version.major == 4 && server.server_version.minor == 2
+          && server.server_version.patch == 3);
+    CHECK(afp_server_drops_long_commands(&server));
+    snprintf(server.machine_type, sizeof(server.machine_type),
+             "Netatalk4.7.0dev");
+    afp_server_identify(&server);
+    CHECK(!afp_server_drops_long_commands(&server));
+    snprintf(server.machine_type, sizeof(server.machine_type), "Netatalk");
+    afp_server_identify(&server);
+    CHECK(afp_server_drops_long_commands(&server));
+    snprintf(server.machine_type, sizeof(server.machine_type), "Mac mini");
+    afp_server_identify(&server);
+    CHECK(!afp_server_drops_long_commands(&server));
     return test_tap_finish();
 }

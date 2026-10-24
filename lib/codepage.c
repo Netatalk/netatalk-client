@@ -287,7 +287,7 @@ int convert_path_to_afp(char encoding, char *dest,
         return -1;
     }
 
-    memset(dest, 0, dest_len);
+    dest[0] = '\0';
     src_len = (int)strnlen(src, (size_t)dest_len);
 
     switch (encoding) {
@@ -297,8 +297,10 @@ int convert_path_to_afp(char encoding, char *dest,
             return -1;
         }
 
-        if (!dest[0] && src_len > 0) {
-            convert_utf8pre_to_utf8dec(src, src_len, dest, dest_len);
+        if (!dest[0] && src_len > 0
+                && convert_utf8pre_to_utf8dec(src, src_len, dest,
+                                              dest_len) < 0) {
+            return -1;
         }
 
         break;

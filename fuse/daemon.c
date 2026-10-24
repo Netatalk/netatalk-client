@@ -419,6 +419,22 @@ static int connect_to_child_socket(const char *socket_path,
     return child_sock;
 }
 
+/* Sends a command and its request to a child daemon in one write, which
+ * the child takes in a single read(2). */
+static int send_child_command(int child_sock, unsigned char command,
+                              const void *request, size_t length)
+{
+    char message[1 + sizeof(struct afpfsd_ipc_status_request)];
+
+    if (length >= sizeof(message)) {
+        return -1;
+    }
+
+    message[0] = (char) command;
+    memcpy(message + 1, request, length);
+    return afpfsd_ipc_write_all(child_sock, message, length + 1);
+}
+
 /* Forward response from child daemon to client */
 static int forward_child_response(int child_sock, int client_fd)
 {
@@ -702,10 +718,8 @@ static int handle_manager_command(int client_fd)
             }
 
             /* Send command to child */
-            unsigned char cmd = AFPFSD_IPC_COMMAND_STATUS;
-
-            if (afpfsd_ipc_write_all(child_sock, &cmd, sizeof(cmd)) < 0 ||
-                    afpfsd_ipc_write_all(child_sock, &req, sizeof(req)) < 0) {
+            if (send_child_command(child_sock, AFPFSD_IPC_COMMAND_STATUS,
+                                   &req, sizeof(req)) < 0) {
                 log_for_client(NULL, AFPFSD, LOG_WARNING,
                                "Failed to send status command to child daemon");
 
@@ -910,8 +924,7 @@ static int handle_manager_command(int client_fd)
         }
 
         /* Send command to child */
-        if (afpfsd_ipc_write_all(child_sock, &command, sizeof(command)) < 0 ||
-                afpfsd_ipc_write_all(child_sock, &req, sizeof(req)) < 0) {
+        if (send_child_command(child_sock, command, &req, sizeof(req)) < 0) {
             log_for_client(NULL, AFPFSD, LOG_WARNING,
                            "Failed to send suspend/resume command to child daemon");
 

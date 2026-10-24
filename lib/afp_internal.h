@@ -54,6 +54,8 @@ struct afp_file_info {
     unsigned char sync;
     unsigned char writable;
     unsigned char dirty;
+    /* This record's open created the file */
+    unsigned char created;
     char finderinfo[32];
     char name[AFPC_MAX_NAME_BYTES];
     char basename[AFPC_MAX_NAME_BYTES];
@@ -81,6 +83,7 @@ struct afp_file_info {
 #define VOLUME_EXTRA_FLAGS_NO_LOCKING 0x10
 #define VOLUME_EXTRA_FLAGS_IGNORE_UNIXPRIVS 0x20
 #define VOLUME_EXTRA_FLAGS_READONLY 0x40
+#define VOLUME_EXTRA_FLAGS_FLUSH_ON_CLOSE 0x80
 
 #define AFP_VOLUME_UNMOUNTED 0
 #define AFP_VOLUME_MOUNTED 1
@@ -119,6 +122,8 @@ struct afp_volume {
     /* Our journal of open forks */
     struct afp_file_info *open_forks;
     pthread_mutex_t open_forks_mutex;
+    /* Read-locked by an open until listed, write-locked by a server copy */
+    pthread_rwlock_t open_lock;
 
     /* Used to trigger startup */
     pthread_cond_t  startup_condition_cond;
@@ -146,13 +151,19 @@ struct afp_versions {
     int         av_number;
 };
 
+/* A release number such as 4.7.0; all zero when unknown */
+struct afpc_server_version {
+    unsigned int major;
+    unsigned int minor;
+    unsigned int patch;
+};
+
 extern struct afp_versions afp_versions[];
 
 struct afp_server {
 
-    /* Our buffer sizes */
-    unsigned int tx_quantum;
-    unsigned int rx_quantum;
+    /* The largest read or write one request carries */
+    unsigned int quantum;
 
     unsigned int tx_delay;
     int dsi_default_timeout;
@@ -171,6 +182,8 @@ struct afp_server {
         uint64_t rx_bytes;
         uint64_t tx_bytes;
         uint64_t requests_pending;
+        /* AFP requests sent, by command code */
+        uint64_t commands[UINT8_MAX + 1];
     } stats;
 
     /* General information */
@@ -183,6 +196,8 @@ struct afp_server {
     int requested_port;
 
     char machine_type[17];
+    /* The server software's release, from machine_type */
+    struct afpc_server_version server_version;
     char icon[AFP_SERVER_ICON_LEN];
     char signature[16];
     unsigned short flags;
@@ -359,7 +374,16 @@ char *get_uam_names_list(void);
 unsigned int default_uams_mask(void);
 
 enum afpc_server_type afp_identify_machine_type(const char *machine_type);
+int server_version_parse(const char *text,
+                         struct afpc_server_version *version);
+int server_version_at_least(const struct afpc_server_version *version,
+                            unsigned int major, unsigned int minor,
+                            unsigned int patch);
 void afp_server_identify(struct afp_server * s);
+int afp_server_is_apple(const struct afp_server *s);
+int afp_server_reports_fork_length(const struct afp_server *s);
+int afp_server_copies_files(const struct afp_server *s);
+int afp_server_drops_long_commands(const struct afp_server *s);
 void afp_server_fill_basic(const struct afp_server *server,
                            struct afpc_server_info *basic);
 
@@ -549,8 +573,6 @@ int afp_zzzzz(struct afp_server *server);
 int afp_volopen(struct afp_volume * volume,
                 unsigned short bitmap, char *password);
 
-int afp_flush(struct afp_volume * volume);
-
 int afp_getfiledirparms(struct afp_volume *volume, unsigned int did,
                         unsigned int filebitmap, unsigned int dirbitmap, const char *pathname,
                         struct afp_file_info *fp);
@@ -583,6 +605,7 @@ int afp_openfork(struct afp_volume * volume,
                  unsigned char forktype,
                  unsigned int dirid,
                  unsigned short accessmode,
+                 unsigned short bitmap,
                  char *filename,
                  struct afp_file_info *fp);
 
@@ -603,6 +626,10 @@ int afp_createdir(struct afp_volume * volume, unsigned int dirid,
 int afp_delete(struct afp_volume * volume,
                unsigned int dirid, char *pathname);
 
+int afp_copyfile(struct afp_volume * volume,
+                 unsigned int srcdid, char *srcname,
+                 unsigned int dstdid, char *dstname, int wait);
+
 
 int afp_createfile(struct afp_volume * volume, unsigned char flag,
                    unsigned int did, char *pathname);
@@ -615,7 +642,11 @@ int afp_writeext(struct afp_volume * volume, unsigned short forkid,
                  uint64_t offset, uint64_t reqcount,
                  char *data, uint64_t *written);
 
-int afp_flushfork(struct afp_volume * volume, unsigned short forkid);
+int afp_flushfork(struct afp_volume * volume, unsigned short forkid,
+                  int wait);
+
+int afp_syncfork(struct afp_volume * volume, unsigned short forkid,
+                 int wait);
 
 int afp_closefork(struct afp_volume * volume, unsigned short forkid);
 int afp_setfileparms(struct afp_volume * volume,
@@ -633,7 +664,8 @@ int afp_volclose(struct afp_volume * volume);
 
 
 int afp_setforkparms(struct afp_volume *volume,
-                     unsigned short forkid, unsigned short bitmap, unsigned long len);
+                     unsigned short forkid, unsigned short bitmap,
+                     uint64_t len);
 
 int afp_byterangelock(struct afp_volume * volume,
                       unsigned char flag,

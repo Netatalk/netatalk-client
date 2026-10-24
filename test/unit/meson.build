@@ -225,6 +225,23 @@ test(
     verbose: true,
 )
 
+fork_io_test = executable(
+    'test_fork_io',
+    sources: ['test_fork_io.c'],
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'AFP fork I/O',
+    fork_io_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
 log_test = executable(
     'test_log',
     sources: ['test_log.c'],

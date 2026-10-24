@@ -99,6 +99,7 @@ sub pagination_setup_commands {
 {
     my $out = afpcmd_pipe($AFP_URL, 'status', 'df', 'quit');
     like($out, qr/afpfs_testsrv/,                     'test_status: server name');
+    like($out, qr/^\s+afpOpenVol: 1$/m,               'test_status: request counts list the volume open');
     like($out, qr/Filesystem statistics for volume:/, 'test_status: df header');
     like($out, qr/Total space:/,                      'test_status: df total');
 }

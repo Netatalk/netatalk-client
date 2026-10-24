@@ -363,19 +363,20 @@ static int fuse_mknod(const char *path, mode_t mode, dev_t dev _U_)
     struct fuse_context * context = fuse_get_context();
     struct afp_volume * volume = context->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** mknod of %s", path);
-    ret = ml_creat(volume, path, mode);
+    ret = ml_creat(volume, path, mode, NULL);
     return ret;
 }
 
 static int fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
     struct afp_file_info * fp;
+    unsigned char created = 0;
     int ret;
     struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** create of %s with mode 0%o, flags 0x%x", path, mode, fi->flags);
     /* Create the file */
-    ret = ml_creat(volume, path, mode);
+    ret = ml_creat(volume, path, mode, &created);
 
     if (ret != 0 && ret != -EEXIST) {
         /* Fatal error other than file exists */
@@ -392,11 +393,14 @@ static int fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     /* Open it. Strip O_CREAT and O_EXCL: ml_creat already created the file,
      * and sending a second FPCreateFile (hard create) for an existing file
      * causes Time Capsule to return kFPMiscErr on the subsequent FPWriteExt.
-     * ml_open will handle O_TRUNC if present in flags. */
-    ret = ml_open(volume, path, fi->flags & ~(O_CREAT | O_EXCL), &fp);
+     * ml_open will handle O_TRUNC of a file ml_creat found. */
+    ret = ml_open(volume, path,
+                  fi->flags & ~(O_CREAT | O_EXCL | (created ? O_TRUNC : 0)),
+                  &fp);
 
     if (ret == 0) {
         fi->fh = (unsigned long) fp;
+        fp->created = created;
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "*** cache create \"%s\" flags=0x%x fh=%" PRIu64 " forkid=%d",
                        path, fi->flags, fi->fh, fp->forkid);
@@ -408,47 +412,22 @@ static int fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     return ret;
 }
 
-static int fuse_flush(const char *path, struct fuse_file_info *fi)
+/* Flushes the handle's fork to the server's disk. */
+static int fuse_fsync(const char *path, int datasync _U_,
+                      struct fuse_file_info *fi)
 {
-    const struct afp_file_info *fp = (struct afp_file_info *) fi->fh;
+    struct afp_file_info *fp = (struct afp_file_info *) fi->fh;
     struct afp_volume * volume = fuse_get_context()->private_data;
-    int ret = 0;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "*** cache flush \"%s\" forkid=%d writable=%u resource=%u",
+                   "*** cache fsync \"%s\" forkid=%d writable=%u resource=%u",
                    path, fp ? fp->forkid : -1, fp ? fp->writable : 0,
                    fp ? fp->resource : 0);
 
     if (!fp) {
-        return 0;
+        return -EBADF;
     }
 
-    /* Flush the fork to ensure all writes are committed to the server */
-    ret = afp_flushfork(volume, fp->forkid);
-
-    if (ret != 0) {
-        int eret;
-
-        /* Map AFP errors to errno */
-        switch (ret) {
-        case kFPAccessDenied:
-            eret = -EACCES;
-            break;
-
-        case kFPParamErr:
-            eret = -EINVAL;
-            break;
-
-        default:
-            eret = -EIO;
-            break;
-        }
-
-        return eret;
-    }
-
-    /* Flushing is sufficient to commit the writes; setting the fork to its
-     * unchanged size would only add a redundant protocol request. */
-    return 0;
+    return ml_fsync(volume, fp);
 }
 
 static int fuse_release(const char *path, struct fuse_file_info * fi)
@@ -498,10 +477,48 @@ static int fuse_write(const char *path, const char *data,
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** cache write \"%s\" offset=%llu size=%llu",
                    path, (unsigned long long) offset, (unsigned long long) size);
-    ret = ml_write(volume, path, data, size, offset, fp,
+    ret = ml_write(volume, data, size, offset, fp,
                    context->uid, context->gid);
     return ret;
 }
+
+/* Linux clamps a copy to the source's end and copies pseudo-files itself
+ * on EOPNOTSUPP; libfuse before 3.18 cuts the length to size_t. */
+#if defined(HAVE_FUSE_COPY_FILE_RANGE) && defined(__linux__) \
+    && SIZE_MAX > UINT32_MAX
+#define AFP_FUSE_COPY_FILE_RANGE 1
+#endif
+
+#ifdef AFP_FUSE_COPY_FILE_RANGE
+/* Copies between two handles of the mount, on the server where it can. */
+static ssize_t fuse_copy_file_range(const char *path_in,
+                                    struct fuse_file_info *fi_in,
+                                    off_t offset_in,
+                                    const char *path_out,
+                                    struct fuse_file_info *fi_out,
+                                    off_t offset_out, size_t size, int flags)
+{
+    const struct fuse_context * context = fuse_get_context();
+    struct afp_volume * volume = context->private_data;
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "*** cache copy_file_range \"%s\" offset=%llu to \"%s\" "
+                   "offset=%llu size=%zu",
+                   path_in, (unsigned long long) offset_in, path_out,
+                   (unsigned long long) offset_out, size);
+
+    if (flags != 0) {
+        return -EINVAL;
+    }
+
+    if (!fi_in || !fi_in->fh || !fi_out || !fi_out->fh) {
+        return -EBADF;
+    }
+
+    return ml_copy_range(volume, (struct afp_file_info *) fi_in->fh,
+                         offset_in, (struct afp_file_info *) fi_out->fh,
+                         offset_out, size, context->uid, context->gid);
+}
+#endif
 
 
 static int fuse_mkdir(const char *path, mode_t mode)
@@ -571,7 +588,7 @@ static int fuse_read(const char *path, char *buf, size_t size, off_t offset,
         size_t remaining = size - amount_read;
         off_t read_offset = offset + (off_t)amount_read;
         int read_result;
-        read_result = ml_read(volume, path, buf + amount_read, remaining,
+        read_result = ml_read(volume, buf + amount_read, remaining,
                               read_offset, fp, &eof);
 
         if (read_result < 0) {
@@ -663,18 +680,7 @@ static int fuse_truncate(const char *path, off_t offset,
         struct afp_file_info *fp = (struct afp_file_info *) fi->fh;
         log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** truncate using open forkid %d",
                        fp->forkid);
-
-        /* Avoid a redundant SetForkParms request when the size is unchanged. */
-        if (fp->size != (uint64_t)offset) {
-            ret = ml_setfork_size(volume, fp->forkid, 0, offset);
-
-            if (ret == 0) {
-                /* Update the cached size */
-                fp->size = offset;
-            }
-        } else {
-            ret = 0;
-        }
+        ret = ml_ftruncate(volume, fp, offset);
     } else if (fi) {
         /* fi is provided but fh is not set yet (create in progress).
          * The file is being opened, so ll_open will handle O_TRUNC.
@@ -1098,15 +1104,8 @@ static int fuse_setattr(const char *path, struct fuse_darwin_attr *attr,
 
     if (to_set & FUSE_SET_ATTR_SIZE) {
         if (fi && fi->fh) {
-            struct afp_file_info *fp = (struct afp_file_info *) fi->fh;
-
-            if (fp->size != (uint64_t)attr->size) {
-                ret = ml_setfork_size(volume, fp->forkid, 0, attr->size);
-
-                if (ret == 0) {
-                    fp->size = attr->size;
-                }
-            }
+            ret = ml_ftruncate(volume, (struct afp_file_info *) fi->fh,
+                               attr->size);
         } else {
             ret = ml_truncate(volume, path, attr->size);
         }
@@ -1220,9 +1219,9 @@ static void *afp_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
     /* Keep each FUSE write within the server's negotiated DSI request
      * quantum.  This gives FUSE 3 a useful large-write size while avoiding
      * an avoidable split and extra AFP write round trip in ll_write(). */
-    if (conn && vol->server->tx_quantum
-            && conn->max_write > vol->server->tx_quantum) {
-        conn->max_write = vol->server->tx_quantum;
+    if (conn && vol->server->quantum
+            && conn->max_write > vol->server->quantum) {
+        conn->max_write = vol->server->quantum;
     }
 
 #ifdef __APPLE__
@@ -1327,7 +1326,10 @@ static struct fuse_operations afp_oper = {
     .mknod      = fuse_mknod,
     .create     = fuse_create,
     .write      = fuse_write,
-    .flush      = fuse_flush,
+#ifdef AFP_FUSE_COPY_FILE_RANGE
+    .copy_file_range = fuse_copy_file_range,
+#endif
+    .fsync      = fuse_fsync,
     .release    = fuse_release,
     .getxattr   = fuse_getxattr,
     .setxattr   = fuse_setxattr,

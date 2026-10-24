@@ -31,8 +31,7 @@ Performance
 -----------
 
 * asynchronous unlocking
-* use rx and tx quantums properly
-* queue writes to be one tx quantum
+* queue writes to be one quantum
 * optimize locking
 * don't go back through the select loop to read what comes after the DSI
 packet
