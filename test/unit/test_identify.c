@@ -2,7 +2,18 @@
 #include <string.h>
 
 #include "lib/afp_internal.h"
+#include "lib/client.h"
+#include "lib/compat.h"
 #include "tap.h"
+
+static void stderr_log_for_client(
+    void *priv _U_,
+    enum logtypes logtype _U_,
+    int loglevel _U_,
+    const char *message)
+{
+    fprintf(stderr, "%s\n", message);
+}
 
 static void identify(struct afp_server *server, const char *machine_type)
 {
@@ -13,6 +24,9 @@ static void identify(struct afp_server *server, const char *machine_type)
 
 int main(int argc, char **argv)
 {
+    struct libafpclient test_client = {
+        .log_for_client = stderr_log_for_client,
+    };
     struct afp_versions afp22 = { "AFP2.2", 22 };
     struct afp_versions afp30 = { "AFP3.0", 30 };
     struct afp_versions afp33 = { "AFP3.3", 33 };
@@ -20,6 +34,7 @@ int main(int argc, char **argv)
     struct afp_server server;
     struct afpc_server_version version;
     test_tap_init(argc, argv);
+    libafpclient_register(&test_client);
     memset(&server, 0, sizeof(server));
     CHECK(afp_identify_machine_type(NULL) == AFPC_SERVER_TYPE_UNKNOWN);
     CHECK(afp_identify_machine_type("") == AFPC_SERVER_TYPE_UNKNOWN);
@@ -91,5 +106,6 @@ int main(int argc, char **argv)
     CHECK(!afp_server_drops_long_commands(&server));
     identify(&server, "Netatalk");
     CHECK(afp_server_drops_long_commands(&server));
+    libafpclient_register(NULL);
     return test_tap_finish();
 }
