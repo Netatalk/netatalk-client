@@ -14,18 +14,25 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   static_analysis:
     name: SonarQube Static Analysis
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 24
     if: >
       (github.event_name == 'push' && github.actor != 'dependabot[bot]' && github.actor != 'dependabot') || (github.event_name
       == 'pull_request' && !github.event.pull_request.head.repo.fork && github.actor != 'dependabot[bot]' && github.actor
       != 'dependabot')
     container:
-      image: ubuntu:24.04
+      image: ubuntu:26.04
     env:
       BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory
+      CC: gcc
+      CXX: g++
     steps:
       - name: Install dependencies
         run: |
@@ -33,30 +40,60 @@ jobs:
           apt-get install --assume-yes --no-install-recommends \
               ca-certificates \
               curl \
+              g++ \
               gcc \
+              gcovr \
               git \
               gnupg \
+              libavahi-client-dev \
               libfuse3-dev \
               libgcrypt20-dev \
               libreadline-dev \
               meson \
               ninja-build \
+              perl \
               pkg-config \
               unzip
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Install Build Wrapper
         uses: SonarSource/sonarqube-scan-action/install-build-wrapper@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
       - name: Run build wrapper
+        id: build
         run: |
-          mkdir -p ${{ env.BUILD_WRAPPER_OUT_DIR }}
-          meson setup build -Dbuildtype=debug
-          build-wrapper-linux-x86-64 --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} meson compile -C build
+          mkdir -p "$BUILD_WRAPPER_OUT_DIR"
+          meson setup build \
+            -Dbuildtype=debug \
+            -Db_coverage=true \
+            -Dwith-testsuite=true
+          build-wrapper-linux-x86-64 --out-dir "$BUILD_WRAPPER_OUT_DIR" meson compile -C build
+      - name: Run tests
+        run: meson test -C build --print-errorlogs
+      - name: Generate SonarQube coverage report
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p build/coverage
+          gcovr --root . --gcov-executable gcov \
+            --filter '(cmdline|common|control|daemon|discovery|fuse|include|lib)/' \
+            --sonarqube build/coverage/sonarqube.xml \
+            --print-summary build
       - name: Run SonarQube scan
         uses: sonarsource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
-          args: --define sonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
+          args: >-
+            --define sonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json --define sonar.coverageReportPaths=build/coverage/sonarqube.xml
+      - name: Upload coverage report and analysis logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: code-analysis-logs
+          path: |
+            build/coverage/
+            build/meson-logs/
+            ${{ env.BUILD_WRAPPER_OUT_DIR }}/
+          retention-days: 30

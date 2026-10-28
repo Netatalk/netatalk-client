@@ -27,6 +27,9 @@ on:
       - 'README.md'
       - 'TODO'
 
+permissions:
+  contents: read
+
 env:
   SMARTOS_BOOTSTRAP_URL: https://pkgsrc.smartos.org/packages/SmartOS/bootstrap/bootstrap-2025Q4-x86_64.tar.gz
   SMARTOS_BOOTSTRAP_SHA256: 4842f72b610d44cf98560253b6bf16ff4056016e5fe2c6932bc195156ac75772
@@ -34,11 +37,14 @@ env:
 jobs:
   build-alpine-fuse2:
     name: Alpine Linux (with FUSE v2)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 24
     container:
       image: alpine:3.22.1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           apk add --no-cache \
@@ -69,11 +75,14 @@ jobs:
 
   build-alpine-fuse3:
     name: Alpine Linux (with FUSE v3)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 24
     container:
       image: alpine:3.22.1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           apk add --no-cache \
@@ -103,12 +112,23 @@ jobs:
           path: build/meson-logs
 
   build-fedora-fuse2:
-    name: Fedora Linux (with FUSE v2)
-    runs-on: ubuntu-latest
+    name: Fedora Linux (with FUSE v2) (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-26.04
+          - arch: arm64
+            runner: ubuntu-26.04-arm
+    timeout-minutes: 24
     container:
       image: fedora:42
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           dnf --setopt=install_weak_deps=False --assumeyes install \
@@ -136,16 +156,27 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: meson-logs-${{ github.job }}
+          name: meson-logs-${{ github.job }}-${{ matrix.arch }}
           path: build/meson-logs
 
   build-fedora-fuse3:
-    name: Fedora Linux (with FUSE v3)
-    runs-on: ubuntu-latest
+    name: Fedora Linux (with FUSE v3) (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-26.04
+          - arch: arm64
+            runner: ubuntu-26.04-arm
+    timeout-minutes: 24
     container:
       image: fedora:42
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           dnf --setopt=install_weak_deps=False --assumeyes install \
@@ -173,14 +204,25 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: meson-logs-${{ github.job }}
+          name: meson-logs-${{ github.job }}-${{ matrix.arch }}
           path: build/meson-logs
 
   build-ubuntu-fuse2:
-    name: Ubuntu 22.04 (with FUSE v2)
-    runs-on: ubuntu-22.04
+    name: Ubuntu 22.04 (with FUSE v2) (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -194,8 +236,11 @@ jobs:
             ninja-build \
             perl \
             pkg-config \
-            python3-pip
-          sudo python3 -m pip install --upgrade meson
+            python3-venv
+          # Ubuntu 22.04 ships Meson 0.61.2; exercise our minimum supported version.
+          python3 -m venv "$RUNNER_TEMP/meson-venv"
+          "$RUNNER_TEMP/meson-venv/bin/pip" install 'meson==0.62.0'
+          echo "$RUNNER_TEMP/meson-venv/bin" >> "$GITHUB_PATH"
       - name: Setup
         run: meson setup build --prefix=/usr -Dwith-testsuite=true
       - name: Compile
@@ -203,21 +248,32 @@ jobs:
       - name: Test
         run: meson test -C build
       - name: Install
-        run: sudo meson install -C build
+        run: sudo "$RUNNER_TEMP/meson-venv/bin/meson" install -C build
       - name: Run
         run: afpcmd -h
       - name: Upload meson logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: meson-logs-${{ github.job }}
+          name: meson-logs-${{ github.job }}-${{ matrix.arch }}
           path: build/meson-logs
 
   build-ubuntu-fuse3:
-    name: Ubuntu 24.04 (with FUSE v3)
-    runs-on: ubuntu-24.04
+    name: Ubuntu 24.04 (with FUSE v3) (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -245,17 +301,20 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: meson-logs-${{ github.job }}
+          name: meson-logs-${{ github.job }}-${{ matrix.arch }}
           path: build/meson-logs
 
   build-macos-fuse2:
-    name: macOS (with FUSE v2)
-    runs-on: macos-latest
+    name: macOS 26 / Homebrew (Apple Silicon, with FUSE v2)
+    runs-on: macos-26
+    timeout-minutes: 24
     env:
       HOMEBREW_NO_INSTALL_CLEANUP: 1
       HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           brew update
@@ -280,13 +339,16 @@ jobs:
           path: build/meson-logs
 
   build-macos-fuse3:
-    name: macOS (with FUSE v3)
-    runs-on: macos-latest
+    name: macOS 26 / Homebrew (Apple Silicon, with FUSE v3)
+    runs-on: macos-26
+    timeout-minutes: 24
     env:
       HOMEBREW_NO_INSTALL_CLEANUP: 1
       HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           brew update
@@ -310,20 +372,80 @@ jobs:
           name: meson-logs-${{ github.job }}
           path: build/meson-logs
 
+  build-macos-intel:
+    name: macOS 15 / MacPorts (Intel, with FUSE v${{ matrix.fuse }})
+    runs-on: macos-15-intel
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      matrix:
+        fuse: [2, 3]
+    env:
+      PKG_CONFIG_PATH: /opt/local/lib/pkgconfig:/opt/local/share/pkgconfig
+      # Keep the selected FUSE headers ahead of the top-level FUSE 2 shim.
+      CFLAGS: -I/opt/local/include/fuse${{ matrix.fuse == 3 && '3' || '' }} -I/opt/local/include
+      LDFLAGS: -L/opt/local/lib
+      AR: /usr/bin/ar
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install MacPorts
+        run: |
+          curl --proto '=https' --location --fail \
+            -o "$RUNNER_TEMP/MacPorts.pkg" \
+            https://distfiles.macports.org/MacPorts/MacPorts-2.12.6-15-Sequoia.pkg
+          echo "2d6d58ff3ff60e70f8dc05cb2df9df3137e3d7c0c6d6f6236d68c8ba03343e34  $RUNNER_TEMP/MacPorts.pkg" | shasum -a 256 -c -
+          sudo installer -pkg "$RUNNER_TEMP/MacPorts.pkg" -target /
+          echo "/opt/local/bin" >> "$GITHUB_PATH"
+          echo "/opt/local/sbin" >> "$GITHUB_PATH"
+          sudo /opt/local/bin/port -N selfupdate
+      - name: Install dependencies
+        run: |
+          sudo /opt/local/bin/port -N install \
+            libedit \
+            libgcrypt \
+            libiconv \
+            macfuse \
+            meson \
+            ninja \
+            pkgconfig
+      - name: Setup
+        run: |
+          pkg-config --modversion fuse${{ matrix.fuse == 3 && '3' || '' }}
+          meson setup build --prefix=/opt/local \
+            -Dforce-fuse-v2=${{ matrix.fuse == 2 && 'true' || 'false' }}
+      - name: Compile
+        run: meson compile -C build
+      - name: Test
+        run: meson test -C build
+      - name: Install
+        run: sudo /opt/local/bin/meson install -C build
+      - name: Run
+        run: /opt/local/bin/afpcmd -h
+      - name: Upload meson logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: meson-logs-${{ github.job }}-fuse${{ matrix.fuse }}
+          path: build/meson-logs
+
   build-freebsd-fuse2:
     name: FreeBSD (with FUSE v2)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    runs-on: ubuntu-26.04
+    timeout-minutes: 24
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build on VM
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           copyback: true
           sync: sshfs
           prepare: |
+            set -e
             pkg remove -y fusefs-libs3
             pkg install -y \
               avahi \
@@ -351,18 +473,20 @@ jobs:
 
   build-freebsd-fuse3:
     name: FreeBSD (with FUSE v3)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    runs-on: ubuntu-26.04
+    timeout-minutes: 24
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build on VM
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           copyback: true
           sync: sshfs
           prepare: |
+            set -e
             pkg install -y \
               avahi \
               fusefs-libs3 \
@@ -389,16 +513,20 @@ jobs:
 
   build-netbsd:
     name: NetBSD (with FUSE v2)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 24
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build on VM
         uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1.5.2
         with:
           copyback: true
           prepare: |
-            export PKG_PATH="http://ftp.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/$(uname -r|cut -f '1 2' -d.)/All"
+            set -e
+            export PKG_PATH="https://ftp.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/$(uname -r|cut -f '1 2' -d.)/All"
             pkg_add \
               fuse \
               gcc13 \
@@ -421,16 +549,20 @@ jobs:
 
   build-openbsd:
     name: OpenBSD
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    timeout-minutes: 24
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build on VM
         uses: vmactions/openbsd-vm@5f7b2c933b8846a138361d6843c52af4bef5d945 # v1.4.8
         with:
           copyback: true
           sync: sshfs
           prepare: |
+            set -e
             pkg_add -I \
               avahi \
               libgcrypt \
@@ -451,11 +583,13 @@ jobs:
 
   build-omnios:
     name: OmniOS
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 24
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build on VM
         uses: vmactions/omnios-vm@9576f0b6d15e7696548409baa533bc0a339caf42 # v1.3.7
         with:
@@ -501,11 +635,13 @@ jobs:
 
   build-openindiana:
     name: OpenIndiana
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 24
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build on VM
         uses: vmactions/openindiana-vm@f0ed27ca85a6d1f5b11e4242eba1d6effa5aaae2 # v1.1.8
         with:
@@ -539,11 +675,13 @@ jobs:
 
   build-solaris:
     name: Solaris 11
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 24
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build on VM
         uses: vmactions/solaris-vm@87d3c436511cef802cd1637f86f73b1a97715c8c # v1.4.1
         with:
