@@ -31,16 +31,14 @@
 
 #include <ctype.h>
 
-/* The data type used for 16 bit character strings.
- * The format is handled compatible to *XChar2b* used by Xlib.
- */
+/* A UCS-2 character in the host's byte order. */
 typedef unsigned short char16;
 
-extern size_t str16len(const char16 *str16, size_t max_len);
 extern int mbCharLen(const char *);
 extern size_t mbStrLen(const char *str, size_t max_bytes);
-extern char16 *UTF8toUCS2(const char *str, size_t max_bytes,
-                          size_t *bytes_consumed);
+extern int UTF8toUCS2(const char *str, size_t max_bytes, char16 *dest,
+                      size_t dest_chars, size_t *bytes_consumed,
+                      unsigned int *substituted);
 extern int UCS2toUTF8(const char16 *str16, size_t max_chars, char *dest,
                       size_t dest_len);
 extern int UCS2precompose(char16, char16);

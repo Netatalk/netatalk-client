@@ -225,6 +225,26 @@ test(
     verbose: true,
 )
 
+path_conversion_allocs_test = executable(
+    'test_path_conversion_allocs',
+    sources: files(
+        '../../lib/codepage.c',
+        '../../lib/unicode.c',
+        'test_path_conversion_allocs.c',
+    ),
+    include_directories: incdir,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'path conversion allocations',
+    path_conversion_allocs_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
 fork_io_test = executable(
     'test_fork_io',
     sources: ['test_fork_io.c'],
