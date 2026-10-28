@@ -245,6 +245,7 @@ int get_dirid(struct afp_volume * volume, const char *path,
 {
     const char *last_slash;
     const char *component;
+    const char *component_end;
     char *slash;
     char *parent;
     char *known_parent;
@@ -314,8 +315,8 @@ int get_dirid(struct afp_volume * volume, const char *path,
         component++;
     }
 
-    while ((slash = strchr(component, '/'))) {
-        size_t component_len = (size_t)(slash - component);
+    while ((component_end = strchr(component, '/'))) {
+        size_t component_len = (size_t)(component_end - component);
         name = strndup(component, component_len);
 
         if (!name) {
@@ -333,7 +334,7 @@ int get_dirid(struct afp_volume * volume, const char *path,
         }
 
         if (fi.isdir) {
-            full_parent = strndup(path, (size_t)(slash - path));
+            full_parent = strndup(path, (size_t)(component_end - path));
 
             if (!full_parent) {
                 free(name);
@@ -351,7 +352,7 @@ int get_dirid(struct afp_volume * volume, const char *path,
 
         free(name);
         parent_did = fi.fileid;
-        component = slash + 1U;
+        component = component_end + 1U;
     }
 
     *dirid = parent_did;

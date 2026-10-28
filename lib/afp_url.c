@@ -92,7 +92,7 @@ static void escape_url(struct afpc_url * url)
 }
 
 
-static char *escape_strrchr(const char *haystack, int c, const char *toescape)
+static char *escape_strrchr(char *haystack, int c, const char *toescape)
 {
     char *p;
 
@@ -116,7 +116,7 @@ static char *escape_strrchr(const char *haystack, int c, const char *toescape)
     return escape_strrchr(p, c, toescape);
 }
 
-static char *escape_strchr(const char *haystack, int c, const char *toescape)
+static char *escape_strchr(char *haystack, int c, const char *toescape)
 {
     char *p;
     size_t diff;
@@ -159,6 +159,7 @@ static int parse_url(struct afpc_url *url, const char *toparse,
     char firstpart[AFP_HOSTNAME_LEN];
     char *secondpart = NULL;
     const char *path_part;
+    const char *authority;
     char *p, *q;
     int firstpartlen;
     int skip_earliestpart = 0;
@@ -181,49 +182,48 @@ static int parse_url(struct afpc_url *url, const char *toparse,
 
     /* if there is a ://, make sure it is preceeded by afp */
 
-    if ((p = strstr(toparse, "://")) != NULL) {
-        q = p - 3;
+    if ((authority = strstr(toparse, "://")) != NULL) {
+        const char *scheme;
 
-        if (p < toparse) {
+        if (authority - toparse < 3) {
             URL_LOG(LOG_ERR, "URL does not start with afp://");
             return -1;
         }
 
-        if (strncmp(q, "afp", 3) != 0) {
+        scheme = authority - 3;
+
+        if (strncmp(scheme, "afp", 3) != 0) {
             URL_LOG(LOG_ERR, "URL does not start with afp://");
             return -1;
         }
 
-        p += 3;
+        authority += 3;
     } else {
         URL_LOG(LOG_ERR, "This isn't a URL at all");
         return -1;
     }
 
-    if (p == NULL) {
-        p = (char *)toparse;
-    }
-
+    q = NULL;
     /* Split the authority from the volume/path without putting a full path
      * into a fixed parser buffer. */
-    path_part = strchr(p, '/');
+    path_part = strchr(authority, '/');
 
     if (!path_part) {
-        if (strlcpy(firstpart, p, sizeof(firstpart)) >= sizeof(firstpart)) {
+        if (strlcpy(firstpart, authority, sizeof(firstpart)) >= sizeof(firstpart)) {
             URL_LOG(LOG_ERR, "Server authority is too long");
             return -1;
         }
 
         skip_secondpart = 1;
     } else {
-        size_t firstpart_len = (size_t)(path_part - p);
+        size_t firstpart_len = (size_t)(path_part - authority);
 
         if (firstpart_len >= sizeof(firstpart)) {
             URL_LOG(LOG_ERR, "Server authority is too long");
             return -1;
         }
 
-        memcpy(firstpart, p, firstpart_len);
+        memcpy(firstpart, authority, firstpart_len);
         firstpart[firstpart_len] = '\0';
     }
 
