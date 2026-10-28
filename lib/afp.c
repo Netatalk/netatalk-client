@@ -4,7 +4,10 @@
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2007 Derrik Pates <dpates@dsdk12.net>
  *  Copyright (C) 2024-2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
+ *  This program can be distributed under the terms of the GNU GPL.
+ *  See the file COPYING.
  */
 
 /*!
@@ -902,15 +905,28 @@ error:
 }
 
 
+/*!
+ * @brief Find a volume by the name a URL gives
+ *
+ * @param[in] server   the server
+ * @param[in] volname  UTF-8 volume name
+ * @returns the volume, or NULL when none matches or the name does not
+ *          decode whole
+ */
 struct afp_volume *find_volume_by_name(struct afp_server * server,
                                        char *volname)
 {
     int i;
     struct afp_volume * using_volume = NULL;
     char converted_volname[AFP_VOLUME_NAME_UTF8_LEN];
-    memset(converted_volname, 0, AFP_VOLUME_NAME_UTF8_LEN);
-    convert_utf8dec_to_utf8pre(volname, strlen(volname),
-                               converted_volname, AFP_VOLUME_NAME_UTF8_LEN);
+
+    /* A name that does not decode whole names another volume. */
+    if (convert_utf8dec_to_utf8pre(volname, (int)strlen(volname),
+                                   converted_volname,
+                                   AFP_VOLUME_NAME_UTF8_LEN) != 0) {
+        return NULL;
+    }
+
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "find_volume_by_name: looking for '%s' (converted: '%s')",
                    volname, converted_volname);

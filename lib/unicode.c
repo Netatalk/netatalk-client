@@ -9,6 +9,7 @@
  * Copyright (C) 2002 Roland Krause <roland_krause@freenet.de>
  * Copyright (C) 2007 Michael Ulbrich <mul@rentapacs.de>
  * Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ * Copyright (C) 2026 Andy Lemin (andylemin)
  *
  * This module is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,6 +27,7 @@
  *
  **********************************************************************/
 
+#include <pthread.h>
 #include <stdlib.h>
 
 #include "unicode.h"
@@ -1042,15 +1044,15 @@ static struct {
 static int delta[] = { 499, 249, 125, 62, 31, 16, 8, 4, 2, 1, 0 };
 
 
-/*      Function Name:  UCS2precompose
- *      Description:    Canonically combine two UCS2 characters, if matching
- *                      pattern is found in table. Uniform binary search
- *                      algorithm from D. Knuth TAOCP Vol.3 p.414. Uses static
- *                      arrays table[] and delta[] (see above).
- *      Arguments:      first	- the first UCS2 character
- *                      second	- the second UCS2 character
- *      Returns:        Canonical composition of first and second or
- *                      -1 if no such composition exists in table.
+/*!
+ * @brief Combine two UCS-2 characters canonically
+ *
+ * A uniform binary search of table[] with the steps in delta[], after
+ * Knuth, TAOCP volume 3.
+ *
+ * @param[in] first   the base character
+ * @param[in] second  the combining character
+ * @returns the composition, or -1 when table[] has none
  */
 int UCS2precompose(char16 first, char16 second)
 {
@@ -1081,34 +1083,11 @@ int UCS2precompose(char16 first, char16 second)
  *
  **********************************************************************/
 
-/*	Function Name:	str16len
- *	Description: 	Determine the string length of a char16 string
- *			with bounds checking.
- *	Arguments:	str16	- A char16 string (may or may not be null-terminated)
- *			max_len	- Maximum number of char16's to examine
- *	Returns:	Length in char16's (up to max_len), or max_len if no null found
- */
-size_t str16len(const char16 *str16, size_t max_len)
-{
-    size_t len = 0;
-
-    if (!str16) {
-        return 0;
-    }
-
-    while (len < max_len && str16[len] != 0) {
-        len++;
-    }
-
-    return len;
-}
-
-/*	Function Name:	mbCharLen
- *	Description: 	Determine the length in byte of an UTF8 coded
- *			character.
- *	Arguments:	str	- Pointer into an UTF8 coded string
- *	Returns:	Number of byte of the next character in the string
- *			or 0 in case of an error.
+/*!
+ * @brief Length in bytes of the UTF-8 character str starts
+ *
+ * @param[in] str  pointer into a UTF-8 string
+ * @returns the length, or 0 at a byte that leads no sequence or the end
  */
 int mbCharLen(const char *str)
 {
@@ -1137,13 +1116,13 @@ int mbCharLen(const char *str)
     return 0;	/* End of string reached */
 }
 
-/*	Function Name:	mbStrLen
- *	Description: 	Determine the string length of an UTF8 coded string
- *			in characters (not in bytes!) with bounds checking.
- *	Arguments:	str	- The UTF8 coded string (may or may not be null-terminated)
- *			max_bytes - Maximum number of bytes to examine
- *	Returns:	The length in characters (illegal coded bytes
- *			are counted as one character per byte)
+/*!
+ * @brief Count the characters of a UTF-8 string
+ *
+ * @param[in] str        UTF-8 string, terminated or not
+ * @param[in] max_bytes  bytes of str to examine
+ * @returns the characters before the end, a malformed byte or a sequence
+ *          max_bytes cuts
  */
 size_t mbStrLen(const char *str, size_t max_bytes)
 {
@@ -1169,134 +1148,136 @@ size_t mbStrLen(const char *str, size_t max_bytes)
     return len;
 }
 
-/*	Function Name:	UTF8toUCS2
- *	Description: 	Conversion of an UTF8 coded string into UCS2/UNICODE
- *			with bounds checking. Stops at max_bytes or null terminator,
- *			whichever comes first. Partial UTF-8 sequences at boundary
- *			are not processed.
- *			If the encoding of a character is not representable
- *			in two bytes, the tilde sign ~ is written into the
- *			result string at that position.
- *			For an illegal UTF8 code an asterix * is stored in
- *			the result string.
- *	Arguments:	str	- The UTF8 coded string (may or may not be null-terminated)
- *			max_bytes - Maximum number of bytes to read from str
- *			bytes_consumed - Output: actual bytes consumed (may be NULL)
- *	Returns:	The UCS2 coded result string. The allocated memory
- *			for this string has to be freed by the caller!
- *			Returns NULL on allocation failure.
- *			The result string is stored independent of the
- *			architecture in the high byte/low byte order and is
- *			compatible to the XChar2b format! Type casting is valid.
- *			char16 is used to increase the performance.
+/*!
+ * @brief Decode UTF-8 into UCS-2, into the caller's buffer
+ *
+ * A malformed sequence decodes to '*' and is counted; a character beyond
+ * UCS-2 decodes to '~' uncounted, as every name shown has it. The decode
+ * stops at a byte that leads no sequence or a sequence max_bytes cuts.
+ *
+ * @param[in]  str             UTF-8 string
+ * @param[in]  max_bytes       bytes of str to read at most
+ * @param[out] dest            receives the characters and a terminator
+ * @param[in]  dest_chars      capacity of dest in characters
+ * @param[out] bytes_consumed  bytes of str decoded, or NULL
+ * @param[out] substituted     malformed sequences replaced, or NULL
+ * @returns the characters written, or -1 when dest cannot hold them
  */
-char16 *UTF8toUCS2(const char *str, size_t max_bytes, size_t *bytes_consumed)
+int UTF8toUCS2(const char *str, size_t max_bytes, char16 *dest,
+               size_t dest_chars, size_t *bytes_consumed,
+               unsigned int *substituted)
 {
-    char16 *str16, *p16, testINTEL = 0, c16;
-    int    clen;
-    size_t cInString;
+    char16 *p16 = dest;
+    char16 c16;
+    int clen;
+    size_t chars_written = 0;
+    unsigned int replaced = 0;
     const char *p, *end;
 
+    if (bytes_consumed) {
+        *bytes_consumed = 0;
+    }
+
+    if (substituted) {
+        *substituted = 0;
+    }
+
+    if (!dest || dest_chars == 0) {
+        return -1;
+    }
+
+    *dest = 0;
+
     if (!str || max_bytes == 0) {
-        if (bytes_consumed) {
-            *bytes_consumed = 0;
-        }
-
-        return NULL;
+        return 0;
     }
 
-    /* In the first step we try to determine the string
-     * length in characters.
-     */
-    cInString = mbStrLen(str, max_bytes);
-    /* Now we need memory for our conversion result including null terminator */
-    str16 = malloc((cInString + 1) * sizeof(char16));
-
-    if (!str16) {
-        if (bytes_consumed) {
-            *bytes_consumed = 0;
-        }
-
-        return NULL;
-    }
-
-    /* Start the conversion: Determine the number of bytes
-     * for the next character, decode it and store the
-     * result in our result string
-     */
-    p   = str;
+    p = str;
     end = str + max_bytes;
-    p16 = str16;
-    size_t chars_written = 0;
 
-    while (p < end && *p != '\0' && chars_written < cInString
-            && (clen = mbCharLen(p)) > 0) {
-        /* Don't process partial UTF-8 sequences at the boundary */
+    while (p < end && *p != '\0' && (clen = mbCharLen(p)) > 0) {
         if (p + clen > end) {
             break;
         }
 
+        if (chars_written + 1 >= dest_chars) {
+            *dest = 0;
+            return -1;
+        }
+
         switch (clen) {
         case 1:
-            *p16 = (char16) * p;
+            c16 = (char16) * p;
             break;
 
         case 2:
             c16 = (p[1] & 0x3f) + ((p[0] & 0x1f) << 6);
-            *p16 = ((c16 > 0x7f) && ((p[1] & 0xC0) == 0x80)) ? c16 : '*';
+
+            if (c16 <= 0x7f || (p[1] & 0xC0) != 0x80) {
+                c16 = '*';
+                replaced++;
+            }
+
             break;
 
         case 3:
             c16 = (p[2] & 0x3f) + ((p[1] & 0x3f) << 6) + ((p[0] & 0xf) << 12);
-            *p16 = ((c16 > 0x7ff) && ((p[1] & 0xC0) == 0x80)
-                    && ((p[2] & 0xC0) == 0x80)) ? c16 : '*';
+
+            if (c16 <= 0x7ff || (p[1] & 0xC0) != 0x80
+                    || (p[2] & 0xC0) != 0x80
+                    || (c16 >= 0xd800 && c16 <= 0xdfff)) {
+                c16 = '*';
+                replaced++;
+            }
+
             break;
 
         default:
-            *p16 = '~';	/* character code is greater than 0xffff */
+            if (clen == 4 && (unsigned char)p[0] <= 0xf4
+                    && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80
+                    && (p[3] & 0xC0) == 0x80
+                    && ((unsigned char)p[0] != 0xf0
+                        || (unsigned char)p[1] >= 0x90)
+                    && ((unsigned char)p[0] != 0xf4
+                        || (unsigned char)p[1] <= 0x8f)) {
+                /* U+10000 to U+10FFFF, led by F0 90..BF to F4 80..8F; shown
+                 * as '~' everywhere, so not a replacement. */
+                c16 = '~';
+            } else {
+                c16 = '*';
+                replaced++;
+            }
+
+            break;
         }
 
-        p16++;				/* Jump to the next character */
+        *p16++ = c16;
         chars_written++;
         p += clen;
     }
 
-    /* String termination - p16 is guaranteed to be within allocated buffer */
     *p16 = 0;
 
     if (bytes_consumed) {
-        *bytes_consumed = p - str;
+        *bytes_consumed = (size_t)(p - str);
     }
 
-    /* Swap the bytes, if we are on a machine with an INTEL architecture */
-
-    if (*((const char *)&testINTEL)) {
-        char *src, *dest, c;
-        src = dest = (char *)str16;
-        src++;
-
-        while (*src || *dest) {
-            c = *dest;
-            *dest = *src;
-            *src = c;
-            src += 2;
-            dest += 2;
-        }
+    if (substituted) {
+        *substituted = replaced;
     }
 
-    return str16;
+    return (int)chars_written;
 }
 
-/*      Function Name:  UCS2toUTF8
- *      Description:    Conversion of an UCS2 coded string into UTF8 with bounds
- *                      checking. Stops at max_chars or null terminator, whichever
- *                      comes first. Output is written to caller-provided buffer.
- *      Arguments:      str16     - The UCS2 coded string (may or may not be null-terminated)
- *                      max_chars - Maximum number of char16's to read from str16
- *                      dest      - Destination buffer for UTF8 output
- *                      dest_len  - Size of destination buffer in bytes
- *      Returns:        0 on success, -1 on error (buffer too small or invalid input)
- *                      dest is always null-terminated on success
+/*!
+ * @brief Encode a UCS-2 string as UTF-8
+ *
+ * @param[in]  str16      UCS-2 string, terminated or not
+ * @param[in]  max_chars  characters of str16 to read at most
+ * @param[out] dest       receives the terminated UTF-8 string, "" on
+ *                        failure
+ * @param[in]  dest_len   capacity of dest
+ * @returns 0, or -1 for a NULL string or a result dest cannot hold
  */
 int UCS2toUTF8(const char16 *str16, size_t max_chars, char *dest,
                size_t dest_len)
@@ -1362,21 +1343,65 @@ int UCS2toUTF8(const char16 *str16, size_t max_chars, char *dest,
     return 0;
 }
 
-/*      Function Name:  UCS2decompose
- *      Description:    Canonically decompose a UCS2 character into base and
- *                      combining character, if a matching pattern is found in
- *                      the table.
- *      Arguments:      c       - the UCS2 character to decompose
- *                      first   - pointer to store the first char (base)
- *                      second  - pointer to store the second char (combining)
- *      Returns:        1 if decomposition found, 0 otherwise.
+/* table[] is in pattern order for UCS2precompose(); UCS2decompose()
+ * searches this index of it, in precomposed order. */
+static int decompose_index[sizeof(table) / sizeof(table[0])];
+static pthread_once_t decompose_index_once = PTHREAD_ONCE_INIT;
+
+/*!
+ * @brief Order two indices into table[] by precomposed character
+ *
+ * @param[in] a  pointer to an index
+ * @param[in] b  pointer to another
+ * @returns negative, zero or positive, as qsort() expects
+ */
+static int compare_precomposed(const void *a, const void *b)
+{
+    int left = table[*(const int *)a].precomposed;
+    int right = table[*(const int *)b].precomposed;
+    return (left > right) - (left < right);
+}
+
+/*!
+ * @brief Sort the index UCS2decompose() searches
+ */
+static void build_decompose_index(void)
+{
+    size_t count = sizeof(table) / sizeof(table[0]);
+
+    for (size_t i = 0; i < count; i++) {
+        decompose_index[i] = (int)i;
+    }
+
+    qsort(decompose_index + 1, count - 1, sizeof(int), compare_precomposed);
+}
+
+/*!
+ * @brief Canonically decompose a UCS-2 character into its base and
+ *        combining character
+ *
+ * @param[in]  c       the character to decompose
+ * @param[out] first   receives the base character
+ * @param[out] second  receives the combining character
+ * @returns 1 when the table decomposes c, 0 otherwise
  */
 int UCS2decompose(char16 c, char16 *first, char16 *second)
 {
-    for (unsigned int i = 1; i < sizeof(table) / sizeof(table[0]); i++) {
-        if (table[i].precomposed == c) {
-            *first = (table[i].pattern >> 16) & 0xFFFF;
-            *second = table[i].pattern & 0xFFFF;
+    size_t low = 1;
+    size_t high = sizeof(table) / sizeof(table[0]);
+    pthread_once(&decompose_index_once, build_decompose_index);
+
+    while (low < high) {
+        size_t mid = low + (high - low) / 2;
+        int entry = decompose_index[mid];
+
+        if (table[entry].precomposed < (int)c) {
+            low = mid + 1;
+        } else if (table[entry].precomposed > (int)c) {
+            high = mid;
+        } else {
+            *first = (table[entry].pattern >> 16) & 0xFFFF;
+            *second = table[entry].pattern & 0xFFFF;
             return 1;
         }
     }

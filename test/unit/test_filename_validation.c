@@ -1,3 +1,13 @@
+/*
+    test_filename_validation.c: name validation and conversion checks
+
+    Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+    Copyright (C) 2026 Andy Lemin (andylemin)
+
+    This program can be distributed under the terms of the GNU GPL.
+    See the file COPYING.
+*/
+
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +18,12 @@
 #include "netatalk-client/path.h"
 #include "tap.h"
 
+/*!
+ * @brief Build "/" and a run of U+4E00, three bytes each
+ *
+ * @param[in] characters  length of the run
+ * @returns the name, which the caller frees, or NULL
+ */
 static char *utf8_name(size_t characters)
 {
     char *name = malloc(1U + (characters * 3U) + 1U);
@@ -30,6 +46,12 @@ static char *utf8_name(size_t characters)
     return name;
 }
 
+/*!
+ * @brief Build "/" and a run of U+20000, four bytes each
+ *
+ * @param[in] characters  length of the run
+ * @returns the name, which the caller frees, or NULL
+ */
 static char *supplementary_utf8_name(size_t characters)
 {
     char *name = malloc(1U + (characters * 4U) + 1U);
@@ -53,6 +75,22 @@ static char *supplementary_utf8_name(size_t characters)
     return name;
 }
 
+/*!
+ * @brief Swallow a log message
+ */
+static void discard_log_message(void *priv _U_, enum logtypes logtype _U_,
+                                int loglevel _U_, const char *message _U_)
+{
+    /* The default client prints every message on stdout, the TAP stream. */
+}
+
+/*!
+ * @brief Run the name validation and conversion checks as TAP
+ *
+ * @param[in] argc  argument count
+ * @param[in] argv  arguments for the TAP harness
+ * @returns the harness's exit status
+ */
 int main(int argc, char **argv)
 {
     struct afp_versions afp3 = { .av_name = "AFP3.0", .av_number = 30 };
@@ -150,6 +188,134 @@ int main(int argc, char **argv)
                                   (int)(source_len * 3U + 1U)) == 0);
         CHECK(strlen(decomposed) == 1U + 255U * 6U);
         free(decomposed);
+    }
+    {
+        /* ASCII converts to itself both ways on both encodings; an AFP '/'
+         * is a Unix ':'; a path that does not fit is refused, not cut. */
+        char out[64];
+        char afp_name[] = "a/b";
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/dir/file.txt",
+                                  sizeof(out)) == 0);
+        CHECK(strcmp(out, "/dir/file.txt") == 0);
+        CHECK(convert_path_to_afp(kFPLongName, out, "/dir/file.txt",
+                                  sizeof(out)) == 0);
+        CHECK(strcmp(out, "/dir/file.txt") == 0);
+        CHECK(convert_path_to_unix(kFPUTF8Name, out, afp_name,
+                                   sizeof(out)) == 0);
+        CHECK(strcmp(out, "a:b") == 0);
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/dir/file.txt",
+                                  13) < 0);
+        /* U+0100 and U+3000, low byte zero, convert as any other: the first
+         * decomposes, the second does not. */
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/\xc4\x80",
+                                  sizeof(out)) == 0);
+        CHECK(strcmp(out, "/A\xcc\x84") == 0);
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/\xe3\x80\x80",
+                                  sizeof(out)) == 0);
+        CHECK(strcmp(out, "/\xe3\x80\x80") == 0);
+    }
+    {
+        /* A source the bound cuts is refused: "/caf" and U+00E9 in Mac Roman
+         * fit a six-byte buffer, the whole name does not. */
+        char cut[6];
+        CHECK(convert_path_to_afp(kFPLongName, cut, "/caf\xc3\xa9x",
+                                  sizeof(cut)) < 0);
+    }
+    {
+        /* A decomposed name of 400 characters precomposes whole. */
+        char long_decomposed[1U + 400U * 3U + 1U];
+        char precomposed[sizeof(long_decomposed)];
+        long_decomposed[0] = '/';
+
+        for (size_t i = 0; i < 400U; i++) {
+            long_decomposed[1U + i * 3U] = 'e';
+            long_decomposed[2U + i * 3U] = (char)0xcc;
+            long_decomposed[3U + i * 3U] = (char)0x81;
+        }
+
+        long_decomposed[sizeof(long_decomposed) - 1U] = '\0';
+        CHECK(convert_path_to_unix(kFPUTF8Name, precomposed, long_decomposed,
+                                   (int)sizeof(precomposed)) == 0);
+        CHECK(strlen(precomposed) == 1U + 400U * 2U);
+    }
+    {
+        /* U+1E69 decomposes in two steps, to s U+0323 U+0307; U+00E6 has no
+         * decomposition. */
+        char out[32];
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/\xe1\xb9\xa9",
+                                  sizeof(out)) == 0);
+        CHECK(strcmp(out, "/s\xcc\xa3\xcc\x87") == 0);
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/\xc3\xa6",
+                                  sizeof(out)) == 0);
+        CHECK(strcmp(out, "/\xc3\xa6") == 0);
+    }
+    {
+        /* Malformed UTF-8 is refused, the well-formed name converts, and a
+         * verbatim supplementary path is refused when its other bytes do not
+         * decode. */
+        char out[32];
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/caf\xe9",
+                                  sizeof(out)) < 0);
+        CHECK(convert_path_to_afp(kFPLongName, out, "/caf\xe9",
+                                  sizeof(out)) < 0);
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/\x80x",
+                                  sizeof(out)) < 0);
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/\xe2\x82",
+                                  sizeof(out)) < 0);
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/\xf0\x80\x80\xaf",
+                                  sizeof(out)) < 0);
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/\xf4\x90\x80\x80",
+                                  sizeof(out)) < 0);
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/\xed\xa0\x80",
+                                  sizeof(out)) < 0);
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/caf\xc3\xa9",
+                                  sizeof(out)) == 0);
+        CHECK(strcmp(out, "/cafe\xcc\x81") == 0);
+        CHECK(convert_path_to_afp(kFPLongName, out, "/caf\xc3\xa9",
+                                  sizeof(out)) == 0);
+        CHECK((unsigned char)out[4] == 0x8e);
+        CHECK(convert_path_to_afp(kFPUTF8Name, out, "/\xf0\x9f\x93\x81/caf\xe9",
+                                  sizeof(out)) < 0);
+        CHECK(convert_path_to_afp(kFPUTF8Name, out,
+                                  "/\xf0\x9f\x93\x81/caf\xc3\xa9",
+                                  sizeof(out)) == 0);
+        CHECK(strcmp(out, "/\xf0\x9f\x93\x81/caf\xc3\xa9") == 0);
+    }
+    {
+        /* A URL's volume name is matched precomposed: the Latin-1 "Caf\xe9"
+         * names no volume, and a character beyond UCS-2 shows as '~' on both
+         * sides and matches. */
+        struct libafpclient quiet_client = {
+            .unmount_volume = NULL,
+            .log_for_client = discard_log_message,
+            .forced_ending_hook = NULL,
+            .scan_extra_fds = NULL,
+            .loop_started = NULL,
+        };
+        struct afp_volume caf;
+        char decomposed_name[] = "Cafe\xcc\x81";
+        char plain_name[] = "Caf";
+        char precomposed_name[] = "Caf\xc3\xa9";
+        char latin1_name[] = "Caf\xe9";
+        char supplementary_name[] = "\xf0\x9f\x93\x81" "Docs";
+        memset(&caf, 0, sizeof(caf));
+        strcpy(caf.volume_name_printable, "Caf\xc3\xa9");
+        server.volumes = &caf;
+        server.num_volumes = 1;
+        libafpclient_register(&quiet_client);
+        CHECK(find_volume_by_name(&server, decomposed_name) == &caf);
+        CHECK(find_volume_by_name(&server, precomposed_name) == &caf);
+        CHECK(find_volume_by_name(&server, plain_name) == NULL);
+        strcpy(caf.volume_name_printable, "Caf");
+        CHECK(find_volume_by_name(&server, plain_name) == &caf);
+        CHECK(find_volume_by_name(&server, latin1_name) == NULL);
+        CHECK(convert_utf8dec_to_utf8pre(supplementary_name,
+                                         (int)strlen(supplementary_name),
+                                         caf.volume_name_printable,
+                                         AFP_VOLUME_NAME_UTF8_LEN) == 0);
+        CHECK(strcmp(caf.volume_name_printable, "~Docs") == 0);
+        CHECK(find_volume_by_name(&server, supplementary_name) == &caf);
+        libafpclient_register(NULL);
     }
     CHECK(sizeof_path_header(&utf8_volume) == 7);
     CHECK(sizeof_path_header(&legacy_volume) == 2);

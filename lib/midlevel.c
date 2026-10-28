@@ -3,6 +3,7 @@
 
     Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
     Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+    Copyright (C) 2026 Andy Lemin (andylemin)
 
     This program can be distributed under the terms of the GNU GPL.
     See the file COPYING.
@@ -41,11 +42,12 @@
 #define min(a,b) (((a)<(b)) ? (a) : (b))
 
 /*!
- * @brief Convert a path to the volume's AFP encoding in a buffer of its size
+ * @brief Convert a path to the volume's AFP encoding
  *
  * @param[in]  encoding        the volume's path encoding
  * @param[in]  path            UTF-8 path
- * @param[out] converted_path  the converted path, which the caller frees
+ * @param[out] converted_path  the converted path, in a buffer sized for
+ *                             its decomposition, which the caller frees
  * @returns 0, -EINVAL for a path that does not convert, -ENAMETOOLONG, or
  *          -ENOMEM
  */
@@ -53,7 +55,6 @@ static int convert_path_to_afp_alloc(char encoding, const char *path,
                                      char **converted_path)
 {
     char *converted;
-    struct afpc_path owned = { 0 };
     size_t len;
     size_t converted_len;
     int ret;
@@ -83,14 +84,14 @@ static int convert_path_to_afp_alloc(char encoding, const char *path,
         return -EINVAL;
     }
 
-    ret = afpc_path_set(&owned, converted, AFPC_MAX_UTF8_PATH_BYTES);
-    free(converted);
-
-    if (ret) {
-        return ret;
+    /* The wire carries a 16-bit path length, which a decomposition can
+     * grow past. */
+    if (strnlen(converted, converted_len) > AFPC_MAX_UTF8_PATH_BYTES) {
+        free(converted);
+        return -ENAMETOOLONG;
     }
 
-    *converted_path = owned.data;
+    *converted_path = converted;
     return 0;
 }
 
