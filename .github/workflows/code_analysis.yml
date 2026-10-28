@@ -97,3 +97,93 @@ jobs:
             build/meson-logs/
             ${{ env.BUILD_WRAPPER_OUT_DIR }}/
           retention-days: 30
+
+  code-coverage:
+    name: Code Coverage
+    runs-on: ubuntu-26.04
+    timeout-minutes: 24
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    env:
+      CC: gcc
+      CXX: g++
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --assume-yes --no-install-recommends \
+            g++ \
+            gcc \
+            gcovr \
+            libavahi-client-dev \
+            libfuse3-dev \
+            libgcrypt20-dev \
+            libreadline-dev \
+            meson \
+            ninja-build \
+            perl \
+            pkg-config
+      - name: Configure
+        run: |
+          meson setup build-coverage \
+            -Dbuildtype=debug \
+            -Db_coverage=true \
+            -Denable-docs=false \
+            -Dwith-testsuite=true
+      - name: Build
+        id: build
+        run: meson compile -C build-coverage
+      - name: Run tests
+        run: meson test -C build-coverage --print-errorlogs
+      - name: Generate coverage reports
+        id: coverage
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p build-coverage/coverage
+          gcovr --root . --gcov-executable gcov \
+            --filter '(cmdline|common|control|daemon|discovery|fuse|include|lib)/' \
+            --cobertura build-coverage/coverage/coverage.xml \
+            --html-details build-coverage/coverage/index.html \
+            --txt build-coverage/coverage/coverage.txt \
+            --print-summary build-coverage \
+            | tee build-coverage/coverage/summary.txt
+          {
+            echo '## Code coverage'
+            echo
+            echo 'Coverage of Netatalk Client C code.'
+            echo
+            echo '```text'
+            cat build-coverage/coverage/summary.txt
+            echo '```'
+            echo
+            echo 'Download the `netatalk-client-code-coverage` artifact and open `coverage/index.html` for annotated source coverage.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish Cobertura coverage report
+        if: >-
+          ${{ !cancelled() && steps.coverage.outcome == 'success' &&
+              github.event_name == 'pull_request' &&
+              github.event.pull_request.head.repo.full_name == github.repository &&
+              github.actor != 'dependabot[bot]' && github.actor != 'dependabot' }}
+        uses: 5monkeys/cobertura-action@ee5787cc56634acddedc51f21c7947985531e6eb # v14
+        with:
+          path: build-coverage/coverage/coverage.xml
+          fail_below_threshold: false
+          minimum_coverage: 50
+          only_changed_files: true
+          show_line: true
+          show_branch: true
+      - name: Upload coverage reports and test logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: netatalk-client-code-coverage
+          path: |
+            build-coverage/coverage/
+            build-coverage/meson-logs/
+          if-no-files-found: ignore
+          retention-days: 30
