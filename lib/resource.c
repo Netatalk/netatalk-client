@@ -38,7 +38,7 @@ static unsigned int extra_translate(
     struct afp_volume * volume, const char *path,
     char **newpath_p)
 {
-    char *p;
+    const char *p;
     char *newpath;
     *newpath_p = NULL;
 
@@ -88,19 +88,19 @@ static unsigned int extra_translate(
         /* If the ending is .finderinfo, tag it */
 
         if (strlen(newpath) > strlen(finderinfo_string)) {
-            p = newpath + strlen(newpath) - strlen(finderinfo_string);
+            char *suffix = newpath + strlen(newpath) - strlen(finderinfo_string);
 
-            if (strcmp(p, finderinfo_string) == 0) {
-                *p = '\0';
+            if (strcmp(suffix, finderinfo_string) == 0) {
+                *suffix = '\0';
                 return AFP_META_FINDERINFO;
             }
         }
 
         if (strlen(newpath) > strlen(comment_string)) {
-            p = newpath + strlen(newpath) - strlen(comment_string);
+            char *suffix = newpath + strlen(newpath) - strlen(comment_string);
 
-            if (strcmp(p, comment_string) == 0) {
-                *p = '\0';
+            if (strcmp(suffix, comment_string) == 0) {
+                *suffix = '\0';
                 return AFP_META_COMMENT;
             }
         }

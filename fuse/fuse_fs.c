@@ -107,14 +107,22 @@ static void finderinfo_set_flags(char finderinfo[32], uint16_t flags)
  * Work around malformed paths that macFUSE occasionally supplies as
  * <dir1>/<dir2>/(null) by truncating the path before "(null)".
  */
-static void strip_null_path_component(const char *path)
+static int strip_null_path_component(const char **path, char **storage)
 {
-    char *null_component;
-    null_component = strstr(path, "(null)");
+    const char *null_component = strstr(*path, "(null)");
+    *storage = NULL;
 
-    if (null_component && null_component > path) {
-        *(null_component - 1) = '\0';
+    if (null_component && null_component > *path) {
+        *storage = strndup(*path, (size_t)(null_component - *path - 1));
+
+        if (!*storage) {
+            return -ENOMEM;
+        }
+
+        *path = *storage;
     }
+
+    return 0;
 }
 
 
@@ -1253,6 +1261,7 @@ static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
                                struct fuse_file_info *fi _U_)
 {
     struct stat stbuf;
+    char *normalized_path;
     struct afp_volume * volume = fuse_get_context()->private_data;
     int ret;
 
@@ -1260,7 +1269,12 @@ static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
         return -EIO;
     }
 
-    strip_null_path_component(path);
+    ret = strip_null_path_component(&path, &normalized_path);
+
+    if (ret < 0) {
+        return ret;
+    }
+
     ret = ml_getattr(volume, path, &stbuf);
 
     if (ret == 0) {
@@ -1285,6 +1299,7 @@ static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
                        "*** getattr \"%s\" -> error %d", path, ret);
     }
 
+    free(normalized_path);
     return ret;
 }
 #else
@@ -1296,6 +1311,7 @@ static int fuse_getattr(const char *path, struct stat *stbuf)
 #endif
 {
     struct afp_volume * volume = fuse_get_context()->private_data;
+    char *normalized_path;
     int ret;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** getattr of \"%s\"", path);
 
@@ -1303,8 +1319,14 @@ static int fuse_getattr(const char *path, struct stat *stbuf)
         return -EIO;
     }
 
-    strip_null_path_component(path);
+    ret = strip_null_path_component(&path, &normalized_path);
+
+    if (ret < 0) {
+        return ret;
+    }
+
     ret = ml_getattr(volume, path, stbuf);
+    free(normalized_path);
     return ret;
 }
 
