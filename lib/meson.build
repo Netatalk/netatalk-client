@@ -62,7 +62,7 @@ libafpclient = shared_library(
     'afpclient',
     sources: libafpclient_sources,
     c_args: cflags,
-    dependencies: [root_dependencies, libiconv_dep, gcrypt_dep, pthread_dep],
+    dependencies: [root_dependencies, libiconv_dep, gcrypt_dep],
     include_directories: incdir,
     install: true,
     install_rpath: install_runtime_path,

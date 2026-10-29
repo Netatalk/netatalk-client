@@ -16,10 +16,7 @@ afpsld_sources = [
 executable(
     'afpsld',
     sources: afpsld_sources,
-    dependencies: [
-        root_dependencies,
-        pthread_dep,
-    ],
+    dependencies: root_dependencies,
     link_with: [libafpclient, daemon_common],
     include_directories: incdir,
     c_args: cflags,

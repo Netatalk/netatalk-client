@@ -10,7 +10,7 @@ executable(
     include_directories: incdir,
     link_with: [libafpclient, daemon_common],
     c_args: cflags,
-    dependencies: [root_dependencies, fuse_dep, pthread_dep],
+    dependencies: [root_dependencies, fuse_dep],
     install: true,
     install_rpath: install_runtime_path,
 )

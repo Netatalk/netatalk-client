@@ -20,6 +20,7 @@ use Errno        ();
 use Fcntl        qw(O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_SYNC O_DSYNC);
 use Getopt::Long qw(GetOptions);
 use IO::Handle;
+use Time::HiRes ();
 
 # O_DIRECT keeps the kernel's page cache out of a transfer, so every byte
 # crosses into afpfsd. $O_DIRECT is 0 where Fcntl does not define O_DIRECT.
@@ -1296,5 +1297,28 @@ mount_or_bail(
 }
 
 unmount_or_bail('fuse_flush_afp30: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_mount_time: ten mounts in a row each complete within 5 s. Every
+# mount closes its status connection from the connecting thread while the
+# loop thread waits on it; a daemon that sleeps on that takes 10 s more.
+# -----------------------------------------------------------------------
+{
+    my $slowest = 0;
+
+    for my $round (1 .. 10) {
+        my $start = Time::HiRes::time();
+        mount_or_bail(
+                      "fuse_mount_time: mount $round succeeds",
+                      'mount_afpfs', $AFP_AUTH_URL, $mnt_dir
+        );
+        my $elapsed = Time::HiRes::time() - $start;
+        $slowest = $elapsed if $elapsed > $slowest;
+        unmount_or_bail("fuse_mount_time: unmount $round succeeds");
+    }
+
+    cmp_ok($slowest, '<', 5,
+           sprintf('fuse_mount_time: the slowest of ten mounts took %.2f s', $slowest));
+}
 
 done_testing;

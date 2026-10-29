@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -44,6 +45,13 @@ void trigger_exit(void)
     exit_program = 1;
 }
 
+/*!
+ * @brief Note a signal the loop catches
+ *
+ * SIGINT and SIGTERM end the loop; the wake-up only interrupts its wait.
+ *
+ * @param[in] signum  the signal
+ */
 void termination_handler(int signum)
 {
     switch (signum) {
@@ -55,8 +63,6 @@ void termination_handler(int signum)
     default:
         break;
     }
-
-    signal(SIGNAL_TO_USE, termination_handler);
 }
 
 #define max(a,b) (((a)>(b)) ? (a) : (b))
@@ -73,18 +79,21 @@ static void add_fd(int fd)
     }
 }
 
+/*!
+ * @brief Take a descriptor out of the loop's set
+ *
+ * The bound drops to one past the highest descriptor left, 0 for an empty
+ * set.
+ *
+ * @param[in] fd  the descriptor
+ */
 static void rm_fd(int fd)
 {
-    int i;
     FD_CLR(fd, &rds);
 
-    for (i = max_fd; i >= 0; i--)
-        if (FD_ISSET(i, &rds)) {
-            max_fd = i;
-            break;
-        }
-
-    max_fd++;
+    while (max_fd > 0 && !FD_ISSET(max_fd - 1, &rds)) {
+        max_fd--;
+    }
 }
 
 static int rm_invalid_fds(void)
@@ -199,31 +208,98 @@ void rm_fd_and_signal(int fd)
     signal_main_thread();
 }
 
+/*!
+ * @brief Close a descriptor taken from a server's connection
+ *
+ * Its callers call it as soon as they take the descriptor, which a peer's
+ * close may have made ready: it leaves the loop's set, so no pass of the
+ * loop but the one under way sees it with no server holding it, and it is
+ * closed once the frame a sender is writing on it has ended.
+ *
+ * @param[in,out] s   the server the descriptor was taken from
+ * @param[in]     fd  the descriptor
+ */
+void loop_close_descriptor(struct afp_server *s, int fd)
+{
+    rm_fd_and_signal(fd);
+    afpc_dsi_end_sends(s, fd);
+    close(fd);
+}
+
+/*!
+ * @brief End a server's connection, from any thread
+ *
+ * Takes the descriptor first, under the list lock and only while the
+ * connection generation is the one the call began on, and resets the
+ * connection's desktop references with it: of two threads ending the same
+ * connection one closes it, a sender that queues from then on writes to
+ * none and fails at once, and a connect that overtakes the call, by
+ * advancing the generation, keeps the next connection's descriptor. The
+ * descriptor then leaves the loop's set, and is closed once the frame a
+ * sender is writing on it has ended. Then fails every request waiting on
+ * the server with EIO, descriptor or none, since a request that queued as
+ * the connection closed waits on nothing. A connected or connecting server
+ * becomes disconnected, with its descriptor or without one, unless a
+ * connect has started the next connection since the call began; a removed
+ * server stays removed. The call keeps errno, which a caller may still be
+ * about to read.
+ *
+ * @param[in,out] s  the server
+ */
 void loop_disconnect(struct afp_server *s)
 {
-    if (s->connect_state != SERVER_STATE_CONNECTED &&
-            s->connect_state != SERVER_STATE_CONNECTING) {
-        return;
+    int saved_errno = errno;
+    unsigned int generation = afp_server_connection_generation(s);
+    int fd = -1;
+    afp_lock_server_list();
+
+    if (afp_server_connection_generation(s) == generation) {
+        fd = __atomic_exchange_n(&s->fd, -1, __ATOMIC_ACQ_REL);
+    }
+
+    if (fd >= 0) {
+        /* Desktop references are allocated per AFP session and cannot
+         * survive a transport loss, even when the volume will later be
+         * reattached. */
+        for (int i = 0; i < s->num_volumes; i++) {
+            s->volumes[i].dtrefnum = 0;
+        }
+    }
+
+    afp_unlock_server_list();
+
+    if (fd >= 0) {
+        loop_close_descriptor(s, fd);
     }
 
     afpc_dsi_fail_request_queue(s, -EIO);
+    /* The connection the call began on ends disconnected; a removal, or
+     * the next connection, keeps its own state. */
+    afp_lock_server_list();
 
-    /* Desktop references are allocated per AFP session and cannot survive a
-     * transport loss, even when the volume will later be reattached. */
-    for (int i = 0; i < s->num_volumes; i++) {
-        s->volumes[i].dtrefnum = 0;
+    if (afp_server_connection_generation(s) == generation &&
+            (s->connect_state == SERVER_STATE_CONNECTED ||
+             s->connect_state == SERVER_STATE_CONNECTING)) {
+        __atomic_store_n(&s->connect_state, SERVER_STATE_DISCONNECTED,
+                         __ATOMIC_RELEASE);
     }
 
-    s->data_read = 0;
-    s->attention_len = 0;
-    rm_fd_and_signal(s->fd);
-    /* Handle disconnect */
-    close(s->fd);
-    s->fd = -1;
-    s->connect_state = SERVER_STATE_DISCONNECTED;
+    afp_unlock_server_list();
     s->need_resume = 1;
+    errno = saved_errno;
 }
 
+/*!
+ * @brief Receive from the first listed server whose descriptor is ready
+ *
+ * A server whose stream ends is disconnected and stays listed, so a later
+ * request can reconnect it.
+ *
+ * @param[in]  set   the ready descriptors
+ * @param[out] onfd  receives the address of the served server's descriptor
+ * @returns 1 when a server was served, 0 when none was ready or its stream
+ *          ended
+ */
 static int process_server_fds(fd_set *set, int **onfd)
 {
     struct afp_server * s;
@@ -246,7 +322,9 @@ static int process_server_fds(fd_set *set, int **onfd)
             continue;
         }
 
-        if (FD_ISSET(s->fd, set)) {
+        int fd = __atomic_load_n(&s->fd, __ATOMIC_ACQUIRE);
+
+        if (fd >= 0 && FD_ISSET(fd, set)) {
             /* Take a reference before releasing the lock so the server
              * cannot be freed while we call afpc_dsi_recv(). */
             afp_server_hold(s);
@@ -283,13 +361,24 @@ static void deal_with_server_signals(void)
     }
 }
 
+/*!
+ * @brief Wait until the event loop has started
+ */
 void afp_wait_for_started_loop(void)
 {
-    if (loop_started) {
+    /* The loop sets the flag once and never clears it, so a request after
+     * the start reads it without the lock. */
+    if (__atomic_load_n(&loop_started, __ATOMIC_ACQUIRE)) {
         return;
     }
 
-    pthread_cond_wait(&loop_started_condition, &loop_started_mutex);
+    pthread_mutex_lock(&loop_started_mutex);
+
+    while (!loop_started) {
+        pthread_cond_wait(&loop_started_condition, &loop_started_mutex);
+    }
+
+    pthread_mutex_unlock(&loop_started_mutex);
 }
 
 static void *afp_main_quick_startup_thread(void *other _U_)
@@ -312,6 +401,15 @@ int afp_main_quick_startup(pthread_t *thread)
 }
 
 
+/*!
+ * @brief Run the event loop until the program ends
+ *
+ * Reads every server's replies and, given a command socket, serves its
+ * clients.
+ *
+ * @param[in] command_fd  the command socket, or -1
+ * @returns -1 once the loop ends
+ */
 int afp_main_loop(int command_fd)
 {
     fd_set ords, oeds;
@@ -319,6 +417,7 @@ int afp_main_loop(int command_fd)
     int ret;
     int fderrors = 0;
     sigset_t sigmask, orig_sigmask;
+    struct sigaction wake;
     main_thread = pthread_self();
     main_thread_valid = 1;
     FD_ZERO(&rds);
@@ -330,7 +429,13 @@ int afp_main_loop(int command_fd)
     sigemptyset(&sigmask);
     sigaddset(&sigmask, SIGNAL_TO_USE);
     sigprocmask(SIG_BLOCK, &sigmask, &orig_sigmask);
-    signal(SIGNAL_TO_USE, termination_handler);
+    /* signal() on illumos and Solaris resets a handler on delivery, so a
+     * second wake-up close behind the first would end the process. */
+    memset(&wake, 0, sizeof(wake));
+    wake.sa_handler = termination_handler;
+    wake.sa_flags = SA_RESTART;
+    sigemptyset(&wake.sa_mask);
+    sigaction(SIGNAL_TO_USE, &wake, NULL);
     signal(SIGTERM, termination_handler);
     signal(SIGINT, termination_handler);
 #ifdef DEBUG_AFP_LOOP
@@ -489,8 +594,8 @@ int afp_main_loop(int command_fd)
         if (ret == 0) {
             if (!loop_started) {
                 pthread_mutex_lock(&loop_started_mutex);
-                loop_started = 1;
-                pthread_cond_signal(&loop_started_condition);
+                __atomic_store_n(&loop_started, 1, __ATOMIC_RELEASE);
+                pthread_cond_broadcast(&loop_started_condition);
                 pthread_mutex_unlock(&loop_started_mutex);
 
                 if (libafpclient->loop_started) {

@@ -19,6 +19,8 @@ struct dsi_request {
     struct timespec deadline;
     int done_waiting;
     int ignore_replies;
+    /*! whether the receiver holds the request, which its sender then keeps */
+    int receiving;
     pthread_cond_t waiting_cond;
     pthread_mutex_t waiting_mutex;
     struct dsi_request *next;
@@ -31,6 +33,7 @@ struct dsi_request {
 int afpc_dsi_receive(struct afp_server *server, void *data, int size);
 int afpc_dsi_getstatus(struct afp_server *server);
 int afpc_dsi_sendtickle(struct afp_server *server);
+void afpc_dsi_end_sends(struct afp_server *server, int fd);
 void afpc_dsi_flush_request_queue(struct afp_server *server);
 void afpc_dsi_fail_request_queue(struct afp_server *server, int error);
 

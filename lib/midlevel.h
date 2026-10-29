@@ -33,8 +33,7 @@ int ml_unlink(struct afp_volume * vol, const char *path);
 
 int ml_mkdir(struct afp_volume * vol, const char *path, mode_t mode);
 
-int ml_close(struct afp_volume * volume, const char *path,
-             struct afp_file_info * fp);
+int ml_close(struct afp_volume * volume, struct afp_file_info * fp);
 
 int ml_fsync(struct afp_volume * volume, struct afp_file_info * fp);
 
