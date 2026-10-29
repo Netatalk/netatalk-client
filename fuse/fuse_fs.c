@@ -5,6 +5,7 @@
  *  Copyright (C) 2001-2005 Miklos Szeredi <miklos@szeredi.hu>
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -468,6 +469,13 @@ static int fuse_fsync(const char *path, int datasync _U_,
     return ml_fsync(volume, fp);
 }
 
+/*!
+ * @brief Close a file the kernel releases, and free its handle
+ *
+ * @param[in] path  UTF-8 path of the file, for the log
+ * @param[in] fi    the kernel's file info with the handle
+ * @returns 0, or a negative errno
+ */
 static int fuse_release(const char *path, struct fuse_file_info * fi)
 {
     struct afp_file_info * fp = (void *) fi->fh;
@@ -477,7 +485,7 @@ static int fuse_release(const char *path, struct fuse_file_info * fi)
                    "*** cache release \"%s\" forkid=%d writable=%u resource=%u",
                    path, fp ? fp->forkid : -1, fp ? fp->writable : 0,
                    fp ? fp->resource : 0);
-    ret = ml_close(volume, path, fp);
+    ret = ml_close(volume, fp);
     free((void *) fi->fh);
     fi->fh = 0;
     return ret;

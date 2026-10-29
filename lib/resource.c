@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -36,7 +37,21 @@
 
 #define min(a,b) (((a)<(b)) ? (a) : (b))
 
-static unsigned int extra_translate(
+/*!
+ * @brief Find the pseudo-file of the .AppleDouble view a path names
+ *
+ * Only a volume that shows AppleDouble files has them. A path through a
+ * .AppleDouble directory names the file or the directory beside it, whose
+ * path the caller receives and frees.
+ *
+ * @param[in]  volume     volume of the path
+ * @param[in]  path       UTF-8 path
+ * @param[out] newpath_p  receives the path the pseudo-file stands for, or
+ *                        NULL
+ * @returns an AFP_META_* type, 0 for a path that names no pseudo-file, or
+ *          -ENOMEM
+ */
+static int extra_translate(
     struct afp_volume * volume, const char *path,
     char **newpath_p)
 {
@@ -66,6 +81,11 @@ static unsigned int extra_translate(
         /* Okay, all we have is /foo/.AppleDouble */
         /* Make a copy, but not the last .AppleDouble */
         newpath = malloc(strlen(path));
+
+        if (newpath == NULL) {
+            return -ENOMEM;
+        }
+
         memset(newpath, 0, strlen(path));
 
         if (strlen(path) == strlen(appledouble) +1) {
@@ -78,13 +98,30 @@ static unsigned int extra_translate(
         return AFP_META_APPLEDOUBLE;
     }
 
-    if ((p = strstr(path, appledouble))) {
-        /* So we have /foo/.AppleDouble/blah.  */
-        newpath = malloc(strlen(path));
-        memset(newpath, 0, strlen(path));
-        memcpy(newpath, path, p - path);
-        p += strlen(appledouble);
-        strcat(newpath, p + 1);
+    /* The directory is a whole component, "/.AppleDouble/", not a name
+     * that ends in it; the first such component counts. */
+    const char *component;
+
+    for (component = strstr(path, appledouble); component;
+            component = strstr(component + 1, appledouble)) {
+        if (component > path && component[-1] == '/'
+                && component[strlen(appledouble)] == '/') {
+            break;
+        }
+    }
+
+    if (component) {
+        /* So we have /foo/.AppleDouble/blah: the copy is /foo/blah. */
+        size_t prefix_len = (size_t)(component - path);
+        const char *rest = component + strlen(appledouble) + 1;
+        newpath = malloc(prefix_len + strlen(rest) + 1);
+
+        if (newpath == NULL) {
+            return -ENOMEM;
+        }
+
+        memcpy(newpath, path, prefix_len);
+        memcpy(newpath + prefix_len, rest, strlen(rest) + 1);
         *newpath_p = newpath;
 
         /* If the ending is .finderinfo, tag it */
@@ -171,12 +208,29 @@ out:
     return ret;
 }
 
+/*!
+ * @brief Create the AppleDouble pseudo-file at path
+ *
+ * A resource fork or Finder information comes with its file, so the call makes
+ * no request.
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] path    UTF-8 path
+ * @param[in] mode    unused
+ * @returns 1 for a resource fork or Finder information, 0 for another path,
+ *          or a negative errno: -EBADF for the .AppleDouble directory, -EPERM
+ *          for the server icon
+ */
 int appledouble_creat(struct afp_volume * volume, const char *path,
                       mode_t mode _U_)
 {
     int resource;
     char *newpath;
     resource = extra_translate(volume, path, &newpath);
+
+    if (resource < 0) {
+        return resource;
+    }
 
     switch (resource) {
     case AFP_META_RESOURCE:
@@ -202,32 +256,47 @@ int appledouble_creat(struct afp_volume * volume, const char *path,
     return 0;
 }
 
+/*!
+ * @brief Refuse a change of mode of an AppleDouble pseudo-file
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] path    UTF-8 path
+ * @param[in] mode    unused
+ * @returns 0 for a path that names no pseudo-file, -EPERM for one, or
+ *          -ENOMEM
+ */
 int appledouble_chmod(struct afp_volume * volume, const char *path,
                       mode_t mode _U_)
 {
     int resource;
     char *newpath;
-    /* There's no resource you can chmod */
     resource = extra_translate(volume, path, &newpath);
     free(newpath);
 
-    if (resource == 0) {
-        return 0;
+    if (resource <= 0) {
+        return resource;
     }
 
     return -EPERM;
 }
 
+/*!
+ * @brief Refuse the deletion of an AppleDouble pseudo-file
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] path    UTF-8 path
+ * @returns 0 for a path that names no pseudo-file, -EPERM for one, or
+ *          -ENOMEM
+ */
 int appledouble_unlink(struct afp_volume * volume, const char *path)
 {
     int resource;
     char *newpath;
-    /* There's no resource you can unlink */
     resource = extra_translate(volume, path, &newpath);
     free(newpath);
 
-    if (resource == 0) {
-        return 0;
+    if (resource <= 0) {
+        return resource;
     }
 
     return -EPERM;
@@ -545,6 +614,11 @@ int appledouble_truncate(struct afp_volume * volume, const char *path,
     int ret;
     unsigned int dirid;
     char basename[AFPC_MAX_NAME_BYTES];
+    memset(&fp, 0, sizeof(fp));
+
+    if (resource < 0) {
+        return resource;
+    }
 
     switch (resource) {
     case AFP_META_RESOURCE:
@@ -614,13 +688,31 @@ int appledouble_truncate(struct afp_volume * volume, const char *path,
     return 0;
 }
 
+/*!
+ * @brief Open the AppleDouble pseudo-file at path
+ *
+ * A resource fork opens as its file's fork; Finder information, a comment and
+ * the server icon open without a request of their own.
+ *
+ * @param[in]     volume  volume of the file
+ * @param[in]     path    UTF-8 path
+ * @param[in]     flags   open(2) flags
+ * @param[in,out] fp      the record, which receives the pseudo-file's type
+ * @returns 1 when path is a pseudo-file's and it opened, 0 for another
+ *          path, or a negative errno: -EISDIR for the .AppleDouble directory
+ */
 int appledouble_open(struct afp_volume * volume, const char *path, int flags,
                      struct afp_file_info *fp)
 {
     char *newpath;
     int ret = 0;
+    int resource = extra_translate(volume, path, &newpath);
 
-    switch ((fp->resource = extra_translate(volume, path, &newpath))) {
+    if (resource < 0) {
+        return resource;
+    }
+
+    switch ((fp->resource = resource)) {
     case AFP_META_RESOURCE:
         if (get_dirid(volume, newpath, fp->basename, &fp->did) < 0) {
             ret = -ENOENT;
@@ -674,6 +766,9 @@ int appledouble_open(struct afp_volume * volume, const char *path, int flags,
     case AFP_META_SERVER_ICON:
         ret = 1;
         goto out;
+
+    default:
+        break;
     }
 
 out:
@@ -712,13 +807,26 @@ int appledouble_open_meta(struct afp_volume * volume, const char *path,
     }
 }
 
+/*!
+ * @brief Describe the AppleDouble pseudo-file at path for stat(2)
+ *
+ * @param[in]  volume  volume of the file
+ * @param[in]  path    UTF-8 path
+ * @param[out] stbuf   receives the attributes
+ * @returns 1 when path is a pseudo-file's, 0 for another path, or a negative
+ *          errno
+ */
 int appledouble_getattr(struct afp_volume * volume,
                         const char *path, struct stat *stbuf)
 {
-    unsigned int resource;
+    int resource;
     char *newpath;
     int ret;
     resource = extra_translate(volume, path, &newpath);
+
+    if (resource < 0) {
+        return resource;
+    }
 
     switch (resource) {
     case AFP_META_RESOURCE:
@@ -795,12 +903,28 @@ static int add_fp(struct afp_file_info **newchain, struct afp_file_info *fp,
     return 0;
 }
 
+/*!
+ * @brief List the .AppleDouble directory at path
+ *
+ * Each file of the directory beside it lists its Finder information, its
+ * comment when it has one, and its resource fork when that is not empty.
+ *
+ * @param[in]  volume  volume of the directory
+ * @param[in]  path    UTF-8 path
+ * @param[out] base    receives the entries, which the caller frees
+ * @returns 1 for the .AppleDouble directory, 0 for another path, or a
+ *          negative errno: -ENOTDIR for a pseudo-file
+ */
 int appledouble_readdir(struct afp_volume * volume,
                         const char *path, struct afp_file_info **base)
 {
-    unsigned int resource;
+    int resource;
     char *newpath;
     resource = extra_translate(volume, path, &newpath);
+
+    if (resource < 0) {
+        return resource;
+    }
 
     switch (resource) {
     case 0:
@@ -809,7 +933,12 @@ int appledouble_readdir(struct afp_volume * volume,
     case AFP_META_APPLEDOUBLE: {
         struct afp_file_info *newchain = NULL;
         struct afp_file_info *validNodes = NULL;
-        ll_readdir(volume, newpath, base, 1);
+        int ret = ll_readdir(volume, newpath, base, 1);
+
+        if (ret < 0) {
+            free(newpath);
+            return ret;
+        }
 
         /* First pass: build list of valid nodes */
         for (struct afp_file_info *fp = *base; fp;) {
@@ -884,113 +1013,170 @@ int appledouble_readdir(struct afp_volume * volume,
     return 0;
 }
 
+/*!
+ * @brief Refuse a directory at a path of the .AppleDouble view
+ *
+ * @param[in] volume  volume of the directory
+ * @param[in] path    UTF-8 path
+ * @param[in] mode    unused
+ * @returns 0 for a path that names no pseudo-file, -EPERM for one, or
+ *          -ENOMEM
+ */
 int appledouble_mkdir(struct afp_volume * volume, const char *path,
                       mode_t mode _U_)
 {
     int resource;
     char *newpath;
-    /* You can't mkdir */
     resource = extra_translate(volume, path, &newpath);
     free(newpath);
 
-    if (resource == 0) {
-        return 0;
+    if (resource <= 0) {
+        return resource;
     }
 
     return -EPERM;
 }
 
+/*!
+ * @brief Refuse to read an AppleDouble pseudo-file as a link
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] path    UTF-8 path
+ * @param[in] buf     unused
+ * @param[in] size    unused
+ * @returns 0 for a path that names no pseudo-file, -EPERM for one, or
+ *          -ENOMEM
+ */
 int appledouble_readlink(struct afp_volume * volume, const char *path,
                          char *buf _U_, size_t size _U_)
 {
     int resource;
     char *newpath;
-    /* You can't readlink*/
     resource = extra_translate(volume, path, &newpath);
     free(newpath);
 
-    if (resource == 0) {
-        return 0;
+    if (resource <= 0) {
+        return resource;
     }
 
     return -EPERM;
 }
 
+/*!
+ * @brief Refuse the removal of a path of the .AppleDouble view
+ *
+ * @param[in] volume  volume of the directory
+ * @param[in] path    UTF-8 path
+ * @returns 0 for a path that names no pseudo-file, -EPERM for one, or
+ *          -ENOMEM
+ */
 int appledouble_rmdir(struct afp_volume * volume, const char *path)
 {
     int resource;
     char *newpath;
-    /* You can't rmdir*/
     resource = extra_translate(volume, path, &newpath);
     free(newpath);
 
-    if (resource == 0) {
-        return 0;
+    if (resource <= 0) {
+        return resource;
     }
 
     return -EPERM;
 }
 
+/*!
+ * @brief Refuse a change of owner of an AppleDouble pseudo-file
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] path    UTF-8 path
+ * @param[in] uid     unused
+ * @param[in] gid     unused
+ * @returns 0 for a path that names no pseudo-file, -EPERM for one, or
+ *          -ENOMEM
+ */
 int appledouble_chown(struct afp_volume * volume, const char *path,
                       uid_t uid _U_, gid_t gid _U_)
 {
     int resource;
     char *newpath;
-    /* You can't chown*/
     resource = extra_translate(volume, path, &newpath);
     free(newpath);
 
-    if (resource == 0) {
-        return 0;
+    if (resource <= 0) {
+        return resource;
     }
 
     return -EPERM;
 }
 
+/*!
+ * @brief Refuse a change of times of an AppleDouble pseudo-file
+ *
+ * @param[in] volume   volume of the file
+ * @param[in] path     UTF-8 path
+ * @param[in] timebuf  unused
+ * @returns 0 for a path that names no pseudo-file, -EPERM for one, or
+ *          -ENOMEM
+ */
 int appledouble_utime(struct afp_volume * volume, const char *path,
                       struct utimbuf * timebuf _U_)
 {
     int resource;
     char *newpath;
-    /* You can't utime*/
     resource = extra_translate(volume, path, &newpath);
     free(newpath);
 
-    if (resource == 0) {
-        return 0;
+    if (resource <= 0) {
+        return resource;
     }
 
     return -EPERM;
 }
 
-int appledouble_symlink(struct afp_volume *vol, const char *path1,
-                        const char *path2 _U_)
+/*!
+ * @brief Refuse a link at a path of the .AppleDouble view
+ *
+ * @param[in] vol    volume of the link
+ * @param[in] path1  unused: a link's target is any text
+ * @param[in] path2  UTF-8 path of the new link
+ * @returns 0 for a path that names no pseudo-file, -EPERM for one, or
+ *          -ENOMEM
+ */
+int appledouble_symlink(struct afp_volume *vol, const char *path1 _U_,
+                        const char *path2)
 {
     int resource;
     char *newpath;
-    /* You can't symlink*/
-    resource = extra_translate(vol, path1, &newpath);
+    resource = extra_translate(vol, path2, &newpath);
     free(newpath);
 
-    if (resource == 0) {
-        return 0;
+    if (resource <= 0) {
+        return resource;
     }
 
     return -EPERM;
 }
 
+/*!
+ * @brief Refuse a rename onto a path of the .AppleDouble view
+ *
+ * @param[in] volume     volume of the file
+ * @param[in] path_from  unused
+ * @param[in] path_to    UTF-8 path the file is to take
+ * @returns 0 for a path that names no pseudo-file, -EPERM for one, or
+ *          -ENOMEM
+ */
 int appledouble_rename(struct afp_volume * volume,
                        const char *path_from _U_,
                        const char *path_to)
 {
     int resource;
     char *newpath;
-    /* You can't rename */
     resource = extra_translate(volume, path_to, &newpath);
     free(newpath);
 
-    if (resource == 0) {
-        return 0;
+    if (resource <= 0) {
+        return resource;
     }
 
     return -EPERM;

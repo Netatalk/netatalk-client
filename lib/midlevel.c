@@ -670,6 +670,14 @@ int ml_chmod(struct afp_volume * vol, const char *path, mode_t mode)
 }
 
 
+/*!
+ * @brief Delete the file at path with FPDelete
+ *
+ * @param[in] vol   volume of the file
+ * @param[in] path  UTF-8 path of the file
+ * @returns 0, or a negative errno: -EISDIR for a directory, -EBUSY for a
+ *          locked file, -EIO for a request not sent or not answered
+ */
 int ml_unlink(struct afp_volume * vol, const char *path)
 {
     int ret, rc;
@@ -739,9 +747,14 @@ int ml_unlink(struct afp_volume * vol, const char *path)
         ret = EINVAL;
         break;
 
-    default:
+    case kFPNoErr:
         remove_did_entry(vol, converted_path);
         ret = 0;
+        break;
+
+    default:
+        /* A request not sent or not answered is never a success. */
+        ret = EIO;
     }
 
     free(converted_path);
@@ -751,6 +764,15 @@ int ml_unlink(struct afp_volume * vol, const char *path)
 
 
 
+/*!
+ * @brief Create a directory at path with FPCreateDir
+ *
+ * @param[in] vol   volume of the directory
+ * @param[in] path  UTF-8 path of the new directory
+ * @param[in] mode  unused: the server gives the directory its mode
+ * @returns 0, or a negative errno: -EIO for a request not sent or not
+ *          answered
+ */
 int ml_mkdir(struct afp_volume * vol, const char *path, mode_t mode)
 {
     int ret, rc;
@@ -818,8 +840,13 @@ int ml_mkdir(struct afp_volume * vol, const char *path, mode_t mode)
         ret = EFAULT;
         break;
 
-    default:
+    case kFPNoErr:
         ret = 0;
+        break;
+
+    default:
+        /* A request not sent or not answered is never a success. */
+        ret = EIO;
     }
 
     free(converted_path);
@@ -831,37 +858,20 @@ int ml_mkdir(struct afp_volume * vol, const char *path, mode_t mode)
  *
  * A flush_on_close mount flushes a written fork first. A handle that a
  * failed server-side copy left without a fork closes without a request.
+ * The record is the caller's to free afterwards, whatever the result.
  *
  * @param[in]     volume  volume of the fork
- * @param[in]     path    UTF-8 path of the file, only checked, or NULL
- * @param[in,out] fp      the open fork
+ * @param[in,out] fp      the open fork, or NULL
  * @returns the flush's result, 0 without one, or a negative errno
  */
-int ml_close(struct afp_volume * volume, const char *path,
-             struct afp_file_info * fp)
+int ml_close(struct afp_volume * volume, struct afp_file_info * fp)
 {
     int ret = 0;
     int synced = 0;
-    char *converted_path = NULL;
-
-    if (path) {
-        ret = convert_path_to_afp_alloc(volume->path_encoding, path,
-                                        &converted_path);
-
-        if (ret) {
-            return ret;
-        }
-
-        if (invalid_filename(volume, converted_path)) {
-            free(converted_path);
-            return -ENAMETOOLONG;
-        }
-    }
 
     /* The logic here is that if we don't have an fp anymore, then the
        fork must already be closed. */
     if (!fp) {
-        free(converted_path);
         return -EBADF;
     }
 
@@ -870,14 +880,11 @@ int ml_close(struct afp_volume * volume, const char *path,
     }
 
     if (fp->resource) {
-        ret = appledouble_close(volume, fp);
-        free(converted_path);
-        return ret;
+        return appledouble_close(volume, fp);
     }
 
     /* Fork 0: a failed server-side copy leaves the handle without a fork. */
     if (fp->forkid == 0) {
-        free(converted_path);
         return 0;
     }
 
@@ -891,13 +898,10 @@ int ml_close(struct afp_volume * volume, const char *path,
     case kFPParamErr:
     case kFPMiscErr:
         ret = EIO;
-        remove_opened_fork(volume, fp);
-        goto error;
+        break;
     }
 
     remove_opened_fork(volume, fp);
-error:
-    free(converted_path);
     return ret ? -ret : synced;
 }
 
@@ -1431,15 +1435,67 @@ ssize_t ml_copy_range(struct afp_volume * volume,
 }
 
 /*!
+ * @brief Give a converted link target back the server's separators
+ *
+ * convert_path_to_unix() converts one name and turns a '/' in it into ':'.
+ * No composition takes a ':' or a '/', so the conversion keeps a valid
+ * target's ':' and '/' in their order, and the k-th ':' of dest, which
+ * stands for the k-th ':' or '/' of src, takes back the '/' it stood for.
+ * A malformed sequence can take a separator into its replacement; dest
+ * then has fewer ':' than src has separators and keeps them all.
+ *
+ * @param[in,out] dest  the converted target
+ * @param[in]     src   the target as the server holds it
+ */
+static void restore_link_separators(char *dest, const char *src)
+{
+    size_t colons = 0;
+    size_t separators = 0;
+
+    for (const char *d = dest; *d; d++) {
+        colons += *d == ':';
+    }
+
+    for (const char *s = src; *s; s++) {
+        separators += *s == ':' || *s == '/';
+    }
+
+    if (colons != separators) {
+        return;
+    }
+
+    for (char *d = dest; *d; d++) {
+        if (*d != ':') {
+            continue;
+        }
+
+        while (*src && *src != ':' && *src != '/') {
+            src++;
+        }
+
+        if (*src == '/') {
+            *d = '/';
+        }
+
+        if (*src) {
+            src++;
+        }
+    }
+}
+
+/*!
  * @brief Read the target of the symbolic link at path
  *
  * The link's data fork holds the target, read back as precomposed UTF-8.
+ * afpd reads a link's target whole, so a target longer than buf fails; one
+ * whose converted form fills buf gives its last byte to the terminator.
  *
  * @param[in]  vol   volume of the link
  * @param[in]  path  UTF-8 path of the link
- * @param[out] buf   receives the target
- * @param[in]  size  capacity of buf
- * @returns 0, or a negative errno
+ * @param[out] buf   receives the target with its terminator
+ * @param[in]  size  capacity of buf, at least 1
+ * @returns 0, or a negative errno, -ENAMETOOLONG for a size of 0 or above
+ *          INT_MAX
  */
 int ml_readlink(struct afp_volume * vol, const char *path,
                 char *buf, size_t size)
@@ -1452,7 +1508,7 @@ int ml_readlink(struct afp_volume * vol, const char *path,
     char *link_path;
     unsigned int dirid;
 
-    if (size == SIZE_MAX || size > INT_MAX) {
+    if (size == 0 || size == SIZE_MAX || size > INT_MAX) {
         return -ENAMETOOLONG;
     }
 
@@ -1463,6 +1519,7 @@ int ml_readlink(struct afp_volume * vol, const char *path,
     }
 
     memset(buf, 0, size);
+    memset(&fp, 0, sizeof(fp));
     buffer.data = link_path;
     buffer.maxsize = size;
     buffer.size = 0;
@@ -1475,10 +1532,9 @@ int ml_readlink(struct afp_volume * vol, const char *path,
     }
 
     get_dirid(vol, converted_path, basename, &dirid);
-    /* Open the fork */
-    rc = afp_openfork(vol, 0, dirid,
-                      AFP_OPENFORK_ALLOWWRITE | AFP_OPENFORK_ALLOWREAD, 0,
-                      basename, &fp);
+    /* Open the fork to read it: a read-only volume refuses a write open. */
+    rc = afp_openfork(vol, 0, dirid, AFP_OPENFORK_ALLOWREAD, 0, basename,
+                      &fp);
 
     switch (rc) {
     case kFPAccessDenied:
@@ -1505,17 +1561,17 @@ int ml_readlink(struct afp_volume * vol, const char *path,
         ret = EMFILE;
         goto error;
 
-    case kFPVolLocked:
-    case kFPDenyConflict:
-    case kFPMiscErr:
-    case kFPBitmapErr:
     case 0:
         ret = 0;
         break;
 
+    case kFPVolLocked:
+    case kFPDenyConflict:
+    case kFPMiscErr:
+    case kFPBitmapErr:
     case -1:
     default:
-        ret = EFAULT;
+        ret = EIO;
         goto error;
     }
 
@@ -1537,14 +1593,16 @@ int ml_readlink(struct afp_volume * vol, const char *path,
         ret = EBUSY;
         goto close_error;
 
-    case kFPMiscErr:
-    case kFPParamErr:
-        ret = EIO;
-        goto close_error;
-
     case kFPEOFErr:
     case kFPNoErr:
         break;
+
+    case kFPMiscErr:
+    case kFPParamErr:
+    default:
+        /* A request not sent or not answered is never a success either. */
+        ret = EIO;
+        goto close_error;
     }
 
     switch (afp_closefork(vol, fp.forkid)) {
@@ -1563,6 +1621,24 @@ int ml_readlink(struct afp_volume * vol, const char *path,
     /* Convert the name back precomposed UTF8 */
     convert_path_to_unix(vol->path_encoding,
                          buf, link_path, (int)size);
+
+    if (!buf[0] && link_path[0]) {
+        /* A target whose converted form fills buf gives its last byte to
+         * the terminator, and a UTF-8 target the character the cut would
+         * split. */
+        size_t cut = size - 1;
+
+        while (vol->path_encoding == kFPUTF8Name && cut > 0
+                && ((unsigned char) link_path[cut] & 0xC0) == 0x80) {
+            cut--;
+        }
+
+        link_path[cut] = '\0';
+        convert_path_to_unix(vol->path_encoding,
+                             buf, link_path, (int)size);
+    }
+
+    restore_link_separators(buf, link_path);
     free(converted_path);
     free(link_path);
     return 0;
@@ -1575,6 +1651,15 @@ error:
     return -ret;
 }
 
+/*!
+ * @brief Delete the empty directory at path with FPDelete
+ *
+ * @param[in] vol   volume of the directory
+ * @param[in] path  UTF-8 path of the directory
+ * @returns 0, or a negative errno: -ENOTDIR for a name that is no directory,
+ *          the lookup's -ENOENT, -EACCES or -EIO when it fails, -ENOTEMPTY
+ *          for a directory with entries
+ */
 int ml_rmdir(struct afp_volume * vol, const char *path)
 {
     int ret, rc;
@@ -1611,10 +1696,11 @@ int ml_rmdir(struct afp_volume * vol, const char *path)
     }
 
     get_dirid(vol, converted_path, basename, &dirid);
+    ret = is_dir_checked(vol, dirid, basename);
 
-    if (!is_dir(vol, dirid, basename)) {
+    if (ret <= 0) {
         free(converted_path);
-        return -ENOTDIR;
+        return ret < 0 ? ret : -ENOTDIR;
     }
 
     rc = afp_delete(vol, dirid, basename);
@@ -1647,9 +1733,14 @@ int ml_rmdir(struct afp_volume * vol, const char *path)
         ret = EINVAL;
         break;
 
-    default:
+    case kFPNoErr:
         remove_did_entry(vol, converted_path);
         ret = 0;
+        break;
+
+    default:
+        /* A request not sent or not answered is never a success. */
+        ret = EIO;
     }
 
     free(converted_path);
@@ -1942,6 +2033,7 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
     int rc;
     unsigned int dirid2;
     char basename2[AFPC_MAX_NAME_BYTES];
+    int created = 0;
     char *converted_path1 = NULL;
     char *converted_path2 = NULL;
 
@@ -1952,6 +2044,7 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
     }
 
     /* Yes, you can create symlinks for AFP >=30.  Tested with 10.3.2 */
+    memset(&fp, 0, sizeof(fp));
     ret = convert_path_to_afp_alloc(vol->path_encoding, path1,
                                     &converted_path1);
 
@@ -1990,8 +2083,8 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
     }
 
     get_dirid(vol, converted_path2, basename2, &dirid2);
-    /* 1. create the file */
-    rc = afp_createfile(vol, kFPHardCreate, dirid2, basename2);
+    /* 1. create the file, which a soft create refuses for a name taken */
+    rc = afp_createfile(vol, kFPSoftCreate, dirid2, basename2);
 
     switch (rc) {
     case kFPAccessDenied:
@@ -2016,6 +2109,7 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
         goto error;
 
     case kFPNoErr:
+        created = 1;
         break;
 
     default:
@@ -2154,12 +2248,20 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
     }
 
 error:
+
+    /* A link the steps after the create could not finish leaves no file
+     * in its name. */
+    if (ret && created) {
+        afp_delete(vol, dirid2, basename2);
+    }
+
     free(converted_path1);
     free(converted_path2);
     return -ret;
 close_error:
     afp_closefork(vol, fp.forkid);
     remove_opened_fork(vol, &fp);
+    afp_delete(vol, dirid2, basename2);
     free(converted_path1);
     free(converted_path2);
     return -ret;

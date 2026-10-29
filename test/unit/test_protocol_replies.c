@@ -1,3 +1,13 @@
+/*
+    test_protocol_replies.c: parsing of the server's AFP replies
+
+    Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+    Copyright (C) 2026 Andy Lemin (andylemin)
+
+    This program can be distributed under the terms of the GNU GPL.
+    See the file COPYING.
+*/
+
 #include <arpa/inet.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -20,6 +30,13 @@ struct listxattr_reply {
     char data[];
 } __attribute__((__packed__));
 
+/*!
+ * @brief Run the reply parsing checks as TAP
+ *
+ * @param[in] argc  argument count
+ * @param[in] argv  arguments for the TAP harness
+ * @returns the harness's exit status
+ */
 int main(int argc, char **argv)
 {
     unsigned char reply[sizeof(struct dsi_header) + 16];
@@ -54,6 +71,7 @@ int main(int argc, char **argv)
     memset(&close_volume, 0, sizeof(close_volume));
     memset(&open_fork, 0, sizeof(open_fork));
     CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, close_session_fds) == 0);
+    pthread_mutex_init(&close_server.request_queue_mutex, NULL);
     close_server.fd = close_session_fds[0];
     close_server.connect_state = SERVER_STATE_CONNECTED;
     close_server.num_volumes = 1;
@@ -239,6 +257,33 @@ int main(int argc, char **argv)
                                 sizeof(appl_reply), &appl) == 0);
         CHECK(appl.tag == 99 && appl.file.did == 123
               && strcmp(appl.file.name, "App") == 0);
+    }
+    {
+        /* A volume's locks work from the reply that lists it; on macOS a
+         * zeroed mutex is not one. */
+        struct afp_versions afp34 = { "AFP3.4", 34 };
+        struct afp_server parms_server;
+        struct {
+            struct dsi_header header;
+            uint32_t time;
+            uint8_t numvolumes;
+            uint8_t flags;
+            uint8_t name_len;
+            char name[3];
+        } __attribute__((__packed__)) parms_reply = { 0 };
+        memset(&parms_server, 0, sizeof(parms_server));
+        parms_server.using_version = &afp34;
+        parms_reply.numvolumes = 1;
+        parms_reply.name_len = 3;
+        memcpy(parms_reply.name, "vol", 3);
+        CHECK(afp_getsrvrparms_reply(&parms_server, (char *)&parms_reply,
+                                     sizeof(parms_reply), NULL) == 0);
+        CHECK(parms_server.num_volumes == 1
+              && strcmp(parms_server.volumes[0].volume_name, "vol") == 0);
+        CHECK(pthread_mutex_lock(&parms_server.volumes[0].did_cache_mutex)
+              == 0);
+        pthread_mutex_unlock(&parms_server.volumes[0].did_cache_mutex);
+        free(parms_server.volumes);
     }
     return test_tap_finish();
 }
