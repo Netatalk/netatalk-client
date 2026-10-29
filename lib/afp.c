@@ -279,24 +279,36 @@ void afp_set_auto_disconnect_on_unmount(int enabled)
     auto_disconnect_on_unmount = enabled;
 }
 
+/*!
+ * @brief Whether requests may still be sent to a server
+ *
+ * A server is valid from afp_server_init() until afp_server_remove()
+ * takes it off the list, through every state the connect path assigns.
+ * The server must be alive: the loop holds it across a receive, afpsld's
+ * command handlers and afpfsd's commands hold it through their lookups,
+ * and the FUSE front end joins its workers before it removes the last
+ * volume's server. The state's writers hold the list lock and store it
+ * atomically, so this check, on every request's path, takes no lock.
+ *
+ * @param[in] server  the server, or NULL
+ * @returns 1 from afp_server_init() until afp_server_remove(), listed or
+ *          not; 0 for NULL, a removed server, or one never set up
+ */
 int server_still_valid(struct afp_server * server)
 {
-    struct afp_server * s = server_base;
+    if (server == NULL) {
+        return 0;
+    }
 
-    for (; s; s = s->next)
-        if (s == server) {
-            return 1;
-        }
+    switch (__atomic_load_n(&server->connect_state, __ATOMIC_ACQUIRE)) {
+    case SERVER_STATE_CONNECTED:
+    case SERVER_STATE_DISCONNECTED:
+    case SERVER_STATE_CONNECTING:
+        return 1;
 
-    return 0;
-}
-
-static void add_server(struct afp_server *newserver)
-{
-    pthread_mutex_lock(&server_list_mutex);
-    newserver->next = server_base;
-    server_base = newserver;
-    pthread_mutex_unlock(&server_list_mutex);
+    default:
+        return 0;
+    }
 }
 
 struct afp_server *get_server_base(void)
@@ -503,6 +515,40 @@ struct afp_volume *afp_volume_find_by_pointer_hold(void *id)
     return NULL;
 }
 
+/*!
+ * @brief Find the volume whose mount point is the one given, and hold its
+ *        server
+ *
+ * The volume's mount point is matched whatever its mounted state.
+ * afpfsd runs each command on a thread of its own, so another client's
+ * unmount can remove the server while a command uses it; the reference
+ * keeps the server until the command releases it.
+ *
+ * @param[in] mountpoint  the mount point
+ * @returns the volume, its server held until afp_server_release(), or
+ *          NULL when no volume has that mount point
+ */
+struct afp_volume *afp_volume_find_by_mountpoint_hold(const char *mountpoint)
+{
+    struct afp_volume * v;
+    pthread_mutex_lock(&server_list_mutex);
+
+    for (struct afp_server * s = server_base; s; s = s->next) {
+        for (int j = 0; j < s->num_volumes; j++) {
+            v = &s->volumes[j];
+
+            if (strcmp(v->mountpoint, mountpoint) == 0) {
+                __atomic_add_fetch(&s->refcount, 1, __ATOMIC_RELAXED);
+                pthread_mutex_unlock(&server_list_mutex);
+                return v;
+            }
+        }
+    }
+
+    pthread_mutex_unlock(&server_list_mutex);
+    return NULL;
+}
+
 void afp_lock_server_list(void)
 {
     pthread_mutex_lock(&server_list_mutex);
@@ -619,6 +665,13 @@ int afp_unmount_volume(struct afp_volume * volume)
 }
 
 
+/*!
+ * @brief Free a server, the requests still queued on it, and its buffers
+ *
+ * The saved password is cleared before its memory is freed.
+ *
+ * @param[in,out] sp  the server, set to NULL
+ */
 void afp_free_server(struct afp_server **sp)
 {
     struct dsi_request * p, *next;
@@ -650,19 +703,27 @@ void afp_free_server(struct afp_server **sp)
         free(server->incoming_buffer);
     }
 
-    if (server->attention_buffer) {
-        free(server->attention_buffer);
-    }
-
     if (volumes) {
         free(volumes);
     }
 
     explicit_bzero(server->password, sizeof(server->password));
+    pthread_cond_destroy(&server->request_queue_cond);
     free(server);
     *sp = NULL;
 }
 
+/*!
+ * @brief Take a server off the list and end its connection
+ *
+ * The unlink marks the server destroyed under the list lock, which is
+ * the state validity reads. The connection then ends: its descriptor
+ * leaves the loop's set and every request waiting on it fails with EIO.
+ * The creation's reference is released last.
+ *
+ * @param[in,out] s  the server, or NULL
+ * @returns 0, or -ENOENT for a server that was not listed
+ */
 int afp_server_remove(struct afp_server *s)
 {
     struct afp_server *s2;
@@ -672,7 +733,6 @@ int afp_server_remove(struct afp_server *s)
         return 0;
     }
 
-    /* Remove from the server list first so no new lookups find it */
     pthread_mutex_lock(&server_list_mutex);
 
     if (s == server_base) {
@@ -688,26 +748,17 @@ int afp_server_remove(struct afp_server *s)
         }
     }
 
+    if (found) {
+        __atomic_store_n(&s->connect_state, SERVER_STATE_DESTROYED,
+                         __ATOMIC_RELEASE);
+    }
+
     pthread_mutex_unlock(&server_list_mutex);
 
     if (!found) {
-        return -1;
+        return -ENOENT;
     }
 
-    /* Wake all waiting DSI requests so blocked threads can unblock */
-    pthread_mutex_lock(&s->request_queue_mutex);
-
-    for (struct dsi_request *p = s->command_requests; p;) {
-        struct dsi_request *next_request = p->next;
-        pthread_mutex_lock(&p->waiting_mutex);
-        p->done_waiting = 1;
-        pthread_cond_signal(&p->waiting_cond);
-        pthread_mutex_unlock(&p->waiting_mutex);
-        p = next_request;
-    }
-
-    pthread_mutex_unlock(&s->request_queue_mutex);
-    /* Close the connection */
     loop_disconnect(s);
     /* Release the initial reference from creation.
      * The server will be freed when all holders release. */
@@ -715,8 +766,15 @@ int afp_server_remove(struct afp_server *s)
     return 0;
 }
 
+/*!
+ * @brief Allocate a server for an address, neither listed nor connected
+ *
+ * @param[in] address  the server's address
+ * @returns the server, holding one reference, or NULL when memory runs out
+ */
 struct afp_server *afp_server_init(struct addrinfo * address)
 {
+    static char no_user_name[] = "";
     struct afp_server * s;
     struct passwd *pw;
 
@@ -730,9 +788,13 @@ struct afp_server *afp_server_init(struct addrinfo * address)
     s->next = NULL;
     s->bufsize = 128 * 1024;
     s->incoming_buffer = malloc(s->bufsize);
+
+    if (s->incoming_buffer == NULL) {
+        free(s);
+        return NULL;
+    }
+
     s->attention_quantum = AFP_DEFAULT_ATTENTION_QUANTUM;
-    s->attention_buffer = malloc(s->attention_quantum);
-    s->attention_len = 0;
     s->fd = -1;
     s->connect_state = SERVER_STATE_DISCONNECTED;
     afp_server_reconnect_end(s);
@@ -741,18 +803,34 @@ struct afp_server *afp_server_init(struct addrinfo * address)
     /* Initialize mutexes */
     pthread_mutex_init(&s->requestid_mutex, NULL);
     pthread_mutex_init(&s->request_queue_mutex, NULL);
+    pthread_cond_init(&s->request_queue_cond, NULL);
     pthread_mutex_init(&s->send_mutex, NULL);
     afp_server_connection_generation_init(s);
     s->refcount = 1;
     /* AFP 3.3+ replay cache - initialized to disabled */
     s->replay_cache_size = 0;
     s->supports_replay_cache = 0;
-    /* FIXME this shouldn't be set here */
+    /* A user the passwd database lacks keeps the process's IDs, and a name
+     * no server user has. */
     pw = getpwuid(geteuid());
-    memcpy(&s->passwd, pw, sizeof(struct passwd));
+
+    if (pw) {
+        memcpy(&s->passwd, pw, sizeof(struct passwd));
+    } else {
+        s->passwd.pw_name = no_user_name;
+        s->passwd.pw_uid = geteuid();
+        s->passwd.pw_gid = getegid();
+    }
+
     return s;
 }
 
+/*!
+ * @brief Copy a server's public details into the structure afpc reads
+ *
+ * @param[in]  server  the server
+ * @param[out] basic   receives the details
+ */
 void afp_server_fill_basic(const struct afp_server *server,
                            struct afpc_server_info *basic)
 {
@@ -760,9 +838,11 @@ void afp_server_fill_basic(const struct afp_server *server,
     memcpy(basic->server_name_printable,
            server->server_name_printable,
            sizeof(basic->server_name_printable));
+    /* The public field is a byte shorter than the server's: a type of
+     * sixteen characters loses its last to keep its terminator. */
     memcpy(basic->machine_type,
            server->machine_type,
-           sizeof(basic->machine_type));
+           sizeof(basic->machine_type) - 1);
     memcpy(basic->icon,
            server->icon,
            sizeof(basic->icon));
@@ -947,6 +1027,19 @@ out:
     return using_volume;
 }
 
+/*!
+ * @brief Open a volume and take its name encoding and attributes
+ *
+ * A volume without fixed directory IDs is detached again. A failure writes its
+ * reason to mesg.
+ *
+ * @param[in,out] volume  the volume
+ * @param[in]     server  the volume's server
+ * @param[out]    mesg    receives the reason for a failure
+ * @param[in,out] l       bytes of mesg in use
+ * @param[in]     max     capacity of mesg
+ * @returns 0 once mounted and attached, or 1
+ */
 int afp_connect_volume(struct afp_volume * volume, struct afp_server * server,
                        char *mesg, unsigned int *l, unsigned int max)
 {
@@ -973,17 +1066,19 @@ int afp_connect_volume(struct afp_volume * volume, struct afp_server * server,
     case kFPNoErr:
         break;
 
+    case ETIMEDOUT:
+        *l += snprintf(mesg, max - *l,
+                       "Timed out waiting to open volume\n");
+        goto error;
+
     case kFPBitmapErr:
     case kFPMiscErr:
     case kFPObjectNotFound:
     case kFPParamErr:
+    default:
+        /* A request not sent or not answered opens no volume either. */
         *l += snprintf(mesg, max - *l,
                        "Could not open volume\n");
-        goto error;
-
-    case ETIMEDOUT:
-        *l += snprintf(mesg, max - *l,
-                       "Timed out waiting to open volume\n");
         goto error;
     }
 
@@ -1030,6 +1125,21 @@ error:
     return 1;
 }
 
+/*!
+ * @brief Connect a disconnected server again, log in and reopen its volumes
+ *
+ * One thread reconnects a server at a time. The server must answer with the
+ * signature it had, so a changed endpoint never receives the saved
+ * credentials, and a removal or a disconnect while the reconnect runs fails
+ * it.
+ *
+ * @param[in,out] s     the server
+ * @param[out]    mesg  receives the reason for a failure
+ * @param[in,out] l     bytes of mesg in use
+ * @param[in]     max   capacity of mesg
+ * @returns 0 once connected, or 1 when another thread reconnects it or the
+ *          reconnect fails
+ */
 int afp_server_reconnect(struct afp_server * s, char *mesg,
                          unsigned int *l, unsigned int max)
 {
@@ -1152,7 +1262,24 @@ int afp_server_reconnect(struct afp_server * s, char *mesg,
         goto error;
     }
 
-    s->connect_state = SERVER_STATE_CONNECTED;
+    /* A removal, or a disconnect, while the reconnect ran took the
+     * descriptor or changed the state under the list lock; the reconnect
+     * then fails. */
+    pthread_mutex_lock(&server_list_mutex);
+
+    if (__atomic_load_n(&s->fd, __ATOMIC_ACQUIRE) < 0
+            || s->connect_state != SERVER_STATE_CONNECTING) {
+        pthread_mutex_unlock(&server_list_mutex);
+        *l += snprintf(mesg, max - *l,
+                       "Connection to %s ended while resuming\n",
+                       s->server_name_printable);
+        errno = ECONNRESET;
+        goto error;
+    }
+
+    __atomic_store_n(&s->connect_state, SERVER_STATE_CONNECTED,
+                     __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&server_list_mutex);
     afp_server_reconnect_end(s);
     return 0;
 error:
@@ -1166,13 +1293,16 @@ error:
  * @brief Connect a server's socket to the first of its addresses that answers
  *
  * Each connection starts a new generation, so replies of an older one are
- * dropped. With full, the status exchange's time also sets tx_delay.
+ * dropped, and the old descriptor leaves the loop's set and is closed once
+ * the frame a sender is writing on it has ended. With full, the status
+ * exchange's time also sets tx_delay.
  *
  * @param[in,out] server  server to connect
  * @param[in]     full    1 to read the server's status and identify the
  *                        server, 0 not
- * @returns 0, a negative errno when no address connects, or the negated
- *          result of a failed status read, positive unless it timed out
+ * @returns 0, or a negative errno, which errno holds too: when no address
+ *          connects, -ENOENT for a server removed meanwhile, or when the
+ *          status read fails, -ETIMEDOUT when it timed out
  */
 int afp_server_connect(struct afp_server *server, int full)
 {
@@ -1183,19 +1313,19 @@ int afp_server_connect(struct afp_server *server, int full)
     static char log_msg[LOG_MSG_SIZE];
     char	ip_addr[INET6_ADDRSTRLEN];
     address = server->address;
-    server->data_read = 0;
-    server->attention_len = 0;
-
-    if (server->fd >= 0) {
-        log_for_client(NULL, AFPFSD, LOG_INFO,
-                       "Closing old socket fd=%d before reconnection", server->fd);
-        close(server->fd);
-        server->fd = -1;
-    }
-
-    /* Increment connection generation to detect stale replies */
+    int fd = __atomic_exchange_n(&server->fd, -1, __ATOMIC_ACQ_REL);
+    /* The next generation starts before the old descriptor is shut down,
+     * so a receiver the shutdown wakes finds its connection replaced. */
     unsigned int connection_generation =
         afp_server_next_connection_generation(server);
+
+    if (fd >= 0) {
+        loop_close_descriptor(server, fd);
+        log_for_client(NULL, AFPFSD, LOG_INFO,
+                       "Closed old socket fd=%d before reconnection", fd);
+        fd = -1;
+    }
+
     log_for_client(NULL, AFPFSD, LOG_INFO,
                    "Connection generation now %u", connection_generation);
 
@@ -1224,33 +1354,33 @@ int afp_server_connect(struct afp_server *server, int full)
         }
 
         (log_for_client)(NULL, AFPFSD, LOG_NOTICE, log_msg);
-        server->fd = socket(address->ai_family,
-                            address->ai_socktype, address->ai_protocol);
+        fd = socket(address->ai_family,
+                    address->ai_socktype, address->ai_protocol);
 
-        if (server->fd >= 0) {
-            if (connect_with_timeout(server->fd, address->ai_addr,
+        if (fd >= 0) {
+            if (connect_with_timeout(fd, address->ai_addr,
                                      address->ai_addrlen, DSI_DEFAULT_TIMEOUT) == 0) {
                 /* Disable Nagle */
                 int nodelay = 1;
 
-                if (setsockopt(server->fd, IPPROTO_TCP, TCP_NODELAY,
+                if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
                                &nodelay, sizeof(nodelay)) < 0) {
                     log_for_client(NULL, AFPFSD, LOG_WARNING,
                                    "Could not set TCP_NODELAY on fd=%d: %s",
-                                   server->fd, strerror(errno));
+                                   fd, strerror(errno));
                 }
 
                 break;
             }
 
-            close(server->fd);
-            server->fd	= -1;
+            close(fd);
+            fd = -1;
         }
 
         address	= address->ai_next;
     }
 
-    if (server->fd < 0) {
+    if (fd < 0) {
         error = errno;
         goto error;
     }
@@ -1263,12 +1393,25 @@ int afp_server_connect(struct afp_server *server, int full)
         server->lastrequestid	= 0;
     }
 
-    server->connect_state	= SERVER_STATE_CONNECTING;
+    /* A server removed while this connect ran stays removed: its state,
+     * its list entry and its published descriptor change under the list
+     * lock. */
+    pthread_mutex_lock(&server_list_mutex);
+
+    if (server->connect_state == SERVER_STATE_DESTROYED) {
+        pthread_mutex_unlock(&server_list_mutex);
+        close(fd);
+        errno = ENOENT;
+        return -ENOENT;
+    }
+
+    __atomic_store_n(&server->fd, fd, __ATOMIC_RELEASE);
+    __atomic_store_n(&server->connect_state, SERVER_STATE_CONNECTING,
+                     __ATOMIC_RELEASE);
     server->used_address	= address;
-    /* Add server to the list if it's not already there. */
     int found = 0;
 
-    for (struct afp_server *s = get_server_base(); s; s = s->next) {
+    for (struct afp_server *s = server_base; s; s = s->next) {
         if (s == server) {
             found = 1;
             break;
@@ -1276,10 +1419,12 @@ int afp_server_connect(struct afp_server *server, int full)
     }
 
     if (!found) {
-        add_server(server);
+        server->next = server_base;
+        server_base = server;
     }
 
-    add_fd_and_signal(server->fd);
+    add_fd_and_signal(fd);
+    pthread_mutex_unlock(&server_list_mutex);
 
     if (!full) {
         return 0;
@@ -1289,7 +1434,10 @@ int afp_server_connect(struct afp_server *server, int full)
     gettimeofday(&t1, NULL);
 
     if ((error = afpc_dsi_getstatus(server)) != 0) {
-        goto error;
+        /* The status read answers ETIMEDOUT or a negative errno; errno
+         * holds it too, for the callers that read errno. */
+        errno = error > 0 ? error : -error;
+        return -errno;
     }
 
     gettimeofday(&t2, NULL);

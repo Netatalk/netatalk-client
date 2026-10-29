@@ -2,9 +2,15 @@
  *  did.c
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
+ */
+
+/*!
+ * @file
+ * @brief The cache of directory IDs by path, and the lookup that fills it
  */
 
 #include <stdlib.h>
@@ -161,8 +167,22 @@ static unsigned int find_cached_directory(
     return did;
 }
 
-unsigned char is_dir(struct afp_volume * volume,
-                     unsigned int parentdid, const char *path)
+/*!
+ * @brief Whether a name in a directory names a directory
+ *
+ * The cache answers for a directory it holds; any other name costs an
+ * FPGetFileDirParms.
+ *
+ * @param[in] volume     volume of the directory
+ * @param[in] parentdid  directory ID of the directory holding the name
+ * @param[in] path       the name
+ * @returns 1 for a directory, 0 for another object, or a negative errno
+ *          when the lookup fails: -ENOENT for a name that does not exist,
+ *          -EACCES for one the session may not read, -EIO for another
+ *          answer or a request without one
+ */
+int is_dir_checked(struct afp_volume * volume, unsigned int parentdid,
+                   const char *path)
 {
     int ret;
     unsigned int filebitmap = 0;
@@ -177,11 +197,33 @@ unsigned char is_dir(struct afp_volume * volume,
     ret = afp_getfiledirparms(volume, parentdid,
                               filebitmap, dirbitmap, path, &fi);
 
-    if (ret) {
-        return 0;
-    }
+    switch (ret) {
+    case kFPNoErr:
+        return fi.isdir ? 1 : 0;
 
-    return fi.isdir;
+    case kFPObjectNotFound:
+        return -ENOENT;
+
+    case kFPAccessDenied:
+        return -EACCES;
+
+    default:
+        return -EIO;
+    }
+}
+
+/*!
+ * @brief Whether a name in a directory names a directory
+ *
+ * @param[in] volume     volume of the directory
+ * @param[in] parentdid  directory ID of the directory holding the name
+ * @param[in] path       the name
+ * @returns 1 for a directory, 0 for another object or a failed lookup
+ */
+unsigned char is_dir(struct afp_volume * volume,
+                     unsigned int parentdid, const char *path)
+{
+    return is_dir_checked(volume, parentdid, path) == 1;
 }
 
 static unsigned int find_dirid_by_fullname(struct afp_volume * volume,

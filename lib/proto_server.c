@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -82,14 +83,16 @@ int afp_getsrvrparms(struct afp_server *server)
 /*!
  * @brief Parse an FPGetSrvrParms reply into the server's time and volumes
  *
- * Builds the volume list with each volume's locks initialized. An AFP 2
- * server's local time sets the offset that corrects later dates.
+ * Builds the volume list, each volume's locks initialized, and hands it to
+ * the server under the list lock, which walkers of every server's volumes
+ * hold. An AFP 2 server's local time sets the offset that corrects later
+ * dates.
  *
  * @param[in,out] server  server of the session, which receives the volumes
  * @param[in]     msg     the reply, DSI header first
  * @param[in]     size    bytes of msg
  * @param[in]     ignore  unused
- * @returns 0, or -1 for a reply cut short
+ * @returns 0, or -1 for a reply cut short or a volume list not allocated
  */
 int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
                            unsigned int size, void *ignore _U_)
@@ -121,25 +124,28 @@ int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
         server->connect_time -= server->time_offset;
     }
 
-    server->num_volumes = afp_getsrvparm_reply->numvolumes;
-    newvolumes = malloc(afp_getsrvparm_reply->numvolumes * sizeof(
-                            struct afp_volume));
-    memset(newvolumes, 0, afp_getsrvparm_reply->numvolumes * sizeof(
-               struct afp_volume));
-    server->volumes = newvolumes;
+    newvolumes = calloc(afp_getsrvparm_reply->numvolumes,
+                        sizeof(struct afp_volume));
+
+    if (newvolumes == NULL && afp_getsrvparm_reply->numvolumes > 0) {
+        return -1;
+    }
+
     p = msg + header_size;
     msg_end = msg + size;
 
     for (int i = 0; i < afp_getsrvparm_reply->numvolumes; i++) {
         if (p >= msg_end) {
+            free(newvolumes);
             return -1;
         }
 
         struct afp_volume * vol;
 
-        vol = &server->volumes[i];
+        vol = &newvolumes[i];
         vol->flags = *p;
         vol->server = server;
+        pthread_mutex_init(&vol->did_cache_mutex, NULL);
         pthread_mutex_init(&vol->open_forks_mutex, NULL);
         pthread_rwlock_init(&vol->open_lock, NULL);
         p++;
@@ -164,6 +170,10 @@ int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
                                        AFP_VOLUME_NAME_UTF8_LEN);
     }
 
+    afp_lock_server_list();
+    server->num_volumes = afp_getsrvparm_reply->numvolumes;
+    server->volumes = newvolumes;
+    afp_unlock_server_list();
     return 0;
 }
 

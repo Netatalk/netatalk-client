@@ -61,7 +61,7 @@ endif
 
 readline_dep = cc.find_library('readline', dirs: libsearch_dirs, required: false)
 editline_dep = dependency('libedit', required: false)
-pthread_dep = cc.find_library('pthread', dirs: libsearch_dirs, required: true)
+pthread_dep = dependency('threads')
 libiconv_dep = cc.find_library('iconv', dirs: libsearch_dirs, required: false)
 libbsd_dep = cc.find_library('bsd', dirs: libsearch_dirs, required: false)
 
@@ -87,7 +87,7 @@ if cc.compiles(
     cflags += '-DICONV_CONST=const'
 endif
 
-root_dependencies = []
+root_dependencies = [pthread_dep]
 cmdline_dependencies = []
 
 libedit_readline_header = ''

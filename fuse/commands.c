@@ -5,6 +5,7 @@
  *  Copyright (C) 2004 Miklos Szeredi <miklos@szeredi.hu>
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -183,6 +184,16 @@ static int fuse_process_client_fds(fd_set *set, int max_fd _U_)
     return 0;
 }
 
+/*!
+ * @brief Serve the ready descriptors of the command socket and its clients
+ *
+ * @param[in]     command_fd  the listening command socket
+ * @param[in,out] set         the ready descriptors, which an accepted client
+ *                            joins
+ * @param[in,out] max_fd      one past the highest descriptor of set
+ * @returns 1 when it served a client, 0 when no client's descriptor was
+ *          ready
+ */
 static int fuse_scan_extra_fds(int command_fd, fd_set *set, int *max_fd)
 {
     struct sockaddr_un new_addr;
@@ -222,8 +233,14 @@ static int fuse_scan_extra_fds(int command_fd, fd_set *set, int *max_fd)
         goto out;
     }
 
-    /* unknown fd */
-    sleep(10);
+    /* A ready descriptor that is neither the listener's nor a client's is a
+     * server's: one whose connection ended during this pass, by the loop's
+     * own hand on the server's close or by another thread's close, which
+     * the kernel reports as ready once, or a live one the loop's next pass
+     * reads, when the receive of another server ended this pass. An ended
+     * one is out of the loop's set already. A listener whose accept()
+     * failed at the descriptor limit returns here too, and stays ready
+     * until a descriptor frees. */
     return 0;
 out:
     return 1;
@@ -434,6 +451,16 @@ static int volopen(struct afpfsd_client * c, struct afp_volume * volume)
 }
 
 
+/*!
+ * @brief Suspend the session of a mount's server, for afpc fs suspend
+ *
+ * The server sleeps with FPZzzzz and is marked suspended, so no request
+ * reconnects it, before its connection ends.
+ *
+ * @param[in] c  the client, whose command names the mount point
+ * @returns AFPFSD_IPC_RESULT_OK, or AFPFSD_IPC_RESULT_ERROR for an unknown
+ *          mount point or a refused sleep
+ */
 static unsigned char process_suspend(struct afpfsd_client * c)
 {
     struct afpfsd_ipc_suspend_request req;
@@ -441,30 +468,22 @@ static unsigned char process_suspend(struct afpfsd_client * c)
     struct afp_volume * v = NULL;
     memcpy(&req, (void *)((uintptr_t)c->incoming_string + 1), sizeof(req));
 
-    /* Find the volume by mountpoint */
-    for (s = get_server_base(); s; s = s->next) {
-        for (int j = 0; j < s->num_volumes; j++) {
-            v = &s->volumes[j];
-
-            if (strcmp(v->mountpoint, req.mountpoint) == 0) {
-                goto found;
-            }
-        }
+    if ((v = afp_volume_find_by_mountpoint_hold(req.mountpoint)) == NULL) {
+        log_for_client((void *) c, AFPFSD, LOG_ERR,
+                       "No volume mounted at %s", req.mountpoint);
+        return AFPFSD_IPC_RESULT_ERROR;
     }
 
-    log_for_client((void *) c, AFPFSD, LOG_ERR,
-                   "No volume mounted at %s", req.mountpoint);
-    return AFPFSD_IPC_RESULT_ERROR;
-found:
     s = v->server;
 
     if (afp_zzzzz(s)) {
+        afp_server_release(s);
         return AFPFSD_IPC_RESULT_ERROR;
     }
 
     afp_server_set_suspended(s, 1);
     loop_disconnect(s);
-    s->connect_state = SERVER_STATE_DISCONNECTED;
+    afp_server_release(s);
     log_for_client((void *) c, AFPFSD, LOG_NOTICE,
                    "Suspended connection for %s", req.mountpoint);
     return AFPFSD_IPC_RESULT_OK;
@@ -488,6 +507,15 @@ static int afp_server_reconnect_loud(struct afpfsd_client * c,
 }
 
 
+/*!
+ * @brief Resume the session of a mount's server, for afpc fs resume
+ *
+ * A failed reconnect leaves the server suspended.
+ *
+ * @param[in] c  the client, whose command names the mount point
+ * @returns AFPFSD_IPC_RESULT_OK, or AFPFSD_IPC_RESULT_ERROR for an unknown
+ *          mount point or a failed reconnect
+ */
 static unsigned char process_resume(struct afpfsd_client * c)
 {
     struct afpfsd_ipc_resume_request req;
@@ -495,68 +523,65 @@ static unsigned char process_resume(struct afpfsd_client * c)
     struct afp_volume * v = NULL;
     memcpy(&req, (void *)((uintptr_t)c->incoming_string + 1), sizeof(req));
 
-    /* Find the volume by mountpoint */
-    for (s = get_server_base(); s; s = s->next) {
-        for (int j = 0; j < s->num_volumes; j++) {
-            v = &s->volumes[j];
-
-            if (strcmp(v->mountpoint, req.mountpoint) == 0) {
-                goto found;
-            }
-        }
+    if ((v = afp_volume_find_by_mountpoint_hold(req.mountpoint)) == NULL) {
+        log_for_client((void *) c, AFPFSD, LOG_ERR,
+                       "No volume mounted at %s", req.mountpoint);
+        return AFPFSD_IPC_RESULT_ERROR;
     }
 
-    log_for_client((void *) c, AFPFSD, LOG_ERR,
-                   "No volume mounted at %s", req.mountpoint);
-    return AFPFSD_IPC_RESULT_ERROR;
-found:
     s = v->server;
     afp_server_set_suspended(s, 0);
 
     if (afp_server_reconnect_loud(c, s)) {
         afp_server_set_suspended(s, 1);
+        afp_server_release(s);
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Unable to reconnect for %s", req.mountpoint);
         return AFPFSD_IPC_RESULT_ERROR;
     }
 
+    afp_server_release(s);
     log_for_client((void *) c, AFPFSD, LOG_NOTICE,
                    "Resumed connection for %s", req.mountpoint);
     return AFPFSD_IPC_RESULT_OK;
 }
 
+/*!
+ * @brief Unmount the volume at a mount point, for afpc fs unmount
+ *
+ * @param[in] c  the client, whose command names the mount point
+ * @returns AFPFSD_IPC_RESULT_OK, or AFPFSD_IPC_RESULT_ERROR for an unknown
+ *          mount point, a volume not mounted, or a failed unmount
+ */
 static unsigned char process_unmount(struct afpfsd_client * c)
 {
     struct afpfsd_ipc_unmount_request req;
     struct afp_server * s;
     struct afp_volume * v;
     char mountpoint[AFP_MOUNTPOINT_LEN];
-    int j = 0;
+    int ret;
     memcpy(&req, (void *)((uintptr_t)c->incoming_string + 1), sizeof(req));
 
-    for (s = get_server_base(); s; s = s->next) {
-        for (j = 0; j < s->num_volumes; j++) {
-            v = &s->volumes[j];
-
-            if (strcmp(v->mountpoint, req.mountpoint) == 0) {
-                goto found;
-            }
-        }
+    if ((v = afp_volume_find_by_mountpoint_hold(req.mountpoint)) == NULL) {
+        goto notfound;
     }
 
-    goto notfound;
-found:
+    s = v->server;
 
     if (v->mounted != AFP_VOLUME_MOUNTED) {
         log_for_client((void *) c, AFPFSD, LOG_NOTICE,
                        "%s was not mounted", v->mountpoint);
+        afp_server_release(s);
         return AFPFSD_IPC_RESULT_ERROR;
     }
 
-    /* A successful unmount can release the server owning v. */
+    /* A successful unmount removes the server owning v, which the release
+     * then frees. */
     strlcpy(mountpoint, v->mountpoint, sizeof(mountpoint));
+    ret = afp_unmount_volume(v);
+    afp_server_release(s);
 
-    if (afp_unmount_volume(v) != 0) {
+    if (ret != 0) {
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Unmount failed for %s; try using 'umount' or 'fusermount -u'", mountpoint);
         return AFPFSD_IPC_RESULT_ERROR;
@@ -610,7 +635,8 @@ static unsigned char process_status(struct afpfsd_client * c)
         fuse_client_append(c, text);
     }
 
-    s = get_server_base();
+    /* The list and each server's volumes change under the list lock. */
+    afp_lock_server_list();
 
     for (s = get_server_base(); s; s = s->next) {
         len = sizeof(text);
@@ -618,6 +644,7 @@ static unsigned char process_status(struct afpfsd_client * c)
         fuse_client_append(c, text);
     }
 
+    afp_unlock_server_list();
     return AFPFSD_IPC_RESULT_OK;
 }
 

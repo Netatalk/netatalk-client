@@ -50,4 +50,33 @@ static inline int test_tap_finish(void)
 #define CHECK(condition) \
     test_tap_check((condition), #condition, __FILE__, __LINE__)
 
+/* A test of one behaviour, as netatalk's afpd test harness runs them: the
+ * call returns 0, or the number of the step that failed, which the report
+ * names. */
+static inline void test_tap_int(int got, int expected,
+                                const char *description, const char *file,
+                                int line)
+{
+    if (test_output_tap) {
+        printf("%s %u - %s\n", got == expected ? "ok" : "not ok",
+               ++test_case_num, description);
+
+        if (got != expected) {
+            printf("# failed at %s:%d\n", file, line);
+            printf("# got: %d\n# expected: %d\n", got, expected);
+            printf("Bail out! stopping after failed assertion\n");
+        }
+    } else if (got != expected) {
+        fprintf(stderr, "test failed at %s:%d: %s: got %d, expected %d\n",
+                file, line, description, got, expected);
+    }
+
+    if (got != expected) {
+        exit(EXIT_FAILURE);
+    }
+}
+
+#define TEST_int(a, b, desc) \
+    test_tap_int((a), (b), (desc), __FILE__, __LINE__)
+
 #endif
