@@ -4,6 +4,8 @@
  *  Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
  *
+ *  This program can be distributed under the terms of the GNU GPL.
+ *  See the file COPYING.
  */
 
 #include "afp_internal.h"

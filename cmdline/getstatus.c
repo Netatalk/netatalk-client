@@ -1,8 +1,9 @@
 /*
- *
  *  Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
  *
+ *  This program can be distributed under the terms of the GNU GPL.
+ *  See the file COPYING.
  */
 
 #include <stdio.h>

@@ -1,16 +1,14 @@
 /*
-
-    fuse_fs.c, FUSE interfaces for Netatalk Client
-
-    Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
-    Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
-
-    Heavily modifed from the example code provided by:
-    Copyright (C) 2001-2005  Miklos Szeredi <miklos@szeredi.hu>
-
-    This program can be distributed under the terms of the GNU GPL.
-    See the file COPYING.
-*/
+ *  fuse_fs.c, FUSE interfaces for Netatalk Client
+ *  Heavily modifed from the example code by Miklos Szeredi
+ *
+ *  Copyright (C) 2001-2005 Miklos Szeredi <miklos@szeredi.hu>
+ *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *
+ *  This program can be distributed under the terms of the GNU GPL.
+ *  See the file COPYING.
+ */
 
 /*!
  * @file
