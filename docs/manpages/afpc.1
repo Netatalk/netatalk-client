@@ -121,6 +121,22 @@ and
 .It Fl O Ar flags , Fl -options Ar flags
 Pass a comma-separated set of FUSE mount options to the mount operation.
 Consult the FUSE documentation for supported flags.
+A set longer than 255 bytes stops the command with an error.
+Three of them set how long the kernel answers from its cache before it
+asks the server again:
+.Cm attr_timeout Ns = Ns Ar seconds
+for a file's attributes (default: 1),
+.Cm entry_timeout Ns = Ns Ar seconds
+for a name's lookup (default: 1) and
+.Cm negative_timeout Ns = Ns Ar seconds
+for a name that does not exist, on Linux and
+.Fx
+(default: 0, asked every time).
+Shorter timeouts show another client's changes sooner and send more
+requests: with the first two at 0, a
+.Xr stat 2
+asks the server at least once for each name in its path and once for the
+attributes.
 .It Fl F , Fl -flush-on-close
 Flush a file written through the mount to the server's disk when the
 kernel releases it after its last descriptor is closed, or at unmount at

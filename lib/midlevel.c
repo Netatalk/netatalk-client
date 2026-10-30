@@ -132,6 +132,45 @@ static int is_finderinfo_xattr(const char *name)
                   AFP_XATTR_FINDERINFO) == 0;
 }
 
+/*!
+ * @brief Whether a name begins with Netatalk's metadata attribute's name
+ *
+ * A user. prefix is dropped first, as for the name the request would send;
+ * Netatalk's server guards the same prefix.
+ *
+ * @param[in] name  the attribute's name
+ * @returns nonzero for such a name
+ */
+static int is_netatalk_meta_xattr(const char *name)
+{
+    return IS_INTERNAL_SERVER_XATTR(normalized_xattr_name_for_compare(name));
+}
+
+/*!
+ * @brief The negative errno for get_dirid()'s failure to resolve a parent
+ *
+ * get_dirid() returns a negative errno, the server's AFP result, -1 for a
+ * failure in the client, or a timed-out request's positive ETIMEDOUT.
+ *
+ * @param[in] ret  get_dirid()'s nonzero result
+ * @returns -ENOENT for a parent the server does not have, -EACCES for one it
+ *          refuses, a negative errno unchanged, -EIO for anything else
+ */
+static int dirid_errno(int ret)
+{
+    switch (ret) {
+    case kFPObjectNotFound:
+        return -ENOENT;
+
+    case kFPAccessDenied:
+        return -EACCES;
+
+    default:
+        /* AFP results lie at kFPNoMoreSessions and below */
+        return ret < -1 && ret > kFPNoMoreSessions ? ret : -EIO;
+    }
+}
+
 static int get_unixprivs(struct afp_volume * volume,
                          unsigned int dirid,
                          const char *path, struct afp_file_info * fp)
@@ -2953,6 +2992,19 @@ int ml_removefinderinfo(struct afp_volume * volume, const char *path)
     return ml_setfinderinfo(volume, path, finderinfo, sizeof(finderinfo));
 }
 
+/*!
+ * @brief Read an extended attribute of a file
+ *
+ * Netatalk's metadata attribute reads as absent.
+ *
+ * @param[in]  volume  volume of the file
+ * @param[in]  path    UTF-8 path of the file
+ * @param[in]  name    the attribute's name, with or without user.
+ * @param[out] value   receives the value
+ * @param[in]  size    capacity of value, or 0 to ask the value's length
+ * @returns the value's length, the bytes read of the resource fork, or a
+ *          negative errno
+ */
 int ml_getxattr(struct afp_volume * volume, const char *path,
                 const char *name, void *value, size_t size)
 {
@@ -2981,7 +3033,7 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
     }
 
     /* Filter internal server EAs - pretend they don't exist */
-    if (IS_INTERNAL_SERVER_XATTR(name)) {
+    if (is_netatalk_meta_xattr(name)) {
         return -ENOATTR;
     }
 
@@ -3000,7 +3052,7 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
     ret = get_dirid(volume, path, basename, &dirid);
 
     if (ret != 0) {
-        return ret;
+        return dirid_errno(ret);
     }
 
     /* Time Capsule rejects small MaxReplySize values.  The reply buffer is
@@ -3056,6 +3108,20 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
     return info.size;
 }
 
+/*!
+ * @brief Set an extended attribute of a file
+ *
+ * Apart from the resource fork and the Finder info, a set at the root, on a
+ * volume without extended attributes or of Netatalk's metadata stores nothing.
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] path    UTF-8 path of the file
+ * @param[in] name    the attribute's name, with or without user.
+ * @param[in] value   the value
+ * @param[in] size    length of value
+ * @param[in] flags   kXAttrCreate or kXAttrReplace, or 0
+ * @returns 0, or a negative errno
+ */
 int ml_setxattr(struct afp_volume * volume, const char *path,
                 const char *name, const void *value, size_t size, int flags)
 {
@@ -3090,7 +3156,7 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
     }
 
     /* Filter internal server EAs - silently succeed to allow file copies */
-    if (IS_INTERNAL_SERVER_XATTR(name)) {
+    if (is_netatalk_meta_xattr(name)) {
         return 0;
     }
 
@@ -3109,7 +3175,7 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
     ret = get_dirid(volume, path, basename, &dirid);
 
     if (ret != 0) {
-        return ret;
+        return dirid_errno(ret);
     }
 
     /* Handle flags (create/replace semantics) */
@@ -3149,6 +3215,18 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
     }
 }
 
+/*!
+ * @brief List the extended attributes of a file
+ *
+ * Off macOS every name is listed under user.; Netatalk's internal
+ * attributes are left out.
+ *
+ * @param[in]  volume  volume of the file
+ * @param[in]  path    UTF-8 path of the file
+ * @param[out] list    receives the names, each NUL-terminated
+ * @param[in]  size    capacity of list, or 0 to ask the list's length
+ * @returns the list's length, or a negative errno
+ */
 int ml_listxattr(struct afp_volume * volume, const char *path,
                  char *list, size_t size)
 {
@@ -3167,7 +3245,7 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
         ret = get_dirid(volume, path, basename, &dirid);
 
         if (ret != 0) {
-            return ret;
+            return dirid_errno(ret);
         }
 
         /* Fetch the complete raw AFP list. Namespace prefixes added below can
@@ -3248,6 +3326,19 @@ out:
     return ret;
 }
 
+/*!
+ * @brief Remove an extended attribute of a file
+ *
+ * The resource fork and the Finder info are cleared on a volume without
+ * extended attributes too.
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] path    UTF-8 path of the file
+ * @param[in] name    the attribute's name, with or without user.
+ * @returns 0, or a negative errno: -ENOATTR on a volume without extended
+ *          attributes, -EACCES at the volume root and for Netatalk's
+ *          metadata attribute
+ */
 int ml_removexattr(struct afp_volume * volume, const char *path,
                    const char *name)
 {
@@ -3275,7 +3366,7 @@ int ml_removexattr(struct afp_volume * volume, const char *path,
     }
 
     /* Filter internal server EAs - deny removal */
-    if (IS_INTERNAL_SERVER_XATTR(name)) {
+    if (is_netatalk_meta_xattr(name)) {
         return -EACCES;
     }
 
@@ -3293,7 +3384,7 @@ int ml_removexattr(struct afp_volume * volume, const char *path,
     ret = get_dirid(volume, path, basename, &dirid);
 
     if (ret != 0) {
-        return ret;
+        return dirid_errno(ret);
     }
 
     ret = afp_removeextattr(volume, dirid, 0, basename,

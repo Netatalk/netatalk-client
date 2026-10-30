@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -745,7 +746,13 @@ static int do_mount(int argc, char **argv)
             break;
 
         case 'O':
-            snprintf(request.fuse_options, sizeof(request.fuse_options), "%s", optarg);
+            if (snprintf(request.fuse_options, sizeof(request.fuse_options),
+                         "%s", optarg) >= (int)sizeof(request.fuse_options)) {
+                fprintf(stderr, "FUSE options are longer than %zu bytes.\n",
+                        sizeof(request.fuse_options) - 1);
+                return -1;
+            }
+
             break;
 
         case 'o':
@@ -962,19 +969,22 @@ static int list_authenticated_volumes(
     return 0;
 }
 
+/*!
+ * @brief Print mount_afpfs's usage
+ */
 static void mount_afpfs_usage(void)
 {
     printf("Netatalk Client %s - mount an AFP network filesystem with FUSE\n"
            "Usage:\n"
-           "\tmount_afpfs [-o volpass=password] <afp url> <mountpoint>\n",
+           "\tmount_afpfs [-o option[,option...]] <afp url> <mountpoint>\n",
            NETATALK_CLIENT_VERSION);
 }
 
 /*!
  * @brief Build the mount request of mount_afpfs from its command line
  *
- * Takes an AFP URL and a mount point, after -o options such as volpass, ro,
- * and flush_on_close.
+ * Takes an AFP URL and a mount point after -o options; attr_timeout,
+ * entry_timeout and negative_timeout go to libfuse, which parses them.
  *
  * @param[in] argc  argument count
  * @param[in] argv  mount_afpfs's arguments
@@ -1008,9 +1018,13 @@ static int handle_mount_afpfs(int argc, char *argv[])
         return -1;
     }
 
+    outgoing_len = sizeof(struct afpfsd_ipc_mount_request) +1;
+    memset(outgoing_buffer, 0, outgoing_len);
+
     if (strcmp(argv[1], "-o") == 0) {
         char *p, *q;
         char command[256];
+        size_t len;
         struct passwd * passwd;
         struct group * group;
 
@@ -1022,13 +1036,16 @@ static int handle_mount_afpfs(int argc, char *argv[])
         p = argv[2];
 
         do {
-            memset(command, 0, 256);
+            q = strchr(p, ',');
+            len = q ? (size_t)(q - p) : strlen(p);
 
-            if ((q = strchr(p, ','))) {
-                strlcpy(command, p, (q - p) + 1);
-            } else {
-                strlcpy(command, p, sizeof(command));
+            if (len >= sizeof(command)) {
+                printf("An -o option is longer than %zu bytes\n",
+                       sizeof(command) - 1);
+                goto cleanup;
             }
+
+            strlcpy(command, p, len + 1);
 
             if (strncmp(command, "volpass=", 8) == 0) {
                 if (copy_secret(volpass, sizeof(volpass), command + 8,
@@ -1068,6 +1085,18 @@ static int handle_mount_afpfs(int argc, char *argv[])
                 readonly = 1;
             } else if (strcmp(command, "flush_on_close") == 0) {
                 flush_on_close = 1;
+            } else if (strncmp(command, "attr_timeout=", 13) == 0
+                       || strncmp(command, "entry_timeout=", 14) == 0
+                       || strncmp(command, "negative_timeout=", 17) == 0) {
+                size_t used = strlen(req->fuse_options);
+                int n = snprintf(req->fuse_options + used,
+                                 sizeof(req->fuse_options) - used, "%s%s",
+                                 used ? "," : "", command);
+
+                if (n < 0 || (size_t)n >= sizeof(req->fuse_options) - used) {
+                    printf("FUSE options too long at %s\n", command);
+                    goto cleanup;
+                }
             } else {
                 printf("Unknown option %s, skipping\n", command);
             }
@@ -1093,8 +1122,6 @@ static int handle_mount_afpfs(int argc, char *argv[])
         mountpoint = argv[2];
     }
 
-    outgoing_len = sizeof(struct afpfsd_ipc_mount_request) +1;
-    memset(outgoing_buffer, 0, outgoing_len);
     afp_default_url(&req->url);
     req->changeuid = changeuid;
     req->volume_options |= DEFAULT_MOUNT_FLAGS;

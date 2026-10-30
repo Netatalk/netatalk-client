@@ -35,16 +35,10 @@ spawns a dedicated afpfsd daemon for each mount request.
 The arguments and options are:
 .Bl -tag -width Ds
 .It Fl o Ar options
-Options passed to
-.Xr mount 2
-are specified with the
-.Fl o
-option followed by a comma separated string of options.
-See the
-.Xr mount 8
-man page for possible options and their meanings.
-Additional options
-supported by the AFP Client are as follows:
+A comma-separated list of the options below.
+Any other option is skipped with a message.
+An option longer than 255 bytes, or timeouts longer than 255 bytes
+together, stop the command with an error.
 .Bl -tag -width Ds
 .It Cm volpass Ns = Ns Ar password
 Set the volume password (since there is no facility for that in an AFP URL).
@@ -79,6 +73,15 @@ Mount the volume as
 .It Cm user Ns = Ns Ar username
 Mount the volume as
 .Ar username .
+.It Cm attr_timeout Ns = Ns Ar seconds
+How long the kernel answers for a file's attributes from its cache before
+it asks the server again (default: 1).
+.It Cm entry_timeout Ns = Ns Ar seconds
+How long the kernel answers a name's lookup from its cache (default: 1).
+.It Cm negative_timeout Ns = Ns Ar seconds
+How long the kernel on Linux and
+.Fx
+answers that a name does not exist (default: 0, asked every time).
 .El
 .It Ar afp_url
 The AFP URL to mount, in the format:
