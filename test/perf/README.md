@@ -11,8 +11,8 @@ and then against the Samba (SMB) CIFS mount of the same directory.
 ## Pieces
 
 - `vfs_lantest.c`: the `afp_lantest` test set as POSIX calls. Same test
-  names, order, geometry, statistics and CSV layout, so the Netatalk chart
-  and history scripts read its output.
+  names, order, geometry, statistics and CSV layout, so the chart and
+  history scripts read its output.
 - `vfs_speedtest.c`: the `afp_speedtest` Read, Write, Copy and ServerCopy
   sweeps as POSIX calls, same runs, warmup, statistics and CSV layout.
 - `vfs_common.[ch]`: checked file operations, aligned buffers, the timer
@@ -30,9 +30,22 @@ and then against the Samba (SMB) CIFS mount of the same directory.
 - `.github/workflows/perf.yml`: the dashboard. One build job, three
   benchmark jobs (latency charts, throughput chart, flamegraph), one job
   that merges the metrics into `perf-history/history.yml` on `gh-pages` and
-  posts the comment. `NETATALK_REF` in that file names the netatalk commit
-  that supplies the server, the entrypoint and the chart, history and
-  publish tooling.
+  posts the comment. The comment shows the AFP mount with its ratio to the
+  SMB run of the same container, AFP/SMB for throughput and SMB/AFP for
+  runtime, so above 1.00 the Netatalk client was the faster mount, and a
+  chart of that ratio per lantest test across PRs; the SMB figures fold
+  away under their own heading. `NETATALK_REF` in that file names the
+  netatalk commit that supplies the server and the entrypoint.
+- `contrib/scripts/plot_lantest.pl`, `plot_speedtest.pl`: the per-run
+  charts from the CSVs, the latter with `--ratio` the AFP/SMB throughput
+  ratio per file size; `plot_perf_history.pl`: the per-test trend across
+  PRs from the history, and with `--ratio-prefix` the ratio of two mounts'
+  series. Both ratio charts draw a parity line at 1.00.
+- `.github/scripts/perf_history.pl`: merges a run's metrics into the
+  history and writes the comment's tables and stats, with `--ratio` the
+  ratio columns and figures; `.github/actions/publish-gh-pages`: publishes
+  a chart as `<dir>/pr-<N>.<ext>` on `gh-pages`. The dashboard needs
+  nothing from the netatalk repository beyond the server image.
 
 The tools are built by meson on Linux with `-Dwith-testsuite=true`, the flag
 the Netatalk server uses for its own test suite, and installed beside the other
@@ -125,8 +138,8 @@ docker run --privileged --rm -v "$PWD/results:/results" \
     -e SHARE_NAME=test1 -e INSECURE_AUTH=1 -e AFP_CNID_TMPFS=1 \
     -e TESTSUITE=lan -e MOUNTS="afp smb" -e AFP_TEST_ITERATIONS=2 -e TEST_FLAGS=-c \
     netatalk-client-perf
-perl /tmp/netatalk-perf-base/contrib/scripts/plot_lantest.pl results/lantest-afp.csv -o lantest
-perl /tmp/netatalk-perf-base/contrib/scripts/plot_lantest.pl results/lantest-smb.csv -o lantest-smb
+perl contrib/scripts/plot_lantest.pl results/lantest-afp.csv -o lantest
+perl contrib/scripts/plot_lantest.pl results/lantest-smb.csv -o lantest-smb
 ```
 
 `TESTSUITE=speed` with `TEST_FLAGS="-c -z 0.00390625,1,16"` runs the
