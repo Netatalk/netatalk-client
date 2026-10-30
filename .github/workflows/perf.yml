@@ -20,9 +20,10 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   REPO: ${{ github.repository }}
-  # netatalk main at this commit is the server under test and supplies the
-  # chart, history and publish tooling. A bump moves every absolute figure;
-  # the dashboard's 30-PR rolling average absorbs the step within weeks.
+  # netatalk main at this commit is the server under test; the chart,
+  # history and publish tooling is this repository's. A bump moves every
+  # absolute figure; the dashboard's 30-PR rolling average absorbs the
+  # step within weeks.
   NETATALK_REF: e031a2484595edcea81cbf82b77ad318b2568ced
   # Server and client configuration shared by the benchmark jobs. The values
   # reach the container through an env file and the chart labels through
@@ -150,19 +151,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The chart scripts and the publish action come from the netatalk
-      # commit that built the server under test.
-      - name: Checkout netatalk tooling
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Netatalk/netatalk
-          ref: ${{ env.NETATALK_REF }}
-          path: netatalk
-          sparse-checkout: |
-            .github/actions/publish-gh-pages
-            .github/scripts
-            contrib/scripts
-          persist-credentials: false
       - name: Login to container registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -244,7 +232,7 @@ jobs:
           render() {
             csv="$1"; out="$2"; title="$3"; what="$4"
             shift 4
-            perl netatalk/contrib/scripts/plot_lantest.pl "$csv" \
+            perl contrib/scripts/plot_lantest.pl "$csv" \
               -o "$out" \
               --title "$title" \
               --subtitle "commit ${SHORT_SHA} · $what · candle: min–max wick, mean±σ box, median line" \
@@ -328,7 +316,7 @@ jobs:
             lantest-smb.png
           retention-days: 30
       - name: Publish FUSE chart to gh-pages branch
-        uses: ./netatalk/.github/actions/publish-gh-pages
+        uses: ./.github/actions/publish-gh-pages
         with:
           files: lantest.png
           dest-dir: lantest
@@ -339,7 +327,7 @@ jobs:
       - name: Drop the publish clone
         run: rm -rf gh-pages
       - name: Publish CIFS chart to gh-pages branch
-        uses: ./netatalk/.github/actions/publish-gh-pages
+        uses: ./.github/actions/publish-gh-pages
         with:
           files: lantest-smb.png
           dest-dir: lantest-smb
@@ -366,17 +354,6 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
-      - name: Checkout netatalk tooling
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Netatalk/netatalk
-          ref: ${{ env.NETATALK_REF }}
-          path: netatalk
-          sparse-checkout: |
-            .github/actions/publish-gh-pages
-            .github/scripts
-            contrib/scripts
           persist-credentials: false
       - name: Login to container registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -427,7 +404,7 @@ jobs:
           render() {
             csv="$1"; out="$2"; title="$3"; what="$4"
             shift 4
-            perl netatalk/contrib/scripts/plot_speedtest.pl "$csv" \
+            perl contrib/scripts/plot_speedtest.pl "$csv" \
               -o "$out" \
               --title "$title" \
               --subtitle "commit ${SHORT_SHA} · $what · mean MB/s, shaded band = min–max" \
@@ -454,6 +431,21 @@ jobs:
           render speedtest-smb.csv speedtest-smb \
             "Samba (SMB) CIFS mount Speedtest — throughput vs file size" \
             "vfs_speedtest on the Samba (SMB) CIFS mount of the same directory"
+          # The AFP mount's mean throughput over the SMB mount's at each
+          # size, one line per operation over the parity line at 1.00.
+          # shellcheck disable=SC2086
+          perl contrib/scripts/plot_speedtest.pl speedtest-afp.csv \
+            --ratio speedtest-smb.csv \
+            -o speedtest-ratio \
+            --title "Netatalk (AFP) FUSE mount Speedtest — AFP/SMB throughput ratio vs file size" \
+            --subtitle "commit ${SHORT_SHA} · mean MB/s on the AFP mount over the SMB mount of the same run · above 1.00 the Netatalk client is faster" \
+            --ylabel "AFP/SMB throughput ratio — above 1.00 the Netatalk client is faster" \
+            --meta iterations=${{ env.AFP_TEST_ITERATIONS }} \
+            --meta warmup=1 \
+            --meta server_cpu=${{ env.AFP_SERVER_CPUS }} \
+            --meta client_cpu=${{ env.AFP_TEST_CPUS }} \
+            $AFP_META
+          echo "speedtest-ratio.png size: $(du -h speedtest-ratio.png | cut -f1)"
       - name: Extract metrics for PR comment
         id: speedtest-summary
         run: |
@@ -512,9 +504,10 @@ jobs:
           path: |
             speedtest.png
             speedtest-smb.png
+            speedtest-ratio.png
           retention-days: 30
       - name: Publish FUSE chart to gh-pages branch
-        uses: ./netatalk/.github/actions/publish-gh-pages
+        uses: ./.github/actions/publish-gh-pages
         with:
           files: speedtest.png
           dest-dir: speedtest
@@ -525,11 +518,20 @@ jobs:
       - name: Drop the publish clone
         run: rm -rf gh-pages
       - name: Publish CIFS chart to gh-pages branch
-        uses: ./netatalk/.github/actions/publish-gh-pages
+        uses: ./.github/actions/publish-gh-pages
         with:
           files: speedtest-smb.png
           dest-dir: speedtest-smb
           commit-prefix: speedtest-smb
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Drop the publish clone
+        run: rm -rf gh-pages
+      - name: Publish ratio chart to gh-pages branch
+        uses: ./.github/actions/publish-gh-pages
+        with:
+          files: speedtest-ratio.png
+          dest-dir: speedtest-ratio
+          commit-prefix: speedtest-ratio
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   flamegraph-lantest:
@@ -557,15 +559,6 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
-      - name: Checkout netatalk tooling
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Netatalk/netatalk
-          ref: ${{ env.NETATALK_REF }}
-          path: netatalk
-          sparse-checkout: |
-            .github/actions/publish-gh-pages
           persist-credentials: false
       - name: Login to container registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -642,7 +635,7 @@ jobs:
             flamegraph.png
           retention-days: 30
       - name: Publish flamegraph to gh-pages branch
-        uses: ./netatalk/.github/actions/publish-gh-pages
+        uses: ./.github/actions/publish-gh-pages
         with:
           files: flamegraph.svg flamegraph.png
           dest-dir: flamegraph
@@ -666,16 +659,9 @@ jobs:
       pull-requests: write
       contents: write
     steps:
-      - name: Checkout netatalk tooling
+      - name: Checkout repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: Netatalk/netatalk
-          ref: ${{ env.NETATALK_REF }}
-          path: netatalk
-          sparse-checkout: |
-            .github/actions/publish-gh-pages
-            .github/scripts
-            contrib/scripts
           persist-credentials: false
       - name: Merge metrics into history and compute deltas
         id: history
@@ -692,14 +678,17 @@ jobs:
           # value" lines. Merge them into the YAML history on gh-pages
           # (per-PR upsert, 100-entry cap, pruning of keys that stop
           # receiving data) and emit the dashboard fragments comparing the
-          # current run against the recent historical average.
+          # current run against the recent historical average. The AFP
+          # sections also carry their ratio to the SMB run of the same
+          # container, oriented so that above 1.00 the AFP mount is the
+          # faster one: AFP/SMB throughput, SMB/AFP runtime.
           printf '%s\n' "$LANTEST_METRICS" > lantest-metrics.txt
           printf '%s\n' "$SMB_LANTEST_METRICS" > smb-lantest-metrics.txt
           printf '%s\n' "$SPEEDTEST_METRICS" > speedtest-metrics.txt
           printf '%s\n' "$SMB_SPEEDTEST_METRICS" > smb-speedtest-metrics.txt
           git clone --depth 1 --branch gh-pages \
             "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" gh-pages
-          perl netatalk/.github/scripts/perf_history.pl \
+          perl .github/scripts/perf_history.pl \
             --history gh-pages/perf-history/history.yml \
             --pr "$PR_NUMBER" \
             --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -709,7 +698,10 @@ jobs:
             --section smb_speedtest=smb-speedtest-metrics.txt \
             --adjust lantest \
             --adjust smb_lantest \
-            --adjust-exclude one_large_file
+            --adjust-exclude one_large_file \
+            --ratio speedtest=speedtest/smb_speedtest:AFP/SMB \
+            --ratio lantest=smb_lantest/lantest:SMB/AFP \
+            --ratio-exclude avg_op_time
       - name: Publish updated history to gh-pages
         id: history-publish
         env:
@@ -742,7 +734,7 @@ jobs:
             # Emit the regenerated fragments as this step's outputs: the
             # dashboard comment prefers them over the pre-retry ones, so the
             # posted deltas always match the history actually published.
-            perl ../netatalk/.github/scripts/perf_history.pl \
+            perl ../.github/scripts/perf_history.pl \
               --history perf-history/history.yml \
               --pr "$PR_NUMBER" \
               --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -753,6 +745,9 @@ jobs:
               --adjust lantest \
               --adjust smb_lantest \
               --adjust-exclude one_large_file \
+              --ratio speedtest=speedtest/smb_speedtest:AFP/SMB \
+              --ratio lantest=smb_lantest/lantest:SMB/AFP \
+              --ratio-exclude avg_op_time \
               --github-output "$GITHUB_OUTPUT"
             git add perf-history/history.yml
             if git diff --cached --quiet; then
@@ -770,8 +765,9 @@ jobs:
         run: |
           # The cross-PR trends from the merged history (the local file holds
           # this PR's values whether or not the push needed retries), one per
-          # mount. The image markdown is emitted only on a successful render,
-          # so the comment degrades to no image instead of a broken link.
+          # mount and one of the SMB/AFP ratio of every lantest row. The
+          # image markdown is emitted only on a successful render, so the
+          # comment degrades to no image instead of a broken link.
           if [ ! -s gh-pages/perf-history/history.yml ]; then
             echo "No history file yet; skipping trend charts" && exit 0
           fi
@@ -781,7 +777,7 @@ jobs:
           COMMIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
           SHORT_SHA="$(echo "$COMMIT_SHA" | cut -c1-7)"
           SUBTITLE="commit ${SHORT_SHA} · band: decaying min–max envelope · solid: rolling average (last 30 PRs)"
-          if perl netatalk/contrib/scripts/plot_perf_history.pl \
+          if perl contrib/scripts/plot_perf_history.pl \
             gh-pages/perf-history/history.yml \
             -o perf-trend \
             --title "Netatalk (AFP) FUSE mount Lantest — per-test runtime trend across PRs" \
@@ -791,7 +787,7 @@ jobs:
             URL="https://netatalk.github.io/netatalk-client/perf-history/pr-${PR_NUMBER}.png"
             echo "image_md=[![Performance trend](${URL})](${URL})" >> "$GITHUB_OUTPUT"
           fi
-          if perl netatalk/contrib/scripts/plot_perf_history.pl \
+          if perl contrib/scripts/plot_perf_history.pl \
             gh-pages/perf-history/history.yml \
             -o perf-trend-smb \
             --prefix smb_lantest. \
@@ -802,12 +798,27 @@ jobs:
             URL="https://netatalk.github.io/netatalk-client/perf-history-smb/pr-${PR_NUMBER}.png"
             echo "smb_image_md=[![Performance trend, Samba (SMB) CIFS mount](${URL})](${URL})" >> "$GITHUB_OUTPUT"
           fi
+          # The SMB runtime over the AFP runtime of the same run, one line
+          # per test: a test above the parity line at 1.00 is faster on the
+          # Netatalk client than on the CIFS mount.
+          if perl contrib/scripts/plot_perf_history.pl \
+            gh-pages/perf-history/history.yml \
+            -o perf-ratio \
+            --ratio-prefix smb_lantest. \
+            --title "Netatalk (AFP) FUSE mount Lantest — SMB/AFP runtime ratio per test across PRs" \
+            --subtitle "commit ${SHORT_SHA} · SMB runtime over AFP runtime of the same run · above 1.00 the Netatalk client is faster" \
+            --ylabel "SMB/AFP runtime ratio — above 1.00 the Netatalk client is faster"
+          then
+            echo "ratio_rendered=1" >> "$GITHUB_OUTPUT"
+            URL="https://netatalk.github.io/netatalk-client/perf-ratio/pr-${PR_NUMBER}.png"
+            echo "ratio_image_md=[![SMB/AFP runtime ratio trend](${URL})](${URL})" >> "$GITHUB_OUTPUT"
+          fi
           # The publish action clones gh-pages itself; drop the history
           # step's clone so the paths don't collide.
           rm -rf gh-pages
       - name: Publish trend chart to gh-pages branch
         if: ${{ steps.trend-chart.outputs.rendered == '1' }}
-        uses: ./netatalk/.github/actions/publish-gh-pages
+        uses: ./.github/actions/publish-gh-pages
         with:
           files: perf-trend.png
           dest-dir: perf-history
@@ -818,11 +829,21 @@ jobs:
         run: rm -rf gh-pages
       - name: Publish SMB trend chart to gh-pages branch
         if: ${{ steps.trend-chart.outputs.smb_rendered == '1' }}
-        uses: ./netatalk/.github/actions/publish-gh-pages
+        uses: ./.github/actions/publish-gh-pages
         with:
           files: perf-trend-smb.png
           dest-dir: perf-history-smb
           commit-prefix: perf-history-smb
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Drop the publish clone
+        run: rm -rf gh-pages
+      - name: Publish ratio trend chart to gh-pages branch
+        if: ${{ steps.trend-chart.outputs.ratio_rendered == '1' }}
+        uses: ./.github/actions/publish-gh-pages
+        with:
+          files: perf-ratio.png
+          dest-dir: perf-ratio
+          commit-prefix: perf-ratio
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Find existing dashboard comment
         id: find-comment
@@ -850,10 +871,12 @@ jobs:
 
             **Commit:** `${{ github.event.pull_request.head.sha }}` · **Server:** netatalk `${{ env.NETATALK_REF }}`
 
-            Each test type runs in one container, first against the Netatalk (AFP) FUSE mount and then
-            against the Samba (SMB) CIFS mount of the same directory.
+            Each test type runs with a Netatalk (AFP) FUSE mount and a Samba (SMB) CIFS mount in the same container.
+            The AFP figures show the ratio to the same SMB run.
 
             ## 🔥 Lantest on the Netatalk (AFP) FUSE mount - FlameGraph (afpfsd)
+
+            ${{ needs.flamegraph-lantest.result != 'success' && '_No flamegraph: the flamegraph job did not succeed in this run._' || '' }}
 
             **afpfsd code-time: ${{ needs.flamegraph-lantest.outputs.self_time }}** · Runtime: ${{ needs.flamegraph-lantest.outputs.runtime }} · Stacks: ${{ needs.flamegraph-lantest.outputs.stacks }}
 
@@ -876,6 +899,8 @@ jobs:
 
             ### Netatalk (AFP) FUSE mount
 
+            ${{ needs.perfgraph-speedtest.result != 'success' && '_No speedtest data: the speedtest job did not succeed in this run._' || '' }}
+
             ${{ needs.perfgraph-speedtest.result == 'success' && format('[![Speedtest throughput, Netatalk (AFP) FUSE mount](https://netatalk.github.io/netatalk-client/speedtest/pr-{0}.png)](https://netatalk.github.io/netatalk-client/speedtest/pr-{0}.png)', github.event.pull_request.number) || '' }}
 
             ${{ steps.history-publish.outputs.speedtest_inline || steps.history.outputs.speedtest_inline }}
@@ -885,9 +910,12 @@ jobs:
 
             ${{ steps.history-publish.outputs.speedtest_table || steps.history.outputs.speedtest_table }}
 
+            ${{ needs.perfgraph-speedtest.result == 'success' && format('[![Speedtest AFP/SMB throughput ratio](https://netatalk.github.io/netatalk-client/speedtest-ratio/pr-{0}.png)](https://netatalk.github.io/netatalk-client/speedtest-ratio/pr-{0}.png)', github.event.pull_request.number) || '' }}
+
             </details>
 
-            ### Samba (SMB) CIFS mount
+            <details>
+            <summary>Samba (SMB) CIFS mount</summary>
 
             ${{ needs.perfgraph-speedtest.result == 'success' && format('[![Speedtest throughput, Samba (SMB) CIFS mount](https://netatalk.github.io/netatalk-client/speedtest-smb/pr-{0}.png)](https://netatalk.github.io/netatalk-client/speedtest-smb/pr-{0}.png)', github.event.pull_request.number) || '' }}
 
@@ -900,9 +928,13 @@ jobs:
 
             </details>
 
+            </details>
+
             ## ⏱️ Lantest - LatencyGraph (vfs_lantest)
 
             ### Netatalk (AFP) FUSE mount
+
+            ${{ needs.latencygraph-lantest.result != 'success' && '_No lantest data: the lantest job did not succeed in this run._' || '' }}
 
             ${{ needs.latencygraph-lantest.result == 'success' && format('[![Lantest latency, Netatalk (AFP) FUSE mount](https://netatalk.github.io/netatalk-client/lantest/pr-{0}.png)](https://netatalk.github.io/netatalk-client/lantest/pr-{0}.png)', github.event.pull_request.number) || '' }}
 
@@ -913,11 +945,14 @@ jobs:
 
             ${{ steps.history-publish.outputs.lantest_table || steps.history.outputs.lantest_table }}
 
+            ${{ steps.trend-chart.outputs.ratio_image_md }}
+
             ${{ steps.trend-chart.outputs.image_md }}
 
             </details>
 
-            ### Samba (SMB) CIFS mount
+            <details>
+            <summary>Samba (SMB) CIFS mount</summary>
 
             ${{ needs.latencygraph-lantest.result == 'success' && format('[![Lantest latency, Samba (SMB) CIFS mount](https://netatalk.github.io/netatalk-client/lantest-smb/pr-{0}.png)](https://netatalk.github.io/netatalk-client/lantest-smb/pr-{0}.png)', github.event.pull_request.number) || '' }}
 
@@ -929,5 +964,7 @@ jobs:
             ${{ steps.history-publish.outputs.smb_lantest_table || steps.history.outputs.smb_lantest_table }}
 
             ${{ steps.trend-chart.outputs.smb_image_md }}
+
+            </details>
 
             </details>

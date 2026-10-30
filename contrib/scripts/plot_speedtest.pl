@@ -1,0 +1,561 @@
+#!/usr/bin/env perl
+
+# This script renders an afp_speedtest CSV capture into a throughput-vs-size
+# chart (PNG) for publishing in CI, mirroring the flamegraph workflow.
+# Rendering is delegated to gnuplot (gnuplot-nox is sufficient), so only
+# core Perl modules are used.
+#
+# (c) 2026 Andy Lemin (andylemin)
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# The speedtest tool (test/testsuite/speedtest.c) emits, when run with -c,
+# one "File Size Performance Summary" block per operation:
+#
+#     # File Size Performance Summary for Read
+#     file_size_bytes,file_size_mb,mean_throughput_mbs,median_throughput_mbs,min_throughput_mbs,max_throughput_mbs,stddev_ms,mean_time_ms
+#     4096,0.004,66.15,65.65,52.79,93.01,0.0,0.1
+#     ...
+#
+# This parser keys on those headers and ignores any surrounding log noise
+# (the container entrypoint prints setup messages on the same stdout), so
+# the raw `docker run ... > speed.csv` capture can be fed in directly.
+#
+# Output: a single plot with X = file size (log2 scale) and Y = mean
+# throughput (MB/s), one line per operation, with a shaded min..max band;
+# or, with --ratio, the ratio chart described below.
+#
+# Usage:
+#     plot_speedtest.pl INPUT.csv [-o OUTPUT_BASENAME] [--title TITLE]
+#                       [--subtitle SUBTITLE] [--baseline BASELINE.csv]
+#                       [--meta KEY=VALUE ...]
+#                       [--ratio CONTROL.csv [--ylabel LABEL]]
+#
+# Writes OUTPUT_BASENAME.png (default basename: "speedtest").
+#
+# With --ratio the chart compares two captures of the same sweep, such as
+# a mount under test and a control mount measured in the same CI run: Y is
+# INPUT's mean throughput over CONTROL's at each file size both swept, one
+# line per operation in the operation's color, over a thick parity line at
+# 1.00. Which side of the line is faster follows from the orientation,
+# which --ylabel should say.
+
+use strict;
+use warnings;
+use Getopt::Long qw(GetOptions);
+
+# Operations in the order the speedtest runs them, with stable colors so
+# the chart reads the same across commits.
+my @OPERATIONS = qw(Read Write Copy ServerCopy);
+my %OP_COLORS = (
+                 Read       => '#1f77b4',    # blue
+                 Write      => '#d62728',    # red
+                 Copy       => '#2ca02c',    # green
+                 ServerCopy => '#ff7f0e',    # orange
+);
+my $DEFAULT_COLOR = '#7f7f7f';               # any unexpected operation
+
+# The parity line of a ratio chart, black so the operations keep their
+# colors.
+my $PARITY_COLOR = '#000000';
+
+# Near-white canvas (RGB 246,248,250) for a clean modern background.
+my $BACKGROUND_COLOR = '#F6F8FA';
+
+# 11 x 5.2 inches at 130 dpi, matching the former matplotlib renderer.
+my $WIDTH_PX  = 1430;
+my $HEIGHT_PX = 676;
+
+# Column header line that immediately precedes the data rows.
+my $COLUMN_HEADER_PREFIX = 'file_size_bytes,';
+
+# Parse a speedtest CSV capture into (results, meta): results = {op => [rows
+# sorted by size]}; meta = run metadata (iterations from the max per-iteration
+# index seen, plus any key=value pairs from an optional "# Config:" line).
+sub parse_csv {
+    my ($path) = @_;
+    my (%results, %meta);
+    my $max_iter   = 0;
+    my $current_op = undef;
+    my $in_data    = 0;
+
+    open my $fh, '<', $path or die "cannot open $path: $!\n";
+    while (my $line = <$fh>) {
+        $line =~ s/^\s+|\s+$//g;
+
+        # Optional self-describing config line, e.g.
+        # "# Config: quantum_kb=1024,iterations=5,warmup=1,afp=3.4".
+        if ($line =~ /#\s*Config:\s*(.+)/i) {
+            for my $pair (split /,/, $1) {
+                next unless index($pair, '=') >= 0;
+                my ($k, $v) = split /=/, $pair, 2;
+                s/^\s+|\s+$//g for ($k, $v);
+                $meta{$k} = $v;
+            }
+            next;
+        }
+
+        # Per-iteration row: "Op,iteration,file_size_mb,microseconds,tput".
+        if ($line =~ /^[A-Za-z]+,(\d+),[\d.]+,\d+,[\d.]+\s*$/) {
+            $max_iter = $1 if $1 > $max_iter;
+        }
+
+        if ($line =~ /#\s*File Size Performance Summary for\s+(\S+)/i) {
+            $current_op = $1;
+            $results{$current_op} ||= [];
+            $in_data = 0;
+            next;
+        }
+        next unless defined $current_op;
+
+        if (index($line, $COLUMN_HEADER_PREFIX) == 0) {
+            $in_data = 1;
+            next;
+        }
+        next unless $in_data;
+
+        # Summary row: size_bytes,size_mb,mean,median,min,max,stddev,time.
+        my @parts = split /,/, $line;
+        if (@parts >= 6
+             && !grep { !/^-?[\d.]+$/ } @parts[0, 2 .. 5]) {
+            push @{$results{$current_op}}, {
+                                            size_bytes => $parts[0] + 0,
+                                            mean       => $parts[2] + 0,
+                                            median     => $parts[3] + 0,
+                                            min        => $parts[4] + 0,
+                                            max        => $parts[5] + 0,
+            };
+        } else {
+            $in_data = 0;    # blank line / next section / log noise
+        }
+    }
+    close $fh;
+
+    for my $op (keys %results) {
+        if (!@{$results{$op}}) {
+            delete $results{$op};
+            next;
+        }
+        $results{$op} = [sort { $a->{size_bytes} <=> $b->{size_bytes} } @{$results{$op}}];
+    }
+    $meta{iterations} = $max_iter if $max_iter && !$meta{iterations};
+    return (\%results, \%meta);
+}
+
+# Format an exact byte count as an integer KiB/MiB axis label.
+sub format_size {
+    my ($size_bytes) = @_;
+    my $kib = $size_bytes / 1024.0;
+    return sprintf('%dK', $kib + 0.5) if $kib < 1024.0;
+    return sprintf('%dM', $kib / 1024.0 + 0.5);
+}
+
+# Known operations first (stable color/order), then any unexpected ones.
+sub ordered_ops {
+    my ($results) = @_;
+    my @ops = grep { $results->{$_} } @OPERATIONS;
+    push @ops, grep {
+        my $op = $_;
+        !grep { $_ eq $op } @OPERATIONS
+    } sort keys %$results;
+    return @ops;
+}
+
+# Run-config lines shown in the chart's info box, from the CSV and --meta.
+# Missing values are omitted rather than guessed. Size sweep is omitted (the
+# X axis already shows the range).
+sub build_info_lines {
+    my ($results, $meta) = @_;
+    my @ops = ordered_ops($results);
+    my @lines;
+    if ($meta->{iterations}) {
+        my $warm = $meta->{warmup} ? " +$meta->{warmup} warmup" : '';
+        push @lines, "Iterations: $meta->{iterations}$warm";
+    }
+    push @lines, 'Ops: ' . join(', ', @ops);
+    push @lines, "AFP: $meta->{afp}"                if $meta->{afp};
+    push @lines, "CNID: $meta->{cnid}"              if $meta->{cnid};
+    push @lines, "Quantum: $meta->{quantum_kb} KiB" if $meta->{quantum_kb};
+    push @lines,
+      "Recvfile: $meta->{recvfile}" . ($meta->{splice_kb} ? ", splice $meta->{splice_kb} KiB" : '')
+      if $meta->{recvfile};
+    my @dc;
+    push @dc, uc $meta->{dircache_mode}     if $meta->{dircache_mode};
+    push @dc, "size $meta->{dircache_size}" if $meta->{dircache_size};
+    push @dc, "freq $meta->{dircache_validation_freq}"
+      if $meta->{dircache_validation_freq};
+    push @lines, 'Dircache: ' . join(' · ', @dc) if @dc;
+    return @lines;
+}
+
+# Escape a string for a double-quoted gnuplot string (newline -> \n escape).
+sub gp_quote {
+    my ($s) = @_;
+    $s =~ s/\\/\\\\/g;
+    $s =~ s/"/\\"/g;
+    $s =~ s/\n/\\n/g;
+    return $s;
+}
+
+# The throughput chart: per-operation mean curves over their min..max
+# bands, the sweep averages as reference lines with value labels, the
+# quantum mark on Read and an optional baseline capture.
+sub plot {
+    my ($results, $out_base, $title, $subtitle, $baseline, $meta) = @_;
+    my @ordered = ordered_ops($results);
+    if (!@ordered) {
+        print STDERR "ERROR: no speedtest summary data found in input — " . "was afp_speedtest run with -c (CSV)?\n";
+        return 0;
+    }
+
+    # Collect plot commands into separate z-layers (see @plots below) so a
+    # later op's fill or line never paints over an earlier op's curve. Draw
+    # order then no longer matches legend order, so every data plot is
+    # notitle and the legend is rebuilt from keyentry items in per-op order.
+    my $blocks = '';
+    my (
+         @bands, @means, @baselines, @meancurves, @maxes, @keyentries,
+         @labels
+    );
+    my $idx = 0;
+    for my $op (@ordered) {
+        my $rows  = $results->{$op};
+        my $color = $OP_COLORS{$op} || $DEFAULT_COLOR;
+        my $tag   = "OP$idx";
+        $blocks .= "\$$tag << EOD\n";
+        for my $r (@$rows) {
+            $blocks .= "$r->{size_bytes} $r->{mean} $r->{min} $r->{max}\n";
+        }
+        $blocks .= "EOD\n";
+
+        # min..max band shows run-to-run variance.
+        push @bands,
+          "\$$tag using 1:3:4 with filledcurves "
+          . "fillcolor rgb \"$color\" fillstyle transparent solid 0.12 "
+          . 'notitle';
+        push @meancurves,
+          "\$$tag using 1:2 with linespoints linewidth 2 pointtype 7 "
+          . "pointsize 0.5 linecolor rgb \"$color\" notitle";
+        # Max (best run) traces the band top, alpha-blended (#80 = 50%
+        # transparent) so it reads lighter than the solid mean.
+        my $light = '#80' . substr($color, 1);
+        push @maxes,
+          "\$$tag using 1:4 with lines dashtype (2,1) linewidth 1 " . "linecolor rgb \"$light\" notitle";
+
+        # Two horizontal references per op: solid = mean of the per-size means
+        # (pairs with the solid mean curve), dotted = mean of the maxes (pairs
+        # with the dotted max hats).
+        my ($sum_mean, $sum_max) = (0, 0);
+        for my $r (@$rows) {
+            $sum_mean += $r->{mean};
+            $sum_max  += $r->{max};
+        }
+        my $avg     = $sum_mean / scalar(@$rows);
+        my $avg_max = $sum_max / scalar(@$rows);
+        push @means,
+          sprintf(
+                  '%s with lines linewidth 1 linecolor rgb "%s" notitle',
+                  $avg, $color
+          );
+        push @means,
+          sprintf(
+                  '%s with lines dashtype (2,1) linewidth 1 linecolor rgb "%s" ' . 'notitle',
+                  $avg_max, $light
+          );
+        # Value labels: avg-mean left-anchored at the Y axis, avg-max
+        # right-anchored at the right edge, so the two never collide. "boxed"
+        # gives a white backing (see set style textbox) for grid readability.
+        push @labels,
+          sprintf(
+                    'set label %d "%.0f" at graph 0.012, first %s left front '
+                  . 'offset 0,0.5 boxed font ",5" textcolor rgb "%s"',
+                  $idx + 10, $avg, $avg, $color
+          );
+        push @labels,
+          sprintf(
+                    'set label %d "%.0f" at graph 0.988, first %s right front '
+                  . 'offset 0,0.5 boxed font ",5" textcolor rgb "%s"',
+                  $idx + 30, $avg_max, $avg_max, $color
+          );
+
+        # Legend: only the per-op mean curve; the avg-max/quantum overlays are
+        # explained by the on-chart labels, keeping the key compact.
+        push @keyentries,
+          sprintf(
+                    'keyentry with linespoints linewidth 2 pointtype 7 '
+                  . 'pointsize 0.5 linecolor rgb "%s" title "%s (mean)"',
+                  $color, gp_quote($op)
+          );
+
+        # Mark the server quantum on the Read curve so the single-frame
+        # boundary is visible.  The configured quantum may not land exactly
+        # on a swept file size, so tag the nearest sweep point.
+        if ($op eq 'Read' && $meta->{quantum_kb}) {
+            my $q_bytes = $meta->{quantum_kb} * 1024;
+            my $mark;
+            for my $r (@$rows) {
+                $mark = $r
+                  if !defined $mark
+                  || abs($r->{size_bytes} - $q_bytes) < abs($mark->{size_bytes} - $q_bytes);
+            }
+            if ($mark) {
+                push @labels,
+                  sprintf(
+                            'set label 9 "quantum" at first %s, first %s '
+                          . 'offset 0.6,0.8 front font ",5" '
+                          . "textcolor rgb \"$color\"",
+                          $mark->{size_bytes}, $mark->{mean}
+                  );
+            }
+        }
+
+        if ($baseline && $baseline->{$op} && @{$baseline->{$op}}) {
+            my $btag = "BASE$idx";
+            $blocks .= "\$$btag << EOD\n";
+            for my $r (@{$baseline->{$op}}) {
+                $blocks .= "$r->{size_bytes} $r->{mean}\n";
+            }
+            $blocks .= "EOD\n";
+            push @baselines,
+              "\$$btag using 1:2 with lines dashtype (4,2) linewidth 1.3 " . "linecolor rgb \"$color\" notitle";
+            push @keyentries,
+              "keyentry with lines dashtype (4,2) linewidth 1.3 "
+              . "linecolor rgb \"$color\" "
+              . "title \"@{[ gp_quote($op) ]} (baseline)\"";
+        }
+        $idx++;
+    }
+    # Bottom-to-top: bands then their max "hats" (the band top edge), baseline
+    # overlays, mean curves, then the avg reference lines on top so they
+    # stay visible across the data, then the (non-drawing) legend entries.
+    my @plots = (
+                 @bands, @maxes, @baselines, @meancurves, @means,
+                 @keyentries
+    );
+
+    my @all_sizes = swept_sizes($results);
+
+    my @header;
+    push @header, $subtitle if defined $subtitle && $subtitle ne '';
+    my @info = build_info_lines($results, $meta);
+    push @header, join(' · ', @info) if @info;
+    my $header = gp_quote(join("\n", @header));
+
+    my $suptitle = gp_quote($title || 'Netatalk AFP Speedtest — throughput vs file size');
+    my $png      = "$out_base.png";
+    my $labels   = join("\n",          @labels);
+    my $plots    = join(", \\\n     ", @plots);
+
+    my $preamble = gp_preamble($png, $suptitle, $header, \@all_sizes);
+
+    my $gp_bin = $ENV{GNUPLOT_BIN} || 'gnuplot';
+    open my $gp, '|-', $gp_bin or die "cannot run $gp_bin: $!\n";
+    print $gp <<"EOF";
+$preamble
+set ylabel "Throughput (MB/s)"
+set style textbox opaque fillcolor rgb "#FFFFFF" noborder margins 0.6,0.6
+# Column headers over the two value-label stacks (means across the sweep).
+set label 3 "avg mean" at graph 0.012, graph 1.02 left front \\
+    font "DejaVu Sans:Bold,6" textcolor rgb "#444444"
+set label 4 "avg max" at graph 0.988, graph 1.02 right front \\
+    font "DejaVu Sans:Bold,6" textcolor rgb "#444444"
+$labels
+
+$blocks
+plot $plots
+EOF
+    close $gp or die "gnuplot failed (status $?)\n";
+    print STDERR "Wrote $png\n";
+    return 1;
+}
+
+# Every file size any operation swept, ascending.
+sub swept_sizes {
+    my ($results) = @_;
+    my %sizes     = map { $_->{size_bytes} => 1 } map {@$_} values %$results;
+    return sort { $a <=> $b } keys %sizes;
+}
+
+# The gnuplot preamble both charts share: terminal and canvas, the title
+# block, the log2 size axis with one integer KiB/MiB tick per swept size,
+# grid and legend box.
+sub gp_preamble {
+    my ($png, $suptitle, $header, $sizes) = @_;
+    my $tics = join(', ', map { sprintf '"%s" %s', format_size($_), $_ } @$sizes);
+    my $xmin = $sizes->[0];
+    # 1.001 factor so the boundary tick label is not clipped.
+    my $xmax = $sizes->[-1] * 1.001;
+    return <<"EOF";
+# fontscale/linewidth/pointscale 1.8 matches matplotlib's dpi=130 (130/72),
+# so the point sizes below mirror the old matplotlib values. DejaVu Sans is
+# matplotlib's default; pangocairo falls back to system sans if it is absent.
+set terminal pngcairo noenhanced size $WIDTH_PX,$HEIGHT_PX \\
+    fontscale 1.8 linewidth 1.8 pointscale 1.8 \\
+    background rgb "$BACKGROUND_COLOR" font "DejaVu Sans,7"
+set output "@{[ gp_quote($png) ]}"
+
+set border 15 linewidth 0.8 linecolor rgb "#333333"
+set tics nomirror out scale 0.6
+
+# Title block manually placed above the plot for a fixed title/subtitle gap.
+set tmargin at screen 0.84
+set bmargin at screen 0.12
+set label 1 "$suptitle" at screen 0.5, screen 0.95 center \\
+    font "DejaVu Sans:Bold,11"
+set label 2 "$header" at screen 0.5, screen 0.885 center \\
+    font "DejaVu Sans,5.5" textcolor rgb "#222222"
+
+set logscale x 2
+set xrange [$xmin:$xmax]
+set xtics font ",7" ($tics)
+set xlabel "File size"
+# Dotted grid; minor lines fainter so they don't read heavy.
+set grid xtics ytics mxtics mytics linetype 1 dashtype (1,2) linewidth 1 \\
+    linecolor rgb "#BBBBBB", linetype 1 dashtype (1,2) linewidth 1 \\
+    linecolor rgb "#DDDDDD"
+# Legend in the free top-left outer canvas, outside the plot area.
+set key at screen 0.005, screen 0.995 top left Left reverse samplen 1.5 \\
+    width -1 spacing 1.1 font ",6" \\
+    box linewidth 0.6 linecolor rgb "#CCCCCC" opaque fillcolor rgb "#F5F5F5"
+EOF
+}
+
+# The ratio chart: each operation's mean throughput over the control
+# capture's at every size both swept, over the parity line.
+sub plot_ratio {
+    my ($results, $control, $out_base, $title, $subtitle, $ylabel, $meta) = @_;
+    my $blocks = '';
+    my (@curves, @keyentries);
+    my ($lo, $hi) = (1, 1);
+    my $idx = 0;
+    for my $op (ordered_ops($results)) {
+        my %ctl = map { $_->{size_bytes} => $_->{mean} } @{$control->{$op} // []};
+        my @pts = map { [$_->{size_bytes}, $_->{mean} / $ctl{$_->{size_bytes}}] }
+          grep { ($ctl{$_->{size_bytes}} // 0) > 0 } @{$results->{$op}};
+        next unless @pts;
+        my $color = $OP_COLORS{$op} || $DEFAULT_COLOR;
+        my $tag   = "OP$idx";
+        $blocks .= "\$$tag << EOD\n" . join('', map {"$_->[0] $_->[1]\n"} @pts) . "EOD\n";
+        for my $p (@pts) {
+            $lo = $p->[1] if $p->[1] < $lo;
+            $hi = $p->[1] if $p->[1] > $hi;
+        }
+        push @curves,
+          "\$$tag using 1:2 with linespoints linewidth 2 pointtype 7 "
+          . "pointsize 0.5 linecolor rgb \"$color\" notitle";
+        push @keyentries,
+          sprintf(
+                  'keyentry with linespoints linewidth 2 pointtype 7 ' . 'pointsize 0.5 linecolor rgb "%s" title "%s"',
+                  $color, gp_quote($op)
+          );
+        $idx++;
+    }
+    if (!$idx) {
+        print STDERR "ERROR: no operation has a file size in both captures\n";
+        return 0;
+    }
+    # The parity line first, so the curves stay legible over it.
+    my @plots =
+      ("1 with lines linewidth 2.4 linecolor rgb \"$PARITY_COLOR\" " . 'title "1.00 = parity"', @curves, @keyentries);
+
+    my @all_sizes = swept_sizes($results);
+    my @header;
+    push @header, $subtitle if defined $subtitle && $subtitle ne '';
+    my @info = build_info_lines($results, $meta);
+    push @header, join(' · ', @info) if @info;
+    my $header   = gp_quote(join("\n", @header));
+    my $suptitle = gp_quote($title || 'Speedtest — throughput ratio vs file size');
+    my $png      = "$out_base.png";
+    my $preamble = gp_preamble($png, $suptitle, $header, \@all_sizes);
+    $ylabel = gp_quote($ylabel);
+    # Linear y: the ratios of one run sit within a few tenths of parity.
+    # The range holds 1.00 and a tenth of the span on either side.
+    my $pad   = ($hi - $lo) / 10 || 0.1;
+    my $y_lo  = $lo - $pad;
+    my $y_hi  = $hi + $pad;
+    my $plots = join(", \\\n     ", @plots);
+
+    my $gp_bin = $ENV{GNUPLOT_BIN} || 'gnuplot';
+    open my $gp, '|-', $gp_bin or die "cannot run $gp_bin: $!\n";
+    print $gp <<"EOF";
+$preamble
+# The legend as one row between the title block and the plot, clear of
+# the title, the info line and the curves.
+set tmargin at screen 0.79
+set key at screen 0.5, screen 0.835 center top horizontal Left reverse \\
+    samplen 1.5 width -1 spacing 1.1 font ",6" \\
+    box linewidth 0.6 linecolor rgb "#CCCCCC" opaque fillcolor rgb "#F5F5F5"
+set yrange [$y_lo:$y_hi]
+set format y "%g"
+set ylabel "$ylabel"
+
+$blocks
+plot $plots
+EOF
+    close $gp or die "gnuplot failed (status $?)\n";
+    print STDERR "Wrote $png\n";
+    return 1;
+}
+
+# Parse the capture and --meta, then draw the throughput chart, or the
+# ratio chart with --ratio.
+sub main {
+    my $output   = 'speedtest';
+    my $title    = undef;
+    my $subtitle = undef;
+    my $baseline_path;
+    my $ratio_path;
+    my $ylabel = 'Throughput ratio';
+    my @meta_args;
+    GetOptions(
+               'o|output=s' => \$output,
+               'title=s'    => \$title,
+               'subtitle=s' => \$subtitle,
+               'baseline=s' => \$baseline_path,
+               'meta=s'     => \@meta_args,
+               'ratio=s'    => \$ratio_path,
+               'ylabel=s'   => \$ylabel,
+      )
+      or die "usage: plot_speedtest.pl INPUT.csv [-o BASENAME] "
+      . "[--title T] [--subtitle S] [--baseline B.csv] "
+      . "[--meta KEY=VALUE ...] [--ratio CONTROL.csv [--ylabel L]]\n";
+    my $input = shift @ARGV
+      or die "missing input CSV (afp_speedtest -c capture)\n";
+
+    my ($results, $meta) = parse_csv($input);
+    # CLI --meta overrides anything parsed from the CSV.
+    for my $pair (@meta_args) {
+        next unless index($pair, '=') >= 0;
+        my ($k, $v) = split /=/, $pair, 2;
+        s/^\s+|\s+$//g for ($k, $v);
+        $meta->{$k} = $v;
+    }
+
+    if ($ratio_path) {
+        my ($control) = parse_csv($ratio_path);
+        return plot_ratio($results, $control, $output, $title, $subtitle, $ylabel, $meta) ? 0 : 1;
+    }
+
+    my $baseline;
+    if ($baseline_path) {
+        if (-r $baseline_path) {
+            ($baseline) = parse_csv($baseline_path);
+        } else {
+            print STDERR "WARNING: could not read baseline: $baseline_path\n";
+        }
+    }
+
+    return plot($results, $output, $title, $subtitle, $baseline, $meta)
+      ? 0
+      : 1;
+}
+
+exit main();
