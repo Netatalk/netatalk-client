@@ -1,9 +1,11 @@
 /*
-    did.c
-
-    Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
-
-*/
+ *  did.c
+ *
+ *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
+ *
+ *  This program can be distributed under the terms of the GNU GPL.
+ *  See the file COPYING.
+ */
 
 #include <stdlib.h>
 #include <sys/time.h>

@@ -2,6 +2,9 @@
  *  fuse_ipc.c - FUSE manager IPC helpers
  *
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *
+ *  This program can be distributed under the terms of the GNU GPL.
+ *  See the file COPYING.
  */
 
 #include <errno.h>

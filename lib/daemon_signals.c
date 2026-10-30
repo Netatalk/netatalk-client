@@ -1,11 +1,14 @@
 /*
  * daemon_signals.c - Shared signal handling for AFP daemons
  *
+ * This file provides common signal handling functions used by both
+ * afpsld (stateless daemon) and afpfsd (FUSE daemon).
+ *
  * Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  * Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
  *
- * This file provides common signal handling functions used by both
- * afpsld (stateless daemon) and afpfsd (FUSE daemon).
+ * This program can be distributed under the terms of the GNU GPL.
+ * See the file COPYING.
  */
 
 #include <signal.h>

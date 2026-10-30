@@ -1,20 +1,14 @@
 /*
  *  commands.c
+ *  Portions of this file are derived from the SSH Filesystem (SSHFS) project
  *
+ *  Copyright (C) 2004 Miklos Szeredi <miklos@szeredi.hu>
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
  *
+ *  This program can be distributed under the terms of the GNU GPL.
+ *  See the file COPYING.
  */
-
-/*
- * Portions of this file are from sshfs.c with the following notice:
- *
- * SSH file system
- * Copyright (C) 2004  Miklos Szeredi <miklos@szeredi.hu>
- *
- * This program can be distributed under the terms of the GNU GPL.
- * See the file COPYING.
-*/
 
 #include <stdint.h>
 #include <stdio.h>
