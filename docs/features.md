@@ -118,7 +118,7 @@ attributes.
 
 ##### Linux
 
-On Linux, extended attributes work fully across all operations.
+On Linux, extended attributes in the `user.` namespace work fully across all operations.
 Linux requires the `user.` namespace prefix for user-defined attributes:
 
     # Set an EA (automatically adds "user." prefix for AFP protocol)
@@ -152,7 +152,7 @@ On macOS, EA read, write, and list operations work correctly.
 
 ##### FreeBSD
 
-On FreeBSD, all EA operations work correctly with `setextattr` and `getextattr` commands:
+On FreeBSD, all EA operations in the `user` namespace work correctly with `setextattr` and `getextattr` commands:
 
     # Set an EA
     setextattr user myattr "myvalue" /mnt/afp/file.txt
@@ -180,6 +180,12 @@ To copy files with extended attributes preserved on FreeBSD:
 Netatalk Client automatically filters internal server metadata to prevent corruption:
 
 - `org.netatalk.Metadata` - Internal netatalk server metadata (always filtered)
+
+On Linux and the BSDs the mount lists every AFP attribute under the `user.` namespace. A name in the kernel's own
+namespaces, `security.`, `system.` and `trusted.`, never reaches the server: where the kernel passes the call on,
+reading one finds no attribute and setting one fails with "Operation not supported". Among them are the
+`security.capability` that Linux can ask for before every write and the POSIX ACLs under `system.`, so a copy to the
+mount keeps neither: `cp -a` reports an ACL as not supported, and `rsync -aX` as root reports capabilities.
 
 All other extended attributes, including macOS system attributes like `com.apple.*`,
 are transmitted to and stored on the server as expected.

@@ -16,6 +16,7 @@ use Test::More;
 use Config;
 use Cwd qw(getcwd);
 use File::Spec;
+use Errno        ();
 use Fcntl        qw(O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_SYNC O_DSYNC);
 use Getopt::Long qw(GetOptions);
 use IO::Handle;
@@ -103,6 +104,16 @@ sub mount_or_bail {
     is($rc, 0, $description);
     BAIL_OUT("$description failed: @cmd exited with " . ($rc >> 8))
       if $rc != 0;
+}
+
+# Run a mount command on $mnt_dir that must refuse its arguments, and unmount
+# what it mounted if it did not, so that the next mount finds $mnt_dir free.
+sub refused_mount {
+    my ($description, @cmd) = @_;
+    my $rc = system(@cmd, $mnt_dir);
+
+    is($rc, 2 << 8, $description);
+    unmount_or_bail("$description: the mount it made unmounts") if $rc == 0;
 }
 
 # Return the status text of the mounted server.
@@ -194,8 +205,11 @@ sub syscall_nr {
 
 my $copy_file_range_nr = syscall_nr(x86_64 => 326, aarch64 => 285);
 my $setxattr_nr        = syscall_nr(x86_64 => 188, aarch64 => 5);
+my $getxattr_nr        = syscall_nr(x86_64 => 191, aarch64 => 8);
+my $listxattr_nr       = syscall_nr(x86_64 => 194, aarch64 => 11);
 my $removexattr_nr     = syscall_nr(x86_64 => 197, aarch64 => 14);
 my $SYSCALL_SKIP       = 'system calls by number need a 64-bit Perl on x86_64 or aarch64 Linux';
+my $DEBUG_LOG_SKIP     = 'the daemon keeps no debug log without AFP_FUSE_DEBUG_LOG';
 
 # Run copy_file_range(2) of $len bytes between two handles, at their file
 # offsets or at the given ones. Perl has no builtin, so the call goes by its
@@ -237,6 +251,50 @@ sub remove_resource_fork {
     my $name = 'user.com.apple.ResourceFork';
     syscall($removexattr_nr, $path, $name) == 0
       or BAIL_OUT("Cannot remove the resource fork of $path: $!");
+}
+
+# Return the errno of a system call that returned $result, or 0 for a success.
+sub errno_of {
+    my ($result) = @_;
+    return $result == -1 ? $! + 0 : 0;
+}
+
+# Run getxattr(2), setxattr(2) and removexattr(2) of $name on $path. Return
+# each one's errno_of() and the extended attribute requests the three sent.
+sub xattr_calls {
+    my ($path, $name) = @_;
+    my $value  = 'x';
+    my $before = request_counts();
+    my @errnos = (
+                  errno_of(syscall($getxattr_nr,    $path, $name, 0, 0)),
+                  errno_of(syscall($setxattr_nr,    $path, $name, $value, length $value, 0)),
+                  errno_of(syscall($removexattr_nr, $path, $name)),
+    );
+    my $after    = request_counts();
+    my $requests = 0;
+    $requests += request_delta($before, $after, $_) for qw(afpGetExtAttr afpSetExtAttr afpRemoveExtAttr);
+    return (@errnos, $requests);
+}
+
+# Return what the daemon's debug log holds from byte $offset on.
+sub daemon_log_since {
+    my ($offset) = @_;
+    open(my $fh, '<', $AFP_FUSE_DEBUG_LOG) or BAIL_OUT("Cannot read $AFP_FUSE_DEBUG_LOG: $!");
+    seek($fh, $offset, 0)                  or BAIL_OUT("Cannot seek in $AFP_FUSE_DEBUG_LOG: $!");
+    my $text = do { local $/; <$fh> };
+    close $fh;
+    return $text // '';
+}
+
+# Return the timeouts libfuse parsed for the mount on $mnt_dir, from the
+# "fuse init" line logged after byte $offset, or undef where none is, as from
+# a FUSE 2 build. A stat(2) first waits out the mount's init.
+sub fuse_init_timeouts {
+    my ($offset) = @_;
+    stat $mnt_dir;
+    my ($timeouts) =
+      daemon_log_since($offset) =~ /\*\*\* fuse init (entry_timeout=\S+ negative_timeout=\S+ attr_timeout=\S+)/;
+    return $timeouts;
 }
 
 # Test whether $len bytes of $first from $first_off equal those of $second
@@ -950,6 +1008,87 @@ SKIP: {
     rmdir $other;
 }
 
+# -----------------------------------------------------------------------
+# fuse_xattr_names: a name in the kernel's own namespaces is answered
+# without a request, and a user. name or one without a namespace goes to
+# the server. The kernel can ask for security.capability before each write
+# and copy; the daemon's debug log shows when it does.
+# -----------------------------------------------------------------------
+SKIP: {
+    skip $SYSCALL_SKIP, 11 unless $getxattr_nr;
+    my $path = "$mnt_dir/xattr_names.txt";
+    write_bytes($path, 0);
+    my @kernel = xattr_calls($path, 'system.afpc_test');
+    is($kernel[0], Errno::ENODATA(),    'fuse_xattr_names: getxattr(2) of system.afpc_test finds no attribute');
+    is($kernel[1], Errno::EOPNOTSUPP(), 'fuse_xattr_names: setxattr(2) of system.afpc_test is not supported');
+    is($kernel[2], Errno::ENODATA(),    'fuse_xattr_names: removexattr(2) of system.afpc_test finds no attribute');
+    is($kernel[3], 0,                   'fuse_xattr_names: system.afpc_test sends no request');
+
+    my @security = xattr_calls($path, 'security.afpc_test');
+    is($security[0], Errno::ENODATA(), 'fuse_xattr_names: getxattr(2) of security.afpc_test finds no attribute');
+    is($security[3], 0,                'fuse_xattr_names: security.afpc_test sends no request');
+
+    for my $name ('user.afpc_test', 'afpc_test') {
+        my @calls = xattr_calls($path, $name);
+        is($calls[0], Errno::ENODATA(), "fuse_xattr_names: getxattr(2) of an absent $name finds no attribute");
+        is($calls[3], 3,                "fuse_xattr_names: the three calls on $name send three requests");
+    }
+
+  SKIP: {
+        skip $DEBUG_LOG_SKIP, 1 unless $AFP_FUSE_DEBUG_LOG;
+        my $written = "$mnt_dir/xattr_names.bin";
+        my $offset  = -s $AFP_FUSE_DEBUG_LOG;
+        my $before  = request_counts();
+        write_bytes($written, 4096);
+        sysopen(my $in,  $written,        O_RDONLY)                    or BAIL_OUT("Cannot open $written: $!");
+        sysopen(my $out, "$written.copy", O_WRONLY | O_CREAT | O_EXCL) or BAIL_OUT("Cannot create $written.copy: $!");
+        copy_range($in, $out, 4096, 0, 0) == 4096 or BAIL_OUT("Cannot copy $written: $!");
+        close $out;
+        close $in;
+        my $after = request_counts();
+        my $asked = () = daemon_log_since($offset) =~ m{\*\*\* getxattr /xattr_names\.bin\S*:security\.capability}g;
+        unlink $written, "$written.copy";
+        skip 'this kernel does not ask the filesystem for security.capability', 1 unless $asked;
+        is(request_delta($before, $after, 'afpGetExtAttr'), 0,
+           'fuse_xattr_names: a write and a copy_file_range(2) send no FPGetExtAttr');
+    }
+    unlink $path;
+}
+
+# -----------------------------------------------------------------------
+# fuse_xattr_metadata: Netatalk's metadata attribute stays the server's
+# under its user. name, without a request.
+# -----------------------------------------------------------------------
+SKIP: {
+    skip $SYSCALL_SKIP, 4 unless $getxattr_nr;
+    my $path = "$mnt_dir/xattr_metadata.txt";
+    write_bytes($path, 0);
+    my @meta = xattr_calls($path, 'user.org.netatalk.Metadata');
+    is($meta[0], Errno::ENODATA(), 'fuse_xattr_metadata: getxattr(2) of user.org.netatalk.Metadata finds no attribute');
+    is($meta[1], 0,                'fuse_xattr_metadata: setxattr(2) of user.org.netatalk.Metadata succeeds');
+    is($meta[2], Errno::EACCES(),  'fuse_xattr_metadata: removexattr(2) of user.org.netatalk.Metadata is refused');
+    is($meta[3], 0,                'fuse_xattr_metadata: user.org.netatalk.Metadata sends no request');
+    unlink $path;
+}
+
+# -----------------------------------------------------------------------
+# fuse_xattr_parent: an attribute call on a path whose parent the server
+# does not have, as a resource fork's under .AppleDouble, fails with ENOENT.
+# -----------------------------------------------------------------------
+SKIP: {
+    skip $SYSCALL_SKIP, 4 unless $getxattr_nr;
+    my $path = "$mnt_dir/xattr_parent.txt";
+    my $fork = "$mnt_dir/.AppleDouble/xattr_parent.txt";
+    write_bytes($path, 0);
+    my @parent = xattr_calls($fork, 'user.afpc_test');
+    is($parent[0], Errno::ENOENT(), 'fuse_xattr_parent: getxattr(2) under .AppleDouble fails with ENOENT');
+    is($parent[1], Errno::ENOENT(), 'fuse_xattr_parent: setxattr(2) under .AppleDouble fails with ENOENT');
+    is($parent[2], Errno::ENOENT(), 'fuse_xattr_parent: removexattr(2) under .AppleDouble fails with ENOENT');
+    is(errno_of(syscall($listxattr_nr, $fork, 0, 0)), Errno::ENOENT(),
+       'fuse_xattr_parent: listxattr(2) under .AppleDouble fails with ENOENT');
+    unlink $path;
+}
+
 unlink "$mnt_dir/sample.txt";
 ok(!-e "$mnt_dir/sample.txt", 'fuse_auth: sample.txt removed');
 
@@ -1036,6 +1175,97 @@ SKIP: {
 }
 
 unmount_or_bail('fuse_flush_on_close: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_options_bound: mount_afpfs -o takes an option of up to 255 bytes,
+# first or last in its list, and afpc fs mount -O 255 bytes of options. One
+# byte more stops the command before it mounts.
+# -----------------------------------------------------------------------
+{
+    my $most = 'x' x 255;
+    mount_or_bail(
+                  'fuse_options_bound: mount_afpfs -o takes a first and a last option of 255 bytes',
+                  'mount_afpfs', '-o', "$most,$most", $AFP_AUTH_URL, $mnt_dir
+    );
+    unmount_or_bail('fuse_options_bound: the mount_afpfs -o mount unmounts');
+    refused_mount(
+                  'fuse_options_bound: mount_afpfs -o refuses a first option of 256 bytes',
+                  'mount_afpfs', '-o', "x$most,ro", $AFP_AUTH_URL
+    );
+    refused_mount(
+                  'fuse_options_bound: mount_afpfs -o refuses a last option of 256 bytes',
+                  'mount_afpfs', '-o', "ro,x$most", $AFP_AUTH_URL
+    );
+
+    # Leading zeros pad attr_timeout=2 to 255 bytes; a cut value reads 0 and
+    # a dropped one libfuse's default of 1.
+    my $zeros  = '0' x (255 - length('attr_timeout=2'));
+    my @mount  = ('afpc', 'fs', 'mount', '-u', $AFP_USER, '-p', $AFP_PASS, '-O');
+    my $offset = $AFP_FUSE_DEBUG_LOG ? -s $AFP_FUSE_DEBUG_LOG : 0;
+    mount_or_bail(
+                  'fuse_options_bound: afpc fs mount -O takes 255 bytes of options',
+                  @mount, "attr_timeout=${zeros}2", "$AFP_HOST:$AFP_VOL", $mnt_dir
+    );
+
+  SKIP: {
+        skip $DEBUG_LOG_SKIP, 1 unless $AFP_FUSE_DEBUG_LOG;
+        my $timeouts = fuse_init_timeouts($offset);
+        skip 'the daemon logs no fuse init line', 1 unless defined $timeouts;
+        is($timeouts, 'entry_timeout=1.000 negative_timeout=0.000 attr_timeout=2.000',
+           'fuse_options_bound: libfuse reads attr_timeout=2 from the 255 bytes of -O');
+    }
+    unmount_or_bail('fuse_options_bound: the afpc fs mount -O mount unmounts');
+    refused_mount(
+                  'fuse_options_bound: afpc fs mount -O refuses 256 bytes of options',
+                  @mount, "attr_timeout=0${zeros}2", "$AFP_HOST:$AFP_VOL"
+    );
+}
+
+# -----------------------------------------------------------------------
+# fuse_timeouts: mount_afpfs -o passes attr_timeout, entry_timeout and
+# negative_timeout to libfuse, up to 255 bytes together. With the first two
+# at zero, a stat(2) looks the name up and reads the attributes; a missing
+# name's lookup lasts the negative timeout.
+# -----------------------------------------------------------------------
+# Leading zeros pad the timeouts to 255 bytes and keep negative_timeout at 30.
+my $timeouts       = 'attr_timeout=0,entry_timeout=0,negative_timeout=';
+my $timeout_zeros  = '0' x (255 - length("${timeouts}30"));
+my $timeout_offset = $AFP_FUSE_DEBUG_LOG ? -s $AFP_FUSE_DEBUG_LOG : 0;
+mount_or_bail(
+              'fuse_timeouts: mount_afpfs -o takes 255 bytes of timeouts',
+              'mount_afpfs', '-o', "${timeouts}${timeout_zeros}30", $AFP_AUTH_URL, $mnt_dir
+);
+
+SKIP: {
+    skip $DEBUG_LOG_SKIP, 1 unless $AFP_FUSE_DEBUG_LOG;
+    my $timeouts_read = fuse_init_timeouts($timeout_offset);
+    skip 'the daemon logs no fuse init line', 1 unless defined $timeouts_read;
+    is($timeouts_read, 'entry_timeout=0.000 negative_timeout=30.000 attr_timeout=0.000',
+       'fuse_timeouts: libfuse reads the three timeouts from the 255 bytes');
+}
+
+SKIP: {
+    skip 'these counts follow the Linux kernel caches', 2 unless $^O eq 'linux';
+    my $path = "$mnt_dir/timeouts.txt";
+    write_bytes($path, 4096);
+    my $before = request_counts();
+    stat $path for 1 .. 5;
+    my $after = request_counts();
+    cmp_ok(request_delta($before, $after, 'afpGetFileDirParms'), '>=', 10,
+           'fuse_timeouts: five stat(2) of a file ask the server at least ten times');
+    $before = $after;
+    stat "$mnt_dir/timeouts.absent" for 1 .. 5;
+    $after = request_counts();
+    is(request_delta($before, $after, 'afpGetFileDirParms'), 1,
+       'fuse_timeouts: five stat(2) of a missing name ask the server once');
+    unlink $path;
+}
+
+unmount_or_bail('fuse_timeouts: unmount succeeds');
+refused_mount(
+              'fuse_timeouts: mount_afpfs -o refuses 256 bytes of timeouts',
+              'mount_afpfs', '-o', "${timeouts}0${timeout_zeros}30", $AFP_AUTH_URL
+);
 
 # -----------------------------------------------------------------------
 # fuse_flush_afp30: an AFP 3.0 session has no FPSyncFork and flushes with
