@@ -1002,6 +1002,10 @@ static unsigned char process_open(struct daemon_client * c)
             result = AFPSL_IPC_RESULT_ENOENT;
         } else if (ret == -EACCES) {
             result = AFPSL_IPC_RESULT_ACCESS;
+        } else if (ret == -EEXIST) {
+            result = AFPSL_IPC_RESULT_EXIST;
+        } else if (ret == -ETIMEDOUT) {
+            result = AFPSL_IPC_RESULT_TIMEDOUT;
         } else {
             result = AFPSL_IPC_RESULT_ERROR;
         }
@@ -1211,8 +1215,7 @@ static unsigned char process_write(struct daemon_client * c)
         goto done;
     }
 
-    /* Perform the write operation - ml_write wants uid/gid, using 0 for now */
-    ret = ml_write(v, data, request->size, request->offset, fp, 0, 0);
+    ret = ml_write(v, data, request->size, request->offset, fp);
 
     if (ret > 0) {
         written = ret;
@@ -1241,12 +1244,16 @@ done:
 /*!
  * @brief Answer an afpsld create request by creating a file at its path
  *
+ * A file it made gets the mode the request names, as ml_set_created_mode()
+ * gives it.
+ *
  * @param[in,out] c  the client, whose complete packet holds the request
  * @returns 0, the response carrying the result
  */
 static unsigned char process_creat(struct daemon_client * c)
 {
     struct afpsl_ipc_creat_response response;
+    unsigned char created = 0;
     struct afpsl_ipc_creat_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     const char *path;
@@ -1283,7 +1290,11 @@ static unsigned char process_creat(struct daemon_client * c)
 
     log_for_client((void *) c, AFPFSD, LOG_DEBUG, "Creating file '%s' mode=%04o",
                    path, request->mode);
-    ret = ml_creat(v, path, request->mode, NULL);
+    ret = ml_creat(v, path, request->mode, &created);
+
+    if (ret == 0 && created) {
+        ml_set_created_mode(v, path, request->mode);
+    }
 
     if (ret < 0) {
         if (ret == -EEXIST) {
@@ -1948,6 +1959,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld stat request with a path's attributes
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result and the attributes
+ */
 static unsigned char process_stat(struct daemon_client * c)
 {
     struct afpsl_ipc_stat_response response;
@@ -1997,6 +2014,8 @@ static unsigned char process_stat(struct daemon_client * c)
 
     if (ret == -ENOENT) {
         result = AFPSL_IPC_RESULT_ENOENT;
+    } else if (ret == -EACCES) {
+        result = AFPSL_IPC_RESULT_ACCESS;
     } else if (ret < 0) {
         result = AFPSL_IPC_RESULT_ERROR;
     } else {

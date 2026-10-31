@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -253,4 +254,46 @@ int afp_server_drops_long_commands(const struct afp_server *s)
 {
     return s->server_type == AFPC_SERVER_TYPE_NETATALK
            && !server_version_at_least(&s->server_version, 4, 5, 0);
+}
+
+/*!
+ * @brief Test whether the server sets a directory's owner and group alone
+ *
+ * Netatalk 2 changes those of every file in the directory with them, and
+ * the AFP specification leaves a directory's owner to FPSetDirParms.
+ *
+ * @param[in] s  identified server
+ * @returns 1 for Netatalk 3 and later, 0 otherwise
+ */
+int afp_server_sets_directory_owner(const struct afp_server *s)
+{
+    return s->server_type == AFPC_SERVER_TYPE_NETATALK
+           && server_version_at_least(&s->server_version, 3, 0, 0);
+}
+
+/*!
+ * @brief Test whether the server keeps an owner or a group of -1 as it is
+ *
+ * @param[in] s  identified server
+ * @returns 1 for Netatalk, 0 otherwise
+ */
+int afp_server_keeps_unset_ids(const struct afp_server *s)
+{
+    return s->server_type == AFPC_SERVER_TYPE_NETATALK;
+}
+
+/*!
+ * @brief Test whether the server may keep a directory's mode and answer
+ *        success
+ *
+ * Netatalk 2 drops chmod(2)'s EPERM for a directory, and from 2.3 sets no
+ * directory's own mode.
+ *
+ * @param[in] s  identified server
+ * @returns 1 for Netatalk before 3, 0 otherwise
+ */
+int afp_server_keeps_directory_modes(const struct afp_server *s)
+{
+    return s->server_type == AFPC_SERVER_TYPE_NETATALK
+           && !server_version_at_least(&s->server_version, 3, 0, 0);
 }

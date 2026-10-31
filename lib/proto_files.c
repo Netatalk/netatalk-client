@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -13,6 +14,7 @@
  * @brief AFP file requests, reads, copies, and the parsing of their replies
  */
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,12 +26,36 @@
 #include "dsi_protocol.h"
 #include "utils.h"
 
-/* afp_setfileparms, afp_setdirparms and afpsetfiledirparms are all remarkably
-   similiar.  We abstract them to afp-setparms_lowlevel. */
+/*!
+ * @brief Store a 32-bit value already in network order
+ *
+ * @param[out] p      where the value goes, at any alignment
+ * @param[in]  value  the value, in network order
+ * @returns the byte after the value
+ */
+static char *put_word(char *p, uint32_t value)
+{
+    memcpy(p, &value, sizeof(value));
+    return p + sizeof(value);
+}
 
-static int afp_setparms_lowlevel(struct afp_volume * volume,
-                                 unsigned int dirid, const char *pathname, unsigned short bitmap,
-                                 struct afp_file_info *fp, char command)
+/*!
+ * @brief Set parameters of a file or a directory with FPSetFileDirParms
+ *
+ * The parameters follow the path in the order of their bits.
+ *
+ * @param[in] volume    volume of the object
+ * @param[in] dirid     its directory
+ * @param[in] pathname  its AFP name in dirid
+ * @param[in] bitmap    the parameters to set
+ * @param[in] fp        their values; kFPOwnerIDBit and kFPGroupIDBit, which a
+ *                      directory alone has, take unixprivs' uid and gid
+ * @returns the server's answer, ETIMEDOUT for a request without one, or a
+ *          negative errno for a request that did not go out
+ */
+int afp_setfiledirparms(struct afp_volume * volume, unsigned int dirid,
+                        const char *pathname, unsigned short bitmap,
+                        struct afp_file_info *fp)
 {
     struct {
         struct dsi_header dsi_header __attribute__((__packed__));
@@ -40,25 +66,22 @@ static int afp_setparms_lowlevel(struct afp_volume * volume,
         uint16_t bitmap;
     }  __attribute__((__packed__)) *request_packet;
     struct afp_server * server = volume->server;
-#if 0
-    unsigned short result_bitmap = 0;
-#endif
+    /* Room for every parameter the bitmap can carry, and a byte of pad. */
     unsigned int len = sizeof(*request_packet) +
-                       sizeof_path_header(volume) + strlen(pathname) +
-                       200 +  /* This is the max size of a data block */
-                       1; /* In case we're not on an even boundary */
+                       sizeof_path_header(volume) + strlen(pathname) + 200 + 1;
     char *msg, *pathptr, *p;
     int ret;
 
     if ((msg = malloc(len)) == NULL) {
-        return -1;
+        return -ENOMEM;
     }
 
     pathptr = msg + sizeof(*request_packet);
     p = pathptr + sizeof_path_header(volume) + strlen(pathname);
 
+    /* The parameters start on an even byte. */
     if (((uintptr_t) p) & 0x1) {
-        p++;    /* Make sure we're on an even boundary */
+        p++;
     }
 
     memset(msg, 0, len);
@@ -66,7 +89,7 @@ static int afp_setparms_lowlevel(struct afp_volume * volume,
     struct dsi_header hdr;
     afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
-    request_packet->command = command;
+    request_packet->command = afpSetFileDirParms;
     request_packet->pad = 0;
     request_packet->volid = htons(volume->volid);
     request_packet->dirid = htonl(dirid);
@@ -75,96 +98,49 @@ static int afp_setparms_lowlevel(struct afp_volume * volume,
     unixpath_to_afppath(volume, pathptr);
 
     if (bitmap & kFPAttributeBit) {
-        /* Todo:
-        The spec says: "The following parameters may be set or cleared:
-        Attributes (all attributes except DAlreadyOpen,
-        RAlreadyOpen, and CopyProtect)".  This should be checked.
-        */
-        *p = htons(fp->attributes);
-#if 0
-        result_bitmap |= kFPAttributeBit;
-#endif
-        p += 2;
+        uint16_t attributes = htons(fp->attributes);
+        memcpy(p, &attributes, sizeof(attributes));
+        p += sizeof(attributes);
     }
 
     if (bitmap & kFPCreateDateBit) {
-        unsigned int *date = (void *) p;
-        *date = afp_date_from_unix(volume->server, fp->creation_date);
-#if 0
-        result_bitmap |= kFPCreateDateBit;
-#endif
-        p += 4;
+        p = put_word(p, afp_date_from_unix(volume->server,
+                                           fp->creation_date));
     }
 
     if (bitmap & kFPModDateBit) {
-        unsigned int *date = (void *) p;
-        *date = afp_date_from_unix(volume->server, fp->modification_date);
-#if 0
-        result_bitmap |= kFPModDateBit;
-#endif
-        p += 4;
+        p = put_word(p, afp_date_from_unix(volume->server,
+                                           fp->modification_date));
     }
 
     if (bitmap & kFPBackupDateBit) {
-        unsigned int *date = (void *) p;
-        *date = afp_date_from_unix(volume->server, fp->backup_date);
-        p += 4;
-#if 0
-        result_bitmap |= kFPBackupDateBit;
-#endif
+        p = put_word(p, afp_date_from_unix(volume->server, fp->backup_date));
     }
 
     if (bitmap & kFPFinderInfoBit) {
-#if 0
-        result_bitmap |= kFPFinderInfoBit;
-#endif
         memcpy(p, fp->finderinfo, 32);
-        p += 32;;
+        p += 32;
+    }
+
+    if (bitmap & kFPOwnerIDBit) {
+        p = put_word(p, htonl(fp->unixprivs.uid));
+    }
+
+    if (bitmap & kFPGroupIDBit) {
+        p = put_word(p, htonl(fp->unixprivs.gid));
     }
 
     if (bitmap & kFPUnixPrivsBit) {
-        struct afpc_unix_privileges * t_unixprivs = (void *) p;
-        memcpy(t_unixprivs, &fp->unixprivs,
-               sizeof(struct afpc_unix_privileges));
-        /* Convert the different components */
-        t_unixprivs->uid = htonl(t_unixprivs->uid);
-        t_unixprivs->gid = htonl(t_unixprivs->gid);
-        t_unixprivs->permissions = htonl(t_unixprivs->permissions);
-        t_unixprivs->ua_permissions = htonl(t_unixprivs->ua_permissions);
-        p += sizeof(struct afpc_unix_privileges);
-#if 0
-        result_bitmap |= kFPUnixPrivsBit;
-#endif
+        p = put_word(p, htonl(fp->unixprivs.uid));
+        p = put_word(p, htonl(fp->unixprivs.gid));
+        p = put_word(p, htonl(fp->unixprivs.permissions));
+        p = put_word(p, htonl(fp->unixprivs.ua_permissions));
     }
 
     ret = afpc_dsi_send(server, (char *) msg, p - msg, DSI_DEFAULT_TIMEOUT,
-                        command, NULL);
+                        afpSetFileDirParms, NULL);
     free(msg);
     return ret;
-}
-
-int afp_setfileparms(struct afp_volume * volume,
-                     unsigned int dirid, const char *pathname, unsigned short bitmap,
-                     struct afp_file_info *fp)
-{
-    return afp_setparms_lowlevel(volume, dirid, pathname, bitmap,
-                                 fp, afpSetFileParms);
-}
-
-int afp_setfiledirparms(struct afp_volume * volume,
-                        unsigned int dirid, const char *pathname, unsigned short bitmap,
-                        struct afp_file_info *fp)
-{
-    return afp_setparms_lowlevel(volume, dirid, pathname, bitmap,
-                                 fp, afpSetFileDirParms);
-}
-
-int afp_setdirparms(struct afp_volume * volume,
-                    unsigned int dirid, const char *pathname, unsigned short bitmap,
-                    struct afp_file_info *fp)
-{
-    return afp_setparms_lowlevel(volume, dirid, pathname, bitmap,
-                                 fp, afpSetDirParms);
 }
 
 int afp_delete(struct afp_volume * volume,

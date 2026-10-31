@@ -33,6 +33,8 @@
 #define appledouble ".AppleDouble"
 #define finderinfo_string ".finderinfo"
 #define comment_string ".comment"
+/* The longest Finder comment AFP stores */
+#define AFP_COMMENT_MAX 199
 #define servericon_string "/.servericon"
 
 #define min(a,b) (((a)<(b)) ? (a) : (b))
@@ -159,53 +161,105 @@ static int ensure_dt_opened(struct afp_volume * volume)
     return (afp_opendt(volume, &volume->dtrefnum));
 }
 
-static int get_comment_size(struct afp_volume * volume, const char *basename,
-                            unsigned int did)
+/*!
+ * @brief Read a file's Finder comment
+ *
+ * @param[in]  volume    volume of the file
+ * @param[in]  basename  its AFP name in did
+ * @param[in]  did       its directory
+ * @param[out] buf       receives the comment, or NULL
+ * @param[in]  size      capacity of buf
+ * @returns the comment's length, or a negative errno: -ENOENT for a file
+ *          without one
+ */
+static int read_comment(struct afp_volume * volume, const char *basename,
+                        unsigned int did, char *buf, size_t size)
 {
+    char data[UINT8_MAX];
     struct afp_comment comment;
-    int ret = 0;
-    int size = 1024;
-
-    if ((comment.data = malloc(size)) == NULL) {
-        return -1;
-    }
-
-    comment.maxsize = size;
+    comment.data = data;
+    comment.maxsize = sizeof(data);
     comment.size = 0;
 
-    if (volume->dtrefnum == 0)
-        if (afp_opendt(volume, &volume->dtrefnum) < 0) {
-            ret = -EIO;
-            goto out;
-        }
+    if (ensure_dt_opened(volume) != kFPNoErr) {
+        return -EIO;
+    }
 
-    ret = (afp_getcomment(volume, did, basename, &comment));
+    switch (afp_getcomment(volume, did, basename, &comment)) {
+    case kFPNoErr:
+        break;
 
-    switch (ret) {
     case kFPAccessDenied:
-        ret = -EACCES;
-        break;
-
-    case kFPMiscErr:
-    case kFPParamErr:
-        ret = -EIO;
-        break;
+        return -EACCES;
 
     case kFPItemNotFound:
     case kFPObjectNotFound:
-        ret = -ENOENT;
-        break;
+        return -ENOENT;
 
-    case kFPNoErr:
-        ret = comment.size;
-
+    /* Every other answer, and a request that failed or timed out. */
     default:
-        break;
+        return -EIO;
     }
 
-out:
-    free(comment.data);
-    return ret;
+    if (buf) {
+        memcpy(buf, data, min(size, comment.size));
+    }
+
+    return (int) comment.size;
+}
+
+/*!
+ * @brief Give a file's Finder comment a length
+ *
+ * A shorter comment keeps its first bytes, and a longer one gains NULs.
+ *
+ * @param[in] volume    volume of the file
+ * @param[in] basename  its AFP name in did
+ * @param[in] did       its directory
+ * @param[in] length    the length, AFP_COMMENT_MAX at most
+ * @returns 0, or a negative errno: -EFBIG for a length past AFP_COMMENT_MAX
+ */
+static int set_comment_length(struct afp_volume * volume, const char *basename,
+                              unsigned int did, off_t length)
+{
+    char comment[AFP_COMMENT_MAX];
+    int len = 0;
+    int ret;
+
+    if (length < 0) {
+        return -EINVAL;
+    }
+
+    if (length > AFP_COMMENT_MAX) {
+        return -EFBIG;
+    }
+
+    if (ensure_dt_opened(volume) != kFPNoErr) {
+        return -EIO;
+    }
+
+    if (length > 0) {
+        len = read_comment(volume, basename, did, comment, sizeof(comment));
+
+        if (len == -ENOENT) {
+            len = 0;
+        }
+
+        if (len < 0) {
+            return len;
+        }
+
+        if (len == length) {
+            return 0;
+        }
+
+        if (len < length) {
+            memset(comment + len, 0, (size_t)(length - len));
+        }
+    }
+
+    ret = afp_addcomment_sized(volume, did, basename, comment, (size_t) length);
+    return -ll_answer_errno(ret);
 }
 
 /*!
@@ -257,16 +311,14 @@ int appledouble_creat(struct afp_volume * volume, const char *path,
 }
 
 /*!
- * @brief Refuse a change of mode of an AppleDouble pseudo-file
+ * @brief Refuse a change of mode, owner or time of an AppleDouble pseudo-file
  *
  * @param[in] volume  volume of the file
  * @param[in] path    UTF-8 path
- * @param[in] mode    unused
  * @returns 0 for a path that names no pseudo-file, -EPERM for one, or
  *          -ENOMEM
  */
-int appledouble_chmod(struct afp_volume * volume, const char *path,
-                      mode_t mode _U_)
+int appledouble_setattr(struct afp_volume * volume, const char *path)
 {
     int resource;
     char *newpath;
@@ -355,11 +407,28 @@ int appledouble_close(struct afp_volume * volume, struct afp_file_info * fp)
     return 0;
 }
 
+/*!
+ * @brief Write to an AppleDouble pseudo-file
+ *
+ * A resource fork takes the bytes, Finder information the part of its 32
+ * bytes they cover, and a comment the part of its AFP_COMMENT_MAX bytes.
+ *
+ * @param[in]     volume        volume of the file
+ * @param[in,out] fp            the pseudo-file's open record
+ * @param[in]     data          bytes to write
+ * @param[in]     size          length of data
+ * @param[in]     offset        byte offset to write at
+ * @param[out]    totalwritten  bytes written
+ * @returns 1 when fp is a pseudo-file's, 0 for a data fork, or a negative
+ *          errno
+ */
 int appledouble_write(struct afp_volume * volume, struct afp_file_info *fp,
                       const char *data, size_t size, off_t offset, size_t *totalwritten)
 {
     int ret;
     int towrite = size;
+    int keeps_time;
+    unsigned short bitmap;
     struct afp_file_info fp2;
 
     switch (fp->resource) {
@@ -384,73 +453,84 @@ int appledouble_write(struct afp_volume * volume, struct afp_file_info *fp,
             towrite = 32 - offset;
         }
 
-        /* Get the previous finderinfo */
-        ret = ll_get_directory_entry(volume, fp->basename, fp->did,
-                                     kFPFinderInfoBit, kFPFinderInfoBit, &fp2);
+        /* The Finder info so far, and the time, which afpd stamps its clock
+         * over in a set without one. */
+        bitmap = kFPFinderInfoBit | kFPModDateBit
+                 | ((volume->extra_flags & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX)
+                    ? kFPUnixPrivsBit : 0);
+        memset(&fp2, 0, sizeof(fp2));
+        ret = ll_get_directory_entry(volume, fp->basename, fp->did, bitmap,
+                                     bitmap, &fp2);
 
-        switch (ret) {
-        case kFPNoErr:
-            break;
-
-        case kFPAccessDenied:
-            return -EACCES;
-
-        case kFPObjectNotFound:
-            return -ENOENT;
-
-        case kFPBitmapErr:
-        case kFPMiscErr:
-        case kFPObjectTypeErr:
-        case kFPParamErr:
-        default:
-            return -EIO;
+        if (ret != kFPNoErr) {
+            return -ll_answer_errno(ret);
         }
 
-        /* Copy in only the parts we got */
         memcpy(fp->finderinfo, fp2.finderinfo, sizeof(fp->finderinfo));
         memcpy(fp->finderinfo + offset, data, towrite);
-        ret = afp_setfiledirparms(volume,
-                                  fp->did, fp->basename,
-                                  kFPFinderInfoBit, fp);
+        fp->modification_date = fp2.modification_date;
+        /* afpd would set a symlink's time on its target, and store one before
+         * 1970 as one after 2068. */
+        keeps_time = !fp2.modification_date_is_unset
+                     && fp2.modification_date >= 0
+                     && !S_ISLNK(fp2.unixprivs.permissions)
+                     && memcmp(fp2.finderinfo, "slnkrhap", 8) != 0;
+        ret = afp_setfiledirparms(volume, fp->did, fp->basename,
+                                  kFPFinderInfoBit
+                                  | (keeps_time ? kFPModDateBit : 0), fp);
 
-        switch (ret) {
-        case kFPNoErr:
-            break;
-
-        case kFPAccessDenied:
-            return -EACCES;
-
-        case kFPObjectNotFound:
-            return -ENOENT;
-
-        case kFPBitmapErr:
-        case kFPMiscErr:
-        case kFPObjectTypeErr:
-        case kFPParamErr:
-        default:
-            return -EIO;
+        if (ret != kFPNoErr) {
+            return -ll_answer_errno(ret);
         }
 
         *totalwritten = towrite;
         return 1;
 
-    case AFP_META_COMMENT:
-        switch (afp_addcomment(volume, fp->did, fp->basename,
-                               (char *)data, (uint64_t *) totalwritten)) {
-        case kFPAccessDenied:
-            return -EACCES;
+    case AFP_META_COMMENT: {
+        char comment[AFP_COMMENT_MAX];
+        int len;
 
-        case kFPObjectNotFound:
-            return -ENOENT;
-
-        case kFPNoErr:
-            *totalwritten = size;
-            return 1;
-
-        case kFPMiscErr:
-        default:
-            return -EIO;
+        if (offset < 0) {
+            return -EINVAL;
         }
+
+        if (offset >= AFP_COMMENT_MAX) {
+            return -EFBIG;
+        }
+
+        len = read_comment(volume, fp->basename, fp->did, comment,
+                           sizeof(comment));
+
+        if (len == -ENOENT) {
+            len = 0;
+        }
+
+        if (len < 0) {
+            return len;
+        }
+
+        towrite = (int) min(size, (size_t)(AFP_COMMENT_MAX - offset));
+
+        if (offset > len) {
+            memset(comment + len, 0, (size_t)(offset - len));
+        }
+
+        memcpy(comment + offset, data, (size_t) towrite);
+
+        if (offset + towrite > len) {
+            len = (int) offset + towrite;
+        }
+
+        ret = afp_addcomment_sized(volume, fp->did, fp->basename, comment,
+                                   (size_t) len);
+
+        if (ret != kFPNoErr) {
+            return -ll_answer_errno(ret);
+        }
+
+        *totalwritten = (size_t) towrite;
+        return 1;
+    }
 
     case AFP_META_SERVER_ICON:
         return -EPERM;
@@ -596,25 +676,21 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
 /*!
  * @brief Truncate the AppleDouble pseudo-file at path
  *
- * Empties a resource fork, whatever offset asks for. Finder information and
- * comments accept the call without a request.
+ * Sets a resource fork's length or a comment's. Finder information accepts
+ * the call without a request.
  *
  * @param[in] volume  volume of the file
  * @param[in] path    UTF-8 path of the pseudo-file
- * @param[in] offset  unused
+ * @param[in] offset  the new length
  * @returns 1 when path is a pseudo-file's, 0 for another file, or a negative
  *          errno
  */
 int appledouble_truncate(struct afp_volume * volume, const char *path,
-                         int offset _U_)
+                         off_t offset)
 {
     char *newpath;
     int resource = extra_translate(volume, path, &newpath);
-    struct afp_file_info fp;
     int ret;
-    unsigned int dirid;
-    char basename[AFPC_MAX_NAME_BYTES];
-    memset(&fp, 0, sizeof(fp));
 
     if (resource < 0) {
         return resource;
@@ -622,51 +698,9 @@ int appledouble_truncate(struct afp_volume * volume, const char *path,
 
     switch (resource) {
     case AFP_META_RESOURCE:
-        ret = get_dirid(volume, newpath, basename, &dirid);
-
-        if (ret < 0) {
-            free(newpath);
-            return ret;
-        }
-
-        ret = afp_openfork(volume, 1, dirid,
-                           AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE, 0,
-                           basename, &fp);
-
-        if (ret != kFPNoErr) {
-            free(newpath);
-
-            switch (ret) {
-            case kFPAccessDenied:
-                return -EACCES;
-
-            case kFPObjectNotFound:
-                return -ENOENT;
-
-            case kFPObjectLocked:
-            case kFPVolLocked:
-            case kFPDenyConflict:
-                return -EBUSY;
-
-            default:
-                return -EIO;
-            }
-        }
-
-        add_opened_fork(volume, &fp);
-        ret = ll_zero_file(volume, fp.forkid, 1);
-
-        if (ret != 0) {
-            afp_closefork(volume, fp.forkid);
-            remove_opened_fork(volume, &fp);
-            free(newpath);
-            return -ret;
-        }
-
+        ret = ml_truncateresourcefork(volume, newpath, (uint64_t) offset);
         free(newpath);
-        afp_closefork(volume, fp.forkid);
-        remove_opened_fork(volume, &fp);
-        return 1;
+        return ret < 0 ? ret : 1;
 
     case AFP_META_APPLEDOUBLE:
         free(newpath);
@@ -676,9 +710,18 @@ int appledouble_truncate(struct afp_volume * volume, const char *path,
         free(newpath);
         return 1;
 
-    case AFP_META_COMMENT:
+    case AFP_META_COMMENT: {
+        char basename[AFPC_MAX_NAME_BYTES];
+        unsigned int did;
+        ret = get_dirid(volume, newpath, basename, &did);
+
+        if (ret == 0) {
+            ret = set_comment_length(volume, basename, did, offset);
+        }
+
         free(newpath);
-        return 1;
+        return ret < 0 ? ret : 1;
+    }
 
     case AFP_META_SERVER_ICON:
         free(newpath);
@@ -686,6 +729,39 @@ int appledouble_truncate(struct afp_volume * volume, const char *path,
     }
 
     return 0;
+}
+
+/*!
+ * @brief Set the length of an open AppleDouble pseudo-file
+ *
+ * Finder information keeps its 32 bytes without a request, and a resource
+ * fork's length is the caller's to set.
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] fp      the open pseudo-file
+ * @param[in] offset  the new length
+ * @returns 1 for a pseudo-file other than a resource fork, 0 for a fork, or
+ *          a negative errno: -EPERM for the server icon
+ */
+int appledouble_ftruncate(struct afp_volume * volume,
+                          struct afp_file_info * fp, off_t offset)
+{
+    int ret;
+
+    switch (fp->resource) {
+    case AFP_META_FINDERINFO:
+        return 1;
+
+    case AFP_META_COMMENT:
+        ret = set_comment_length(volume, fp->basename, fp->did, offset);
+        return ret < 0 ? ret : 1;
+
+    case AFP_META_SERVER_ICON:
+        return -EPERM;
+
+    default:
+        return 0;
+    }
 }
 
 /*!
@@ -714,8 +790,9 @@ int appledouble_open(struct afp_volume * volume, const char *path, int flags,
 
     switch ((fp->resource = resource)) {
     case AFP_META_RESOURCE:
-        if (get_dirid(volume, newpath, fp->basename, &fp->did) < 0) {
-            ret = -ENOENT;
+        ret = get_dirid(volume, newpath, fp->basename, &fp->did);
+
+        if (ret < 0) {
             goto out;
         }
 
@@ -733,8 +810,9 @@ int appledouble_open(struct afp_volume * volume, const char *path, int flags,
         goto out;
 
     case AFP_META_FINDERINFO:
-        if (get_dirid(volume, newpath, fp->basename, &fp->did) < 0) {
-            ret = -ENOENT;
+        ret = get_dirid(volume, newpath, fp->basename, &fp->did);
+
+        if (ret < 0) {
             goto out;
         }
 
@@ -742,8 +820,9 @@ int appledouble_open(struct afp_volume * volume, const char *path, int flags,
         goto out;
 
     case AFP_META_COMMENT:
-        if (get_dirid(volume, newpath, fp->basename, &fp->did) < 0) {
-            ret = -ENOENT;
+        ret = get_dirid(volume, newpath, fp->basename, &fp->did);
+
+        if (ret < 0) {
             goto out;
         }
 
@@ -757,6 +836,14 @@ int appledouble_open(struct afp_volume * volume, const char *path, int flags,
             case kFPNoErr:
             default:
                 break;
+            }
+        }
+
+        if (flags & O_TRUNC) {
+            ret = set_comment_length(volume, fp->basename, fp->did, 0);
+
+            if (ret < 0) {
+                goto out;
             }
         }
 
@@ -776,10 +863,24 @@ out:
     return ret;
 }
 
+/*!
+ * @brief Open a file's resource fork or Finder information by its own path
+ *
+ * Finder information opens without a request of its own.
+ *
+ * @param[in]  volume    volume of the file
+ * @param[in]  path      AFP path of the file
+ * @param[in]  resource  AFP_META_RESOURCE or AFP_META_FINDERINFO
+ * @param[in]  flags     open(2) flags, for a resource fork
+ * @param[out] fp        receives the open record
+ * @returns 0, or a negative errno: the lookup's, the open's, or -EINVAL
+ */
 int appledouble_open_meta(struct afp_volume * volume, const char *path,
                           unsigned int resource, int flags,
                           struct afp_file_info *fp)
 {
+    int ret;
+
     if (!volume || !path || !fp) {
         return -EINVAL;
     }
@@ -789,18 +890,11 @@ int appledouble_open_meta(struct afp_volume * volume, const char *path,
 
     switch (resource) {
     case AFP_META_RESOURCE:
-        if (get_dirid(volume, path, fp->basename, &fp->did) < 0) {
-            return -ENOENT;
-        }
-
-        return ll_open(volume, path, flags, fp);
+        ret = get_dirid(volume, path, fp->basename, &fp->did);
+        return ret < 0 ? ret : ll_open(volume, path, flags, fp);
 
     case AFP_META_FINDERINFO:
-        if (get_dirid(volume, path, fp->basename, &fp->did) < 0) {
-            return -ENOENT;
-        }
-
-        return 0;
+        return get_dirid(volume, path, fp->basename, &fp->did);
 
     default:
         return -EINVAL;
@@ -858,7 +952,7 @@ int appledouble_getattr(struct afp_volume * volume,
             goto error;
         }
 
-        ret = get_comment_size(volume, basename, did);
+        ret = read_comment(volume, basename, did, NULL, 0);
 
         if (ret < 0) {
             goto error;
@@ -948,8 +1042,7 @@ int appledouble_readdir(struct afp_volume * volume,
 
             /* Add comments if it has a size > 0 */
             if (ensure_dt_opened(volume) == 0) {
-                int size = get_comment_size(volume,
-                                            fp->name, fp->did);
+                int size = read_comment(volume, fp->name, fp->did, NULL, 0);
 
                 if (size > 0) {
                     add_fp(&newchain, fp, comment_string, 32);
@@ -1071,55 +1164,6 @@ int appledouble_readlink(struct afp_volume * volume, const char *path,
  *          -ENOMEM
  */
 int appledouble_rmdir(struct afp_volume * volume, const char *path)
-{
-    int resource;
-    char *newpath;
-    resource = extra_translate(volume, path, &newpath);
-    free(newpath);
-
-    if (resource <= 0) {
-        return resource;
-    }
-
-    return -EPERM;
-}
-
-/*!
- * @brief Refuse a change of owner of an AppleDouble pseudo-file
- *
- * @param[in] volume  volume of the file
- * @param[in] path    UTF-8 path
- * @param[in] uid     unused
- * @param[in] gid     unused
- * @returns 0 for a path that names no pseudo-file, -EPERM for one, or
- *          -ENOMEM
- */
-int appledouble_chown(struct afp_volume * volume, const char *path,
-                      uid_t uid _U_, gid_t gid _U_)
-{
-    int resource;
-    char *newpath;
-    resource = extra_translate(volume, path, &newpath);
-    free(newpath);
-
-    if (resource <= 0) {
-        return resource;
-    }
-
-    return -EPERM;
-}
-
-/*!
- * @brief Refuse a change of times of an AppleDouble pseudo-file
- *
- * @param[in] volume   volume of the file
- * @param[in] path     UTF-8 path
- * @param[in] timebuf  unused
- * @returns 0 for a path that names no pseudo-file, -EPERM for one, or
- *          -ENOMEM
- */
-int appledouble_utime(struct afp_volume * volume, const char *path,
-                      struct utimbuf * timebuf _U_)
 {
     int resource;
     char *newpath;

@@ -20,7 +20,6 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <sys/time.h>
 #include <time.h>
 #include <fcntl.h>
 
@@ -30,6 +29,7 @@
 #include "codepage.h"
 #include "compat.h"
 #include "lowlevel.h"
+#include "mapping.h"
 #include "midlevel.h"
 #include "forklist.h"
 #include "resource.h"
@@ -132,82 +132,133 @@ static int is_finderinfo_xattr(const char *name)
                   AFP_XATTR_FINDERINFO) == 0;
 }
 
-static int get_unixprivs(struct afp_volume * volume,
-                         unsigned int dirid,
-                         const char *path, struct afp_file_info * fp)
+/*!
+ * @brief Read parameters of a file or a directory with FPGetFileDirParms
+ *
+ * @param[in]  vol       volume of the object
+ * @param[in]  dirid     its directory
+ * @param[in]  basename  its AFP name in dirid
+ * @param[in]  bitmap    the parameters, bits the file and directory bitmaps
+ *                       share
+ * @param[out] fp        receives them
+ * @returns 0, or a negative errno, as ll_answer_errno() gives it
+ */
+static int get_parameters(struct afp_volume * vol, unsigned int dirid,
+                          char *basename, unsigned short bitmap,
+                          struct afp_file_info * fp)
 {
-    switch (ll_get_directory_entry(volume, (char *)path,
-                                   dirid, kFPUnixPrivsBit, kFPUnixPrivsBit, fp)) {
+    int ret = ll_get_directory_entry(vol, basename, dirid, bitmap, bitmap, fp);
+    return -ll_answer_errno(ret);
+}
+
+/*!
+ * @brief Set parameters of a file or a directory with FPSetFileDirParms
+ *
+ * @param[in] vol       volume of the object
+ * @param[in] dirid     its directory
+ * @param[in] basename  its AFP name in dirid
+ * @param[in] bitmap    the parameters
+ * @param[in] fp        their values
+ * @returns 0, or a negative errno: -EPERM for a refused change of the
+ *          privileges or the ids, -EACCES for another, -ENOSYS for a
+ *          parameter the server does not set, -ENOENT, -EROFS or -EIO
+ */
+static int set_parameters(struct afp_volume * vol, unsigned int dirid,
+                          const char *basename, unsigned short bitmap,
+                          struct afp_file_info * fp)
+{
+    switch (afp_setfiledirparms(vol, dirid, basename, bitmap, fp)) {
+    case kFPNoErr:
+        return 0;
+
     case kFPAccessDenied:
-        return -EACCES;
+        return (bitmap & (kFPUnixPrivsBit | kFPOwnerIDBit | kFPGroupIDBit))
+               ? -EPERM : -EACCES;
+
+    case kFPBitmapErr:
+        return -ENOSYS;
 
     case kFPObjectNotFound:
         return -ENOENT;
 
-    case kFPNoErr:
-        break;
+    case kFPVolLocked:
+        return -EROFS;
 
-    case kFPBitmapErr:
-    case kFPMiscErr:
-    case kFPParamErr:
+    /* Every other answer, and a request that failed or timed out. */
     default:
         return -EIO;
     }
-
-    return 0;
 }
 
-
-static int set_unixprivs(struct afp_volume * vol,
-                         unsigned int dirid,
-                         const char *basename, struct afp_file_info * fp)
-
+/*!
+ * @brief Give a file or a directory an owner and a group, read back
+ *
+ * The ids are read back, as Netatalk answers a change it keeps with success;
+ * a set-ID file keeps its ids, as afpd restores the bits chown(2) clears.
+ *
+ * @param[in]     vol       volume of the object
+ * @param[in]     dirid     its directory
+ * @param[in]     basename  its AFP name in dirid
+ * @param[in,out] fp        its UNIX privileges and modification time, as
+ *                          read or set, which a file's request carries
+ *                          with the new ids
+ * @param[in]     mode      its mode as read, whose set-ID bits a mode the
+ *                          request carries cannot clear
+ * @param[in]     uid       the server's id of the owner
+ * @param[in]     gid       the server's id of the group
+ * @returns 0, -EPERM for an owner or a group the server kept or would not
+ *          set alone, or another negative errno
+ */
+static int set_owner(struct afp_volume * vol, unsigned int dirid,
+                     char *basename, struct afp_file_info * fp,
+                     unsigned int mode, unsigned int uid, unsigned int gid)
 {
-#define TOCHECK_BITS \
-	(S_IRUSR |S_IWUSR | S_IXUSR | S_IRGRP | S_IWGRP | S_IXGRP | \
-	 S_IROTH | S_IWOTH | S_IXOTH )
-    int ret = 0, rc;
-    /* Do not zero ua_permissions here; callers populate it from get_unixprivs
-     * and Time Capsule uses the "User is the owner" bit to enforce write access. */
+    struct afp_file_info check;
+    unsigned short bitmap;
+    int ret = 0;
 
-    if (!(vol->extra_flags & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX)) {
+    if (fp->unixprivs.uid == uid && fp->unixprivs.gid == gid) {
         return 0;
     }
 
-    if (fp->isdir) {
-        rc = afp_setdirparms(vol, dirid, basename,
-                             kFPUnixPrivsBit, fp);
-    } else {
-        rc = afp_setfiledirparms(vol, dirid, basename,
-                                 kFPUnixPrivsBit, fp);
+    if (!fp->isdir && (mode & (S_ISUID | S_ISGID))) {
+        return -EPERM;
     }
 
-    switch (rc) {
-    case kFPAccessDenied:
-        ret = EPERM;
-        break;
-
-    case kFPBitmapErr:
-        ret = ENOSYS;
-        break;
-
-    case kFPObjectNotFound:
-        ret = ENOENT;
-        break;
-
-    case 0:
-        ret = 0;
-        break;
-
-    case kFPMiscErr:
-    case kFPObjectTypeErr:
-    case kFPParamErr:
-    default:
-        ret = EIO;
-        break;
+    if (fp->isdir && !afp_server_sets_directory_owner(vol->server)) {
+        return -EPERM;
     }
 
-    return -ret;
+    while (ret == 0 && (fp->unixprivs.uid != uid
+                        || fp->unixprivs.gid != gid)) {
+        if (!fp->isdir) {
+            fp->unixprivs.uid = uid;
+            fp->unixprivs.gid = gid;
+            bitmap = kFPUnixPrivsBit
+                     | (fp->modification_date_is_unset ? 0 : kFPModDateBit);
+        } else if (fp->unixprivs.uid != uid) {
+            fp->unixprivs.uid = uid;
+            bitmap = kFPOwnerIDBit;
+        } else {
+            fp->unixprivs.gid = gid;
+            bitmap = kFPGroupIDBit;
+        }
+
+        ret = set_parameters(vol, dirid, basename, bitmap, fp);
+
+        if (ret == 0) {
+            memset(&check, 0, sizeof(check));
+            ret = get_parameters(vol, dirid, basename, kFPUnixPrivsBit,
+                                 &check);
+        }
+
+        if (ret == 0 && (check.unixprivs.uid != fp->unixprivs.uid
+                         || check.unixprivs.gid != fp->unixprivs.gid)) {
+            ret = -EPERM;
+        }
+    }
+
+    return ret;
 }
 
 void add_file_by_name(struct afp_file_info **base, const char *filename)
@@ -254,26 +305,6 @@ void afp_ml_filebase_free(struct afp_file_info **filebase)
 
 
 
-/*
- * set_uidgid()
- *
- * This sets the userid and groupid in an afp_file_info struct using the
- * appropriate translation.  You should pass it the host's version of the
- * uid and gid.
- *
- */
-
-static int set_uidgid(struct afp_volume * volume,
-                      struct afp_file_info * fp, uid_t uid, gid_t gid)
-{
-    unsigned int newuid = uid;
-    unsigned int newgid = gid;
-    translate_uidgid_to_server(volume, &newuid, &newgid);
-    fp->unixprivs.uid = newuid;
-    fp->unixprivs.gid = newgid;
-    return 0;
-}
-
 static int map_filebase_uidgid_to_client(struct afp_volume * volume,
                                          struct afp_file_info * filebase)
 {
@@ -292,17 +323,20 @@ static int map_filebase_uidgid_to_client(struct afp_volume * volume,
     return 0;
 }
 
-static void update_time(time_t *newtime)
-{
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    *newtime = tv.tv_sec;
-}
-
+/*!
+ * @brief Open a file's data fork, or an AppleDouble pseudo-file, at path
+ *
+ * @param[in]  volume  volume of the file
+ * @param[in]  path    UTF-8 path of the file
+ * @param[in]  flags   open(2) flags
+ * @param[out] newfp   receives the open record, which the caller frees after
+ *                     ml_close()
+ * @returns 0, or a negative errno: -EROFS for a write open of a read-only
+ *          volume, the lookup's errno, or the open's
+ */
 int ml_open(struct afp_volume * volume, const char *path, int flags,
             struct afp_file_info **newfp)
 {
-    /* FIXME:  doesn't handle create properly */
     struct afp_file_info * fp;
     int ret;
     unsigned int dirid;
@@ -322,12 +356,12 @@ int ml_open(struct afp_volume * volume, const char *path, int flags,
     if (volume_is_readonly(volume) &&
             (flags & (O_WRONLY | O_RDWR | O_TRUNC | O_APPEND | O_CREAT))) {
         free(converted_path);
-        return -EACCES;
+        return -EROFS;
     }
 
     if ((fp = malloc(sizeof(*fp))) == NULL) {
         free(converted_path);
-        return -1;
+        return -ENOMEM;
     }
 
     *newfp = fp;
@@ -344,8 +378,9 @@ int ml_open(struct afp_volume * volume, const char *path, int flags,
         goto out;
     }
 
-    if (get_dirid(volume, converted_path, fp->basename, &dirid) < 0) {
-        ret = -ENOENT;
+    ret = get_dirid(volume, converted_path, fp->basename, &dirid);
+
+    if (ret) {
         goto error;
     }
 
@@ -370,14 +405,15 @@ error:
 /*!
  * @brief Create a file at path with FPCreateFile, unless one exists
  *
- * The soft create leaves an existing file as it is, and the call still
- * succeeds. A path to an AppleDouble pseudo-file needs no request.
+ * The soft create leaves an existing file as it is. A path to an AppleDouble
+ * pseudo-file needs no request.
  *
  * @param[in]  volume   volume of the path
  * @param[in]  path     UTF-8 path of the new file
  * @param[in]  mode     unused, as FPCreateFile carries no mode
  * @param[out] created  set to 1 when this call made the file, or NULL
- * @returns 0, or a negative errno
+ * @returns 0, -EEXIST for a file or a directory at the path, or another
+ *          negative errno
  */
 int ml_creat(struct afp_volume * volume, const char *path, mode_t mode,
              unsigned char *created)
@@ -385,7 +421,6 @@ int ml_creat(struct afp_volume * volume, const char *path, mode_t mode,
     int ret;
     char basename[AFPC_MAX_NAME_BYTES];
     unsigned int dirid;
-    int rc;
     char *converted_path;
     ret = convert_path_to_afp_alloc(volume->path_encoding, path,
                                     &converted_path);
@@ -396,7 +431,7 @@ int ml_creat(struct afp_volume * volume, const char *path, mode_t mode,
 
     if (volume_is_readonly(volume)) {
         free(converted_path);
-        return -EACCES;
+        return -EROFS;
     }
 
     ret = appledouble_creat(volume, path, mode);
@@ -423,54 +458,89 @@ int ml_creat(struct afp_volume * volume, const char *path, mode_t mode,
         return ret;
     }
 
-    /* Skip FPSetFileDirParms after FPCreateFile.  Time Capsule (and likely other
-     * servers) can return kFPMiscErr on subsequent FPWriteExt if we mutate the
-     * file's permissions/attrs between create and open.  macOS never calls
-     * FPSetFileDirParms in its create sequence either.  If the caller needs to
-     * set permissions it will do so via fuse_chmod -> ml_chmod afterward. */
-    rc = afp_createfile(volume, kFPSoftCreate, dirid, basename);
+    /* The caller gives the mode with ml_set_created_mode(), after any open
+     * it writes through: an open fork stays writable whatever mode follows. */
+    ret = ll_createfile(volume, dirid, basename);
 
-    switch (rc) {
-    case kFPNoErr:
-        if (created) {
-            *created = 1;
-        }
-
-        ret = 0;
-        break;
-
-    case kFPObjectExists:
-        /* A retry after a transient create/open race continues into the
-         * caller's open path. */
-        ret = 0;
-        break;
-
-    case kFPAccessDenied:
-        ret = -EACCES;
-        break;
-
-    case kFPDiskFull:
-        ret = -ENOSPC;
-        break;
-
-    case kFPObjectNotFound:
-        ret = -ENOENT;
-        break;
-
-    case kFPFileBusy:
-    case kFPVolLocked:
-        ret = -EBUSY;
-        break;
-
-    default:
-    case kFPParamErr:
-    case kFPMiscErr:
-        ret = -EIO;
-        break;
+    if (ret == 0 && created) {
+        *created = 1;
     }
 
     free(converted_path);
     return ret;
+}
+
+/*!
+ * @brief Whether an object created on the volume takes the mode asked for
+ *
+ * Netatalk keeps ids of -1 in the UNIX privileges as they are, so the mode
+ * needs no read first; other servers keep the mode they give an object.
+ *
+ * @param[in] volume  volume of the object
+ * @returns 1 on a Netatalk volume with UNIX privileges, 0 elsewhere
+ */
+static int takes_created_mode(const struct afp_volume * volume)
+{
+    return (volume->extra_flags & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX)
+           && afp_server_keeps_unset_ids(volume->server);
+}
+
+/*!
+ * @brief Give a file or a directory this client created the mode asked for
+ *
+ * An object whose mode the server cannot set keeps the server's, as does a
+ * directory on Netatalk 2.3 and 2.4, which set no directory's own mode.
+ *
+ * @param[in] volume    volume of the object
+ * @param[in] dirid     its directory
+ * @param[in] basename  its AFP name in dirid
+ * @param[in] mode      the mode asked for
+ */
+static void set_created_mode(struct afp_volume * volume, unsigned int dirid,
+                             const char *basename, mode_t mode)
+{
+    struct afp_file_info fp;
+
+    if (!takes_created_mode(volume)) {
+        return;
+    }
+
+    memset(&fp, 0, sizeof(fp));
+    fp.unixprivs.uid = UINT32_MAX;
+    fp.unixprivs.gid = UINT32_MAX;
+    fp.unixprivs.permissions = mode & ~S_IFMT;
+
+    if (set_parameters(volume, dirid, basename, kFPUnixPrivsBit, &fp) != 0) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "%s keeps the server's mode", basename);
+    }
+}
+
+/*!
+ * @brief Give a file this client created the mode asked for
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] path    UTF-8 path of the file
+ * @param[in] mode    the mode asked for, as set_created_mode() gives it
+ */
+void ml_set_created_mode(struct afp_volume * volume, const char *path,
+                         mode_t mode)
+{
+    char basename[AFPC_MAX_NAME_BYTES];
+    char *converted_path;
+    unsigned int dirid;
+
+    if (!takes_created_mode(volume)
+            || convert_path_to_afp_alloc(volume->path_encoding, path,
+                                         &converted_path) != 0) {
+        return;
+    }
+
+    if (get_dirid(volume, converted_path, basename, &dirid) == 0) {
+        set_created_mode(volume, dirid, basename, mode);
+    }
+
+    free(converted_path);
 }
 
 
@@ -554,41 +624,44 @@ int ml_read(struct afp_volume * volume,
 }
 
 
-int ml_chmod(struct afp_volume * vol, const char *path, mode_t mode)
+/*!
+ * @brief Set the mode, owner, group and modification time of an object
+ *
+ * A mode, owner or group equal to the object's sends nothing; a change
+ * Netatalk may keep while answering success is read back, EPERM if kept.
+ *
+ * @param[in] vol    volume of the object
+ * @param[in] path   UTF-8 path of the object
+ * @param[in] which  ML_SET_MODE, ML_SET_UID, ML_SET_GID and ML_SET_MTIME
+ * @param[in] mode   the mode, for ML_SET_MODE
+ * @param[in] uid    the owner, for ML_SET_UID
+ * @param[in] gid    the group, for ML_SET_GID
+ * @param[in] mtime  the modification time, for ML_SET_MTIME
+ * @returns 0, or a negative errno; a time asked is set even when the
+ *          privileges cannot be read or are not the session's to change
+ */
+int ml_setattr(struct afp_volume * vol, const char *path, unsigned int which,
+               mode_t mode, uid_t uid, gid_t gid, time_t mtime)
 {
-    /*
-    chmod has an interesting story to it.
-
-    It is known to work with Darwin 10.3.9 (AFP 3.1), 10.4.2 and 10.5.x (AFP 3.2).
-
-    chmod will not work properly in the following situations:
-
-    - AFP 2.2, this needs some more verification but I don't see how it is possible
-
-    - netatalk 3.0 and later has the option "unix priv = no" in afp.conf
-      which disables support for unix privileges altogether
-
-    - netatalk 2.0.3 and probably earlier had limited support for unix privileges,
-      notably not setting the execute bit at all
-
-    The right way to see if a volume supports chmod is to check the attributes
-    found with getvolparm or volopen, then to test chmod the first time.
-
-    */
-    int ret = 0, rc;
+    unsigned int privs = which & (ML_SET_MODE | ML_SET_UID | ML_SET_GID);
     struct afp_file_info fp;
-    unsigned int dirid;
+    struct afp_file_info now;
     char basename[AFPC_MAX_NAME_BYTES];
     char *converted_path;
-    uid_t uid;
-    gid_t gid;
-
-    if (invalid_filename(vol, path)) {
-        return -ENAMETOOLONG;
-    }
+    unsigned short bitmap = 0;
+    unsigned int dirid;
+    unsigned int was = 0;
+    int result = 0;
+    int ret;
 
     if (volume_is_readonly(vol)) {
-        return -EACCES;
+        return -EROFS;
+    }
+
+    ret = appledouble_setattr(vol, path);
+
+    if (ret < 0) {
+        return ret;
     }
 
     ret = convert_path_to_afp_alloc(vol->path_encoding, path,
@@ -598,89 +671,222 @@ int ml_chmod(struct afp_volume * vol, const char *path, mode_t mode)
         return ret;
     }
 
-    /* There's no way to do this in AFP < 3.0 */
-    if (~ vol->extra_flags & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX) {
-        if (vol->extra_flags & VOLUME_EXTRA_FLAGS_IGNORE_UNIXPRIVS) {
+    if (invalid_filename(vol, converted_path)) {
+        ret = -ENAMETOOLONG;
+        goto out;
+    }
+
+    /* AFP 2, and Netatalk with "unix priv = no", carry no UNIX privileges. */
+    if (privs && !(vol->extra_flags & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX)) {
+        if (!(vol->extra_flags & VOLUME_EXTRA_FLAGS_IGNORE_UNIXPRIVS)) {
+            result = -ENOSYS;
+        } else if (!(which & ML_SET_MTIME)) {
             struct stat stbuf;
-            /* See if the file exists */
             ret = ll_getattr(vol, converted_path, &stbuf, 0);
-            free(converted_path);
-            return ret;
+            goto out;
         }
 
-        free(converted_path);
-        return -ENOSYS;
-    };
-
-    ret = appledouble_chmod(vol, path, mode);
-
-    if (ret < 0) {
-        free(converted_path);
-        return ret;
+        privs = 0;
     }
 
-    if (ret == 1) {
-        free(converted_path);
-        return 0;
+    if ((privs & (ML_SET_UID | ML_SET_GID))
+            && vol->mapping != AFP_MAPPING_COMMON) {
+        unsigned int shown_uid = 0;
+        unsigned int shown_gid = 0;
+
+        if (translate_uidgid_to_client(vol, &shown_uid, &shown_gid)
+                || ((privs & ML_SET_UID) && uid != shown_uid)
+                || ((privs & ML_SET_GID) && gid != shown_gid)) {
+            result = -EPERM;
+        }
+
+        privs &= ~(ML_SET_UID | ML_SET_GID);
     }
 
-    get_dirid(vol, converted_path, basename, &dirid);
-
-    if ((rc = get_unixprivs(vol,
-                            dirid, basename, &fp))) {
-        free(converted_path);
-        return rc;
+    if (!privs && !(which & ML_SET_MTIME)) {
+        ret = result;
+        goto out;
     }
 
-    mode &= (~S_IFDIR);
+    ret = get_dirid(vol, converted_path, basename, &dirid);
 
-    /* Don't bother updating it if it's already the same */
-    if ((fp.unixprivs.permissions & (~S_IFDIR)) == mode) {
-        free(converted_path);
-        return 0;
+    if (ret) {
+        goto out;
     }
 
-    /* Check to make sure that we can; some servers (at least netatalk)
-       don't report an error when you try to setfileparm when you don't
-       own the file.  */
-    /* Try to guess if the operation is possible */
-    uid = fp.unixprivs.uid;
-    gid = fp.unixprivs.gid;
+    memset(&fp, 0, sizeof(fp));
 
-    if (translate_uidgid_to_client(vol, &uid, &gid)) {
-        free(converted_path);
-        return -EIO;
+    if (privs) {
+        ret = get_parameters(vol, dirid, basename,
+                             kFPUnixPrivsBit | kFPModDateBit, &fp);
+
+        /* A time asked goes alone. */
+        if (ret) {
+            result = ret;
+            privs = 0;
+        }
+
+        was = fp.unixprivs.permissions;
+
+        /* afpd would set a symlink's time on its target, and store one before
+         * 1970 as one after 2068. */
+        if (S_ISLNK(was) || fp.modification_date < 0) {
+            fp.modification_date_is_unset = 1;
+        }
     }
 
-    if ((gid != getgid()) && (uid != geteuid())) {
-        free(converted_path);
-        return -EPERM;
+    if ((privs & ML_SET_MODE) && (was & ~S_IFMT) != (mode & ~S_IFMT)) {
+        fp.unixprivs.permissions = (was & S_IFMT) | (mode & ~S_IFMT);
+        bitmap = kFPUnixPrivsBit;
     }
 
-    fp.unixprivs.permissions = mode;
-    rc = set_unixprivs(vol, dirid, basename, &fp);
-
-    if (rc == -ENOSYS) {
-        free(converted_path);
-        return -ENOSYS;
+    if (which & ML_SET_MTIME) {
+        fp.modification_date = mtime;
+        fp.modification_date_is_unset = 0;
     }
 
+    /* afpd stamps its clock on a change of the privileges that has no time. */
+    if ((bitmap || (which & ML_SET_MTIME))
+            && !fp.modification_date_is_unset) {
+        bitmap |= kFPModDateBit;
+    }
+
+    if (bitmap) {
+        unsigned int uid_read = fp.unixprivs.uid;
+        unsigned int gid_read = fp.unixprivs.gid;
+
+        /* Netatalk keeps ids of -1 as they are; a directory's own would go to
+         * every file in it on Netatalk 2. */
+        if ((bitmap & kFPUnixPrivsBit) && fp.isdir
+                && afp_server_keeps_unset_ids(vol->server)) {
+            fp.unixprivs.uid = UINT32_MAX;
+            fp.unixprivs.gid = UINT32_MAX;
+        }
+
+        ret = set_parameters(vol, dirid, basename, bitmap, &fp);
+        fp.unixprivs.uid = uid_read;
+        fp.unixprivs.gid = gid_read;
+
+        /* A server can refuse the time with the mode. */
+        if (ret == -EPERM && (bitmap & kFPUnixPrivsBit)
+                && (which & ML_SET_MTIME)) {
+            int time_ret = set_parameters(vol, dirid, basename,
+                                          kFPModDateBit, &fp);
+            ret = time_ret ? time_ret : -EPERM;
+        }
+
+        if (ret) {
+            goto out;
+        }
+    }
+
+    /* afpd answers a file's refused chmod(2) with success, and Netatalk 2 a
+     * directory's; kUserIsOwner marks the owner, a session with euid 0, and
+     * every object root owns. */
+    if ((bitmap & kFPUnixPrivsBit)
+            && (fp.isdir ? afp_server_keeps_directory_modes(vol->server)
+                : (!(fp.unixprivs.ua_permissions & kUserIsOwner)
+                   || fp.unixprivs.uid == 0))) {
+        /* afpd keeps a file's set-ID and sticky bits whatever is asked, and
+         * a directory's replies leave out the set-group-ID bit it adds: only
+         * the access bits and a file's special bits added can show. */
+        const unsigned int access = S_IRWXU | S_IRWXG | S_IRWXO;
+        unsigned int added = fp.isdir ? 0
+                             : mode & ~was & (S_ISUID | S_ISGID | S_ISVTX);
+        unsigned int asked = ((mode ^ was) & access) | added;
+        memset(&now, 0, sizeof(now));
+        ret = get_parameters(vol, dirid, basename, kFPUnixPrivsBit, &now);
+
+        if (ret) {
+            goto out;
+        }
+
+        if (asked && !(((now.unixprivs.permissions ^ was) & access)
+                       | (now.unixprivs.permissions & added))) {
+            result = -EPERM;
+        }
+    }
+
+    if (privs & (ML_SET_UID | ML_SET_GID)) {
+        ret = set_owner(vol, dirid, basename, &fp, was,
+                        (privs & ML_SET_UID) ? uid : fp.unixprivs.uid,
+                        (privs & ML_SET_GID) ? gid : fp.unixprivs.gid);
+
+        if (ret) {
+            goto out;
+        }
+    }
+
+    ret = result;
+out:
     free(converted_path);
-    return rc;
+    return ret;
 }
 
+/*!
+ * @brief Set the mode of a file or a directory
+ *
+ * @param[in] vol   volume of the object
+ * @param[in] path  UTF-8 path of the object
+ * @param[in] mode  the mode
+ * @returns 0, or a negative errno, as ml_setattr()
+ */
+int ml_chmod(struct afp_volume * vol, const char *path, mode_t mode)
+{
+    return ml_setattr(vol, path, ML_SET_MODE, mode, 0, 0, 0);
+}
+
+
+/*!
+ * @brief Map the answer of an FPDelete to an errno
+ *
+ * @param[in] rc  the answer, or the request's failure
+ * @returns 0 for kFPNoErr, or a positive errno: EBUSY for an object open
+ *          elsewhere or locked, EROFS for a read-only filesystem, ENOTEMPTY
+ *          for a directory with entries, EIO for an unexpected answer or a
+ *          request without one, or the server's EACCES or ENOENT
+ */
+static int delete_errno(int rc)
+{
+    switch (rc) {
+    case kFPNoErr:
+        return 0;
+
+    case kFPAccessDenied:
+        return EACCES;
+
+    case kFPObjectNotFound:
+        return ENOENT;
+
+    case kFPObjectLocked:
+    case kFPFileBusy:
+        return EBUSY;
+
+    case kFPVolLocked:
+        return EROFS;
+
+    case kFPDirNotEmpty:
+        return ENOTEMPTY;
+
+    /* Every other answer, and a request that failed or timed out. */
+    default:
+        return EIO;
+    }
+}
 
 /*!
  * @brief Delete the file at path with FPDelete
  *
  * @param[in] vol   volume of the file
  * @param[in] path  UTF-8 path of the file
- * @returns 0, or a negative errno: -EISDIR for a directory, -EBUSY for a
- *          locked file, -EIO for a request not sent or not answered
+ * @returns 0, or a negative errno: -EISDIR for a directory, -ENOTDIR for a
+ *          path through a file, -EROFS for a read-only filesystem, -EBUSY
+ *          for a file open elsewhere or locked, -EIO for an unexpected
+ *          answer or a request without one
  */
 int ml_unlink(struct afp_volume * vol, const char *path)
 {
-    int ret, rc;
+    int ret;
     unsigned int dirid;
     char basename[AFPC_MAX_NAME_BYTES];
     char *converted_path;
@@ -693,7 +899,7 @@ int ml_unlink(struct afp_volume * vol, const char *path)
 
     if (volume_is_readonly(vol)) {
         free(converted_path);
-        return -EACCES;
+        return -EROFS;
     }
 
     ret = appledouble_unlink(vol, path);
@@ -708,7 +914,12 @@ int ml_unlink(struct afp_volume * vol, const char *path)
         return 0;
     }
 
-    get_dirid(vol, converted_path, basename, &dirid);
+    ret = get_dirid(vol, converted_path, basename, &dirid);
+
+    if (ret) {
+        free(converted_path);
+        return ret;
+    }
 
     if (is_dir(vol, dirid, basename)) {
         free(converted_path);
@@ -720,41 +931,10 @@ int ml_unlink(struct afp_volume * vol, const char *path)
         return -ENAMETOOLONG;
     }
 
-    rc = afp_delete(vol, dirid, basename);
+    ret = delete_errno(afp_delete(vol, dirid, basename));
 
-    switch (rc) {
-    case kFPAccessDenied:
-        ret = EACCES;
-        break;
-
-    case kFPObjectLocked:
-        ret = EBUSY;
-        break;
-
-    case kFPObjectNotFound:
-        ret = ENOENT;
-        break;
-
-    case kFPVolLocked:
-        ret = EACCES;
-        break;
-
-    case kFPObjectTypeErr:
-    case kFPDirNotEmpty:
-    case kFPMiscErr:
-    case kFPParamErr:
-    case -1:
-        ret = EINVAL;
-        break;
-
-    case kFPNoErr:
+    if (ret == 0) {
         remove_did_entry(vol, converted_path);
-        ret = 0;
-        break;
-
-    default:
-        /* A request not sent or not answered is never a success. */
-        ret = EIO;
     }
 
     free(converted_path);
@@ -767,11 +947,14 @@ int ml_unlink(struct afp_volume * vol, const char *path)
 /*!
  * @brief Create a directory at path with FPCreateDir
  *
+ * The new directory gets the mode asked for, as set_created_mode() gives it.
+ *
  * @param[in] vol   volume of the directory
  * @param[in] path  UTF-8 path of the new directory
- * @param[in] mode  unused: the server gives the directory its mode
- * @returns 0, or a negative errno: -EIO for a request not sent or not
- *          answered
+ * @param[in] mode  the mode asked for
+ * @returns 0, or a negative errno: -EROFS for a read-only filesystem, -EPERM
+ *          for a volume without directories, -EIO for an unexpected answer
+ *          or a request without one
  */
 int ml_mkdir(struct afp_volume * vol, const char *path, mode_t mode)
 {
@@ -794,7 +977,7 @@ int ml_mkdir(struct afp_volume * vol, const char *path, mode_t mode)
 
     if (volume_is_readonly(vol)) {
         free(converted_path);
-        return -EACCES;
+        return -EROFS;
     }
 
     ret = appledouble_mkdir(vol, path, mode);
@@ -809,7 +992,13 @@ int ml_mkdir(struct afp_volume * vol, const char *path, mode_t mode)
         return 0;
     }
 
-    get_dirid(vol, converted_path, basename, &dirid);
+    ret = get_dirid(vol, converted_path, basename, &dirid);
+
+    if (ret) {
+        free(converted_path);
+        return ret;
+    }
+
     rc = afp_createdir(vol, dirid, basename, &result_did);
 
     switch (rc) {
@@ -830,23 +1019,25 @@ int ml_mkdir(struct afp_volume * vol, const char *path, mode_t mode)
         break;
 
     case kFPVolLocked:
-        ret = EBUSY;
+        ret = EROFS;
         break;
 
+    /* mkdir(2)'s errno for a filesystem without directories */
     case kFPFlatVol:
-    case kFPMiscErr:
-    case kFPParamErr:
-    case -1:
-        ret = EFAULT;
+        ret = EPERM;
         break;
 
     case kFPNoErr:
         ret = 0;
         break;
 
+    /* Every other answer, and a request that failed or timed out. */
     default:
-        /* A request not sent or not answered is never a success. */
         ret = EIO;
+    }
+
+    if (ret == 0) {
+        set_created_mode(vol, dirid, basename, mode);
     }
 
     free(converted_path);
@@ -1017,29 +1208,17 @@ int ml_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf)
  * @param[in]     size    length of data
  * @param[in]     offset  byte offset to write at
  * @param[in,out] fp      the open fork, or an AppleDouble pseudo-file
- * @param[in]     uid     caller's user ID, recorded on a volume with Unix
- *                        privileges
- * @param[in]     gid     caller's group ID, recorded with uid
  * @returns bytes written, or a negative errno
  */
 int ml_write(struct afp_volume * volume,
              const char *data, size_t size, off_t offset,
-             struct afp_file_info * fp, uid_t uid,
-             gid_t gid)
+             struct afp_file_info * fp)
 {
     int ret;
     size_t totalwritten = 0;
-#if 0
-    uint64_t sizetowrite, ignored;
-    unsigned char flags = 0;
-    unsigned int max_packet_size = volume->server->tx_quantum;
-#endif
 
-    /* TODO:
-       - handle nonblocking IO correctly
-    */
     if (volume_is_readonly(volume)) {
-        return -EACCES;
+        return -EROFS;
     }
 
     ret = appledouble_write(volume, fp, data, size, offset, &totalwritten);
@@ -1052,30 +1231,12 @@ int ml_write(struct afp_volume * volume,
         return totalwritten;
     }
 
-    /* Set the time and perms */
-
-    /* There's no way to do this in AFP < 3.0 */
-    if (volume->extra_flags & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX) {
-#if 0
-        flags |= kFPUnixPrivsBit;
-#endif
-        set_uidgid(volume, fp, uid, gid);
-        fp->unixprivs.permissions = 0100644;
-    };
-
-    update_time(&fp->modification_date);
-
-#if 0
-    flags |= kFPModDateBit;
-
-#endif
     ret = ll_write(volume, data, size, offset, fp, &totalwritten);
 
     if (ret < 0) {
         return ret;
     }
 
-    /* Update the cached file size if the write extended the file */
     if (offset + totalwritten > fp->size) {
         fp->size = offset + totalwritten;
     }
@@ -1290,9 +1451,9 @@ static ssize_t copy_range_on_server(struct afp_volume *volume,
     /* Every ll_open() in flight has listed its record once this returns. */
     pthread_rwlock_wrlock(&volume->open_lock);
 
-    /* A source whose length differs from len goes through the client. It may
-     * be another file exchanged into the name, or a fork that changed since
-     * the caller sized the copy. The cap counts both forks. */
+    /* A source whose length differs from len goes through the client, as it
+     * may be another file or a changed fork, and so does a destination the
+     * copy's reopen may not read and write. The cap counts both forks. */
     if (other_fork_open(volume, fp_out)
             || !fork_still_named(volume, fp_in,
                                  kFPAttributeBit | kFPExtDataForkLenBit
@@ -1304,7 +1465,9 @@ static ssize_t copy_range_on_server(struct afp_volume *volume,
                                  kFPExtDataForkLenBit | kFPExtRsrcForkLenBit
                                  | (unix_privs ? kFPUnixPrivsBit : 0),
                                  &dst)
-            || dst.size != 0 || dst.resourcesize != 0) {
+            || dst.size != 0 || dst.resourcesize != 0
+            || (unix_privs && (~dst.unixprivs.ua_permissions
+                               & (kUserCanRead | kUserCanWrite)))) {
         copied = 0;
     } else {
         copied = copy_into_destination(volume, fp_in, fp_out, &src, &dst);
@@ -1325,8 +1488,6 @@ static ssize_t copy_range_on_server(struct afp_volume *volume,
  * @param[in,out] fp_out   the destination's open fork
  * @param[in]     off_out  offset in the destination
  * @param[in]     len      the cap on bytes to copy
- * @param[in]     uid      caller's user ID, for the writes
- * @param[in]     gid      caller's group ID, for the writes
  * @returns the bytes copied if any, else the read's or the write's error, or
  *          0 at the source's end
  */
@@ -1334,8 +1495,7 @@ static ssize_t copy_range_through_client(struct afp_volume *volume,
                                          struct afp_file_info *fp_in,
                                          off_t off_in,
                                          struct afp_file_info *fp_out,
-                                         off_t off_out, size_t len,
-                                         uid_t uid, gid_t gid)
+                                         off_t off_out, size_t len)
 {
     unsigned long long quantum = volume->server->quantum;
     size_t copied = 0;
@@ -1360,7 +1520,7 @@ static ssize_t copy_range_through_client(struct afp_volume *volume,
         }
 
         ret = ml_write(volume, buf, (size_t) ret, off_out + (off_t) copied,
-                       fp_out, uid, gid);
+                       fp_out);
 
         if (ret <= 0) {
             break;
@@ -1386,15 +1546,13 @@ static ssize_t copy_range_through_client(struct afp_volume *volume,
  * @param[in,out] fp_out   the destination's open fork, opened for writing
  * @param[in]     off_out  offset in the destination
  * @param[in]     len      the cap on bytes to copy
- * @param[in]     uid      caller's user ID
- * @param[in]     gid      caller's group ID
  * @returns the bytes copied, 0 at the source's end, -EOPNOTSUPP for a
  *          pseudo-file other than a resource fork, or another negative errno
  */
 ssize_t ml_copy_range(struct afp_volume * volume,
                       struct afp_file_info *fp_in, off_t off_in,
                       struct afp_file_info *fp_out, off_t off_out,
-                      size_t len, uid_t uid, gid_t gid)
+                      size_t len)
 {
     ssize_t copied;
 
@@ -1418,7 +1576,7 @@ ssize_t ml_copy_range(struct afp_volume * volume,
 
     if (copied == 0) {
         copied = copy_range_through_client(volume, fp_in, off_in, fp_out,
-                                           off_out, len, uid, gid);
+                                           off_out, len);
     }
 
     /* A copy into an O_SYNC or O_DSYNC file ends with a flush, as the
@@ -1486,9 +1644,8 @@ static void restore_link_separators(char *dest, const char *src)
 /*!
  * @brief Read the target of the symbolic link at path
  *
- * The link's data fork holds the target, read back as precomposed UTF-8.
- * afpd reads a link's target whole, so a target longer than buf fails; one
- * whose converted form fills buf gives its last byte to the terminator.
+ * afpd reads a link's target whole, so one longer than buf fails; one whose
+ * precomposed UTF-8 form fills buf gives its last byte to the terminator.
  *
  * @param[in]  vol   volume of the link
  * @param[in]  path  UTF-8 path of the link
@@ -1531,53 +1688,25 @@ int ml_readlink(struct afp_volume * vol, const char *path,
         return ret;
     }
 
-    get_dirid(vol, converted_path, basename, &dirid);
+    ret = get_dirid(vol, converted_path, basename, &dirid);
+
+    if (ret) {
+        free(converted_path);
+        free(link_path);
+        return ret;
+    }
+
     /* Open the fork to read it: a read-only volume refuses a write open. */
     rc = afp_openfork(vol, 0, dirid, AFP_OPENFORK_ALLOWREAD, 0, basename,
                       &fp);
+    ret = ll_openfork_errno(rc);
 
-    switch (rc) {
-    case kFPAccessDenied:
-        ret = EACCES;
-        goto error;
-
-    case kFPObjectNotFound:
-        ret = ENOENT;
-        goto error;
-
-    case kFPObjectLocked:
-        ret = EROFS;
-        goto error;
-
-    case kFPObjectTypeErr:
-        ret = EISDIR;
-        goto error;
-
-    case kFPParamErr:
-        ret = EACCES;
-        goto error;
-
-    case kFPTooManyFilesOpen:
-        ret = EMFILE;
-        goto error;
-
-    case 0:
-        ret = 0;
-        break;
-
-    case kFPVolLocked:
-    case kFPDenyConflict:
-    case kFPMiscErr:
-    case kFPBitmapErr:
-    case -1:
-    default:
-        ret = EIO;
+    if (ret) {
         goto error;
     }
 
     add_opened_fork(vol, &fp);
 
-    /* Read the name of the file from it */
     if (vol->server->using_version->av_number < 30) {
         rc = afp_read(vol, fp.forkid, 0, size, &buffer);
     } else {
@@ -1618,7 +1747,6 @@ int ml_readlink(struct afp_volume * vol, const char *path,
     }
 
     remove_opened_fork(vol, &fp);
-    /* Convert the name back precomposed UTF8 */
     convert_path_to_unix(vol->path_encoding,
                          buf, link_path, (int)size);
 
@@ -1658,11 +1786,11 @@ error:
  * @param[in] path  UTF-8 path of the directory
  * @returns 0, or a negative errno: -ENOTDIR for a name that is no directory,
  *          the lookup's -ENOENT, -EACCES or -EIO when it fails, -ENOTEMPTY
- *          for a directory with entries
+ *          for a directory with entries, -EROFS for a read-only filesystem
  */
 int ml_rmdir(struct afp_volume * vol, const char *path)
 {
-    int ret, rc;
+    int ret;
     unsigned int dirid;
     char basename[AFPC_MAX_NAME_BYTES];
     char *converted_path;
@@ -1680,7 +1808,7 @@ int ml_rmdir(struct afp_volume * vol, const char *path)
 
     if (volume_is_readonly(vol)) {
         free(converted_path);
-        return -EACCES;
+        return -EROFS;
     }
 
     ret = appledouble_rmdir(vol, path);
@@ -1695,7 +1823,13 @@ int ml_rmdir(struct afp_volume * vol, const char *path)
         return 0;
     }
 
-    get_dirid(vol, converted_path, basename, &dirid);
+    ret = get_dirid(vol, converted_path, basename, &dirid);
+
+    if (ret) {
+        free(converted_path);
+        return ret;
+    }
+
     ret = is_dir_checked(vol, dirid, basename);
 
     if (ret <= 0) {
@@ -1703,223 +1837,95 @@ int ml_rmdir(struct afp_volume * vol, const char *path)
         return ret < 0 ? ret : -ENOTDIR;
     }
 
-    rc = afp_delete(vol, dirid, basename);
+    ret = delete_errno(afp_delete(vol, dirid, basename));
 
-    switch (rc) {
-    case kFPAccessDenied:
-        ret = EACCES;
-        break;
-
-    case kFPObjectLocked:
-        ret = EBUSY;
-        break;
-
-    case kFPObjectNotFound:
-        ret = ENOENT;
-        break;
-
-    case kFPVolLocked:
-        ret = EACCES;
-        break;
-
-    case kFPDirNotEmpty:
-        ret = ENOTEMPTY;
-        break;
-
-    case kFPObjectTypeErr:
-    case kFPMiscErr:
-    case kFPParamErr:
-    case -1:
-        ret = EINVAL;
-        break;
-
-    case kFPNoErr:
+    if (ret == 0) {
         remove_did_entry(vol, converted_path);
-        ret = 0;
-        break;
-
-    default:
-        /* A request not sent or not answered is never a success. */
-        ret = EIO;
     }
 
-    free(converted_path);
-    return -ret;
-}
-
-int ml_chown(struct afp_volume * vol, const char *path,
-             uid_t uid, gid_t gid)
-{
-    int ret;
-    struct afp_file_info fp;
-    int rc;
-    unsigned int dirid;
-    char basename[AFPC_MAX_NAME_BYTES];
-    char *converted_path;
-    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
-                                    &converted_path);
-
-    if (ret) {
-        return ret;
-    }
-
-    if (invalid_filename(vol, converted_path)) {
-        free(converted_path);
-        return -ENAMETOOLONG;
-    }
-
-    if (volume_is_readonly(vol)) {
-        free(converted_path);
-        return -EACCES;
-    }
-
-    ret = appledouble_chown(vol, path, uid, gid);
-
-    if (ret < 0) {
-        free(converted_path);
-        return ret;
-    }
-
-    if (ret == 1) {
-        free(converted_path);
-        return 0;
-    }
-
-    /* There's no way to do this in AFP < 3.0 */
-    if (~ vol->extra_flags & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX) {
-        if (vol->extra_flags & VOLUME_EXTRA_FLAGS_IGNORE_UNIXPRIVS) {
-            struct stat stbuf;
-            /* See if the file exists */
-            ret = ll_getattr(vol, converted_path, &stbuf, 0);
-            free(converted_path);
-            return ret;
-        }
-
-        free(converted_path);
-        return -ENOSYS;
-    };
-
-    get_dirid(vol, converted_path, basename, &dirid);
-
-    if ((rc = get_unixprivs(vol,
-                            dirid, basename, &fp))) {
-        free(converted_path);
-        return rc;
-    }
-
-#if 0
-    FIXME
-    set_uidgid(volume, &fp, uid, gid);
-    THIS IS the wrong set of returns to check...
-#endif
-    rc = set_unixprivs(vol, dirid, basename, &fp);
-
-    switch (rc) {
-    case -ENOSYS:
-        free(converted_path);
-        return -ENOSYS;
-
-    case kFPNoErr:
-        break;
-
-    case kFPAccessDenied:
-        free(converted_path);
-        return -EACCES;
-
-    case kFPObjectNotFound:
-        free(converted_path);
-        return -ENOENT;
-
-    case kFPBitmapErr:
-    case kFPMiscErr:
-    case kFPObjectTypeErr:
-    case kFPParamErr:
-    default:
-        break;
-    }
-
-    free(converted_path);
-    return 0;
-}
-
-int ml_truncate(struct afp_volume * vol, const char *path, off_t offset)
-{
-    int ret = 0;
-    char *converted_path;
-    struct afp_file_info *fp;
-    int flags;
-    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
-                                    &converted_path);
-
-    if (ret) {
-        return ret;
-    }
-
-    /* The approach here is to get the forkid by calling ml_open()
-       (and not afp_openfork).  Note the fake afp_file_info used
-       just to grab this forkid. */
-
-    if (invalid_filename(vol, converted_path)) {
-        free(converted_path);
-        return -ENAMETOOLONG;
-    }
-
-    if (volume_is_readonly(vol)) {
-        free(converted_path);
-        return -EACCES;
-    }
-
-    ret = appledouble_truncate(vol, path, offset);
-
-    if (ret < 0) {
-        free(converted_path);
-        return ret;
-    }
-
-    if (ret == 1) {
-        free(converted_path);
-        return 0;
-    }
-
-    /* Here, we're going to use the untranslated path since it is
-       translated through the ml_open() */
-    flags = O_WRONLY;
-
-    if ((ml_open(vol, path, flags, &fp))) {
-        free(converted_path);
-        return ret;
-    };
-
-    if ((ret = ll_zero_file(vol, fp->forkid, 0))) {
-        goto out;
-    }
-
-    afp_closefork(vol, fp->forkid);
-    remove_opened_fork(vol, fp);
-    free(fp);
-out:
     free(converted_path);
     return -ret;
 }
 
 /*!
- * @brief Set the length of an open handle's data or resource fork
+ * @brief Set the owner and group of a file or a directory
  *
- * The fork is then dirty, as after a write. A pseudo-file other than a
- * resource fork has no fork to set.
+ * @param[in] vol   volume of the object
+ * @param[in] path  UTF-8 path of the object
+ * @param[in] uid   the owner, or -1 to keep it
+ * @param[in] gid   the group, or -1 to keep it
+ * @returns 0, or a negative errno, as ml_setattr()
+ */
+int ml_chown(struct afp_volume * vol, const char *path,
+             uid_t uid, gid_t gid)
+{
+    return ml_setattr(vol, path,
+                      (uid != (uid_t) -1 ? ML_SET_UID : 0)
+                      | (gid != (gid_t) -1 ? ML_SET_GID : 0),
+                      0, uid, gid, 0);
+}
+
+/*!
+ * @brief Set the length of the file at path
+ *
+ * The data fork opens for writing, takes the length and closes, flushed as
+ * a write would be. The path of a resource fork sets that fork's length.
+ *
+ * @param[in] vol     volume of the file
+ * @param[in] path    UTF-8 path of the file
+ * @param[in] offset  the new length
+ * @returns 0, or a negative errno, the open's when it fails
+ */
+int ml_truncate(struct afp_volume * vol, const char *path, off_t offset)
+{
+    struct afp_file_info *fp;
+    int close_ret;
+    int ret;
+
+    if (volume_is_readonly(vol)) {
+        return -EROFS;
+    }
+
+    ret = appledouble_truncate(vol, path, offset);
+
+    if (ret != 0) {
+        return ret < 0 ? ret : 0;
+    }
+
+    ret = ml_open(vol, path, O_WRONLY, &fp);
+
+    if (ret == 0) {
+        ret = ml_ftruncate(vol, fp, offset);
+        close_ret = ml_close(vol, fp);
+        free(fp);
+
+        if (ret == 0) {
+            ret = close_ret;
+        }
+    }
+
+    return ret;
+}
+
+/*!
+ * @brief Set the length of an open handle's fork or AppleDouble pseudo-file
+ *
+ * A fork is then dirty, as after a write; appledouble_ftruncate() sets a
+ * pseudo-file's.
  *
  * @param[in]     vol     volume of the fork
  * @param[in,out] fp      the open fork
  * @param[in]     offset  the new length
- * @returns 0, or a negative errno, -EIO for a handle without a fork
+ * @returns 0, or a negative errno, -EIO for a handle without a fork, -EPERM
+ *          for the server icon
  */
 int ml_ftruncate(struct afp_volume * vol, struct afp_file_info * fp,
                  off_t offset)
 {
-    int ret;
+    int ret = appledouble_ftruncate(vol, fp, offset);
 
-    if (fp->resource > AFP_META_RESOURCE) {
-        return 0;
+    if (ret != 0) {
+        return ret < 0 ? ret : 0;
     }
 
     if (fp->forkid == 0) {
@@ -1938,78 +1944,18 @@ int ml_ftruncate(struct afp_volume * vol, struct afp_file_info * fp,
 }
 
 
+/*!
+ * @brief Set the modification time of a file or a directory
+ *
+ * @param[in] vol      volume of the object
+ * @param[in] path     UTF-8 path of the object
+ * @param[in] timebuf  the times, of which the modification time is set
+ * @returns 0, or a negative errno, as ml_setattr()
+ */
 int ml_utime(struct afp_volume * vol, const char *path,
              struct utimbuf * timebuf)
 {
-    int ret = 0;
-    unsigned int dirid;
-    struct afp_file_info fp;
-    char basename[AFPC_MAX_NAME_BYTES];
-    char *converted_path;
-    int rc;
-
-    if (volume_is_readonly(vol)) {
-        return -EACCES;
-    }
-
-    memset(&fp, 0, sizeof(struct afp_file_info));
-    fp.modification_date = timebuf->modtime;
-
-    if (invalid_filename(vol, path)) {
-        return -ENAMETOOLONG;
-    }
-
-    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
-                                    &converted_path);
-
-    if (ret) {
-        return ret;
-    }
-
-    ret = appledouble_utime(vol, path, timebuf);
-
-    if (ret < 0) {
-        free(converted_path);
-        return ret;
-    }
-
-    if (ret == 1) {
-        free(converted_path);
-        return 0;
-    }
-
-    get_dirid(vol, converted_path, basename, &dirid);
-
-    if (is_dir(vol, dirid, basename)) {
-        rc = afp_setdirparms(vol,
-                             dirid, basename, kFPModDateBit, &fp);
-    } else {
-        rc = afp_setfileparms(vol,
-                              dirid, basename, kFPModDateBit, &fp);
-    }
-
-    switch (rc) {
-    case kFPNoErr:
-        break;
-
-    case kFPAccessDenied:
-        free(converted_path);
-        return -EACCES;
-
-    case kFPObjectNotFound:
-        free(converted_path);
-        return -ENOENT;
-
-    case kFPBitmapErr:
-    case kFPMiscErr:
-    case kFPObjectTypeErr:
-    case kFPParamErr:
-    default:
-        break;
-    }
-
-    free(converted_path);
-    return -ret;
+    return ml_setattr(vol, path, ML_SET_MTIME, 0, 0, 0, timebuf->modtime);
 }
 
 
@@ -2043,7 +1989,6 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
         goto error;
     }
 
-    /* Yes, you can create symlinks for AFP >=30.  Tested with 10.3.2 */
     memset(&fp, 0, sizeof(fp));
     ret = convert_path_to_afp_alloc(vol->path_encoding, path1,
                                     &converted_path1);
@@ -2065,7 +2010,7 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
     if (volume_is_readonly(vol)) {
         free(converted_path1);
         free(converted_path2);
-        return -EACCES;
+        return -EROFS;
     }
 
     ret = appledouble_symlink(vol, path1, path2);
@@ -2082,90 +2027,37 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
         return 0;
     }
 
-    get_dirid(vol, converted_path2, basename2, &dirid2);
-    /* 1. create the file, which a soft create refuses for a name taken */
-    rc = afp_createfile(vol, kFPSoftCreate, dirid2, basename2);
+    ret = get_dirid(vol, converted_path2, basename2, &dirid2);
 
-    switch (rc) {
-    case kFPAccessDenied:
-        ret = EACCES;
-        goto error;
+    if (ret) {
+        free(converted_path1);
+        free(converted_path2);
+        return ret;
+    }
 
-    case kFPDiskFull:
-        ret = ENOSPC;
-        goto error;
+    ret = -ll_createfile(vol, dirid2, basename2);
 
-    case kFPObjectExists:
-        ret = EEXIST;
-        goto error;
-
-    case kFPObjectNotFound:
-        ret = ENOENT;
-        goto error;
-
-    case kFPFileBusy:
-    case kFPVolLocked:
-        ret = EBUSY;
-        goto error;
-
-    case kFPNoErr:
-        created = 1;
-        break;
-
-    default:
-    case kFPParamErr:
-    case kFPMiscErr:
-        ret = EIO;
+    if (ret) {
         goto error;
     }
 
-    /* Open the fork */
+    created = 1;
     rc = afp_openfork(vol, 0,
                       dirid2,
                       AFP_OPENFORK_ALLOWWRITE | AFP_OPENFORK_ALLOWREAD, 0,
                       basename2, &fp);
+    ret = ll_openfork_errno(rc);
 
-    switch (rc) {
-    case kFPAccessDenied:
-        ret = EACCES;
-        goto error;
+    /* The server may still open the fork, so the link's file stays. */
+    if (ret == ETIMEDOUT) {
+        created = 0;
+    }
 
-    case kFPObjectNotFound:
-        ret = ENOENT;
-        goto error;
-
-    case kFPObjectLocked:
-        ret = EROFS;
-        goto error;
-
-    case kFPObjectTypeErr:
-        ret = EISDIR;
-        goto error;
-
-    case kFPParamErr:
-        ret = EACCES;
-        goto error;
-
-    case kFPTooManyFilesOpen:
-        ret = EMFILE;
-        goto error;
-
-    case 0:
-        ret = 0;
-        break;
-
-    case kFPVolLocked:
-    case kFPDenyConflict:
-    case kFPMiscErr:
-    case kFPBitmapErr:
-    case -1:
-    default:
-        ret = EFAULT;
+    if (ret) {
         goto error;
     }
 
     add_opened_fork(vol, &fp);
-    /* Write the name of the file to it */
     rc = afp_writeext(vol, fp.forkid, 0, converted_path1_len,
                       converted_path1, &written);
 
@@ -2195,29 +2087,16 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
         goto close_error;
     }
 
-    switch (afp_closefork(vol, fp.forkid)) {
-    case kFPNoErr:
-        break;
+    rc = afp_closefork(vol, fp.forkid);
+    remove_opened_fork(vol, &fp);
 
-    default:
-    case kFPParamErr:
-    case kFPMiscErr:
+    if (rc != kFPNoErr) {
         ret = EIO;
-        remove_opened_fork(vol, &fp);
         goto error;
     }
 
-    remove_opened_fork(vol, &fp);
-    /* And now for the undocumented magic */
-    memset(&fp.finderinfo, 0, 32);
-    fp.finderinfo[0] = 's';
-    fp.finderinfo[1] = 'l';
-    fp.finderinfo[2] = 'n';
-    fp.finderinfo[3] = 'k';
-    fp.finderinfo[4] = 'r';
-    fp.finderinfo[5] = 'h';
-    fp.finderinfo[6] = 'a';
-    fp.finderinfo[7] = 'p';
+    memset(&fp.finderinfo, 0, sizeof(fp.finderinfo));
+    memcpy(fp.finderinfo, "slnkrhap", 8);
     rc = afp_setfiledirparms(vol, dirid2, basename2,
                              kFPFinderInfoBit, &fp);
 
@@ -2227,7 +2106,6 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
         goto error;
 
     case kFPBitmapErr:
-        /* This is the case where it isn't supported */
         ret = ENOSYS;
         goto error;
 
@@ -2785,20 +2663,22 @@ int ml_getresourcefork(struct afp_volume * volume, const char *path,
 }
 
 /*!
- * @brief Write the resource fork of path when its extended attribute is set
+ * @brief Write the resource fork of path
  *
- * A write of nothing at position 0 empties the fork. The fork is dirty
- * afterwards, so a flush_on_close mount flushes it before the call returns.
+ * At position 0, a write of nothing or of the whole fork leaves no tail of
+ * the old fork; a flush_on_close mount flushes the fork before the return.
  *
  * @param[in] volume    volume of the file
  * @param[in] path      UTF-8 path of the file
  * @param[in] value     bytes to write, or NULL when size is 0
  * @param[in] size      length of value
  * @param[in] position  offset in the fork to write at
+ * @param[in] whole     1 when a value at position 0 is the whole fork
  * @returns 0, or a negative errno
  */
-int ml_setresourcefork(struct afp_volume * volume, const char *path,
-                       const void *value, size_t size, off_t position)
+static int write_resource_fork(struct afp_volume * volume, const char *path,
+                               const void *value, size_t size,
+                               off_t position, int whole)
 {
     struct afp_file_info fp = { 0 };
     size_t written = 0;
@@ -2814,25 +2694,13 @@ int ml_setresourcefork(struct afp_volume * volume, const char *path,
     }
 
     if (volume_is_readonly(volume)) {
-        return -EACCES;
+        return -EROFS;
     }
 
     ret = open_appledouble_meta(volume, path, AFP_META_RESOURCE, O_RDWR, &fp);
 
     if (ret < 0) {
         return ret;
-    }
-
-    if (position == 0 && size == 0) {
-        ret = ll_zero_file(volume, fp.forkid, 1);
-
-        if (ret != 0) {
-            appledouble_close(volume, &fp);
-            return -ret;
-        }
-
-        fp.resourcesize = 0;
-        fp.dirty = 1;
     }
 
     if (size > 0) {
@@ -2849,6 +2717,15 @@ int ml_setresourcefork(struct afp_volume * volume, const char *path,
         }
     }
 
+    if (position == 0 && (size == 0 || whole)) {
+        ret = ml_ftruncate(volume, &fp, (off_t)size);
+
+        if (ret < 0) {
+            appledouble_close(volume, &fp);
+            return ret;
+        }
+    }
+
     ret = appledouble_close(volume, &fp);
 
     if (ret < 0) {
@@ -2858,6 +2735,37 @@ int ml_setresourcefork(struct afp_volume * volume, const char *path,
     return 0;
 }
 
+/*!
+ * @brief Write the resource fork of path at a position
+ *
+ * A write of nothing at position 0 empties the fork.
+ *
+ * @param[in] volume    volume of the file
+ * @param[in] path      UTF-8 path of the file
+ * @param[in] value     bytes to write, or NULL when size is 0
+ * @param[in] size      length of value
+ * @param[in] position  offset in the fork to write at
+ * @returns 0, or a negative errno
+ */
+int ml_setresourcefork(struct afp_volume * volume, const char *path,
+                       const void *value, size_t size, off_t position)
+{
+    return write_resource_fork(volume, path, value, size, position, 0);
+}
+
+/*!
+ * @brief Set the resource fork of path as its extended attribute
+ *
+ * A value written at position 0 is the whole fork.
+ *
+ * @param[in] volume    volume of the file
+ * @param[in] path      UTF-8 path of the file
+ * @param[in] value     bytes to write, or NULL when size is 0
+ * @param[in] size      length of value
+ * @param[in] position  offset in the fork to write at
+ * @param[in] flags     kXAttrCreate, kXAttrReplace or 0
+ * @returns 0, or a negative errno
+ */
 int ml_setresourcefork_flags(struct afp_volume * volume, const char *path,
                              const void *value, size_t size, off_t position,
                              int flags)
@@ -2878,7 +2786,7 @@ int ml_setresourcefork_flags(struct afp_volume * volume, const char *path,
         }
     }
 
-    return ml_setresourcefork(volume, path, value, size, position);
+    return write_resource_fork(volume, path, value, size, position, 1);
 }
 
 /*!
@@ -2908,7 +2816,7 @@ int ml_truncateresourcefork(struct afp_volume * volume, const char *path,
     }
 
     if (volume_is_readonly(volume)) {
-        return -EACCES;
+        return -EROFS;
     }
 
     ret = open_appledouble_meta(volume, path, AFP_META_RESOURCE, O_RDWR, &fp);

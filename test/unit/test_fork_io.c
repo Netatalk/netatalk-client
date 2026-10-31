@@ -1,3 +1,12 @@
+/*
+    test_fork_io.c: the reads, writes and lengths of an open fork
+
+    Copyright (C) 2026 Andy Lemin (andylemin)
+
+    This program can be distributed under the terms of the GNU GPL.
+    See the file COPYING.
+*/
+
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -8,6 +17,13 @@
 #include "lib/lowlevel.h"
 #include "tap.h"
 
+/*!
+ * @brief Check a fork's AFP 2 bounds and what a failed request reads
+ *
+ * @param[in] argc  argument count
+ * @param[in] argv  --tap for TAP output
+ * @returns EXIT_SUCCESS, or EXIT_FAILURE at the first failed check
+ */
 int main(int argc, char **argv)
 {
     struct afp_versions afp2 = { "AFP2.2", 22 };
@@ -28,19 +44,37 @@ int main(int argc, char **argv)
     volume.server = &server;
     volume.extra_flags = VOLUME_EXTRA_FLAGS_NO_LOCKING;
     fork.forkid = 1;
-    /* An AFP 2 session cannot address a write that ends past 4 GiB. */
+    /* AFP 2 offsets, counts and lengths are signed 32 bits: no write ends
+     * past INT32_MAX. */
     written = 1;
-    CHECK(ll_write(&volume, data, sizeof(data),
-                   (off_t) AFP_MAX_AFP2_FILESIZE - 8, &fork,
-                   &written) == -EFBIG);
-    CHECK(written == 0);
-    /* The client refuses a write ending exactly at 4 GiB: the reply's 32-bit
-     * offset would wrap to zero. */
-    written = 1;
-    CHECK(ll_write(&volume, data, sizeof(data),
-                   (off_t) AFP_MAX_AFP2_FILESIZE - (off_t) sizeof(data),
+    CHECK(ll_write(&volume, data, sizeof(data), (off_t) INT32_MAX - 8,
                    &fork, &written) == -EFBIG);
     CHECK(written == 0);
+    written = 1;
+    CHECK(ll_write(&volume, data, sizeof(data),
+                   (off_t) INT32_MAX + 1 - (off_t) sizeof(data), &fork,
+                   &written) == -EFBIG);
+    CHECK(written == 0);
+    /* A write that ends at INT32_MAX is the server's to answer. */
+    CHECK(ll_write(&volume, data, sizeof(data),
+                   (off_t) INT32_MAX - (off_t) sizeof(data), &fork,
+                   &written) == -EIO);
+    /* A read reaches offset INT32_MAX; past it, a fork the handle knows to
+     * be longer fails the read without a request. */
+    {
+        char buf[16];
+        int eof = 0;
+        CHECK(ll_read(&volume, buf, sizeof(buf), (off_t) INT32_MAX, &fork,
+                      &eof) == -EIO);
+        fork.size = (uint64_t) INT32_MAX + 1 + sizeof(buf);
+        CHECK(ll_read(&volume, buf, sizeof(buf), (off_t) INT32_MAX + 1,
+                      &fork, &eof) == -EOVERFLOW);
+        CHECK(eof == 0);
+        fork.size = 0;
+    }
+    /* A length of INT32_MAX is the server's to answer. */
+    CHECK(ll_setfork_size(&volume, 1, 0, INT32_MAX) == EIO);
+    CHECK(ll_setfork_size(&volume, 1, 0, (uint64_t) INT32_MAX + 1) == EFBIG);
     /* A read whose request fails reads nothing and says so: an empty
      * result would be the end of the file. */
     {

@@ -436,3 +436,23 @@ test(
     protocol: 'tap',
     verbose: true,
 )
+
+metadata_requests_test = executable(
+    'test_metadata_requests',
+    sources: files(
+        'afp_fake_server.c',
+        'test_metadata_requests.c',
+    ),
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'create, truncate and metadata requests',
+    metadata_requests_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)

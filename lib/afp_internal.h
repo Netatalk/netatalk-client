@@ -398,6 +398,9 @@ int afp_server_is_apple(const struct afp_server *s);
 int afp_server_reports_fork_length(const struct afp_server *s);
 int afp_server_copies_files(const struct afp_server *s);
 int afp_server_drops_long_commands(const struct afp_server *s);
+int afp_server_sets_directory_owner(const struct afp_server *s);
+int afp_server_keeps_unset_ids(const struct afp_server *s);
+int afp_server_keeps_directory_modes(const struct afp_server *s);
 void afp_server_fill_basic(const struct afp_server *server,
                            struct afpc_server_info *basic);
 
@@ -528,8 +531,6 @@ int afp_closedt(struct afp_server * server, unsigned short refnum);
 int afp_getcomment(struct afp_volume *volume, unsigned int did,
                    const char *pathname, struct afp_comment * comment);
 
-int afp_addcomment(struct afp_volume *volume, unsigned int did,
-                   const char *pathname, char *comment, uint64_t *size);
 int afp_addcomment_sized(struct afp_volume *volume, unsigned int did,
                          const char *pathname, const void *comment,
                          size_t comment_size);
@@ -664,16 +665,9 @@ int afp_syncfork(struct afp_volume * volume, unsigned short forkid,
                  int wait);
 
 int afp_closefork(struct afp_volume * volume, unsigned short forkid);
-int afp_setfileparms(struct afp_volume * volume,
-                     unsigned int dirid, const char *pathname, unsigned short bitmap,
-                     struct afp_file_info *fp);
 int afp_setfiledirparms(struct afp_volume * volume,
                         unsigned int dirid, const char *pathname, unsigned short bitmap,
                         struct afp_file_info *fp);
-
-int afp_setdirparms(struct afp_volume * volume,
-                    unsigned int dirid, const char *pathname, unsigned short bitmap,
-                    struct afp_file_info *fp);
 
 int afp_volclose(struct afp_volume * volume);
 

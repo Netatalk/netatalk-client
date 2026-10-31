@@ -21,6 +21,7 @@
 
 #include "afp_internal.h"
 #include "afp_protocol.h"
+#include "lowlevel.h"
 
 #undef DID_CACHE_DISABLE
 
@@ -282,8 +283,23 @@ out:
 }
 
 
-/* This calculates the dirid and basename.  It *always* gets the parent did. */
-
+/*!
+ * @brief Find the directory ID of a path's parent, and the path's last name
+ *
+ * The cache answers for a known parent. An unknown one costs an
+ * FPGetFileDirParms for each component below the nearest cached directory.
+ *
+ * @param[in]  volume    volume of the path
+ * @param[in]  path      AFP path, with a leading slash
+ * @param[out] basename  receives the last component, or NULL
+ * @param[out] dirid     receives the parent's directory ID, set on success
+ *                       alone
+ * @returns 0, or a negative errno: -ENOTDIR for a component that is a
+ *          file, -ENOENT for one that does not exist, -EACCES for one the
+ *          session may not read, -EIO for an unexpected answer or a request
+ *          without one, -EINVAL for a path without a slash, -ENAMETOOLONG
+ *          for a last name too long, or -ENOMEM
+ */
 int get_dirid(struct afp_volume * volume, const char *path,
               char *basename, unsigned int *dirid)
 {
@@ -304,7 +320,7 @@ int get_dirid(struct afp_volume * volume, const char *path,
     unsigned int parent_did = AFP_ROOT_DID;
 
     if (!path || !dirid || !(last_slash = strrchr(path, '/'))) {
-        return -1;
+        return -EINVAL;
     }
 
     basename_len = strlen(last_slash + 1U);
@@ -371,29 +387,28 @@ int get_dirid(struct afp_volume * volume, const char *path,
         volume->did_cache_stats.misses++;
         ret = afp_getfiledirparms(volume, parent_did,
                                   filebitmap, dirbitmap, name, &fi);
+        ret = -ll_answer_errno(ret);
+
+        if (ret == 0 && !fi.isdir) {
+            ret = -ENOTDIR;
+        }
 
         if (ret) {
             free(name);
             goto out;
         }
 
-        if (fi.isdir) {
-            full_parent = strndup(path, (size_t)(component_end - path));
+        full_parent = strndup(path, (size_t)(component_end - path));
 
-            if (!full_parent) {
-                free(name);
-                ret = -ENOMEM;
-                goto out;
-            }
-
-            (void)add_did_cache_entry(volume, parent_did, fi.fileid,
-                                      full_parent, name);
-            free(full_parent);
-        } else {
+        if (!full_parent) {
             free(name);
-            break;
+            ret = -ENOMEM;
+            goto out;
         }
 
+        (void)add_did_cache_entry(volume, parent_did, fi.fileid,
+                                  full_parent, name);
+        free(full_parent);
         free(name);
         parent_did = fi.fileid;
         component = component_end + 1U;
