@@ -4,6 +4,7 @@
 
     Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
     Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+    Copyright (C) 2026 Andy Lemin (andylemin)
 
     This program can be distributed under the terms of the GNU GPL.
     See the file COPYING.
@@ -429,6 +430,10 @@ int ll_open(struct afp_volume * volume,
         ret = ll_zero_file(volume, fp->forkid, resource);
 
         if (ret != 0) {
+            /* The caller frees the record: the fork closes and the record
+             * leaves the list first. */
+            afp_closefork(volume, fp->forkid);
+            remove_opened_fork(volume, fp);
             goto error;
         }
 
@@ -602,7 +607,8 @@ error:
  *
  * @param[in]  volume    volume of the directory
  * @param[in]  path      AFP path of the directory
- * @param[out] fb        the entries, a list the caller frees
+ * @param[out] fb        the entries, a list the caller frees; NULL when
+ *                       the listing fails
  * @param[in]  resource  1 for the files' resource fork lengths, 0 for their
  *                       data fork lengths
  * @returns 0, or a negative errno
@@ -618,6 +624,7 @@ int ll_readdir(struct afp_volume * volume, const char *path,
     char basename[AFPC_MAX_NAME_BYTES];
     char converted_name[AFPC_MAX_NAME_BYTES];
     unsigned int dirid;
+    *fb = NULL;
 
     if (invalid_filename(volume, path)) {
         return -ENAMETOOLONG;
@@ -683,10 +690,6 @@ int ll_readdir(struct afp_volume * volume, const char *path,
         }
 
         switch (rc) {
-        case -1:
-            ret = EIO;
-            goto error;
-
         case 0:
         case kFPObjectNotFound:
             if (filebase == NULL) {
@@ -719,14 +722,15 @@ int ll_readdir(struct afp_volume * volume, const char *path,
 
         case kFPDirNotFound:
             ret = ENOENT;
-            exit++;
-            break;
+            goto error;
 
         case kFPBitmapErr:
         case kFPMiscErr:
         case kFPObjectTypeErr:
         case kFPParamErr:
         case kFPCallNotSupported:
+        default:
+            /* A request not sent or not answered is never a page. */
             ret = EIO;
             goto error;
         }
@@ -767,6 +771,7 @@ int ll_readdir(struct afp_volume * volume, const char *path,
     *fb = filebase;
     return 0;
 error:
+    afp_ml_filebase_free(&filebase);
     return -ret;
 }
 

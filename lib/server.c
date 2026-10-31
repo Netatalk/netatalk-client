@@ -2,6 +2,7 @@
  *  server.c
  *
  *  Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -129,7 +130,26 @@ struct afp_server *afp_server_complete_connection(
                        "Login message: %s", loginmsg);
 
     memcpy(server->loginmesg, loginmsg, AFP_LOGINMESG_LEN);
-    server->connect_state = SERVER_STATE_CONNECTED;
+    /* A removal, or a disconnect no reconnect repaired, while the login
+     * ran took the descriptor or changed the state under the list lock;
+     * the connection then fails. A reconnect a request of the login ran
+     * published a descriptor of its own and left it connected. */
+    afp_lock_server_list();
+
+    if (server->fd < 0 ||
+            server->connect_state == SERVER_STATE_DISCONNECTED ||
+            server->connect_state == SERVER_STATE_DESTROYED) {
+        afp_unlock_server_list();
+        log_for_client(priv, AFPFSD, LOG_ERR,
+                       "Connection to %s ended during the login",
+                       server->server_name_printable);
+        errno = EIO;
+        goto error;
+    }
+
+    __atomic_store_n(&server->connect_state, SERVER_STATE_CONNECTED,
+                     __ATOMIC_RELEASE);
+    afp_unlock_server_list();
     return server;
 error:
     connection_error = errno;
