@@ -5,6 +5,7 @@
  *  Copyright (C) 2001-2005 Miklos Szeredi <miklos@szeredi.hu>
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -183,10 +184,56 @@ static int fuse_unlink(const char *path)
 }
 
 /* Extended attributes (AFP 3.2+) */
+/*!
+ * @brief Whether a name lies in a namespace the kernel keeps for itself
+ *
+ * Off macOS the mount lists every AFP attribute under user., so a
+ * security., system. or trusted. name has no AFP attribute behind it.
+ *
+ * @param[in] name  the attribute's name
+ * @returns 1 for such a name, 0 for any other
+ */
+static int in_kernel_namespace(const char *name)
+{
 #ifdef __APPLE__
+    (void)name;
+    return 0;
+#else
+    return strncmp(name, "security.", sizeof("security.") - 1U) == 0
+           || strncmp(name, "system.", sizeof("system.") - 1U) == 0
+           || strncmp(name, "trusted.", sizeof("trusted.") - 1U) == 0;
+#endif
+}
+
+#ifdef __APPLE__
+/*!
+ * @brief Read an extended attribute for getxattr(2)
+ *
+ * @param[in]  path      UTF-8 path of the file
+ * @param[in]  name      the attribute's name
+ * @param[out] value     receives the value
+ * @param[in]  size      capacity of value, or 0 to ask the value's length
+ * @param[in]  position  offset into the resource fork, 0 for any other
+ *                       attribute
+ * @returns the value's length, or a negative errno
+ */
 static int fuse_getxattr(const char *path, const char *name, char *value,
                          size_t size, uint32_t position)
 #else
+/*!
+ * @brief Read an extended attribute for getxattr(2)
+ *
+ * The Linux kernel can ask for security.capability before every write and
+ * copy.
+ *
+ * @param[in]  path   UTF-8 path of the file
+ * @param[in]  name   the attribute's name
+ * @param[out] value  receives the value
+ * @param[in]  size   capacity of value, or 0 to ask the value's length
+ * @returns the value's length, the bytes read of the resource fork, or a
+ *          negative errno: -ENOATTR, without a request, for a name in the
+ *          kernel's namespaces
+ */
 static int fuse_getxattr(const char *path, const char *name, char *value,
                          size_t size)
 #endif
@@ -222,15 +269,43 @@ static int fuse_getxattr(const char *path, const char *name, char *value,
 #endif
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** getxattr %s:%s (size=%zu)", path, name, size);
+
+    if (in_kernel_namespace(name)) {
+        return -ENOATTR;
+    }
+
     ret = ml_getxattr(volume, path, name, value, size);
     return ret;
 }
 
 #ifdef __APPLE__
+/*!
+ * @brief Set an extended attribute for setxattr(2)
+ *
+ * @param[in] path      UTF-8 path of the file
+ * @param[in] name      the attribute's name
+ * @param[in] value     the value
+ * @param[in] size      length of value
+ * @param[in] flags     XATTR_CREATE or XATTR_REPLACE, or 0
+ * @param[in] position  offset into the resource fork, 0 for any other
+ *                      attribute
+ * @returns 0, or a negative errno
+ */
 static int fuse_setxattr(const char *path, const char *name,
                          const char *value, size_t size, int flags,
                          uint32_t position)
 #else
+/*!
+ * @brief Set an extended attribute for setxattr(2)
+ *
+ * @param[in] path   UTF-8 path of the file
+ * @param[in] name   the attribute's name
+ * @param[in] value  the value
+ * @param[in] size   length of value
+ * @param[in] flags  XATTR_CREATE or XATTR_REPLACE, or 0
+ * @returns 0, or a negative errno: -EOPNOTSUPP, without a request, for a
+ *          name in the kernel's namespaces
+ */
 static int fuse_setxattr(const char *path, const char *name,
                          const char *value, size_t size, int flags)
 #endif
@@ -281,6 +356,11 @@ static int fuse_setxattr(const char *path, const char *name,
 #endif
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** setxattr %s:%s (size=%zu)", path, name, size);
+
+    if (in_kernel_namespace(name)) {
+        return -EOPNOTSUPP;
+    }
+
     ret = ml_setxattr(volume, path, name, value, size, ml_flags);
     return ret;
 }
@@ -295,6 +375,14 @@ static int fuse_listxattr(const char *path, char *list, size_t size)
     return ret;
 }
 
+/*!
+ * @brief Remove an extended attribute for removexattr(2)
+ *
+ * @param[in] path  UTF-8 path of the file
+ * @param[in] name  the attribute's name
+ * @returns 0, or a negative errno: -ENOATTR off macOS, without a request,
+ *          for a name in the kernel's namespaces
+ */
 static int fuse_removexattr(const char *path, const char *name)
 {
     int ret;
@@ -314,6 +402,11 @@ static int fuse_removexattr(const char *path, const char *name)
     }
 
 #endif
+
+    if (in_kernel_namespace(name)) {
+        return -ENOATTR;
+    }
+
     ret = ml_removexattr(volume, path, name);
     return ret;
 }
