@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -162,24 +163,6 @@ int afp_addcomment_sized(struct afp_volume *volume, unsigned int did,
                        afpAddComment, NULL);
     free(msg);
     return rc;
-}
-
-int afp_addcomment(struct afp_volume *volume, unsigned int did,
-                   const char *pathname, char *comment, uint64_t *size)
-{
-    size_t comment_size;
-
-    if (!comment) {
-        return -1;
-    }
-
-    comment_size = strlen(comment);
-
-    if (size) {
-        *size = comment_size;
-    }
-
-    return afp_addcomment_sized(volume, did, pathname, comment, comment_size);
 }
 
 int afp_getcomment(struct afp_volume *volume, unsigned int did,

@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -32,7 +33,7 @@
  * typically be used where the databases are separate, and one user expects to
  * be able to read/write all the files he sees.  This can get confusing, since
  * any files that aren't his will appear to be owned by him, but writing to
- * them will result in an EPERM.
+ * them will result in an EACCES.
  *
  * 3. Name mapped
  *
@@ -41,30 +42,6 @@
  * This is currently unsupported.
  *
  */
-
-int translate_uidgid_to_server(struct afp_volume * volume,
-                               unsigned int *newuid, unsigned int *newgid)
-{
-    switch (volume->mapping) {
-    case AFP_MAPPING_COMMON:
-        /* The user databases are the same, don't do
-         * any translaion. */
-        break;
-
-    case AFP_MAPPING_LOGINIDS:
-        /* Return the value of what we used when we
-          logged in.*/
-        *newuid = volume->server->server_uid;
-        *newgid = volume->server->server_gid;
-        break;
-
-    default:
-    case AFP_MAPPING_UNKNOWN:
-        return -1;
-    }
-
-    return 0;
-}
 
 int translate_uidgid_to_client(struct afp_volume * volume,
                                unsigned int *newuid, unsigned int *newgid)

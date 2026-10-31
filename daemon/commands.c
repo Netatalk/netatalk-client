@@ -5,6 +5,7 @@
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -263,7 +264,45 @@ static int register_file_handle(struct afp_file_info *fp)
     return 0;
 }
 
-static struct afp_file_info *get_file_handle(int id)
+/*!
+ * @brief Whether a record is on a volume's open-fork list
+ *
+ * @param[in] volume  the volume
+ * @param[in] fp      the record
+ * @returns 1 when listed, 0 when not
+ */
+static int fork_is_listed(struct afp_volume *volume,
+                          const struct afp_file_info *fp)
+{
+    int listed = 0;
+    pthread_mutex_lock(&volume->open_forks_mutex);
+
+    for (const struct afp_file_info *p = volume->open_forks; p;
+            p = p->largelist_next) {
+        if (p == fp) {
+            listed = 1;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&volume->open_forks_mutex);
+    return listed;
+}
+
+/*!
+ * @brief Find the open fork a handle names on a volume
+ *
+ * A record the library freed, as a detach frees the volume's, is no
+ * longer listed, nor is one of another volume.
+ *
+ * @param[in] id      the handle
+ * @param[in] volume  the volume the request names
+ * @param[in] take    1 to clear the handle, for a close, or 0
+ * @returns the record, or NULL when the handle names no fork of volume
+ */
+static struct afp_file_info *get_file_handle(int id,
+                                             struct afp_volume *volume,
+                                             int take)
 {
     struct afp_file_info *fp = NULL;
 
@@ -273,8 +312,39 @@ static struct afp_file_info *get_file_handle(int id)
 
     pthread_mutex_lock(&file_handle_mutex);
     fp = file_handle_table[id];
+
+    if (fp && !fork_is_listed(volume, fp)) {
+        fp = NULL;
+    }
+
+    if (fp && take) {
+        file_handle_table[id] = NULL;
+    }
+
     pthread_mutex_unlock(&file_handle_mutex);
     return fp;
+}
+
+/*!
+ * @brief Forget the handles of a volume's open forks before it detaches
+ *
+ * The detach closes and frees the records, and a handle left behind could
+ * name a record a later open places at the same address.
+ *
+ * @param[in] volume  the attached volume
+ */
+static void release_volume_handles(struct afp_volume *volume)
+{
+    pthread_mutex_lock(&file_handle_mutex);
+
+    for (int i = 1; i < MAX_OPEN_FILES; i++) {
+        if (file_handle_table[i]
+                && fork_is_listed(volume, file_handle_table[i])) {
+            file_handle_table[i] = NULL;
+        }
+    }
+
+    pthread_mutex_unlock(&file_handle_mutex);
 }
 
 static int volume_server_is_connected(const struct afp_volume *volume)
@@ -335,17 +405,13 @@ static int desktop_ensure_open(struct afp_volume *volume)
     return desktop_error(ret, 0);
 }
 
-static void release_file_handle(int id)
-{
-    if (id <= 0 || id >= MAX_OPEN_FILES) {
-        return;
-    }
-
-    pthread_mutex_lock(&file_handle_mutex);
-    file_handle_table[id] = NULL;
-    pthread_mutex_unlock(&file_handle_mutex);
-}
-
+/*!
+ * @brief Open a volume, logging the message the library gives
+ *
+ * @param[in]     c       the client the message is logged for
+ * @param[in,out] volume  the volume to open
+ * @returns 0 once the volume is open, or 1
+ */
 static int volopen(struct daemon_client * c, struct afp_volume * volume)
 {
     char mesg[1024];
@@ -452,6 +518,15 @@ static unsigned char process_status(struct daemon_client * c)
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld detach request by detaching a volume
+ *
+ * The handles of the volume's open forks go first, since the detach frees the
+ * records they name.
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result and its message
+ */
 static unsigned char process_detach(struct daemon_client * c)
 {
     struct afpsl_ipc_detach_request * req;
@@ -475,6 +550,7 @@ static unsigned char process_detach(struct daemon_client * c)
         goto done;
     }
 
+    release_volume_handles(v);
     afp_detach_volume(v);
     response.header.result = AFPSL_IPC_RESULT_OK;
     snprintf(response.detach_message, 1023, "Detached volume %s.\n",
@@ -566,6 +642,16 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld disconnect request by ending a server's session
+ *
+ * The handles of the open forks of the server's volumes go first, since the
+ * unmount frees the records they name; the logout then goes out without a
+ * wait, and the server is removed.
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result
+ */
 static unsigned char process_disconnect(struct daemon_client * c)
 {
     struct afpsl_ipc_disconnect_request *req = (void *)c->complete_packet;
@@ -590,6 +676,11 @@ static unsigned char process_disconnect(struct daemon_client * c)
 
     log_for_client((void *)c, AFPFSD, LOG_INFO,
                    "Disconnecting from server %s", server->server_name_printable);
+
+    for (int i = 0; i < server->num_volumes; i++) {
+        release_volume_handles(&server->volumes[i]);
+    }
+
     afp_unmount_all_volumes(server);
     afp_logout(server, DSI_DONT_WAIT);
     afp_server_remove(server);
@@ -673,6 +764,16 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld serverinfo request with a server's details
+ *
+ * A server this daemon has a session with answers from it; another is asked
+ * over a connection made for the request and removed after it.
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0 once it sends the response, or AFPSL_IPC_RESULT_ERROR to close
+ *          the connection for a request cut short
+ */
 static unsigned char process_serverinfo(struct daemon_client * c)
 {
     struct afpsl_ipc_serverinfo_request * req = (void *) c->complete_packet;
@@ -721,6 +822,12 @@ static unsigned char process_serverinfo(struct daemon_client * c)
         }
 
         if (afp_server_connect(tmpserver, 1) < 0) {
+            /* A failed status read leaves the server listed; one that never
+             * connected is not listed, and the release below frees it. */
+            if (afp_server_remove(tmpserver) == 0) {
+                tmpserver = NULL;
+            }
+
             goto error;
         }
 
@@ -842,6 +949,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld open request by opening a fork of a file
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result and the handle
+ */
 static unsigned char process_open(struct daemon_client * c)
 {
     struct afpsl_ipc_open_response response;
@@ -889,6 +1002,10 @@ static unsigned char process_open(struct daemon_client * c)
             result = AFPSL_IPC_RESULT_ENOENT;
         } else if (ret == -EACCES) {
             result = AFPSL_IPC_RESULT_ACCESS;
+        } else if (ret == -EEXIST) {
+            result = AFPSL_IPC_RESULT_EXIST;
+        } else if (ret == -ETIMEDOUT) {
+            result = AFPSL_IPC_RESULT_TIMEDOUT;
         } else {
             result = AFPSL_IPC_RESULT_ERROR;
         }
@@ -902,7 +1019,7 @@ static unsigned char process_open(struct daemon_client * c)
     int handle = register_file_handle(fp);
 
     if (handle == 0) {
-        ml_close(v, NULL, fp);
+        ml_close(v, fp);
         free(fp);
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
@@ -995,8 +1112,7 @@ static unsigned char process_read(struct daemon_client * c)
     }
 
     data = ((char *) response) + sizeof(struct afpsl_ipc_read_response);
-    /* Cast fileid back to file_info pointer for stateless operation */
-    struct afp_file_info *fp = get_file_handle(request->fileid);
+    struct afp_file_info *fp = get_file_handle(request->fileid, v, 0);
 
     if (!fp) {
         result = AFPSL_IPC_RESULT_ERROR;
@@ -1092,16 +1208,14 @@ static unsigned char process_write(struct daemon_client * c)
         bytes_remaining -= ret;
     }
 
-    /* Get file handle */
-    struct afp_file_info *fp = get_file_handle(request->fileid);
+    struct afp_file_info *fp = get_file_handle(request->fileid, v, 0);
 
     if (!fp) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    /* Perform the write operation - ml_write wants uid/gid, using 0 for now */
-    ret = ml_write(v, data, request->size, request->offset, fp, 0, 0);
+    ret = ml_write(v, data, request->size, request->offset, fp);
 
     if (ret > 0) {
         written = ret;
@@ -1130,12 +1244,16 @@ done:
 /*!
  * @brief Answer an afpsld create request by creating a file at its path
  *
+ * A file it made gets the mode the request names, as ml_set_created_mode()
+ * gives it.
+ *
  * @param[in,out] c  the client, whose complete packet holds the request
  * @returns 0, the response carrying the result
  */
 static unsigned char process_creat(struct daemon_client * c)
 {
     struct afpsl_ipc_creat_response response;
+    unsigned char created = 0;
     struct afpsl_ipc_creat_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     const char *path;
@@ -1172,7 +1290,11 @@ static unsigned char process_creat(struct daemon_client * c)
 
     log_for_client((void *) c, AFPFSD, LOG_DEBUG, "Creating file '%s' mode=%04o",
                    path, request->mode);
-    ret = ml_creat(v, path, request->mode, NULL);
+    ret = ml_creat(v, path, request->mode, &created);
+
+    if (ret == 0 && created) {
+        ml_set_created_mode(v, path, request->mode);
+    }
 
     if (ret < 0) {
         if (ret == -EEXIST) {
@@ -1784,6 +1906,14 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld close request by closing an open fork
+ *
+ * The handle is cleared as it is taken, so a second close of it finds no fork.
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result
+ */
 static unsigned char process_close(struct daemon_client * c)
 {
     struct afpsl_ipc_close_response response;
@@ -1807,16 +1937,15 @@ static unsigned char process_close(struct daemon_client * c)
         goto done;
     }
 
-    struct afp_file_info *fp = get_file_handle(request->fileid);
+    struct afp_file_info *fp = get_file_handle(request->fileid, v, 1);
 
     if (!fp) {
         ret = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    ret = ml_close(v, NULL, fp);
+    ret = ml_close(v, fp);
     free(fp);
-    release_file_handle(request->fileid);
 done:
     response.header.len = sizeof(struct afpsl_ipc_close_response);
     response.header.result = ret;
@@ -1830,6 +1959,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld stat request with a path's attributes
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result and the attributes
+ */
 static unsigned char process_stat(struct daemon_client * c)
 {
     struct afpsl_ipc_stat_response response;
@@ -1879,6 +2014,8 @@ static unsigned char process_stat(struct daemon_client * c)
 
     if (ret == -ENOENT) {
         result = AFPSL_IPC_RESULT_ENOENT;
+    } else if (ret == -EACCES) {
+        result = AFPSL_IPC_RESULT_ACCESS;
     } else if (ret < 0) {
         result = AFPSL_IPC_RESULT_ERROR;
     } else {

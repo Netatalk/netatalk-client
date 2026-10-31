@@ -19,6 +19,8 @@ struct dsi_request {
     struct timespec deadline;
     int done_waiting;
     int ignore_replies;
+    /*! whether the receiver holds the request, which its sender then keeps */
+    int receiving;
     pthread_cond_t waiting_cond;
     pthread_mutex_t waiting_mutex;
     struct dsi_request *next;

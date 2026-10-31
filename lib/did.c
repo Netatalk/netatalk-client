@@ -2,9 +2,15 @@
  *  did.c
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
+ */
+
+/*!
+ * @file
+ * @brief The cache of directory IDs by path, and the lookup that fills it
  */
 
 #include <stdlib.h>
@@ -15,6 +21,7 @@
 
 #include "afp_internal.h"
 #include "afp_protocol.h"
+#include "lowlevel.h"
 
 #undef DID_CACHE_DISABLE
 
@@ -161,8 +168,22 @@ static unsigned int find_cached_directory(
     return did;
 }
 
-unsigned char is_dir(struct afp_volume * volume,
-                     unsigned int parentdid, const char *path)
+/*!
+ * @brief Whether a name in a directory names a directory
+ *
+ * The cache answers for a directory it holds; any other name costs an
+ * FPGetFileDirParms.
+ *
+ * @param[in] volume     volume of the directory
+ * @param[in] parentdid  directory ID of the directory holding the name
+ * @param[in] path       the name
+ * @returns 1 for a directory, 0 for another object, or a negative errno
+ *          when the lookup fails: -ENOENT for a name that does not exist,
+ *          -EACCES for one the session may not read, -EIO for another
+ *          answer or a request without one
+ */
+int is_dir_checked(struct afp_volume * volume, unsigned int parentdid,
+                   const char *path)
 {
     int ret;
     unsigned int filebitmap = 0;
@@ -177,11 +198,33 @@ unsigned char is_dir(struct afp_volume * volume,
     ret = afp_getfiledirparms(volume, parentdid,
                               filebitmap, dirbitmap, path, &fi);
 
-    if (ret) {
-        return 0;
-    }
+    switch (ret) {
+    case kFPNoErr:
+        return fi.isdir ? 1 : 0;
 
-    return fi.isdir;
+    case kFPObjectNotFound:
+        return -ENOENT;
+
+    case kFPAccessDenied:
+        return -EACCES;
+
+    default:
+        return -EIO;
+    }
+}
+
+/*!
+ * @brief Whether a name in a directory names a directory
+ *
+ * @param[in] volume     volume of the directory
+ * @param[in] parentdid  directory ID of the directory holding the name
+ * @param[in] path       the name
+ * @returns 1 for a directory, 0 for another object or a failed lookup
+ */
+unsigned char is_dir(struct afp_volume * volume,
+                     unsigned int parentdid, const char *path)
+{
+    return is_dir_checked(volume, parentdid, path) == 1;
 }
 
 static unsigned int find_dirid_by_fullname(struct afp_volume * volume,
@@ -240,8 +283,23 @@ out:
 }
 
 
-/* This calculates the dirid and basename.  It *always* gets the parent did. */
-
+/*!
+ * @brief Find the directory ID of a path's parent, and the path's last name
+ *
+ * The cache answers for a known parent. An unknown one costs an
+ * FPGetFileDirParms for each component below the nearest cached directory.
+ *
+ * @param[in]  volume    volume of the path
+ * @param[in]  path      AFP path, with a leading slash
+ * @param[out] basename  receives the last component, or NULL
+ * @param[out] dirid     receives the parent's directory ID, set on success
+ *                       alone
+ * @returns 0, or a negative errno: -ENOTDIR for a component that is a
+ *          file, -ENOENT for one that does not exist, -EACCES for one the
+ *          session may not read, -EIO for an unexpected answer or a request
+ *          without one, -EINVAL for a path without a slash, -ENAMETOOLONG
+ *          for a last name too long, or -ENOMEM
+ */
 int get_dirid(struct afp_volume * volume, const char *path,
               char *basename, unsigned int *dirid)
 {
@@ -262,7 +320,7 @@ int get_dirid(struct afp_volume * volume, const char *path,
     unsigned int parent_did = AFP_ROOT_DID;
 
     if (!path || !dirid || !(last_slash = strrchr(path, '/'))) {
-        return -1;
+        return -EINVAL;
     }
 
     basename_len = strlen(last_slash + 1U);
@@ -329,29 +387,28 @@ int get_dirid(struct afp_volume * volume, const char *path,
         volume->did_cache_stats.misses++;
         ret = afp_getfiledirparms(volume, parent_did,
                                   filebitmap, dirbitmap, name, &fi);
+        ret = -ll_answer_errno(ret);
+
+        if (ret == 0 && !fi.isdir) {
+            ret = -ENOTDIR;
+        }
 
         if (ret) {
             free(name);
             goto out;
         }
 
-        if (fi.isdir) {
-            full_parent = strndup(path, (size_t)(component_end - path));
+        full_parent = strndup(path, (size_t)(component_end - path));
 
-            if (!full_parent) {
-                free(name);
-                ret = -ENOMEM;
-                goto out;
-            }
-
-            (void)add_did_cache_entry(volume, parent_did, fi.fileid,
-                                      full_parent, name);
-            free(full_parent);
-        } else {
+        if (!full_parent) {
             free(name);
-            break;
+            ret = -ENOMEM;
+            goto out;
         }
 
+        (void)add_did_cache_entry(volume, parent_did, fi.fileid,
+                                  full_parent, name);
+        free(full_parent);
         free(name);
         parent_did = fi.fileid;
         component = component_end + 1U;

@@ -150,6 +150,8 @@ struct afp_volume {
 #define SERVER_STATE_CONNECTED 1
 #define SERVER_STATE_DISCONNECTED 2
 #define SERVER_STATE_CONNECTING 3
+/* Taken off the server list; a request to it fails before it is sent. */
+#define SERVER_STATE_DESTROYED 4
 
 struct afp_versions {
     char        *av_name;
@@ -245,6 +247,9 @@ struct afp_server {
     /* Our DSI request queue */
     pthread_mutex_t requestid_mutex;
     pthread_mutex_t request_queue_mutex;
+    /* Signalled under request_queue_mutex when the receiver lets a
+     * request go. */
+    pthread_cond_t request_queue_cond;
     unsigned short lastrequestid;
     unsigned short expectedrequestid;
     struct dsi_request *command_requests;
@@ -261,6 +266,12 @@ struct afp_server {
     char *incoming_buffer;
     int data_read;
     int bufsize;
+    /* Payload bytes of a frame being dropped still to be read. */
+    size_t discard_remaining;
+    /* Payload bytes of the read reply in progress already in its buffer. */
+    size_t stream_read;
+    /* The connection generation whose stream the receive state follows. */
+    unsigned int rx_generation;
 
     /* And this is for the outgoing queue */
     pthread_mutex_t send_mutex;
@@ -275,10 +286,8 @@ struct afp_server {
     /* Reference counting for safe multi-threaded access */
     int refcount;
 
-    /* These are for DSI attention packets */
+    /* The attention quantum this side offers in DSIOpenSession. */
     unsigned int attention_quantum;
-    unsigned int attention_len;
-    char *attention_buffer;
 
 };
 
@@ -389,6 +398,9 @@ int afp_server_is_apple(const struct afp_server *s);
 int afp_server_reports_fork_length(const struct afp_server *s);
 int afp_server_copies_files(const struct afp_server *s);
 int afp_server_drops_long_commands(const struct afp_server *s);
+int afp_server_sets_directory_owner(const struct afp_server *s);
+int afp_server_keeps_unset_ids(const struct afp_server *s);
+int afp_server_keeps_directory_modes(const struct afp_server *s);
 void afp_server_fill_basic(const struct afp_server *server,
                            struct afpc_server_info *basic);
 
@@ -494,6 +506,7 @@ int server_still_valid(struct afp_server * server);
 struct afp_server *afp_server_find_by_name_hold(char *name);
 struct afp_server *afp_server_find_by_address_hold(struct addrinfo * address);
 struct afp_volume *afp_volume_find_by_pointer_hold(void *id);
+struct afp_volume *afp_volume_find_by_mountpoint_hold(const char *mountpoint);
 
 void afp_server_hold(struct afp_server *s);
 void afp_server_release(struct afp_server *s);
@@ -518,8 +531,6 @@ int afp_closedt(struct afp_server * server, unsigned short refnum);
 int afp_getcomment(struct afp_volume *volume, unsigned int did,
                    const char *pathname, struct afp_comment * comment);
 
-int afp_addcomment(struct afp_volume *volume, unsigned int did,
-                   const char *pathname, char *comment, uint64_t *size);
 int afp_addcomment_sized(struct afp_volume *volume, unsigned int did,
                          const char *pathname, const void *comment,
                          size_t comment_size);
@@ -654,16 +665,9 @@ int afp_syncfork(struct afp_volume * volume, unsigned short forkid,
                  int wait);
 
 int afp_closefork(struct afp_volume * volume, unsigned short forkid);
-int afp_setfileparms(struct afp_volume * volume,
-                     unsigned int dirid, const char *pathname, unsigned short bitmap,
-                     struct afp_file_info *fp);
 int afp_setfiledirparms(struct afp_volume * volume,
                         unsigned int dirid, const char *pathname, unsigned short bitmap,
                         struct afp_file_info *fp);
-
-int afp_setdirparms(struct afp_volume * volume,
-                    unsigned int dirid, const char *pathname, unsigned short bitmap,
-                    struct afp_file_info *fp);
 
 int afp_volclose(struct afp_volume * volume);
 

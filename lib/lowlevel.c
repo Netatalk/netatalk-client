@@ -4,6 +4,7 @@
 
     Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
     Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+    Copyright (C) 2026 Andy Lemin (andylemin)
 
     This program can be distributed under the terms of the GNU GPL.
     See the file COPYING.
@@ -119,67 +120,31 @@ done:
 
 
 
-/* zero_file()
+/*!
+ * @brief Set an open fork's length with FPSetForkParms
  *
- * This function will truncate the fork given to zero bytes in length.
- * This has been abstracted because there is some differences in the
- * expectation of Ext or not Ext. */
-
-int ll_zero_file(struct afp_volume * volume, unsigned short forkid,
-                 unsigned int resource)
-{
-    unsigned int bitmap;
-    int ret;
-
-    /* The Airport Extreme 7.1.1 will crash if you send it
-     * DataForkLenBit. */
-
-    if (volume->server->using_version->av_number < 30) {
-        bitmap = (resource ?
-                  kFPRsrcForkLenBit : kFPDataForkLenBit);
-    } else {
-        bitmap = (resource ?
-                  kFPExtRsrcForkLenBit : kFPExtDataForkLenBit);
-    }
-
-    ret = afp_setforkparms(volume, forkid, bitmap, 0);
-
-    switch (ret) {
-    case kFPAccessDenied:
-        ret = EACCES;
-        break;
-
-    case kFPVolLocked:
-    case kFPLockErr:
-        ret = EBUSY;
-        break;
-
-    case kFPDiskFull:
-        ret = ENOSPC;
-        break;
-
-    case kFPBitmapErr:
-    case kFPMiscErr:
-    case kFPParamErr:
-        ret = EIO;
-        break;
-
-    default:
-        ret = 0;
-    }
-
-    return ret;
-}
-
+ * @param[in] volume    volume of the fork
+ * @param[in] forkid    the open fork
+ * @param[in] resource  1 for a resource fork, 0 for a data fork
+ * @param[in] size      the new length
+ * @returns 0, or a positive errno: EFBIG for an AFP 2 length past
+ *          AFP_MAX_AFP2_FILESIZE, EROFS for a read-only filesystem, EIO for
+ *          an unexpected answer or a request without one, or the server's
+ *          EACCES, EBUSY or ENOSPC
+ */
 int ll_setfork_size(struct afp_volume * volume, unsigned short forkid,
                     unsigned int resource, uint64_t size)
 {
     unsigned int bitmap;
     int ret;
 
-    /* The Airport Extreme 7.1.1 will crash if you send it
-     * DataForkLenBit. */
+    if (volume->server->using_version->av_number < 30
+            && size > AFP_MAX_AFP2_FILESIZE) {
+        return EFBIG;
+    }
 
+    /* AirPort Extreme 7.1.1 crashes on an AFP 3 request with the 32-bit
+     * length bit. */
     if (volume->server->using_version->av_number < 30) {
         bitmap = (resource ?
                   kFPRsrcForkLenBit : kFPDataForkLenBit);
@@ -191,11 +156,17 @@ int ll_setfork_size(struct afp_volume * volume, unsigned short forkid,
     ret = afp_setforkparms(volume, forkid, bitmap, size);
 
     switch (ret) {
+    case kFPNoErr:
+        break;
+
     case kFPAccessDenied:
         ret = EACCES;
         break;
 
     case kFPVolLocked:
+        ret = EROFS;
+        break;
+
     case kFPLockErr:
         ret = EBUSY;
         break;
@@ -204,14 +175,9 @@ int ll_setfork_size(struct afp_volume * volume, unsigned short forkid,
         ret = ENOSPC;
         break;
 
-    case kFPBitmapErr:
-    case kFPMiscErr:
-    case kFPParamErr:
-        ret = EIO;
-        break;
-
+    /* Every other answer, and a request that failed or timed out. */
     default:
-        ret = 0;
+        ret = EIO;
     }
 
     return ret;
@@ -237,12 +203,125 @@ int ll_get_directory_entry(struct afp_volume * volume,
     return ret;
 }
 
+/*!
+ * @brief Create a file with a soft FPCreateFile
+ *
+ * A soft create leaves a file at the name as it is, where a hard create
+ * would empty it.
+ *
+ * @param[in] volume    volume of the file
+ * @param[in] did       directory of the file
+ * @param[in] basename  AFP name of the file in did
+ * @returns 0 for a file this call made, -EEXIST for a name a file or a
+ *          directory holds, or another negative errno
+ */
+int ll_createfile(struct afp_volume * volume, unsigned int did,
+                  char *basename)
+{
+    switch (afp_createfile(volume, kFPSoftCreate, did, basename)) {
+    case kFPNoErr:
+        return 0;
 
+    /* afpd answers a directory at the name with kFPObjectTypeErr. */
+    case kFPObjectExists:
+    case kFPObjectTypeErr:
+        return -EEXIST;
+
+    case kFPAccessDenied:
+        return -EACCES;
+
+    case kFPDiskFull:
+        return -ENOSPC;
+
+    case kFPObjectNotFound:
+        return -ENOENT;
+
+    case kFPFileBusy:
+        return -EBUSY;
+
+    case kFPVolLocked:
+        return -EROFS;
+
+    /* Every other answer, and a request that failed or timed out. */
+    default:
+        return -EIO;
+    }
+}
+
+/*!
+ * @brief Map the answer of an FPOpenFork to an errno
+ *
+ * @param[in] rc  the answer, or the request's failure
+ * @returns 0 for kFPNoErr, or a positive errno
+ */
+int ll_openfork_errno(int rc)
+{
+    switch (rc) {
+    case kFPNoErr:
+        return 0;
+
+    /* afpd answers a write open that EACCES refuses with kFPLockErr. */
+    case kFPAccessDenied:
+    case kFPParamErr:
+    case kFPLockErr:
+        return EACCES;
+
+    case kFPObjectNotFound:
+        return ENOENT;
+
+    case kFPObjectLocked:
+    case kFPVolLocked:
+        return EROFS;
+
+    case kFPObjectTypeErr:
+        return EISDIR;
+
+    case kFPTooManyFilesOpen:
+        return EMFILE;
+
+    case kFPDenyConflict:
+        return EBUSY;
+
+    /* A request whose wait expired may still be carried out. */
+    case ETIMEDOUT:
+        return ETIMEDOUT;
+
+    /* Every other answer, and a request that failed. */
+    default:
+        return EIO;
+    }
+}
+
+/*!
+ * @brief Map an answer about a file or a directory to an errno
+ *
+ * @param[in] rc  the answer, or the request's failure
+ * @returns 0 for kFPNoErr, or a positive errno: EACCES, ENOENT, or EIO for
+ *          another answer or a request without one
+ */
+int ll_answer_errno(int rc)
+{
+    switch (rc) {
+    case kFPNoErr:
+        return 0;
+
+    case kFPAccessDenied:
+        return EACCES;
+
+    case kFPObjectNotFound:
+        return ENOENT;
+
+    /* Every other answer, and a request that failed or timed out. */
+    default:
+        return EIO;
+    }
+}
 
 /*!
  * @brief Open the data or resource fork that fp names
  *
- * O_TRUNC empties the file only when the flags lack O_CREAT.
+ * O_CREAT creates with a soft create, so O_EXCL fails for a name taken, and
+ * a failed open removes the file it made; O_TRUNC empties one it found.
  *
  * @param[in]     volume  volume of the file
  * @param[in]     path    unused
@@ -258,6 +337,7 @@ int ll_open(struct afp_volume * volume,
     int ret;
     int dsi_ret;
     int rc;
+    int created = 0;
     unsigned int resource = fp->resource;
     unsigned short bitmap = 0;
     unsigned char aflags = 0;
@@ -277,84 +357,43 @@ int ll_open(struct afp_volume * volume,
 
     if ((aflags & AFP_OPENFORK_ALLOWWRITE) &&
             (volume_is_readonly(volume))) {
-        ret = EPERM;
+        ret = EROFS;
         goto error;
     }
 
-    /*
-       O_NOBLOCK - todo: it is unclear how to this in fuse.
-    */
-    /* The following flags don't need any attention here:
-       O_ASYNC - not relevant for files
-       O_APPEND
-       O_NOATIME - we have no way to handle this anyway
-    */
-    /* Handle file creation properly when O_CREAT is set */
-    if ((flags & O_CREAT) && (aflags & AFP_OPENFORK_ALLOWWRITE)) {
-        if (flags & O_EXCL) {
-            /* With O_EXCL, file must not exist. Use kFPHardCreate
-             * (hard create - fails if file exists) instead of kFPSoftCreate */
-            rc = afp_createfile(volume, kFPHardCreate, fp->did, fp->basename);
+    /* O_NONBLOCK, O_ASYNC, O_APPEND and O_NOATIME need nothing of the open:
+     * each write carries an append's offset, and AFP keeps no access time. */
+    if (flags & O_CREAT) {
+        rc = ll_createfile(volume, fp->did, fp->basename);
 
-            if (rc == kFPObjectExists) {
-                ret = EEXIST;
-                goto error;
-            } else if (rc != 0) {
-                ret = EIO;
-                goto error;
-            }
-        } else {
-            /* Without O_EXCL, use kFPSoftCreate (soft create - succeeds if exists) */
-            rc = afp_createfile(volume, kFPSoftCreate, fp->did, fp->basename);
-
-            if (rc && rc != kFPObjectExists) {
-                ret = EIO;
-                goto error;
-            }
-
-            /* If rc == kFPObjectExists, file already exists, which is fine */
+        if (rc == 0) {
+            created = 1;
+        } else if (rc != -EEXIST || (flags & O_EXCL)) {
+            ret = -rc;
+            goto error;
         }
     }
 
     if (volume->server->using_version->av_number < 30) {
-        switch (ll_get_directory_entry(volume, fp->basename, fp->did,
-                                       kFPParentDirIDBit | kFPNodeIDBit |
-                                       (resource ? kFPRsrcForkLenBit : kFPDataForkLenBit),
-                                       0, fp)) {
-        case kFPAccessDenied:
-            ret = EACCES;
-            goto error;
-
-        case kFPObjectNotFound:
-            ret = ENOENT;
-            goto error;
-
-        case kFPNoErr:
-            break;
-
-        case kFPBitmapErr:
-        case kFPMiscErr:
-        case kFPParamErr:
-        default:
-            ret = EIO;
-            goto error;
-        }
-
-        if (resource ? (fp->resourcesize >= (AFP_MAX_AFP2_FILESIZE - 1)) :
-                (fp->size >= AFP_MAX_AFP2_FILESIZE - 1)) {
-            /* According to p.30, if the server doesn't support >4GB files
-               and the file being opened is >4GB, then resourcesize or size
-               will return 4GB.  How can it return 4GB in 32 bits?  I
-               suspect it actually returns 4GB-1.
-            */
-            ret = EOVERFLOW;
-            goto error;
-        }
-
+        rc = ll_get_directory_entry(volume, fp->basename, fp->did,
+                                    kFPParentDirIDBit | kFPNodeIDBit
+                                    | (resource ? kFPRsrcForkLenBit
+                                       : kFPDataForkLenBit), 0, fp);
+        ret = ll_answer_errno(rc);
         /* parse_reply_block() clears the complete result structure.  Keep
          * the caller's fork type: resource forks need it for both the AFP
          * open and appledouble_close(), which unregisters the open fork. */
         fp->resource = resource;
+
+        if (ret) {
+            goto error;
+        }
+
+        /* The read's AFP 2 bound weighs size, which a truncation keeps for
+         * either fork. */
+        if (resource) {
+            fp->size = fp->resourcesize;
+        }
     }
 
     /* These are client-side open state, not AFP reply parameters.  Set them
@@ -379,56 +418,26 @@ int ll_open(struct afp_volume * volume,
     }
 
     pthread_rwlock_unlock(&volume->open_lock);
+    ret = ll_openfork_errno(dsi_ret);
 
-    switch (dsi_ret) {
-    case kFPAccessDenied:
-        ret = EACCES;
-        goto error;
+    /* The server may still open the fork, so its file stays. */
+    if (ret == ETIMEDOUT) {
+        created = 0;
+    }
 
-    case kFPObjectNotFound:
-        /* File not found and O_CREAT wasn't set (or wasn't honored above) */
-        ret = ENOENT;
-        goto error;
-
-    case kFPObjectLocked:
-        ret = EROFS;
-        goto error;
-
-    case kFPObjectTypeErr:
-        ret = EISDIR;
-        goto error;
-
-    case kFPParamErr:
-        ret = EACCES;
-        goto error;
-
-    case kFPTooManyFilesOpen:
-        ret = EMFILE;
-        goto error;
-
-    case kFPVolLocked:
-    case kFPDenyConflict:
-    case kFPMiscErr:
-    case kFPBitmapErr:
-    case -1:
-        ret = EFAULT;
-        goto error;
-
-    case 0:
-        ret = 0;
-        break;
-
-    default:
-        ret = EFAULT;
+    if (ret) {
         goto error;
     }
 
-    /* Handle O_TRUNC flag: truncate existing files (but not newly created ones) */
-    /* Skip truncation if O_CREAT was set (file just created, already empty) */
-    if ((flags & O_TRUNC) && !(flags & O_CREAT)) {
-        ret = ll_zero_file(volume, fp->forkid, resource);
+    /* A file this open created is empty already. */
+    if ((flags & O_TRUNC) && !created) {
+        ret = ll_setfork_size(volume, fp->forkid, resource, 0);
 
         if (ret != 0) {
+            /* The caller frees the record: the fork closes and the record
+             * leaves the list first. */
+            afp_closefork(volume, fp->forkid);
+            remove_opened_fork(volume, fp);
             goto error;
         }
 
@@ -439,16 +448,48 @@ int ll_open(struct afp_volume * volume,
 
     return 0;
 error:
+
+    if (created) {
+        afp_delete(volume, fp->did, fp->basename);
+    }
+
     return -ret;
 }
 
 
 /*!
+ * @brief Whether an AFP 2 fork reaches past an offset, by the server's length
+ *
+ * Another client can grow the fork past the length the handle holds.
+ *
+ * @param[in] volume  volume of the fork
+ * @param[in] fp      the open fork, whose directory and name the query names
+ * @param[in] offset  the offset
+ * @returns 1 when the fork reaches past offset, 0 when it ends at or before
+ *          it, or a negative errno when the query fails
+ */
+static int afp2_fork_reaches(struct afp_volume * volume,
+                             struct afp_file_info * fp, uint64_t offset)
+{
+    struct afp_file_info now;
+    int ret;
+    memset(&now, 0, sizeof(now));
+    ret = ll_get_directory_entry(volume, fp->basename, fp->did,
+                                 fp->resource ? kFPRsrcForkLenBit
+                                 : kFPDataForkLenBit, 0, &now);
+
+    if (ret != kFPNoErr) {
+        return -ll_answer_errno(ret);
+    }
+
+    return (fp->resource ? now.resourcesize : now.size) > offset;
+}
+
+/*!
  * @brief Read from an open fork, a quantum per request
  *
- * On an Apple server, first flushes the file's other dirty forks of the same
- * kind. Only kFPEOFErr marks the fork's end: the read continues where a
- * short reply ends.
+ * Flushes the file's other dirty forks of its kind first on an Apple server.
+ * Only kFPEOFErr marks the end, or on AFP 2 the fork's length past the bound.
  *
  * @param[in]     volume  volume of the fork
  * @param[out]    buf     receives the bytes
@@ -458,7 +499,8 @@ error:
  * @param[in,out] fp      the open fork
  * @param[out]    eof     set to 1 when the read reaches the end of the fork
  * @returns bytes read, or a negative errno, -EIO for a handle without a fork
- *          or a request that fails otherwise
+ *          or a request that fails otherwise, -EOVERFLOW for an AFP 2 read
+ *          that starts past AFP_MAX_AFP2_FILESIZE in a longer fork
  */
 int ll_read(struct afp_volume * volume,
             char *buf, size_t size, off_t offset,
@@ -506,9 +548,27 @@ int ll_read(struct afp_volume * volume,
         return -EIO;
     }
 
-    /* Lock the range */
+    /* No AFP 2 request, a lock's included, passes the bound: a read stops
+     * there, and one past it fails in a fork that reaches further. */
+    if (volume->server->using_version->av_number < 30) {
+        if ((uint64_t) offset > AFP_MAX_AFP2_FILESIZE) {
+            ret = fp->size > (uint64_t) offset
+                  ? 1 : afp2_fork_reaches(volume, fp, (uint64_t) offset);
+
+            if (ret < 0) {
+                return ret;
+            }
+
+            *eof = !ret;
+            return ret ? -EOVERFLOW : 0;
+        }
+
+        if (size > AFP_MAX_AFP2_FILESIZE - (uint64_t) offset + 1) {
+            size = (size_t)(AFP_MAX_AFP2_FILESIZE - (uint64_t) offset + 1);
+        }
+    }
+
     if (ll_handle_locking(volume, fp->forkid, offset, size)) {
-        /* There was an irrecoverable error when locking */
         ret = EBUSY;
         goto error;
     }
@@ -525,11 +585,6 @@ int ll_read(struct afp_volume * volume,
         buffer.errorcode = 0;
 
         if (volume->server->using_version->av_number < 30) {
-            if (read_offset > UINT32_MAX) {
-                ret = EFBIG;
-                goto error;
-            }
-
             rc = afp_read(volume, fp->forkid, (uint32_t)read_offset,
                           (uint32_t)chunksize, &buffer);
         } else {
@@ -575,7 +630,6 @@ int ll_read(struct afp_volume * volume,
 done:
 
     if (ll_handle_unlocking(volume, fp->forkid, offset, size)) {
-        /* Somehow, we couldn't unlock the range. */
         ret = EIO;
         goto error;
     }
@@ -602,7 +656,8 @@ error:
  *
  * @param[in]  volume    volume of the directory
  * @param[in]  path      AFP path of the directory
- * @param[out] fb        the entries, a list the caller frees
+ * @param[out] fb        the entries, a list the caller frees; NULL when
+ *                       the listing fails
  * @param[in]  resource  1 for the files' resource fork lengths, 0 for their
  *                       data fork lengths
  * @returns 0, or a negative errno
@@ -618,6 +673,7 @@ int ll_readdir(struct afp_volume * volume, const char *path,
     char basename[AFPC_MAX_NAME_BYTES];
     char converted_name[AFPC_MAX_NAME_BYTES];
     unsigned int dirid;
+    *fb = NULL;
 
     if (invalid_filename(volume, path)) {
         return -ENAMETOOLONG;
@@ -683,10 +739,6 @@ int ll_readdir(struct afp_volume * volume, const char *path,
         }
 
         switch (rc) {
-        case -1:
-            ret = EIO;
-            goto error;
-
         case 0:
         case kFPObjectNotFound:
             if (filebase == NULL) {
@@ -719,14 +771,15 @@ int ll_readdir(struct afp_volume * volume, const char *path,
 
         case kFPDirNotFound:
             ret = ENOENT;
-            exit++;
-            break;
+            goto error;
 
         case kFPBitmapErr:
         case kFPMiscErr:
         case kFPObjectTypeErr:
         case kFPParamErr:
         case kFPCallNotSupported:
+        default:
+            /* A request not sent or not answered is never a page. */
             ret = EIO;
             goto error;
         }
@@ -767,6 +820,7 @@ int ll_readdir(struct afp_volume * volume, const char *path,
     *fb = filebase;
     return 0;
 error:
+    afp_ml_filebase_free(&filebase);
     return -ret;
 }
 
@@ -905,8 +959,7 @@ int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
 /*!
  * @brief Write to an open fork, a quantum per request
  *
- * Refuses a write that would reach 4 GiB on AFP 2, because FPWrite's offsets
- * are 32 bits. afpd reads them signed and refuses one past 2 GiB itself. The
+ * Refuses an AFP 2 write that would end past AFP_MAX_AFP2_FILESIZE. The
  * fork is dirty after each chunk the server acknowledges.
  *
  * @param[in]     volume        volume of the fork
@@ -915,8 +968,8 @@ int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
  * @param[in]     offset        byte offset to write at
  * @param[in,out] fp            the open fork
  * @param[out]    totalwritten  bytes written, also when a chunk fails
- * @returns 0, or a negative errno, -EFBIG on AFP 2 at 4 GiB and -EIO for a
- *          handle without a fork
+ * @returns 0, or a negative errno, -EFBIG for that AFP 2 write and -EIO for
+ *          a handle without a fork
  */
 int ll_write(struct afp_volume * volume,
              const char *data, size_t size, off_t offset,
@@ -946,16 +999,12 @@ int ll_write(struct afp_volume * volume,
         return -EIO;
     }
 
-    /* FPWrite's offset and its reply's are 32 bits, so a write that reaches
-     * 4 GiB can neither be addressed nor acknowledged. */
     if (volume->server->using_version->av_number < 30
-            && (uint64_t) offset + size >= AFP_MAX_AFP2_FILESIZE) {
+            && (uint64_t) offset + size > AFP_MAX_AFP2_FILESIZE) {
         return -EFBIG;
     }
 
-    /* Get a lock */
     if (ll_handle_locking(volume, fp->forkid, offset, size)) {
-        /* There was an irrecoverable error when locking */
         err = EBUSY;
         goto error;
     }
@@ -973,7 +1022,6 @@ int ll_write(struct afp_volume * volume,
             sizetowrite = size - *totalwritten;
         }
 
-        /* Defensive check: never send a zero-byte write */
         if (sizetowrite == 0) {
             log_for_client(NULL, AFPFSD, LOG_ERR,
                            "ll_write: sizetowrite is 0, aborting");
@@ -1006,11 +1054,10 @@ int ll_write(struct afp_volume * volume,
             goto error;
 
         case kFPLockErr:
-        case kFPMiscErr:
-        case kFPParamErr:
-            err = EINVAL;
+            err = EBUSY;
             goto error;
 
+        /* Every other answer, and a request that failed or timed out. */
         default:
             err = EIO;
             goto error;
@@ -1039,7 +1086,6 @@ int ll_write(struct afp_volume * volume,
     }
 
     if (ll_handle_unlocking(volume, fp->forkid, offset, size)) {
-        /* Somehow, we couldn't unlock the range. */
         err = EIO;
         goto error;
     }

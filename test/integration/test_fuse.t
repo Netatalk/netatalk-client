@@ -19,6 +19,7 @@ use File::Spec;
 use Fcntl        qw(O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_SYNC O_DSYNC);
 use Getopt::Long qw(GetOptions);
 use IO::Handle;
+use Time::HiRes ();
 
 # O_DIRECT keeps the kernel's page cache out of a transfer, so every byte
 # crosses into afpfsd. $O_DIRECT is 0 where Fcntl does not define O_DIRECT.
@@ -195,7 +196,9 @@ sub syscall_nr {
 my $copy_file_range_nr = syscall_nr(x86_64 => 326, aarch64 => 285);
 my $setxattr_nr        = syscall_nr(x86_64 => 188, aarch64 => 5);
 my $removexattr_nr     = syscall_nr(x86_64 => 197, aarch64 => 14);
+my $mknodat_nr         = syscall_nr(x86_64 => 259, aarch64 => 33);
 my $SYSCALL_SKIP       = 'system calls by number need a 64-bit Perl on x86_64 or aarch64 Linux';
+my $SETATTR_SKIP       = "macOS's combined setattr reports a refused change as done";
 
 # Run copy_file_range(2) of $len bytes between two handles, at their file
 # offsets or at the given ones. Perl has no builtin, so the call goes by its
@@ -1066,5 +1069,346 @@ mount_or_bail(
 }
 
 unmount_or_bail('fuse_flush_afp30: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_truncate_path: truncate(2) by path sets the length asked, of a file
+# and of its resource fork, and fails for a file the server will not open
+# for writing, which keeps its length; a resource fork set as an extended
+# attribute ends where the value does.
+# -----------------------------------------------------------------------
+mount_or_bail('fuse_truncate_path: authenticated mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+
+{
+    my $path = "$mnt_dir/truncate_path.txt";
+    my $fork = "$mnt_dir/.AppleDouble/truncate_path.txt";
+    write_bytes($path, 4096);
+    ok(truncate($path, 100), 'fuse_truncate_path: truncate(2) by path to 100 succeeds');
+    is(-s $path, 100, 'fuse_truncate_path: the file is 100 bytes long');
+
+    write_bytes($fork, 4096);
+    ok(truncate($fork, 1024), "fuse_truncate_path: truncate(2) of a resource fork's path succeeds");
+    is(-s $fork, 1024, 'fuse_truncate_path: the resource fork is 1024 bytes long');
+
+  SKIP: {
+        skip $SYSCALL_SKIP, 1 unless $setxattr_nr;
+        my $named = "$mnt_dir/truncate_xattr.txt";
+        write_bytes($named, 0);
+        set_resource_fork($named, 'r' x 64);
+        set_resource_fork($named, 's' x 8);
+        is(-s "$mnt_dir/.AppleDouble/truncate_xattr.txt", 8,
+           'fuse_truncate_path: a shorter resource fork set as an extended attribute keeps no old tail');
+        unlink $named;
+    }
+
+    write_bytes($path, 4096);
+    chmod 0444, $path or BAIL_OUT("Cannot chmod $path: $!");
+    my $truncated = truncate($path, 0);
+    my $denied    = $!{EACCES};
+    ok(!$truncated && $denied,
+       'fuse_truncate_path: truncate(2) of a file the server will not open for writing fails with EACCES');
+    # The sleep outlasts the kernel's attribute cache, so stat(2) asks the
+    # server.
+    sleep 2;
+    is(-s $path, 4096, 'fuse_truncate_path: that file keeps its length');
+    chmod 0644, $path;
+    unlink $path;
+}
+
+unmount_or_bail('fuse_truncate_path: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_unlink_busy: unlink(2) of a file another session holds open fails
+# with EBUSY where the server refuses the delete, as Netatalk before 4.6
+# does, and succeeds once that session closes the file.
+# -----------------------------------------------------------------------
+{
+    my $other = "$mnt_dir.other";
+    mkdir $other unless -d $other;
+    mount_or_bail('fuse_unlink_busy: authenticated mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    mount_or_bail('fuse_unlink_busy: a second mount succeeds',      'mount_afpfs', $AFP_AUTH_URL, $other);
+    my $path   = "$mnt_dir/unlink_busy.txt";
+    my $before = request_counts();
+    write_bytes($path, 16);
+    # This mount's release goes first: libfuse renames a file it holds open
+    # instead of deleting it.
+    counts_after_release($before, 1);
+    open(my $held, '<', "$other/unlink_busy.txt")
+      or BAIL_OUT("Cannot open the file through the second mount: $!");
+    my $removed = unlink $path;
+    my $busy    = $!{EBUSY};
+    close $held;
+
+  SKIP: {
+        skip 'the server deletes a file another session holds open', 2 if $removed && !-e $path;
+        ok($busy, 'fuse_unlink_busy: unlink(2) of a file another session holds open fails with EBUSY');
+
+        # The other session's release reaches its server after close(2).
+        my $gone = 0;
+
+        for (1 .. 50) {
+            if (unlink $path) {
+                $gone = 1;
+                last;
+            }
+
+            select(undef, undef, undef, 0.1);
+        }
+
+        ok($gone, 'fuse_unlink_busy: unlink(2) succeeds once the other session closes the file');
+    }
+
+    is(system('afpc', 'fs', 'unmount', $other), 0, 'fuse_unlink_busy: the second mount unmounts');
+    rmdir $other;
+    unmount_or_bail('fuse_unlink_busy: unmount succeeds');
+}
+
+# -----------------------------------------------------------------------
+# fuse_owner: without the common mapping every file shows the session's
+# owner and group, and the server's own are unknown: chown(2) to those
+# shown sends no change, and to another owner fails with EPERM.
+# -----------------------------------------------------------------------
+mount_or_bail('fuse_owner: authenticated mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+
+{
+    my $path = "$mnt_dir/owner.txt";
+    write_bytes($path, 16);
+    my @st     = stat $path;
+    my $before = settled_counts();
+    ok(chown($st[4], $st[5], $path), 'fuse_owner: chown(2) to the owner and group shown succeeds');
+    my $after = request_counts();
+    is(request_delta($before, $after, 'afpSetFileDirParms'), 0,
+       'fuse_owner: chown(2) to the owner and group shown sends no change');
+    my $changed = chown(65534, -1, $path);
+    my $denied  = $!{EPERM};
+  SKIP: {
+        skip $SETATTR_SKIP, 1 if $^O eq 'darwin';
+        ok(!$changed && $denied, 'fuse_owner: chown(2) to another owner fails with EPERM');
+    }
+    unlink $path;
+}
+
+unmount_or_bail('fuse_owner: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_owner_common: with the common mapping chown(2) of a file and of a
+# directory to an owner or a group the server keeps fails with EPERM, and
+# the object keeps both.
+# -----------------------------------------------------------------------
+my @common_mount = ('afpc', 'fs', 'mount', '-u', $AFP_USER, '-p', $AFP_PASS, '-m', 'common');
+mount_or_bail(
+              'fuse_owner_common: a mount with the common mapping succeeds',
+              @common_mount, "$AFP_HOST:$AFP_VOL", $mnt_dir
+);
+
+{
+    my $file = "$mnt_dir/owner_common.txt";
+    my $dir  = "$mnt_dir/owner_common.dir";
+    write_bytes($file, 16);
+    mkdir $dir or BAIL_OUT("Cannot create $dir: $!");
+
+    for my $object (['file', $file], ['directory', $dir]) {
+        my ($kind, $path) = @$object;
+        my @st      = stat $path;
+        my $changed = chown(65534, -1, $path);
+        my $denied  = $!{EPERM};
+        my $group   = chown(-1, 65534, $path);
+        my $refused = $!{EPERM};
+      SKIP: {
+            skip $SETATTR_SKIP, 2 if $^O eq 'darwin';
+            ok(!$changed && $denied,
+               "fuse_owner_common: chown(2) of a $kind to an owner the server keeps fails with EPERM");
+            ok(!$group && $refused,
+               "fuse_owner_common: chown(2) of a $kind to a group the server keeps fails with EPERM");
+        }
+        # The sleep outlasts the kernel's attribute cache, so stat(2) asks
+        # the server.
+        sleep 2;
+        my @now = stat $path;
+        ok($now[4] == $st[4] && $now[5] == $st[5], "fuse_owner_common: the $kind keeps its owner and group");
+    }
+
+    unlink $file;
+    rmdir $dir;
+}
+
+unmount_or_bail('fuse_owner_common: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_chmod_other: chmod(2) of a file another user owns fails with EPERM,
+# where Netatalk answers the change with success and keeps the mode.
+# -----------------------------------------------------------------------
+my $other_owned = "$mnt_dir/chmod_other.txt";
+mount_or_bail('fuse_chmod_other: authenticated mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+write_bytes($other_owned, 16);
+chmod 0644, $other_owned or BAIL_OUT("Cannot chmod $other_owned: $!");
+unmount_or_bail('fuse_chmod_other: unmount succeeds');
+mount_or_bail('fuse_chmod_other: guest mount succeeds', 'mount_afpfs', $AFP_GUEST_URL, $mnt_dir);
+
+{
+    my $changed = chmod 0600, $other_owned;
+    my $denied  = $!{EPERM};
+    my $setuid  = chmod 04644, $other_owned;
+    my $refused = $!{EPERM};
+  SKIP: {
+        skip $SETATTR_SKIP, 2 if $^O eq 'darwin';
+        ok(!$changed && $denied,  'fuse_chmod_other: chmod(2) of a file another user owns fails with EPERM');
+        ok(!$setuid  && $refused, 'fuse_chmod_other: chmod(2) that adds the set-user-ID bit alone fails with EPERM');
+    }
+    # The sleep outlasts the kernel's attribute cache, so stat(2) asks the
+    # server.
+    sleep 2;
+    is((stat $other_owned)[2] & 07777, 0644, 'fuse_chmod_other: the file keeps its mode');
+}
+
+unmount_or_bail('fuse_chmod_other: guest unmount succeeds');
+mount_or_bail('fuse_chmod_other: authenticated mount for the cleanup succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+unlink $other_owned;
+unmount_or_bail('fuse_chmod_other: unmount after the cleanup succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_mtime_kept: a mode, owner or Finder info change keeps the
+# modification time, as cp -p, rsync -a and tar -x expect after they set
+# it. The server stamps its clock on a change that carries no time.
+# -----------------------------------------------------------------------
+mount_or_bail('fuse_mtime_kept: authenticated mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+
+{
+    my $when = 1000000000;
+    my $file = "$mnt_dir/mtime_kept.txt";
+    my $dir  = "$mnt_dir/mtime_kept.dir";
+    write_bytes($file, 16);
+    mkdir $dir or BAIL_OUT("Cannot create $dir: $!");
+
+    utime $when, $when, $file or BAIL_OUT("Cannot set the time of $file: $!");
+    chmod 0600, $file or BAIL_OUT("Cannot chmod $file: $!");
+    is((stat $file)[9], $when, 'fuse_mtime_kept: chmod(2) of a file keeps its modification time');
+
+    utime $when, $when, $dir or BAIL_OUT("Cannot set the time of $dir: $!");
+    chmod 0750, $dir or BAIL_OUT("Cannot chmod $dir: $!");
+    is((stat $dir)[9], $when, 'fuse_mtime_kept: chmod(2) of a directory keeps its modification time');
+
+  SKIP: {
+        skip $SYSCALL_SKIP, 1 unless $setxattr_nr;
+        my $name = 'user.com.apple.FinderInfo';
+        my $info = 'TEXTttxt' . ("\0" x 24);
+        utime $when, $when, $file or BAIL_OUT("Cannot set the time of $file: $!");
+        syscall($setxattr_nr, $file, $name, $info, length $info, 0) == 0
+          or BAIL_OUT("Cannot set the Finder info of $file: $!");
+        is((stat $file)[9], $when, 'fuse_mtime_kept: a Finder info change keeps the modification time');
+    }
+
+    # cp -p creates the copy without the group's and others' bits, then
+    # gives it the source's mode.
+    my $copy = "$mnt_dir/mtime_kept.copy";
+    chmod 0640, $file or BAIL_OUT("Cannot chmod $file: $!");
+    utime $when, $when, $file or BAIL_OUT("Cannot set the time of $file: $!");
+    is(system('cp', '-p', $file, $copy), 0,     'fuse_mtime_kept: cp -p succeeds');
+    is((stat $copy)[9],                  $when, 'fuse_mtime_kept: cp -p keeps the modification time');
+    unlink $file, $copy;
+    rmdir $dir;
+}
+
+unmount_or_bail('fuse_mtime_kept: unmount succeeds');
+mount_or_bail(
+              'fuse_mtime_kept: a mount with the common mapping succeeds',
+              @common_mount, "$AFP_HOST:$AFP_VOL", $mnt_dir
+);
+
+{
+    my $when = 1000000000;
+    my $file = "$mnt_dir/mtime_kept.owner";
+    write_bytes($file, 16);
+    utime $when, $when, $file or BAIL_OUT("Cannot set the time of $file: $!");
+    ok(!chown(65534, -1, $file), 'fuse_mtime_kept: chown(2) to an owner the server keeps fails');
+    # The sleep outlasts the kernel's attribute cache, so stat(2) asks the
+    # server.
+    sleep 2;
+    is((stat $file)[9], $when, 'fuse_mtime_kept: that owner request keeps the modification time');
+    unlink $file;
+}
+
+unmount_or_bail('fuse_mtime_kept: unmount of the common mount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_create_mode: a file or a directory created through the mount has the
+# mode the create asked for, also a file without the owner's write
+# permission, which the creator still writes through its descriptor.
+# FPCreateFile and FPCreateDir carry no mode. A FIFO fails to create.
+# -----------------------------------------------------------------------
+mount_or_bail('fuse_create_mode: authenticated mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+
+{
+    my $old     = umask 077;
+    my $private = "$mnt_dir/create_mode.private";
+    my $before  = settled_counts();
+    sysopen(my $fh, $private, O_WRONLY | O_CREAT | O_EXCL, 0600) or BAIL_OUT("Cannot create $private: $!");
+    close $fh;
+    my $after = counts_after_release($before, 1);
+    is((stat $private)[2] & 07777, 0600, 'fuse_create_mode: a file created with mode 0600 has mode 0600');
+    is(request_delta($before, $after, 'afpSetFileDirParms'), 1,
+       'fuse_create_mode: the mode takes one FPSetFileDirParms');
+
+    umask 0;
+    my $readonly = "$mnt_dir/create_mode.readonly";
+    sysopen($fh, $readonly, O_WRONLY | O_CREAT | O_EXCL, 0444) or BAIL_OUT("Cannot create $readonly: $!");
+    my $written = syswrite($fh, 'data');
+    close $fh;
+    is($written,                    4,    'fuse_create_mode: the creator writes a file created with mode 0444');
+    is((stat $readonly)[2] & 07777, 0444, 'fuse_create_mode: that file has mode 0444');
+
+    umask 077;
+    my $dir = "$mnt_dir/create_mode.dir";
+    mkdir $dir, 0777 or BAIL_OUT("Cannot create $dir: $!");
+    is((stat $dir)[2] & 0777, 0700, 'fuse_create_mode: a directory created under umask 077 has mode 0700');
+
+  SKIP: {
+        skip $SYSCALL_SKIP, 1 unless $mknodat_nr;
+        my $node = "$mnt_dir/create_mode.node";
+        # AT_FDCWD, and a regular file's type bits; libfuse makes the file
+        # with fuse_create().
+        syscall($mknodat_nr, -100, $node, 0100640, 0) == 0
+          or BAIL_OUT("Cannot mknod $node: $!");
+        is((stat $node)[2] & 07777, 0600, 'fuse_create_mode: mknod(2) under umask 077 gives mode 0600');
+        unlink $node;
+    }
+
+    # AFP has no FIFOs.
+    my $fifo    = "$mnt_dir/create_mode.fifo";
+    my $made    = POSIX::mkfifo($fifo, 0644);
+    my $refused = $!{EPERM};
+    ok(!$made && $refused, 'fuse_create_mode: mkfifo(3) fails with EPERM');
+    ok(!-e $fifo,          'fuse_create_mode: and leaves no file');
+    unlink $fifo;
+
+    umask $old;
+    chmod 0644, $readonly;
+    unlink $private, $readonly;
+    rmdir $dir;
+}
+
+unmount_or_bail('fuse_create_mode: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_mount_time: ten mounts in a row each complete within 5 s. Every
+# mount closes its status connection from the connecting thread while the
+# loop thread waits on it; a daemon that sleeps on that takes 10 s more.
+# -----------------------------------------------------------------------
+{
+    my $slowest = 0;
+
+    for my $round (1 .. 10) {
+        my $start = Time::HiRes::time();
+        mount_or_bail(
+                      "fuse_mount_time: mount $round succeeds",
+                      'mount_afpfs', $AFP_AUTH_URL, $mnt_dir
+        );
+        my $elapsed = Time::HiRes::time() - $start;
+        $slowest = $elapsed if $elapsed > $slowest;
+        unmount_or_bail("fuse_mount_time: unmount $round succeeds");
+    }
+
+    cmp_ok($slowest, '<', 5,
+           sprintf('fuse_mount_time: the slowest of ten mounts took %.2f s', $slowest));
+}
 
 done_testing;

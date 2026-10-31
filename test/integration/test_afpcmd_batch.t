@@ -133,6 +133,50 @@ if (-e $test_path) {
 }
 
 # -----------------------------------------------------------------------
+# batch_overwrite: an upload over a longer file of the same name leaves the
+# new contents alone, without the old file's tail.
+# -----------------------------------------------------------------------
+{
+    my $name = "afpcmd_overwrite_$$.txt";
+    my $path = "$work_dir/$name";
+    open(my $long, '>', $path) or BAIL_OUT("Cannot create $path: $!");
+    print $long "first line\nsecond line\nthird line\n";
+    close $long;
+    is(system('afpcmd', $path, $AFP_URL), 0, 'batch_overwrite: the first upload succeeds');
+    open(my $short, '>', $path) or BAIL_OUT("Cannot rewrite $path: $!");
+    print $short "short\n";
+    close $short;
+    is(system('afpcmd', $path, $AFP_URL), 0, 'batch_overwrite: the upload over it succeeds');
+    unlink $path;
+    is(system('afpcmd', "$AFP_URL/$name", $work_dir), 0, 'batch_overwrite: the download succeeds');
+    my $got = '';
+
+    if (open(my $read, '<', $path)) {
+        $got = do { local $/; <$read> };
+        close $read;
+    }
+
+    is($got, "short\n", 'batch_overwrite: the file holds the second upload alone');
+    unlink $path;
+    open(my $afpcmd, '|-', "afpcmd '$AFP_URL' > /dev/null 2>&1")
+      or BAIL_OUT("Cannot run afpcmd: $!");
+    print $afpcmd "rm $name\nquit\n";
+    close $afpcmd;
+}
+
+# -----------------------------------------------------------------------
+# batch_read_error: an upload whose local read fails exits non-zero. A read
+# of /proc/self/mem at offset 0 fails with EIO.
+# -----------------------------------------------------------------------
+{
+    isnt(system('afpcmd', '/proc/self/mem', $AFP_URL), 0, 'batch_read_error: the upload exits non-zero');
+    open(my $afpcmd, '|-', "afpcmd '$AFP_URL' > /dev/null 2>&1")
+      or BAIL_OUT("Cannot run afpcmd: $!");
+    print $afpcmd "rm mem\nquit\n";
+    close $afpcmd;
+}
+
+# -----------------------------------------------------------------------
 # recursive_macos_round_trip
 # -----------------------------------------------------------------------
 

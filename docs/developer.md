@@ -611,7 +611,7 @@ afpcmd commands map to stateless library operations:
 | disconnect | afp_sl_detach() | Detach from volume |
 | ls/dir | afp_sl_readdir() | List directory contents |
 | get | afp_sl_stat() + afp_sl_open() + afp_sl_read() + afp_sl_close() | Download files |
-| put | afp_sl_creat() + afp_sl_open() + afp_sl_write() + afp_sl_close() | Upload files |
+| put | afp_sl_creat() + afp_sl_open() + afp_sl_write() + afp_sl_close(), then afp_sl_truncate() of a file the create found | Upload files |
 | rm | afp_sl_unlink() | Delete files |
 | mkdir | afp_sl_mkdir() | Create directories |
 | rmdir | afp_sl_rmdir() | Remove directories |

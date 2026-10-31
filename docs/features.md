@@ -48,7 +48,9 @@ This is where all the files appear as the user that logged in.  This would
 typically be used where the databases are separate, and one user expects to
 be able to read/write all the files he sees.  This can get confusing, since
 any files that aren't his will appear to be owned by him, but writing to
-them will result in an EPERM.
+them will result in an EACCES. A chown to any owner or group but the
+logged-in user's changes nothing, as the server's ids are unknown: it
+fails with EPERM, which macOS's combined setattr ignores.
 
 ### Named mapping
 
@@ -82,7 +84,8 @@ The exact manner of storage is determined by the client and operating system.
 The only desktop function that's actually implemented is comments.  For file
 /dir/foo, they can be found in /dir/.AppleDouble/file.comment
 
-Permissions for the comment are the same as the data fork.
+Permissions for the comment are the same as the data fork. A comment
+holds at most 199 bytes, and Netatalk reads back the first 128.
 
 1. Catalog searching
 2. Icon searching
@@ -237,8 +240,10 @@ Netatalk Client has never been used with Mac OS 8 and earlier versions, so there
 
 This speaks AFP 2.1 or 2.2, which presents certain restrictions, such as:
 
-- smaller limits on file and disk sizes (4GB)
-  - creating files larger than 2GB isn't possible and isn't handled properly
+- smaller limits on file and disk sizes
+  - a file holds at most 2 GiB less one byte: a write or a length past
+    that fails with EFBIG, and a read of a file longer than 2 GiB fails
+    at 2 GiB with EOVERFLOW
   - 'df' will report a max of 4GB.
 - no support for Unix privileges; all files are reported as 0600, directories
   as 0700.

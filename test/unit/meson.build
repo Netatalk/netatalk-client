@@ -346,3 +346,113 @@ test(
     protocol: 'tap',
     verbose: true,
 )
+
+dsi_recv_test = executable(
+    'test_dsi_recv',
+    sources: ['test_dsi_recv.c'],
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'DSI receive path',
+    dsi_recv_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+status_text_test = executable(
+    'test_status_text',
+    sources: ['test_status_text.c'],
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'server status text',
+    status_text_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+appledouble_paths_test = executable(
+    'test_appledouble_paths',
+    sources: ['test_appledouble_paths.c'],
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'AppleDouble path translation',
+    appledouble_paths_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+send_failures_test = executable(
+    'test_send_failures',
+    sources: ['test_send_failures.c'],
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'a failed send is a failure',
+    send_failures_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+fork_records_test = executable(
+    'test_fork_records',
+    sources: files(
+        'afp_fake_server.c',
+        'test_fork_records.c',
+    ),
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'open-fork records',
+    fork_records_test,
+    args: ['--tap'],
+    # Bound at load: lazy binding would run on the stack a case dirties.
+    env: ['LD_BIND_NOW=1', 'DYLD_BIND_AT_LAUNCH=1'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+metadata_requests_test = executable(
+    'test_metadata_requests',
+    sources: files(
+        'afp_fake_server.c',
+        'test_metadata_requests.c',
+    ),
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'create, truncate and metadata requests',
+    metadata_requests_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)

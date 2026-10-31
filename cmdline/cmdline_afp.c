@@ -2,6 +2,7 @@
     Copyright (C) 1987-2002 Free Software Foundation, Inc.
     Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
     Copyright (C) 2024-2026 Daniel Markstedt <daniel@mindani.net>
+    Copyright (C) 2026 Andy Lemin (andylemin)
 
     This is based on readline's fileman.c example, which is very useful.
     The original fileman.c carries the following notice:
@@ -234,6 +235,36 @@ static const char *display_text(const char *text, char *buf, size_t size)
 {
     cmdline_sanitize_text(text, buf, size);
     return buf;
+}
+
+/*!
+ * @brief A remote path or name for a message, its controls escaped
+ *
+ * The text lives in a static buffer until the next call, so a recursive
+ * copy's frames stay small; afpcmd runs every command on one thread.
+ *
+ * @param[in] path  the remote path or name
+ * @returns the escaped text
+ */
+static const char *remote_display(const char *path)
+{
+    static char display[AFPC_MAX_UTF8_PATH_STORAGE * 4];
+    return display_text(path, display, sizeof(display));
+}
+
+/*!
+ * @brief A local path for a message, its controls escaped
+ *
+ * The text lives in a static buffer until the next call, as
+ * remote_display()'s does.
+ *
+ * @param[in] path  the local path
+ * @returns the escaped text
+ */
+static const char *local_display(const char *path)
+{
+    static char display[PATH_MAX * 4];
+    return display_text(path, display, sizeof(display));
 }
 
 /* Metadata sidecars are an implementation detail of the selected local
@@ -1678,6 +1709,17 @@ out:
     return ret == 0 ? 0 : -1;
 }
 
+/*!
+ * @brief Upload a local file to its path on the volume
+ *
+ * A file at the path is overwritten and ends where a transfer that succeeds
+ * does; a failed one leaves what it wrote. Metadata follows the transfer mode.
+ *
+ * @param[in]  local_filename     path of the local file
+ * @param[in]  server_fullname    path of the file on the volume
+ * @param[out] bytes_transferred  bytes written, or NULL
+ * @returns 0, or a negative value after printing why
+ */
 static int upload_file(const char *local_filename, const char *server_fullname,
                        unsigned long long *bytes_transferred)
 {
@@ -1689,10 +1731,10 @@ static int upload_file(const char *local_filename, const char *server_fullname,
 #define PUT_BUFSIZE 102400
     char buf[PUT_BUFSIZE];
     ssize_t amount_read;
-    unsigned int written;
     int ret = -1;
     struct timeval starttv, endtv;
     int file_opened = 0;
+    int created;
     localfd = open(local_filename, O_RDONLY);
 
     if (localfd < 0) {
@@ -1728,45 +1770,24 @@ static int upload_file(const char *local_filename, const char *server_fullname,
     }
 
     gettimeofday(&starttv, NULL);
-    /* Create remote file first (with permission bits only, not file type)
-     * We mask with 0777 to ensure we only pass permission bits, not file type bits (like S_IFREG)
-     * which could confuse the server or midlevel API */
-    ret = afp_sl_creat(&vol_id, server_fullname, NULL, localstat.st_mode & 0777);
+    /* The open writes whatever the local file's mode, which the metadata
+     * copy then gives the file, unless -M none. */
+    ret = afp_sl_creat(&vol_id, server_fullname, NULL,
+                       (localstat.st_mode & 0777) | S_IRUSR | S_IWUSR);
+    created = ret == 0;
 
-    if (ret != 0) {
-        if (ret == -EEXIST) {
-            if (verbose_mode) {
-                printf("    File exists, truncating before overwriting...\n");
-            }
+    /* A directory the session may not create in can still hold a file at
+     * the path that it may write. */
+    if (ret != 0 && ret != -EEXIST && ret != -EACCES) {
+        char display_remote[AFPC_MAX_UTF8_PATH_STORAGE * 4];
+        printf("Could not create remote file \"%s\" (result=%d)\n",
+               display_text(server_fullname, display_remote,
+                            sizeof(display_remote)), ret);
+        goto out;
+    }
 
-            ret = afp_sl_truncate(&vol_id, server_fullname, NULL, 0);
-
-            if (ret != 0) {
-                char display_remote[AFPC_MAX_UTF8_PATH_STORAGE * 4];
-                printf("Could not truncate existing file \"%s\" (result=%d)\n",
-                       display_text(server_fullname, display_remote,
-                                    sizeof(display_remote)), ret);
-                goto out;
-            }
-        } else if (ret == -EACCES) {
-            /* Sometimes ACCESS is returned if file exists but is read-only.
-               Try to truncate/overwrite anyway. */
-            ret = afp_sl_truncate(&vol_id, server_fullname, NULL, 0);
-
-            if (ret != 0) {
-                char display_remote[AFPC_MAX_UTF8_PATH_STORAGE * 4];
-                printf("Permission denied creating file \"%s\"\n",
-                       display_text(server_fullname, display_remote,
-                                    sizeof(display_remote)));
-                goto out;
-            }
-        } else {
-            char display_remote[AFPC_MAX_UTF8_PATH_STORAGE * 4];
-            printf("Could not create remote file \"%s\" (result=%d)\n",
-                   display_text(server_fullname, display_remote,
-                                sizeof(display_remote)), ret);
-            goto out;
-        }
+    if (ret == -EEXIST && verbose_mode) {
+        printf("    File exists, overwriting...\n");
     }
 
     ret = afp_sl_open(&vol_id, server_fullname, NULL, &fileid, O_RDWR);
@@ -1786,16 +1807,18 @@ static int upload_file(const char *local_filename, const char *server_fullname,
             printf("Could not open remote file for writing (result=%d)\n", ret);
         }
 
-        /* If we created the file but failed to open it, try to remove it to avoid leaving
-           a partial/inaccessible file and potentially confusing the server state */
-        afp_sl_unlink(&vol_id, server_fullname, NULL);
+        /* An open without an answer may still open the file. */
+        if (created && ret != -ETIMEDOUT) {
+            afp_sl_unlink(&vol_id, server_fullname, NULL);
+        }
+
         goto out;
     }
 
     file_opened = 1;
 
-    /* Upload loop: read from local, write to remote */
     while ((amount_read = read(localfd, buf, PUT_BUFSIZE)) > 0) {
+        unsigned int written = 0;
         int api_ret = afp_sl_write(&vol_id, fileid, 0, offset, amount_read, &written,
                                    buf);
 
@@ -1813,6 +1836,7 @@ static int upload_file(const char *local_filename, const char *server_fullname,
     if (amount_read < 0) {
         printf("Error reading local file\n");
         perror("read");
+        ret = -1;
         goto out;
     }
 
@@ -1826,6 +1850,20 @@ static int upload_file(const char *local_filename, const char *server_fullname,
                display_text(server_fullname, display_remote,
                             sizeof(display_remote)), ret);
         goto out;
+    }
+
+    /* A found file is cut to the upload's length only now: emptied at the
+     * open, a local file that is that file would read nothing. */
+    if (!created) {
+        ret = afp_sl_truncate(&vol_id, server_fullname, NULL, total_written);
+
+        if (ret != 0) {
+            char display_remote[AFPC_MAX_UTF8_PATH_STORAGE * 4];
+            printf("Could not truncate remote file \"%s\" (result=%d)\n",
+                   display_text(server_fullname, display_remote,
+                                sizeof(display_remote)), ret);
+            goto out;
+        }
     }
 
     ret = copy_local_metadata_to_remote(local_filename, server_fullname,
@@ -1871,10 +1909,58 @@ out:
         close(localfd);
     }
 
-    /* Note: We don't delete the partially created remote file on error */
     return ret;
 }
 
+/*!
+ * @brief Make a remote directory, or take the directory at its path
+ *
+ * One it makes gives its owner full access until the metadata copy gives
+ * it the mode.
+ *
+ * @param[in] path  path of the directory on the volume
+ * @param[in] mode  the mode the copy is to give it
+ * @returns 0, or -1 after printing why
+ */
+static int make_remote_directory(const char *path, mode_t mode)
+{
+    struct stat st;
+    int stat_ret = 0;
+    int ret = afp_sl_mkdir(&vol_id, path, NULL, (mode & 0777) | S_IRWXU);
+
+    if (ret == -EEXIST) {
+        stat_ret = afp_sl_stat(&vol_id, path, NULL, &st);
+
+        if (stat_ret == 0 && S_ISDIR(st.st_mode)) {
+            return 0;
+        }
+
+        printf("Remote path %s: %s\n", remote_display(path),
+               stat_ret != 0 ? "exists and cannot be read"
+               : "exists and is not a directory");
+        return -1;
+    }
+
+    if (ret != 0) {
+        printf("Failed to create remote directory %s (error: %d)\n",
+               remote_display(path), ret);
+        return -1;
+    }
+
+    return 0;
+}
+
+/*!
+ * @brief Upload a local directory tree to its path on the volume
+ *
+ * A directory it creates gives its owner full access until the metadata
+ * copy, unless -M none, gives it the local mode; a file there fails it.
+ *
+ * @param[in]  local_dirname       path of the local directory
+ * @param[in]  server_parent_path  path of the directory on the volume
+ * @param[out] total_bytes         bytes written, or NULL
+ * @returns 0, or -1 after printing why
+ */
 static int upload_directory(const char *local_dirname,
                             const char *server_parent_path,
                             unsigned long long *total_bytes)
@@ -1886,45 +1972,29 @@ static int upload_directory(const char *local_dirname,
     int ret = 0;
     unsigned long long bytes = 0;
 
+    if (total_bytes) {
+        *total_bytes = 0;
+    }
+
     if (lstat(local_dirname, &dir_stat) != 0) {
         perror("lstat");
         return -1;
     }
 
     if (S_ISLNK(dir_stat.st_mode)) {
-        char display_local[PATH_MAX * 4];
         printf("Symlinks are not supported: %s\n",
-               display_text(local_dirname, display_local, sizeof(display_local)));
+               local_display(local_dirname));
         return -1;
     }
 
-    ret = afp_sl_mkdir(&vol_id, server_parent_path, NULL,
-                       dir_stat.st_mode & 0777);
-
-    if (ret != 0 && ret != -EEXIST) {
-        char display_remote[AFPC_MAX_UTF8_PATH_STORAGE * 4];
-        printf("Failed to create remote directory %s (error: %d)\n",
-               display_text(server_parent_path, display_remote,
-                            sizeof(display_remote)), ret);
-
-        if (total_bytes) {
-            *total_bytes = 0;
-        }
-
+    if (make_remote_directory(server_parent_path, dir_stat.st_mode) < 0) {
         return -1;
     }
 
-    /* An existing destination directory is a successful merge target. */
-    ret = 0;
     dir = opendir(local_dirname);
 
     if (!dir) {
         perror("opendir");
-
-        if (total_bytes) {
-            *total_bytes = 0;
-        }
-
         return -1;
     }
 
@@ -1941,10 +2011,7 @@ static int upload_directory(const char *local_dirname,
         char *server_path = join_remote_path(server_parent_path, entry->d_name);
 
         if (!local_path || !server_path) {
-            char display_name[AFPC_MAX_UTF8_PATH_STORAGE * 4];
-            printf("Path too long: %s\n",
-                   display_text(entry->d_name, display_name,
-                                sizeof(display_name)));
+            printf("Path too long: %s\n", local_display(entry->d_name));
             free(local_path);
             free(server_path);
             ret = -1;
@@ -1960,9 +2027,8 @@ static int upload_directory(const char *local_dirname,
         }
 
         if (S_ISLNK(st.st_mode)) {
-            char display_local[PATH_MAX * 4];
             printf("Symlinks are not supported: %s\n",
-                   display_text(local_path, display_local, sizeof(display_local)));
+                   local_display(local_path));
             free(local_path);
             free(server_path);
             ret = -1;
@@ -1995,9 +2061,8 @@ static int upload_directory(const char *local_dirname,
 
     if (copy_local_metadata_to_remote(local_dirname, server_parent_path,
                                       &dir_stat) < 0) {
-        char display_local[PATH_MAX * 4];
         printf("Could not preserve directory metadata for %s\n",
-               display_text(local_dirname, display_local, sizeof(display_local)));
+               local_display(local_dirname));
         ret = -1;
     }
 
@@ -3539,38 +3604,30 @@ static char *quote_copy_argument(const char *path)
     return output;
 }
 
+/*!
+ * @brief Copy a directory tree within the volume
+ *
+ * A copy the call creates gives its owner full access while its entries go
+ * in; the metadata copy, unless -M none, then gives it the source's mode.
+ *
+ * @param[in] source       path of the source directory
+ * @param[in] target       path of the copy
+ * @param[in] source_stat  the source's attributes
+ * @returns 0, or -1
+ */
 static int copy_remote_tree(const char *source, const char *target,
                             const struct stat *source_stat)
 {
     struct afpc_file_info *entries = NULL;
     unsigned int count = 0;
     int ret = 0;
-    int mkdir_ret = afp_sl_mkdir(&vol_id, target, NULL,
-                                 source_stat->st_mode & 0777);
 
-    if (mkdir_ret != 0 && mkdir_ret != -EEXIST) {
-        printf("Could not create directory %s (error: %d)\n", target, mkdir_ret);
+    if (make_remote_directory(target, source_stat->st_mode) < 0) {
         return -1;
     }
 
-    if (mkdir_ret == -EEXIST) {
-        struct stat target_stat;
-        int stat_ret = afp_sl_stat(&vol_id, target, NULL, &target_stat);
-
-        if (stat_ret != 0) {
-            printf("Could not stat existing copy target %s (error: %d)\n",
-                   target, stat_ret);
-            return -1;
-        }
-
-        if (!S_ISDIR(target_stat.st_mode)) {
-            printf("Copy target exists and is not a directory: %s\n", target);
-            return -1;
-        }
-    }
-
     if (remote_readdir_all(source, &entries, &count) != 0) {
-        printf("Could not read directory %s\n", source);
+        printf("Could not read directory %s\n", remote_display(source));
         return -1;
     }
 
@@ -3587,7 +3644,8 @@ static int copy_remote_tree(const char *source, const char *target,
         child_target = join_remote_path(target, entry->name);
 
         if (!child_source || !child_target) {
-            printf("Path too long while copying %s\n", entry->name);
+            printf("Path too long while copying %s\n",
+                   remote_display(entry->name));
             free(child_source);
             free(child_target);
             ret = -1;
@@ -3595,7 +3653,8 @@ static int copy_remote_tree(const char *source, const char *target,
         }
 
         if (S_ISLNK(entry->unixprivs.permissions)) {
-            printf("Symlinks are not supported: %s\n", child_source);
+            printf("Symlinks are not supported: %s\n",
+                   remote_display(child_source));
             ret = -1;
         } else if (S_ISDIR(entry->unixprivs.permissions)) {
             struct stat child_stat;
@@ -3625,7 +3684,8 @@ static int copy_remote_tree(const char *source, const char *target,
             target_len = strlen(quoted_target);
 
             if (source_len > SIZE_MAX - target_len - 2U) {
-                printf("Could not format copy arguments for %s\n", child_source);
+                printf("Could not format copy arguments for %s\n",
+                       remote_display(child_source));
                 free(quoted_source);
                 free(quoted_target);
                 free(child_source);
@@ -3665,11 +3725,54 @@ static int copy_remote_tree(const char *source, const char *target,
     free(entries);
 
     if (copy_remote_metadata(source, target, source_stat) < 0) {
-        printf("Could not preserve copied metadata for %s\n", source);
+        printf("Could not preserve copied metadata for %s\n",
+               remote_display(source));
         ret = -1;
     }
 
     return ret;
+}
+
+/*!
+ * @brief Whether a remote path lies in a directory, by the directory's node
+ *
+ * The path's bytes can name the directory another way: in another Unicode
+ * normalization, or in another case on a volume that ignores it.
+ *
+ * @param[in] path  the path, which need not exist
+ * @param[in] dir   the directory's attributes
+ * @returns 1 when a directory above path is dir, 0 when none is, or -1
+ *          without memory
+ */
+static int remote_path_within(const char *path, const struct stat *dir)
+{
+    char *parent = strdup(path);
+    char *slash;
+    int within = 0;
+
+    if (!parent) {
+        return -1;
+    }
+
+    while (!within && (slash = strrchr(parent, '/'))) {
+        struct stat st;
+
+        if (slash == parent) {
+            parent[1] = '\0';
+        } else {
+            *slash = '\0';
+        }
+
+        within = afp_sl_stat(&vol_id, parent, NULL, &st) == 0
+                 && st.st_ino == dir->st_ino;
+
+        if (slash == parent) {
+            break;
+        }
+    }
+
+    free(parent);
+    return within;
 }
 
 static int path_is_same_or_descendant(const char *parent, const char *candidate)
@@ -3693,6 +3796,15 @@ static int path_is_same_or_descendant(const char *parent, const char *candidate)
            && (candidate[parent_len] == '\0' || candidate[parent_len] == '/');
 }
 
+/*!
+ * @brief Copy a file or, with -r, a directory tree within the volume
+ *
+ * A target that names a directory receives the source under its own name,
+ * and the open empties a target file that exists.
+ *
+ * @param[in] arg  the command's arguments: [-r] source and target
+ * @returns 0, or a negative value
+ */
 int com_copy(char *arg)
 {
     char *source_path = NULL;
@@ -3701,6 +3813,7 @@ int com_copy(char *arg)
     char *server_target = NULL;
     struct stat source_stat;
     struct stat target_stat;
+    int created;
     unsigned int source_fid = 0, target_fid = 0;
     int ret = -1;
     unsigned long long offset = 0;
@@ -3736,7 +3849,8 @@ int com_copy(char *arg)
     }
 
     if (afp_sl_stat(&vol_id, server_source, NULL, &source_stat)) {
-        printf("Could not stat source file: %s\n", source_path);
+        printf("Could not stat source file: %s\n",
+               remote_display(source_path));
         goto out;
     }
 
@@ -3751,7 +3865,8 @@ int com_copy(char *arg)
 
         if (target_stat_ret == 0) {
             if (!S_ISDIR(target_stat.st_mode)) {
-                printf("Target exists and is not a directory: %s\n", target_path);
+                printf("Target exists and is not a directory: %s\n",
+                       remote_display(target_path));
                 goto out;
             }
 
@@ -3777,8 +3892,16 @@ int com_copy(char *arg)
             server_target = target_with_base;
         }
 
-        if (path_is_same_or_descendant(server_source, server_target)) {
+        ret = remote_path_within(server_target, &source_stat);
+
+        if (ret < 0) {
+            printf("Out of memory\n");
+            goto out;
+        }
+
+        if (ret || path_is_same_or_descendant(server_source, server_target)) {
             printf("Cannot copy a directory into itself\n");
+            ret = -1;
             goto out;
         }
 
@@ -3787,12 +3910,15 @@ int com_copy(char *arg)
     }
 
     if (S_ISLNK(source_stat.st_mode)) {
-        printf("Symlinks are not supported: %s\n", source_path);
+        printf("Symlinks are not supported: %s\n",
+               remote_display(source_path));
         goto out;
     }
 
-    if (afp_sl_stat(&vol_id, server_target, NULL,
-                    &target_stat) == 0 && S_ISDIR(target_stat.st_mode)) {
+    int target_stat_ret = afp_sl_stat(&vol_id, server_target, NULL,
+                                      &target_stat);
+
+    if (target_stat_ret == 0 && S_ISDIR(target_stat.st_mode)) {
         char *source_copy = strdup(source_path);
         const char *base;
         char *target_with_base;
@@ -3813,32 +3939,57 @@ int com_copy(char *arg)
 
         free(server_target);
         server_target = target_with_base;
+        target_stat_ret = afp_sl_stat(&vol_id, server_target, NULL,
+                                      &target_stat);
     }
 
-    if (afp_sl_open(&vol_id, server_source, NULL, &source_fid, O_RDONLY)) {
-        printf("Could not open source file: %s\n", source_path);
+    /* An existing target is emptied before the copy, which would empty a
+     * source that is the target. One the session may not look up, as in a
+     * drop box, is not the source it reads; another failed stat may be. */
+    if (target_stat_ret != 0 && target_stat_ret != -ENOENT
+            && target_stat_ret != -EACCES) {
+        printf("Could not stat target file: %s\n",
+               remote_display(server_target));
         goto out;
     }
 
-    ret = afp_sl_creat(&vol_id, server_target, NULL, source_stat.st_mode & 0777);
-
-    if (ret != 0) {
-        if (ret == -EEXIST) {
-            if (afp_sl_truncate(&vol_id, server_target, NULL, 0)) {
-                printf("Could not truncate target file\n");
-                goto out;
-            }
-        } else if (ret == -EACCES) {
-            printf("Permission denied creating target file\n");
-            goto out;
-        } else {
-            printf("Could not create target file: %d\n", ret);
-            goto out;
-        }
+    if (target_stat_ret == 0 && target_stat.st_ino == source_stat.st_ino) {
+        printf("%s and ", remote_display(server_source));
+        printf("%s are the same file\n", remote_display(server_target));
+        goto out;
     }
 
-    if (afp_sl_open(&vol_id, server_target, NULL, &target_fid, O_RDWR)) {
+    if (afp_sl_open(&vol_id, server_source, NULL, &source_fid, O_RDONLY)) {
+        printf("Could not open source file: %s\n",
+               remote_display(source_path));
+        goto out;
+    }
+
+    /* The open writes whatever the source's mode, which the metadata copy
+     * then gives the target, unless -M none. */
+    ret = afp_sl_creat(&vol_id, server_target, NULL,
+                       (source_stat.st_mode & 0777) | S_IRUSR | S_IWUSR);
+    created = ret == 0;
+
+    if (ret == -EACCES) {
+        printf("Permission denied creating target file\n");
+        goto out;
+    } else if (ret != 0 && ret != -EEXIST) {
+        printf("Could not create target file: %d\n", ret);
+        goto out;
+    }
+
+    ret = afp_sl_open(&vol_id, server_target, NULL, &target_fid,
+                      O_RDWR | (created ? 0 : O_TRUNC));
+
+    if (ret != 0) {
         printf("Could not open target file for writing\n");
+
+        /* An open without an answer may still open the file. */
+        if (created && ret != -ETIMEDOUT) {
+            afp_sl_unlink(&vol_id, server_target, NULL);
+        }
+
         goto out;
     }
 
@@ -3872,6 +4023,7 @@ int com_copy(char *arg)
         source_fid = 0;
         target_fid = 0;
         printf("Could not close files after copy\n");
+        ret = -1;
         goto out;
     }
 
