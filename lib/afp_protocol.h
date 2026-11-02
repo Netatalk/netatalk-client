@@ -84,8 +84,8 @@ typedef enum {
 /* Maximum length of a token, this is undocumented */
 #define AFP_TOKEN_MAX_LEN 256
 
-/* The maximum size of a file for AFP 2 */
-#define AFP_MAX_AFP2_FILESIZE (4294967296)
+/* AFP 2 offsets, counts and lengths are signed 32 bits */
+#define AFP_MAX_AFP2_FILESIZE (2147483647)
 
 /* AFP Reference: Constants > AFP Protocol Constants > Volume Attributes Bitmap */
 enum {
@@ -110,6 +110,12 @@ enum {
     kFPSoftCreate = 0,
     kFPHardCreate = 0x80
 };
+
+/* AFP Reference: Access Rights Bitmap, the owner bit of ua_permissions */
+#define kUserIsOwner 0x80000000U
+/* The session's read and write bits of ua_permissions */
+#define kUserCanRead 0x02000000U
+#define kUserCanWrite 0x04000000U
 
 /* AFP Reference: Constants > AFP Protocol Constants > File and Directory Bitmap */
 enum {

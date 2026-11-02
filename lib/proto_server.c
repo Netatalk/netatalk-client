@@ -53,12 +53,39 @@ time_t afp_date_to_unix(const struct afp_server *server, uint32_t date)
     return (time_t)seconds;
 }
 
+/*!
+ * @brief Convert a time to an AFP date
+ *
+ * A time past what AFP's signed 32 bits from 2000 hold takes the nearest
+ * date they hold but 0x80000000, the unset date.
+ *
+ * @param[in] server  the server, whose AFP 2 dates are its local time, or
+ *                    NULL
+ * @param[in] date    the time
+ * @returns the date in network order
+ */
 uint32_t afp_date_from_unix(const struct afp_server *server, time_t date)
 {
-    int64_t seconds = (int64_t)date - AD_DATE_DELTA;
+    int64_t seconds = (int64_t)date;
+
+    /* A time this far out is past AFP's dates either way, and the sums
+     * below cannot overflow. */
+    if (seconds > INT64_C(1) << 32) {
+        seconds = INT64_C(1) << 32;
+    } else if (seconds < -(INT64_C(1) << 32)) {
+        seconds = -(INT64_C(1) << 32);
+    }
+
+    seconds -= AD_DATE_DELTA;
 
     if (server_uses_local_time(server)) {
         seconds += server->time_offset;
+    }
+
+    if (seconds > INT32_MAX) {
+        seconds = INT32_MAX;
+    } else if (seconds <= INT32_MIN) {
+        seconds = INT32_MIN + 1;
     }
 
     return htonl((uint32_t)seconds);

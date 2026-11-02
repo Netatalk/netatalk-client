@@ -111,9 +111,9 @@ static int utest_appledouble_directory_translates(void)
 }
 
 /*!
- * @brief Names inside a path that end or start with it are regular
+ * @brief A name that ends or starts with .AppleDouble is a regular name
  *
- * chmod passes such a name on to the server.
+ * Inside a path, its mode, owner and time change through the setter.
  *
  * @returns 0, or the number of the step that failed
  */
@@ -123,17 +123,18 @@ static int utest_names_inside_a_path_are_regular(void)
     struct afp_volume volume;
     volume_open(&volume, &server);
 
-    if (appledouble_chmod(&volume, "/x.AppleDouble/y", 0640) != 0) {
+    if (appledouble_setattr(&volume, "/x.AppleDouble/y") != 0) {
         return 1;
     }
 
-    return appledouble_chmod(&volume, "/.AppleDoubleX/y", 0640) == 0 ? 0 : 2;
+    return appledouble_setattr(&volume, "/.AppleDoubleX/y") == 0 ? 0 : 2;
 }
 
 /*!
  * @brief A whole .AppleDouble component makes a pseudo-file
  *
- * It does after such a name too, and chmod refuses it.
+ * After such a name too, the pseudo-file refuses a change of mode, owner
+ * or time.
  *
  * @returns 0, or the number of the step that failed
  */
@@ -143,11 +144,11 @@ static int utest_appledouble_component_makes_a_pseudo_file(void)
     struct afp_volume volume;
     volume_open(&volume, &server);
 
-    if (appledouble_chmod(&volume, "/foo/.AppleDouble/bar", 0640) != -EPERM) {
+    if (appledouble_setattr(&volume, "/foo/.AppleDouble/bar") != -EPERM) {
         return 1;
     }
 
-    return appledouble_chmod(&volume, "/a.AppleDouble/.AppleDouble/x", 0640)
+    return appledouble_setattr(&volume, "/a.AppleDouble/.AppleDouble/x")
            == -EPERM ? 0 : 2;
 }
 

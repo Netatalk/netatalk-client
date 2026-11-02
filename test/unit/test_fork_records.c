@@ -152,13 +152,14 @@ static int utest_symlink_record_holds_the_fork_alone(void)
 }
 
 /*!
- * @brief A resource fork's truncation lists a record holding its fork
+ * @brief The record a resource fork's truncation lists is the open's
  *
- * It is listed while the pseudo-file's fork is truncated.
+ * The truncation opens the pseudo-file's resource fork as any open does,
+ * so its record names the file and the fork.
  *
  * @returns 0, or the number of the step that failed
  */
-static int utest_truncate_record_holds_the_fork_alone(void)
+static int utest_truncate_record_is_the_opens(void)
 {
     struct afp_fake_server fake;
     int rc;
@@ -182,7 +183,12 @@ static int utest_truncate_record_holds_the_fork_alone(void)
         return 3;
     }
 
-    return holds_fork_alone(&fake.listed) ? 0 : 4;
+    return fake.listed.forkid == AFP_FAKE_SERVER_FORK
+           && fake.listed.resource == AFP_META_RESOURCE
+           && fake.listed.writable && !fake.listed.dirty
+           && fake.listed.did == AFP_ROOT_DID
+           && !fake.listed.largelist_next
+           && strcmp(fake.listed.basename, "file") == 0 ? 0 : 4;
 }
 
 /*!
@@ -468,8 +474,8 @@ int main(int argc, char **argv)
              "a link's read lists a record holding its fork alone");
     TEST_int(utest_symlink_record_holds_the_fork_alone(), 0,
              "a link's creation lists a record holding its fork alone");
-    TEST_int(utest_truncate_record_holds_the_fork_alone(), 0,
-             "a resource fork's truncation lists a record holding its fork");
+    TEST_int(utest_truncate_record_is_the_opens(), 0,
+             "a resource fork's truncation lists the open's record");
     TEST_int(utest_target_filling_the_buffer_is_cut(), 0,
              "a link target filling the buffer is cut to fit it");
     TEST_int(utest_target_that_fits_precomposed_is_whole(), 0,

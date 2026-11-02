@@ -15,9 +15,6 @@ int ll_readdir(struct afp_volume * volume, const char *path,
 int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
                int resourcefork);
 
-int ll_zero_file(struct afp_volume * volume, unsigned short forkid,
-                 unsigned int resource);
-
 int ll_setfork_size(struct afp_volume * volume, unsigned short forkid,
                     unsigned int resource, uint64_t size);
 
@@ -34,6 +31,13 @@ int ll_handle_locking(struct afp_volume * volume, unsigned short forkid,
 int ll_write(struct afp_volume * volume,
              const char *data, size_t size, off_t offset,
              struct afp_file_info * fp, size_t *totalwritten);
+
+int ll_createfile(struct afp_volume * volume, unsigned int did,
+                  char *basename);
+
+int ll_openfork_errno(int rc);
+
+int ll_answer_errno(int rc);
 
 int ll_open(struct afp_volume * volume, const char *path, int flags,
             struct afp_file_info *fp);

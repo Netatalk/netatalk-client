@@ -462,28 +462,27 @@ error:
 }
 
 /*!
- * @brief Create a regular file for mknod(2)
+ * @brief Refuse mknod(2) of a FIFO, a socket or a device node
  *
- * @param[in] path  UTF-8 path of the new file
- * @param[in] mode  its mode
+ * AFP has none of them; libfuse sends a regular file's mknod(2) to
+ * fuse_create().
+ *
+ * @param[in] path  UTF-8 path of the node, for the log
+ * @param[in] mode  unused
  * @param[in] dev   unused
- * @returns 0, or a negative errno
+ * @returns -EPERM
  */
-static int fuse_mknod(const char *path, mode_t mode, dev_t dev _U_)
+static int fuse_mknod(const char *path, mode_t mode _U_, dev_t dev _U_)
 {
-    int ret = 0;
-    struct fuse_context * context = fuse_get_context();
-    struct afp_volume * volume = context->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** mknod of %s", path);
-    ret = ml_creat(volume, path, mode, NULL);
-    return ret;
+    return -EPERM;
 }
 
 /*!
  * @brief Create and open a file for open(2) with O_CREAT
  *
- * The handle records whether this create made the file, which the offload
- * requires of its destination.
+ * The handle records whether this create made the file, as the offload asks;
+ * a refused open removes the file, an unanswered one leaves it with its mode.
  *
  * @param[in]     path  UTF-8 path of the file
  * @param[in]     mode  its mode
@@ -498,41 +497,49 @@ static int fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** create of %s with mode 0%o, flags 0x%x", path, mode, fi->flags);
-    /* Create the file */
     ret = ml_creat(volume, path, mode, &created);
 
-    if (ret != 0 && ret != -EEXIST) {
-        /* Fatal error other than file exists */
+    /* Another client can take the name after the kernel's lookup: O_EXCL
+     * fails the create, and XNU retries osxfuse's O_EXCL creates as opens. */
+    if (ret != 0 && (ret != -EEXIST || (fi->flags & O_EXCL))) {
         return ret;
     }
 
     if (ret == -EEXIST) {
-        /* File already exists - this can happen on retry after a transient failure.
-         * Proceed to open the file; ml_open will handle O_TRUNC if needed. */
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                       "*** create: file exists, attempting to open anyway");
+                       "*** create: file exists, opening it");
     }
 
-    /* The open drops O_CREAT and O_EXCL, because ml_creat already created
-     * the file. A second FPCreateFile (hard create) of an existing file
-     * makes Time Capsule return kFPMiscErr on the next FPWriteExt. ml_open
-     * applies O_TRUNC to a file ml_creat found. */
+    /* The file exists, so the open sends no create of its own. A file
+     * ml_creat made is empty, and one it found takes O_TRUNC. */
     ret = ml_open(volume, path,
                   fi->flags & ~(O_CREAT | O_EXCL | (created ? O_TRUNC : 0)),
                   &fp);
 
-    if (ret == 0) {
-        fi->fh = (unsigned long) fp;
-        fp->created = created;
-        log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                       "*** cache create \"%s\" flags=0x%x fh=%" PRIu64 " forkid=%d",
-                       path, fi->flags, fi->fh, fp->forkid);
-    } else {
+    if (ret != 0) {
+        /* An open without an answer may still open the file. */
+        if (created && ret == -ETIMEDOUT) {
+            ml_set_created_mode(volume, path, mode);
+        } else if (created) {
+            ml_unlink(volume, path);
+        }
+
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "*** create open failed with ret=%d", ret);
+        return ret;
     }
 
-    return ret;
+    /* An open fork writes whatever mode the file then takes. */
+    if (created) {
+        ml_set_created_mode(volume, path, mode);
+    }
+
+    fi->fh = (unsigned long) fp;
+    fp->created = created;
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "*** cache create \"%s\" flags=0x%x fh=%" PRIu64
+                   " forkid=%d", path, fi->flags, fi->fh, fp->forkid);
+    return 0;
 }
 
 /*!
@@ -619,15 +626,11 @@ static int fuse_write(const char *path, const char *data,
                       struct fuse_file_info *fi)
 {
     struct afp_file_info *fp = (struct afp_file_info *) fi->fh;
-    int ret;
-    struct fuse_context * context = fuse_get_context();
-    struct afp_volume * volume = context->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** cache write \"%s\" offset=%llu size=%llu",
                    path, (unsigned long long) offset, (unsigned long long) size);
-    ret = ml_write(volume, data, size, offset, fp,
-                   context->uid, context->gid);
-    return ret;
+    return ml_write(volume, data, size, offset, fp);
 }
 
 /* Linux clamps a copy to the source's end and copies pseudo-files itself on
@@ -662,8 +665,7 @@ static ssize_t fuse_copy_file_range(const char *path_in,
                                     struct fuse_file_info *fi_out,
                                     off_t offset_out, size_t size, int flags)
 {
-    const struct fuse_context * context = fuse_get_context();
-    struct afp_volume * volume = context->private_data;
+    struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** cache copy_file_range \"%s\" offset=%llu to \"%s\" "
                    "offset=%llu size=%zu",
@@ -689,7 +691,7 @@ static ssize_t fuse_copy_file_range(const char *path_in,
 #endif
     return ml_copy_range(volume, (struct afp_file_info *) fi_in->fh,
                          offset_in, (struct afp_file_info *) fi_out->fh,
-                         offset_out, size, context->uid, context->gid);
+                         offset_out, size);
 }
 #endif
 
@@ -907,6 +909,27 @@ static int fuse_truncate(const char *path, off_t offset)
 
 #endif
 
+#if FUSE_USE_VERSION < 30
+/*!
+ * @brief Set the length of an open file for ftruncate(2)
+ *
+ * Without this operation libfuse 2 sends ftruncate(2) to truncate(), which
+ * opens the file a second time by path.
+ *
+ * @param[in] path    unused
+ * @param[in] offset  the new length
+ * @param[in] fi      the kernel's file info, with the handle
+ * @returns 0, or a negative errno
+ */
+static int fuse_ftruncate(const char *path _U_, off_t offset,
+                          struct fuse_file_info *fi)
+{
+    struct afp_volume * volume = fuse_get_context()->private_data;
+    return ml_ftruncate(volume, (struct afp_file_info *) fi->fh, offset);
+}
+
+#endif
+
 
 #if FUSE_NEW_API
 static int fuse_chmod(const char *path, mode_t mode,
@@ -1049,15 +1072,22 @@ static void afp_destroy(void *ignore _U_)
     afp_unmount_volume(volume);
 }
 
+/*!
+ * @brief Make a symbolic link at path2 that points at path1
+ *
+ * @param[in] path1  the link's target
+ * @param[in] path2  UTF-8 path of the link
+ * @returns 0, or a negative errno
+ */
 static int fuse_symlink(const char *path1, const char *path2)
 {
     struct afp_volume * volume = fuse_get_context()->private_data;
     int ret;
     ret = ml_symlink(volume, path1, path2);
 
-    if ((ret == -EFAULT) || (ret == -ENOSYS)) {
+    if (ret == -ENOSYS) {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
-                       "Got some sort of internal error in when creating symlink");
+                       "The server makes no symlinks");
     }
 
     return ret;
@@ -1246,8 +1276,8 @@ static int fuse_apply_chflags(struct afp_volume *volume, const char *path,
 /*!
  * @brief Set a file's attributes for macFUSE's combined setattr
  *
- * From FUSE_USE_VERSION 30, macFUSE sends every setattrlist() here. Without
- * it, setattrlist() fails with ENOSYS and copyfile() aborts before writing.
+ * macFUSE sends every setattrlist() here from FUSE_USE_VERSION 30; without it
+ * copyfile() fails on ENOSYS. The creation and backup times stay the server's.
  *
  * @param[in] path    UTF-8 path of the file
  * @param[in] attr    the attributes to set
@@ -1259,6 +1289,7 @@ static int fuse_setattr(const char *path, struct fuse_darwin_attr *attr,
                         int to_set, struct fuse_file_info *fi)
 {
     struct afp_volume * volume = fuse_get_context()->private_data;
+    unsigned int which;
     int ret = 0;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** setattr \"%s\" to_set=0x%x", path, to_set);
@@ -1271,44 +1302,8 @@ static int fuse_setattr(const char *path, struct fuse_darwin_attr *attr,
         }
     }
 
-    if (to_set & FUSE_SET_ATTR_MODE) {
-        ret = ml_chmod(volume, path, attr->mode);
-
-        /* Ignore ENOSYS/EPERM/EACCES: server may not support Unix privs.
-         * Ignore ENOENT: transient kFPObjectNotFound after catalog updates. */
-        if (ret == -ENOSYS || ret == -EPERM || ret == -EACCES || ret == -ENOENT) {
-            if (ret != 0)
-                log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                               "*** setattr chmod \"%s\" ignored: %d", path, ret);
-
-            ret = 0;
-        } else if (ret < 0) {
-            log_for_client(NULL, AFPFSD, LOG_WARNING,
-                           "*** setattr chmod \"%s\" failed: %d", path, ret);
-            return ret;
-        } else {
-            log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                           "*** setattr chmod \"%s\" ok", path);
-        }
-    }
-
-    if (to_set & (FUSE_SET_ATTR_UID | FUSE_SET_ATTR_GID)) {
-        ret = ml_chown(volume, path, attr->uid, attr->gid);
-
-        /* Same rationale: best-effort, ENOENT is non-fatal */
-        if (ret == -ENOSYS || ret == -EPERM || ret == -EACCES || ret == -ENOENT) {
-            if (ret != 0)
-                log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                               "*** setattr chown \"%s\" ignored: %d", path, ret);
-
-            ret = 0;
-        } else if (ret < 0) {
-            log_for_client(NULL, AFPFSD, LOG_WARNING,
-                           "*** setattr chown \"%s\" failed: %d", path, ret);
-            return ret;
-        }
-    }
-
+    /* A truncation moves the server's time, and a mode without the owner's
+     * write permission would refuse the open a truncation by path makes. */
     if (to_set & FUSE_SET_ATTR_SIZE) {
         if (fi && fi->fh) {
             ret = ml_ftruncate(volume, (struct afp_file_info *) fi->fh,
@@ -1324,34 +1319,31 @@ static int fuse_setattr(const char *path, struct fuse_darwin_attr *attr,
         }
     }
 
-    if (to_set & (FUSE_SET_ATTR_MTIME | FUSE_SET_ATTR_MTIME_NOW)) {
-        struct utimbuf timebuf;
-        timebuf.modtime = (to_set & FUSE_SET_ATTR_MTIME_NOW)
-                          ? time(NULL) : (time_t)attr->mtimespec.tv_sec;
-        timebuf.actime  = timebuf.modtime;
-        ret = ml_utime(volume, path, &timebuf);
+    which = ((to_set & FUSE_SET_ATTR_MODE) ? ML_SET_MODE : 0)
+            | ((to_set & FUSE_SET_ATTR_UID) ? ML_SET_UID : 0)
+            | ((to_set & FUSE_SET_ATTR_GID) ? ML_SET_GID : 0)
+            | ((to_set & (FUSE_SET_ATTR_MTIME | FUSE_SET_ATTR_MTIME_NOW))
+               ? ML_SET_MTIME : 0);
 
-        /* Treat timestamp-setting failures as non-fatal on AFP volumes:
-         * kFPObjectNotFound (ENOENT) can occur transiently after catalog
-         * updates, and EACCES may indicate a read-only fork; neither
-         * should cause macOS to abort an otherwise-successful safe-save. */
-        if (ret == -ENOSYS || ret == -EPERM || ret == -ENOENT || ret == -EACCES) {
-            if (ret != 0)
-                log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                               "*** setattr utime \"%s\" ignored: %d", path, ret);
+    if (which) {
+        time_t mtime = (to_set & FUSE_SET_ATTR_MTIME_NOW)
+                       ? time(NULL) : (time_t) attr->mtimespec.tv_sec;
+        ret = ml_setattr(volume, path, which, attr->mode, attr->uid,
+                         attr->gid, mtime);
 
-            ret = 0;
+        /* A safe-save goes on past a change refused or unsupported, and past
+         * kFPObjectNotFound, which a catalog update gives for a moment. */
+        if (ret == -ENOSYS || ret == -EPERM || ret == -EACCES
+                || ret == -ENOENT) {
+            log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                           "*** setattr \"%s\" ignored: %d", path, ret);
         } else if (ret < 0) {
             log_for_client(NULL, AFPFSD, LOG_WARNING,
-                           "*** setattr utime \"%s\" failed: %d", path, ret);
+                           "*** setattr \"%s\" failed: %d", path, ret);
             return ret;
-        } else {
-            log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                           "*** setattr utime \"%s\" ok", path);
         }
     }
 
-    /* Birth time / backup time: AFP has no API for setting these */
     return 0;
 }
 
@@ -1573,6 +1565,9 @@ static struct fuse_operations afp_oper = {
     .access     = fuse_access,
 #endif
     .truncate   = fuse_truncate,
+#if FUSE_USE_VERSION < 30
+    .ftruncate  = fuse_ftruncate,
+#endif
     .rename     = fuse_rename,
 #if FUSE_USE_VERSION >= 30
     .utimens    = fuse_utimens,
