@@ -19,6 +19,9 @@ int ml_open(struct afp_volume * volume, const char *path, int flags,
 int ml_creat(struct afp_volume * volume, const char *path, mode_t mode,
              unsigned char *created);
 
+void ml_set_created_mode(struct afp_volume * volume, const char *path,
+                         mode_t mode);
+
 int ml_readdir(struct afp_volume * volume,
                const char *path,
                struct afp_file_info **base);
@@ -44,13 +47,12 @@ int ml_getattr(struct afp_volume * volume, const char *path,
 
 int ml_write(struct afp_volume * volume,
              const char *data, size_t size, off_t offset,
-             struct afp_file_info * fp, uid_t uid,
-             gid_t gid);
+             struct afp_file_info * fp);
 
 ssize_t ml_copy_range(struct afp_volume * volume,
                       struct afp_file_info *fp_in, off_t off_in,
                       struct afp_file_info *fp_out, off_t off_out,
-                      size_t len, uid_t uid, gid_t gid);
+                      size_t len);
 
 int ml_readlink(struct afp_volume * vol, const char *path,
                 char *buf, size_t size);
@@ -67,6 +69,20 @@ int ml_ftruncate(struct afp_volume * vol, struct afp_file_info * fp,
 
 int ml_utime(struct afp_volume * vol, const char *path,
              struct utimbuf * timebuf);
+
+/* The members ml_setattr() sets */
+#define ML_SET_MODE  0x1U
+#define ML_SET_UID   0x2U
+#define ML_SET_GID   0x4U
+#define ML_SET_MTIME 0x8U
+
+int ml_setattr(struct afp_volume * vol, const char *path, unsigned int which,
+               mode_t mode, uid_t uid, gid_t gid, time_t mtime);
+
+int ml_carries_time(const struct afp_file_info *fp);
+
+/* The type and creator of a symlink's Finder information */
+#define ML_SYMLINK_FINDERINFO "slnkrhap"
 
 int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2);
 

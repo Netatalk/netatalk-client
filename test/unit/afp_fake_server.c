@@ -169,6 +169,34 @@ static int names_a_fork(uint8_t command)
 }
 
 /*!
+ * @brief Whether a read-only filesystem refuses a command
+ *
+ * afpd refuses a write open, a create, a delete and a directory's mode or
+ * owner change there; the fake also refuses a length and a file's parameters.
+ *
+ * @param[in] command  the AFP command
+ * @param[in] access   the access an FPOpenFork asks for
+ * @returns 1 for a command refused, 0 for another
+ */
+static int refused_read_only(uint8_t command, uint16_t access)
+{
+    switch (command) {
+    case afpOpenFork:
+        return (access & AFP_OPENFORK_ALLOWWRITE) != 0;
+
+    case afpCreateFile:
+    case afpCreateDir:
+    case afpDelete:
+    case afpSetForkParms:
+    case afpSetFileDirParms:
+        return 1;
+
+    default:
+        return 0;
+    }
+}
+
+/*!
  * @brief Answer a request by its AFP command
  *
  * @param[in,out] fake     the fake server, which counts the forks it opens
@@ -182,7 +210,7 @@ static int answer(struct afp_fake_server *fake,
                   const unsigned char *payload, uint32_t length)
 {
     struct dsi_header header;
-    unsigned char data[8];
+    unsigned char data[256];
     const void *body = data;
     uint32_t body_len = 0;
     int32_t result = kFPNoErr;
@@ -190,10 +218,30 @@ static int answer(struct afp_fake_server *fake,
     uint64_t count;
     uint16_t value;
     uint16_t access = 0;
+    uint16_t bitmap = 0;
 
     if (payload[0] == afpOpenFork && length >= 12) {
         memcpy(&value, payload + 10, sizeof(value));
         access = ntohs(value);
+    }
+
+    if ((payload[0] == afpGetFileDirParms || payload[0] == afpSetFileDirParms)
+            && length >= 10) {
+        memcpy(&value, payload + 8, sizeof(value));
+        bitmap = ntohs(value);
+    }
+
+    if (payload[0] == afpSetFileDirParms && length >= 10) {
+        fake->set_bitmap = bitmap;
+
+        /* The privileges are the highest bit's, so they end the request. */
+        if ((bitmap & kFPUnixPrivsBit) && length >= 26) {
+            uint32_t id;
+            memcpy(&id, payload + length - 16, sizeof(id));
+            fake->set_uid = ntohl(id);
+            memcpy(&id, payload + length - 12, sizeof(id));
+            fake->set_gid = ntohl(id);
+        }
     }
 
     if (names_a_fork(payload[0]) && length >= 4) {
@@ -206,17 +254,105 @@ static int answer(struct afp_fake_server *fake,
             && (fake->forks_open == 0 || ntohs(value) != AFP_FAKE_SERVER_FORK)) {
         /* afpd refuses a fork it never opened, or has closed. */
         result = kFPParamErr;
-    } else if (payload[0] == fake->refuse) {
-        result = kFPAccessDenied;
-    } else if (payload[0] == afpOpenFork && fake->read_only
-               && (access & AFP_OPENFORK_ALLOWWRITE)) {
-        /* A read-only volume refuses an open for writing, as afpd does. */
+    } else if (payload[0] == fake->refuse
+               || (fake->refuse_privs && payload[0] == afpSetFileDirParms
+                   && (bitmap & kFPUnixPrivsBit))) {
+        result = fake->refusal ? fake->refusal : kFPAccessDenied;
+    } else if (fake->read_only && refused_read_only(payload[0], access)) {
         result = kFPVolLocked;
     } else if (payload[0] == afpCreateFile && fake->name_taken && length >= 2
                && !(payload[1] & kFPHardCreate)) {
         /* A soft create refuses a name taken; afpd's hard create empties
          * the file the name holds. */
         result = kFPObjectExists;
+    } else if (payload[0] == afpGetFileDirParms && fake->file_params
+               && length >= 12) {
+        /* An object the session owns, of mode 0644 or 0755 unless params_mode
+         * says, with the time, a file's fork lengths and the privileges. */
+        uint32_t mode = fake->params_dir ? 040755 : 0100644;
+        uint32_t privs[4];
+        const uint32_t data_length = htonl(fake->data_length);
+        const uint32_t resource_length = htonl(fake->resource_length);
+
+        if (fake->params_mode) {
+            mode = fake->params_mode;
+        }
+
+        privs[0] = htonl(1000);
+        privs[1] = htonl(1000);
+        privs[2] = htonl(mode);
+        privs[3] = htonl(kUserIsOwner);
+
+        if (fake->params_dir) {
+            memcpy(&value, payload + 10, sizeof(value));
+            bitmap = ntohs(value) & (kFPModDateBit | kFPUnixPrivsBit);
+        } else {
+            bitmap &= kFPModDateBit | kFPDataForkLenBit | kFPRsrcForkLenBit
+                      | kFPUnixPrivsBit;
+        }
+
+        value = htons(bitmap);
+        memset(data, 0, 6);
+        memcpy(data + (fake->params_dir ? 2 : 0), &value, sizeof(value));
+        data[4] = fake->params_dir ? 0x80 : 0;
+        body_len = 6;
+
+        if (bitmap & kFPModDateBit) {
+            memcpy(data + body_len, &fake->params_date, 4);
+            body_len += 4;
+        }
+
+        if (bitmap & kFPDataForkLenBit) {
+            memcpy(data + body_len, &data_length, sizeof(data_length));
+            body_len += sizeof(data_length);
+        }
+
+        if (bitmap & kFPRsrcForkLenBit) {
+            memcpy(data + body_len, &resource_length, sizeof(resource_length));
+            body_len += sizeof(resource_length);
+        }
+
+        if (bitmap & kFPUnixPrivsBit) {
+            memcpy(data + body_len, privs, sizeof(privs));
+            body_len += sizeof(privs);
+        }
+    } else if (payload[0] == afpAddComment && length >= 15) {
+        /* The comment's length and bytes follow the UTF-8 path, from an even
+         * byte. */
+        size_t at;
+        memcpy(&value, payload + 13, sizeof(value));
+        at = 15U + ntohs(value);
+        at += at & 1U;
+
+        if (at < length) {
+            size_t len = payload[at];
+            size_t keep = fake->whole_comment ? sizeof(fake->comment) : 199U;
+
+            if (len > length - at - 1U) {
+                len = length - at - 1U;
+            }
+
+            if (len > keep) {
+                len = keep;
+            }
+
+            memcpy(fake->comment, payload + at + 1U, len);
+            fake->comment_len = (uint8_t) len;
+        }
+    } else if (payload[0] == afpGetComment) {
+        if (fake->comment_len == 0) {
+            result = kFPItemNotFound;
+        } else {
+            data[0] = fake->whole_comment || fake->comment_len < 128
+                      ? fake->comment_len : 128;
+            memcpy(data + 1, fake->comment, data[0]);
+            body_len = 1U + data[0];
+        }
+    } else if (payload[0] == afpCreateDir) {
+        /* The new directory's ID */
+        const uint32_t did = htonl(17);
+        memcpy(data, &did, sizeof(did));
+        body_len = sizeof(did);
     } else if (payload[0] == afpOpenFork) {
         /* No file parameters, then the fork number. */
         value = 0;
@@ -310,6 +446,7 @@ static void *serve(void *arg)
         }
 
         if (fake->ncommands < sizeof(fake->commands)) {
+            fake->lengths[fake->ncommands] = length;
             fake->commands[fake->ncommands++] = payload[0];
         }
 
@@ -365,10 +502,8 @@ static void release(struct afp_fake_server *fake)
 /*!
  * @brief Open a session on the fake server and start the server's thread
  *
- * The start gives the server AFP 3.4, and the volume its server, its locks,
- * UTF-8 names and a fixed signature; the caller zeroes the fake and sets
- * refuse, inspect, read_only, name_taken, read_data and the volume's other
- * fields first.
+ * The server gets AFP 3.4 and the volume its server, locks, UTF-8 names and a
+ * fixed signature; the caller zeroes the fake first and sets its other fields.
  *
  * @param[in,out] fake  the fake server
  * @returns 0, or -1 when the session cannot be made

@@ -1,3 +1,13 @@
+/*
+    test_identify.c: the identification of servers and its predicates
+
+    Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+    Copyright (C) 2026 Andy Lemin (andylemin)
+
+    This program can be distributed under the terms of the GNU GPL.
+    See the file COPYING.
+*/
+
 #include <stdio.h>
 #include <string.h>
 
@@ -22,6 +32,13 @@ static void identify(struct afp_server *server, const char *machine_type)
     afp_server_identify(server);
 }
 
+/*!
+ * @brief Check the identification of servers and the predicates it feeds
+ *
+ * @param[in] argc  argument count
+ * @param[in] argv  --tap for TAP output
+ * @returns EXIT_SUCCESS, or EXIT_FAILURE at the first failed check
+ */
 int main(int argc, char **argv)
 {
     struct libafpclient test_client = {
@@ -100,12 +117,28 @@ int main(int argc, char **argv)
     CHECK(!afp_server_drops_long_commands(&server));
     identify(&server, "Netatalk4.7.0dev");
     CHECK(!afp_server_drops_long_commands(&server));
+    CHECK(afp_server_sets_directory_owner(&server));
+    CHECK(afp_server_keeps_unset_ids(&server));
+    CHECK(!afp_server_keeps_directory_modes(&server));
+    identify(&server, "Netatalk3.0.0");
+    CHECK(afp_server_sets_directory_owner(&server));
+    CHECK(!afp_server_keeps_directory_modes(&server));
+    identify(&server, "Netatalk2.4.10");
+    CHECK(!afp_server_sets_directory_owner(&server));
+    CHECK(afp_server_keeps_unset_ids(&server));
+    CHECK(afp_server_keeps_directory_modes(&server));
     identify(&server, "Mac mini");
     CHECK(server.server_version.major == 0 && server.server_version.minor == 0
           && server.server_version.patch == 0);
     CHECK(!afp_server_drops_long_commands(&server));
+    CHECK(!afp_server_sets_directory_owner(&server));
+    CHECK(!afp_server_keeps_unset_ids(&server));
+    CHECK(!afp_server_keeps_directory_modes(&server));
     identify(&server, "Netatalk");
     CHECK(afp_server_drops_long_commands(&server));
+    CHECK(!afp_server_sets_directory_owner(&server));
+    CHECK(afp_server_keeps_unset_ids(&server));
+    CHECK(afp_server_keeps_directory_modes(&server));
     libafpclient_register(NULL);
     return test_tap_finish();
 }

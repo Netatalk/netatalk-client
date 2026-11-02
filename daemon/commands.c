@@ -44,6 +44,7 @@
 #include "lib/client.h"
 #include "lib/mapping.h"
 #include "lib/midlevel.h"
+#include "lib/resource.h"
 #include "lib/uam_registry.h"
 #include "lib/utils.h"
 
@@ -52,9 +53,13 @@
 #include "daemon_client.h"
 #include "stateless_ipc.h"
 
-/* File handle table for mapping 32-bit IDs to 64-bit pointers */
+/* A 32-bit handle names an open record and the volume it belongs to. */
 #define MAX_OPEN_FILES 1024
-static struct afp_file_info *file_handle_table[MAX_OPEN_FILES];
+struct handle_slot {
+    struct afp_file_info *fp;
+    struct afp_volume *volume;
+};
+static struct handle_slot file_handle_table[MAX_OPEN_FILES];
 static pthread_mutex_t file_handle_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Serialize all AFP server operations to prevent concurrent DSI calls */
 static pthread_mutex_t server_op_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -248,13 +253,22 @@ static void *alloc_response(size_t len, size_t fixed_len)
     return response;
 }
 
-static int register_file_handle(struct afp_file_info *fp)
+/*!
+ * @brief Give an open record a handle that names it and its volume
+ *
+ * @param[in] fp      the record
+ * @param[in] volume  its volume
+ * @returns the handle, or 0 when every slot is taken
+ */
+static int register_file_handle(struct afp_file_info *fp,
+                                struct afp_volume *volume)
 {
     pthread_mutex_lock(&file_handle_mutex);
 
     for (int i = 1; i < MAX_OPEN_FILES; i++) {
-        if (file_handle_table[i] == NULL) {
-            file_handle_table[i] = fp;
+        if (file_handle_table[i].fp == NULL) {
+            file_handle_table[i].fp = fp;
+            file_handle_table[i].volume = volume;
             pthread_mutex_unlock(&file_handle_mutex);
             return i;
         }
@@ -262,6 +276,18 @@ static int register_file_handle(struct afp_file_info *fp)
 
     pthread_mutex_unlock(&file_handle_mutex);
     return 0;
+}
+
+/*!
+ * @brief Whether a record is a pseudo-file's, which no open-fork list holds
+ *
+ * @param[in] fp  the record
+ * @returns 1 for Finder information, a comment or the server icon, 0 for a
+ *          fork
+ */
+static int is_pseudo_file(const struct afp_file_info *fp)
+{
+    return fp->resource != AFP_META_NONE && fp->resource != AFP_META_RESOURCE;
 }
 
 /*!
@@ -290,15 +316,15 @@ static int fork_is_listed(struct afp_volume *volume,
 }
 
 /*!
- * @brief Find the open fork a handle names on a volume
+ * @brief Find the open record a handle names on a volume
  *
- * A record the library freed, as a detach frees the volume's, is no
- * longer listed, nor is one of another volume.
+ * The handle must be the volume's, and a fork's record must still be on its
+ * open-fork list, as a detach frees the records the library listed.
  *
  * @param[in] id      the handle
  * @param[in] volume  the volume the request names
  * @param[in] take    1 to clear the handle, for a close, or 0
- * @returns the record, or NULL when the handle names no fork of volume
+ * @returns the record, or NULL when the handle names none of volume's
  */
 static struct afp_file_info *get_file_handle(int id,
                                              struct afp_volume *volume,
@@ -311,14 +337,16 @@ static struct afp_file_info *get_file_handle(int id,
     }
 
     pthread_mutex_lock(&file_handle_mutex);
-    fp = file_handle_table[id];
+    fp = file_handle_table[id].fp;
 
-    if (fp && !fork_is_listed(volume, fp)) {
+    if (fp && (file_handle_table[id].volume != volume
+               || (!is_pseudo_file(fp) && !fork_is_listed(volume, fp)))) {
         fp = NULL;
     }
 
     if (fp && take) {
-        file_handle_table[id] = NULL;
+        file_handle_table[id].fp = NULL;
+        file_handle_table[id].volume = NULL;
     }
 
     pthread_mutex_unlock(&file_handle_mutex);
@@ -326,10 +354,10 @@ static struct afp_file_info *get_file_handle(int id,
 }
 
 /*!
- * @brief Forget the handles of a volume's open forks before it detaches
+ * @brief Forget a volume's handles before it detaches
  *
- * The detach closes and frees the records, and a handle left behind could
- * name a record a later open places at the same address.
+ * The detach frees the listed records, and the table alone holds a
+ * pseudo-file's; a handle left behind could name a later open's record.
  *
  * @param[in] volume  the attached volume
  */
@@ -338,9 +366,15 @@ static void release_volume_handles(struct afp_volume *volume)
     pthread_mutex_lock(&file_handle_mutex);
 
     for (int i = 1; i < MAX_OPEN_FILES; i++) {
-        if (file_handle_table[i]
-                && fork_is_listed(volume, file_handle_table[i])) {
-            file_handle_table[i] = NULL;
+        struct handle_slot *handle = &file_handle_table[i];
+
+        if (handle->fp && handle->volume == volume) {
+            if (is_pseudo_file(handle->fp)) {
+                free(handle->fp);
+            }
+
+            handle->fp = NULL;
+            handle->volume = NULL;
         }
     }
 
@@ -1002,6 +1036,10 @@ static unsigned char process_open(struct daemon_client * c)
             result = AFPSL_IPC_RESULT_ENOENT;
         } else if (ret == -EACCES) {
             result = AFPSL_IPC_RESULT_ACCESS;
+        } else if (ret == -EEXIST) {
+            result = AFPSL_IPC_RESULT_EXIST;
+        } else if (ret == -ETIMEDOUT) {
+            result = AFPSL_IPC_RESULT_TIMEDOUT;
         } else {
             result = AFPSL_IPC_RESULT_ERROR;
         }
@@ -1012,7 +1050,7 @@ static unsigned char process_open(struct daemon_client * c)
         goto done;
     }
 
-    int handle = register_file_handle(fp);
+    int handle = register_file_handle(fp, v);
 
     if (handle == 0) {
         ml_close(v, fp);
@@ -1211,8 +1249,7 @@ static unsigned char process_write(struct daemon_client * c)
         goto done;
     }
 
-    /* Perform the write operation - ml_write wants uid/gid, using 0 for now */
-    ret = ml_write(v, data, request->size, request->offset, fp, 0, 0);
+    ret = ml_write(v, data, request->size, request->offset, fp);
 
     if (ret > 0) {
         written = ret;
@@ -1241,12 +1278,16 @@ done:
 /*!
  * @brief Answer an afpsld create request by creating a file at its path
  *
+ * A file it made gets the mode the request names, as ml_set_created_mode()
+ * gives it.
+ *
  * @param[in,out] c  the client, whose complete packet holds the request
  * @returns 0, the response carrying the result
  */
 static unsigned char process_creat(struct daemon_client * c)
 {
     struct afpsl_ipc_creat_response response;
+    unsigned char created = 0;
     struct afpsl_ipc_creat_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
     const char *path;
@@ -1283,7 +1324,11 @@ static unsigned char process_creat(struct daemon_client * c)
 
     log_for_client((void *) c, AFPFSD, LOG_DEBUG, "Creating file '%s' mode=%04o",
                    path, request->mode);
-    ret = ml_creat(v, path, request->mode, NULL);
+    ret = ml_creat(v, path, request->mode, &created);
+
+    if (ret == 0 && created) {
+        ml_set_created_mode(v, path, request->mode);
+    }
 
     if (ret < 0) {
         if (ret == -EEXIST) {
@@ -1948,6 +1993,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld stat request with a path's attributes
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result and the attributes
+ */
 static unsigned char process_stat(struct daemon_client * c)
 {
     struct afpsl_ipc_stat_response response;
@@ -1997,6 +2048,8 @@ static unsigned char process_stat(struct daemon_client * c)
 
     if (ret == -ENOENT) {
         result = AFPSL_IPC_RESULT_ENOENT;
+    } else if (ret == -EACCES) {
+        result = AFPSL_IPC_RESULT_ACCESS;
     } else if (ret < 0) {
         result = AFPSL_IPC_RESULT_ERROR;
     } else {

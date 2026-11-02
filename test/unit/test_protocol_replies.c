@@ -106,6 +106,20 @@ int main(int argc, char **argv)
     CHECK(file_info.modification_date_is_unset);
     server.using_version = NULL;
     server.time_offset = 0;
+    {
+        /* A time past AFP's dates takes the nearest they hold, 0x80000000,
+         * the unset date, aside. */
+        int64_t early = AD_DATE_DELTA - INT64_C(0x80000000);
+        int64_t late = AD_DATE_DELTA + INT64_C(0x80000000);
+        int64_t lowest = INT64_MIN;
+        CHECK(afp_date_from_unix(&server, (time_t) early)
+              == htonl(UINT32_C(0x80000001)));
+        CHECK(sizeof(time_t) == 4 || afp_date_from_unix(&server, (time_t) late)
+              == htonl(UINT32_C(0x7fffffff)));
+        CHECK(sizeof(time_t) == 4
+              || afp_date_from_unix(&server, (time_t) lowest)
+              == htonl(UINT32_C(0x80000001)));
+    }
     CHECK(!afp_server_has_valid_signature(&server));
     server.flags = kSrvrSig;
     CHECK(!afp_server_has_valid_signature(&server));

@@ -174,6 +174,7 @@ int afp_sl_write(afpc_volume_t *volid, unsigned int fileid,
                  unsigned int resource,
                  unsigned long long offset, unsigned int size,
                  unsigned int *written, const char *data);
+/* afp_sl_creat: -EEXIST for a name taken; Netatalk takes the mode at once. */
 int afp_sl_creat(afpc_volume_t *volid, const char *path,
                  struct afpc_url * url, mode_t mode);
 int afp_sl_chmod(afpc_volume_t *volid, const char *path,
@@ -209,9 +210,10 @@ int afp_sl_changepw(struct afpc_url * url,
  * are transferred with repeated calls at increasing offsets.
  *
  * afp_sl_setxattr accepts zero or one of AFP_SL_XATTR_CREATE and
- * AFP_SL_XATTR_REPLACE; other flag combinations return -EINVAL.
- * Resource fork writes overwrite or extend the specified range but do not
- * shorten an existing fork. A zero-length write at offset zero clears
+ * AFP_SL_XATTR_REPLACE; other flag combinations return -EINVAL. Its value
+ * for com.apple.ResourceFork is the whole fork.
+ * afp_sl_setresourcefork overwrites or extends the specified range but does
+ * not shorten an existing fork. A zero-length write at offset zero clears
  * the fork. Use afp_sl_truncateresourcefork to set any final length explicitly. */
 int afp_sl_getxattr(afpc_volume_t *volid, const char *path, const char *name,
                     void *value, size_t size);
