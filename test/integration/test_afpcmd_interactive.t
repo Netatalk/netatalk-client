@@ -12,15 +12,18 @@ use strict;
 use warnings;
 
 use Test::More;
+use File::Path qw(make_path remove_tree);
 use File::Temp qw(tempfile);
+use POSIX      qw(mkfifo);
 
-my $AFP_HOST     = 'localhost';
-my $AFP_SERVER   = 'afpfs_testsrv';
-my $AFP_VOL      = 'afpfs_test';
-my $AFP_USER     = 'test_usr';
-my $AFP_PASS     = 'test_pwd';
-my $AFP_PASS_TMP = 'test_pwd_tmp';
-my $AFP_URL      = "afp://${AFP_USER}:${AFP_PASS}\@${AFP_HOST}/${AFP_VOL}";
+my $AFP_HOST       = 'localhost';
+my $AFP_SERVER     = 'afpfs_testsrv';
+my $AFP_VOL        = 'afpfs_test';
+my $AFP_VOL_NOUNIX = 'afpfs_test_nounix';
+my $AFP_USER       = 'test_usr';
+my $AFP_PASS       = 'test_pwd';
+my $AFP_PASS_TMP   = 'test_pwd_tmp';
+my $AFP_URL        = "afp://${AFP_USER}:${AFP_PASS}\@${AFP_HOST}/${AFP_VOL}";
 
 # Feed newline-separated commands to afpcmd via stdin and return combined
 # stdout+stderr.  Uses fork+exec to avoid any shell quoting issues.
@@ -207,7 +210,7 @@ sub pagination_setup_commands {
                           'cat lctest.txt',
                           'chmod 600 lctest.txt',
                           'ls',
-                          'chmod 644 lctest.txt',
+                          'chmod 640 lctest.txt',
                           'ls',
                           'mv lctest.txt lcrenamed.txt',
                           'ls',
@@ -217,12 +220,384 @@ sub pagination_setup_commands {
                           'rm lccopy.txt',
                           'quit'
     );
-    like($out, qr/lctest\.txt/,        'test_file_lifecycle: touch creates file');
-    like($out, qr/\-rw\-\-\-\-\-\-\-/, 'test_file_lifecycle: chmod 600');
-    like($out, qr/\-rw\-r\-\-r\-\-/,   'test_file_lifecycle: chmod 644');
-    like($out, qr/lcrenamed\.txt/,     'test_file_lifecycle: mv rename');
-    like($out, qr/Copied \d+ bytes/,   'test_file_lifecycle: cp reports bytes');
-    like($out, qr/lccopy\.txt/,        'test_file_lifecycle: cp creates copy');
+    like($out, qr/lctest\.txt/,                  'test_file_lifecycle: touch creates file');
+    like($out, qr/^-rw------- .* lctest\.txt$/m, 'test_file_lifecycle: chmod 600');
+    like($out, qr/^-rw-r----- .* lctest\.txt$/m, 'test_file_lifecycle: chmod 640');
+    like($out, qr/lcrenamed\.txt/,               'test_file_lifecycle: mv rename');
+    like($out, qr/Copied \d+ bytes/,             'test_file_lifecycle: cp reports bytes');
+    like($out, qr/lccopy\.txt/,                  'test_file_lifecycle: cp creates copy');
+}
+
+# -----------------------------------------------------------------------
+# test_copy_onto_itself: cp refuses a target that is the source, named
+# directly or through its directory, and the file keeps its contents
+# -----------------------------------------------------------------------
+{
+    my $tmpfile = "/tmp/afpcmd_cpself_$$.txt";
+    open(my $fh, '>', $tmpfile) or BAIL_OUT("Cannot create temp file: $!");
+    print $fh "copy onto itself\n";
+    close $fh;
+    (my $tmpname = $tmpfile) =~ s{.*/}{};
+
+    my $out = afpcmd_pipe(
+                          $AFP_URL,
+                          'lcd /tmp',
+                          'mkdir cpself',
+                          'cd cpself',
+                          "put $tmpname",
+                          "cp $tmpname $tmpname",
+                          'cd ..',
+                          "cp cpself/$tmpname cpself",
+                          "cat cpself/$tmpname",
+                          "rm cpself/$tmpname",
+                          'rmdir cpself',
+                          'quit'
+    );
+    unlink $tmpfile;
+    my @refused = $out =~ /are the same file/g;
+    is(scalar @refused, 2, 'test_copy_onto_itself: both copies are refused');
+    like($out, qr/copy onto itself/, 'test_copy_onto_itself: the file keeps its contents');
+}
+
+# -----------------------------------------------------------------------
+# test_put_over_readonly: put and cp over a file the session may not
+# write fail and leave that file
+# -----------------------------------------------------------------------
+{
+    my $tmpfile = "/tmp/afpcmd_putro_$$.txt";
+    open(my $fh, '>', $tmpfile) or BAIL_OUT("Cannot create temp file: $!");
+    print $fh "kept contents\n";
+    close $fh;
+    (my $tmpname = $tmpfile) =~ s{.*/}{};
+
+    my $out = afpcmd_pipe(
+                          $AFP_URL,
+                          'lcd /tmp',
+                          "put $tmpname",
+                          "cp $tmpname $tmpname.src",
+                          "chmod 444 $tmpname",
+                          "put $tmpname",
+                          "cp $tmpname.src $tmpname",
+                          'ls',
+                          "chmod 644 $tmpname",
+                          "rm $tmpname",
+                          "rm $tmpname.src",
+                          'quit'
+    );
+    unlink $tmpfile;
+    like($out, qr/Permission denied opening file/,         'test_put_over_readonly: the second put fails');
+    like($out, qr/Could not open target file for writing/, 'test_put_over_readonly: the cp fails');
+    like($out, qr/^-r--r--r-- .* \Q$tmpname\E$/m,          'test_put_over_readonly: the file stays');
+}
+
+# -----------------------------------------------------------------------
+# test_copy_onto_a_longer_file: cp over a longer file leaves no part of it
+# -----------------------------------------------------------------------
+{
+    my $long  = "/tmp/afpcmd_cplong_$$.txt";
+    my $short = "/tmp/afpcmd_cpshort_$$.txt";
+    open(my $lfh, '>', $long) or BAIL_OUT("Cannot create $long: $!");
+    print $lfh "the head, then the LONGER-TAIL\n";
+    close $lfh;
+    open(my $sfh, '>', $short) or BAIL_OUT("Cannot create $short: $!");
+    print $sfh "short\n";
+    close $sfh;
+    (my $lname = $long)  =~ s{.*/}{};
+    (my $sname = $short) =~ s{.*/}{};
+
+    my $out = afpcmd_pipe(
+                          $AFP_URL,
+                          'lcd /tmp',
+                          "put $lname",
+                          "put $sname",
+                          "cp $sname $lname",
+                          "cat $lname",
+                          "rm $lname",
+                          "rm $sname",
+                          'quit'
+    );
+    unlink $long, $short;
+    like($out, qr/Copied 6 bytes/, 'test_copy_onto_a_longer_file: cp copies the file');
+    unlike($out, qr/LONGER-TAIL/, 'test_copy_onto_a_longer_file: and leaves no tail of the target');
+}
+
+# -----------------------------------------------------------------------
+# test_touch_directory: touch of a directory's name finds the directory
+# -----------------------------------------------------------------------
+{
+    my $out = afpcmd_pipe(
+                          $AFP_URL,
+                          'mkdir tdtest.dir',
+                          'touch tdtest.dir',
+                          'ls',
+                          'rmdir tdtest.dir',
+                          'quit'
+    );
+    like($out, qr/^d.* tdtest\.dir$/m, 'test_touch_directory: the directory is listed');
+    unlike($out, qr/Could not (?:create file|update timestamp)/, 'test_touch_directory: touch of its name succeeds');
+}
+
+# -----------------------------------------------------------------------
+# test_touch_existing_file: touch of an existing file gives it the time of
+# the touch
+# -----------------------------------------------------------------------
+{
+    my $tmpfile = "/tmp/afpcmd_touch_$$.txt";
+    open(my $fh, '>', $tmpfile) or BAIL_OUT("Cannot create temp file: $!");
+    close $fh;
+    # Mid-2001, the same year in every time zone
+    utime 994000000, 994000000, $tmpfile or BAIL_OUT("Cannot set the time of $tmpfile: $!");
+    (my $tmpname = $tmpfile) =~ s{.*/}{};
+
+    my $out = afpcmd_pipe(
+                          $AFP_URL,
+                          'lcd /tmp',
+                          "put $tmpname",
+                          'ls',
+                          "touch $tmpname",
+                          'ls',
+                          "rm $tmpname",
+                          'quit'
+    );
+    unlink $tmpfile;
+    my @years = $out =~ /^-.* (\d{4})-\d\d-\d\d \d\d:\d\d \Q$tmpname\E$/mg;
+    is_deeply(\@years, ['2001', (localtime)[5] + 1900], 'test_touch_existing_file: touch sets the time');
+}
+
+# -----------------------------------------------------------------------
+# test_copy_unreadable_target: cp to a target in a directory the session
+# may not search goes past the target's stat and fails at the create
+# -----------------------------------------------------------------------
+{
+    my $out = afpcmd_pipe(
+                          $AFP_URL,
+                          'touch cuttest.txt',
+                          'mkdir cuttest.dir',
+                          'chmod 600 cuttest.dir',
+                          'cp cuttest.txt cuttest.dir/copy.txt',
+                          'chmod 755 cuttest.dir',
+                          'rmdir cuttest.dir',
+                          'rm cuttest.txt',
+                          'quit'
+    );
+    like($out, qr/Permission denied creating target file/, 'test_copy_unreadable_target: cp fails at the create');
+}
+
+# -----------------------------------------------------------------------
+# test_delete_through_a_file: rm of a path through a file finds nothing,
+# and the file the path names last at the root stays
+# -----------------------------------------------------------------------
+{
+    my $out = afpcmd_pipe(
+                          $AFP_URL,
+                          'touch dtx.txt',
+                          'touch dty.txt',
+                          'rm dtx.txt/dty.txt',
+                          'rm dtx.txt',
+                          'rm dty.txt',
+                          'quit'
+    );
+    like( $out, qr{File not found: dtx\.txt/dty\.txt},
+          'test_delete_through_a_file: rm of a path through a file finds nothing');
+    unlike($out, qr/File not found: dty\.txt$/m,
+           'test_delete_through_a_file: the file at the root stays for its own rm');
+}
+
+# -----------------------------------------------------------------------
+# test_created_modes: touch makes a file of mode 0644 and mkdir a directory
+# of mode 0755, not the server's own modes
+# -----------------------------------------------------------------------
+{
+    my $out = afpcmd_pipe(
+                          $AFP_URL,
+                          'touch cmtest.txt',
+                          'mkdir cmtest.dir',
+                          'ls',
+                          'rm cmtest.txt',
+                          'rmdir cmtest.dir',
+                          'quit'
+    );
+    like($out, qr/^-rw-r--r-- .* cmtest\.txt$/m, 'test_created_modes: touch gives mode 0644');
+    like($out, qr/^drwxr-xr-x .* cmtest\.dir$/m, 'test_created_modes: mkdir gives mode 0755');
+}
+
+# -----------------------------------------------------------------------
+# test_put_readonly_tree: put -r of a directory and a file without the
+# owner's write permission uploads the file, and both end with their modes
+# -----------------------------------------------------------------------
+{
+    my $tree = "/tmp/afpcmd_rotree_$$";
+    mkdir $tree                       or BAIL_OUT("Cannot create $tree: $!");
+    open(my $fh, '>', "$tree/ro.txt") or BAIL_OUT("Cannot create $tree/ro.txt: $!");
+    print $fh "read-only contents\n";
+    close $fh;
+    chmod 0444, "$tree/ro.txt";
+    chmod 0555, $tree;
+    (my $name = $tree) =~ s{.*/}{};
+
+    my $out = afpcmd_pipe(
+                          $AFP_URL,
+                          'lcd /tmp',
+                          "put -r $name",
+                          "cat $name/ro.txt",
+                          "ls $name",
+                          'ls',
+                          "chmod 755 $name",
+                          "chmod 644 $name/ro.txt",
+                          "rm $name/ro.txt",
+                          "rmdir $name",
+                          'quit'
+    );
+    chmod 0755, $tree;
+    unlink "$tree/ro.txt";
+    rmdir $tree;
+    like($out, qr/read-only contents/,         'test_put_readonly_tree: the file uploads into the directory');
+    like($out, qr/^-r--r--r-- .* ro\.txt$/m,   'test_put_readonly_tree: the file has mode 0444');
+    like($out, qr/^dr-xr-xr-x .* \Q$name\E$/m, 'test_put_readonly_tree: the directory has mode 0555');
+}
+
+# -----------------------------------------------------------------------
+# test_put_fifo: put of a FIFO is refused without waiting for a writer
+# -----------------------------------------------------------------------
+{
+    my $fifo = "/tmp/afpcmd_fifo_$$";
+    mkfifo($fifo, 0600) or BAIL_OUT("Cannot create $fifo: $!");
+    (my $name = $fifo) =~ s{.*/}{};
+
+    my $out = afpcmd_pipe($AFP_URL, 'lcd /tmp', "put $name", 'quit');
+    unlink $fifo;
+    like($out, qr/Not a regular file/, 'test_put_fifo: put of a FIFO is refused');
+}
+
+# -----------------------------------------------------------------------
+# test_put_tree_with_a_fifo: put -r of a tree that holds a FIFO names it
+# -----------------------------------------------------------------------
+{
+    my $tree = "/tmp/afpcmd_fifotree_$$";
+    mkdir $tree                or BAIL_OUT("Cannot create $tree: $!");
+    mkfifo("$tree/pipe", 0600) or BAIL_OUT("Cannot create $tree/pipe: $!");
+    (my $name = $tree) =~ s{.*/}{};
+
+    my $out = afpcmd_pipe($AFP_URL, 'lcd /tmp', "put -r $name", "rm -r $name", 'quit');
+    unlink "$tree/pipe";
+    rmdir $tree;
+    like($out, qr{Not a regular file: .*/pipe}, 'test_put_tree_with_a_fifo: the FIFO is refused by name');
+}
+
+# -----------------------------------------------------------------------
+# test_put_dir_onto_file: put -r of a directory onto a file of its name
+# fails and leaves the file's mode
+# -----------------------------------------------------------------------
+{
+    my $tree = "/tmp/afpcmd_ontofile_$$";
+    mkdir $tree or BAIL_OUT("Cannot create $tree: $!");
+    (my $name = $tree) =~ s{.*/}{};
+
+    my $out = afpcmd_pipe(
+                          $AFP_URL,
+                          'lcd /tmp',
+                          "touch $name",
+                          "chmod 600 $name",
+                          "put -r $name",
+                          'ls',
+                          "rm $name",
+                          'quit'
+    );
+    rmdir $tree;
+    like($out, qr/exists and is not a directory/, 'test_put_dir_onto_file: put -r fails');
+    like($out, qr/^-rw------- .* \Q$name\E$/m,    'test_put_dir_onto_file: the file keeps its mode');
+}
+
+# -----------------------------------------------------------------------
+# test_put_deep_tree: put -r of a tree 40 directories deep uploads the
+# file at its bottom
+# -----------------------------------------------------------------------
+{
+    my $tree = "/tmp/afpcmd_deep_$$";
+    my $deep = join('/', $tree, ('d') x 40);
+    make_path($deep);
+    open(my $fh, '>', "$deep/deep.txt") or BAIL_OUT("Cannot create $deep/deep.txt: $!");
+    print $fh "deep contents\n";
+    close $fh;
+    (my $name   = $tree) =~ s{.*/}{};
+    (my $remote = $deep) =~ s{^/tmp/}{};
+
+    my $out = afpcmd_pipe(
+                          $AFP_URL,
+                          'lcd /tmp',
+                          "put -r $name",
+                          "cat $remote/deep.txt",
+                          "rm -r $name",
+                          'quit'
+    );
+    remove_tree($tree);
+    like($out, qr/deep contents/, 'test_put_deep_tree: the deepest file uploads');
+}
+
+# -----------------------------------------------------------------------
+# test_copy_into_itself_by_another_name: cp -r into the source, or into its
+# parent so that the copy is the source, named in another Unicode
+# normalization, is refused
+# -----------------------------------------------------------------------
+{
+    my $nfc = "caf\xc3\xa9.dir";
+    my $nfd = "cafe\xcc\x81.dir";
+    my $out = afpcmd_pipe(
+                          $AFP_URL,
+                          "mkdir $nfc",
+                          "mkdir $nfc/sub",
+                          "cp -r $nfc $nfd/copy",
+                          "cp -r $nfc/sub $nfd",
+                          "ls $nfc",
+                          "rm -r $nfc",
+                          'quit'
+    );
+    my @refused = $out =~ /Cannot copy a directory into itself/g;
+    is(scalar @refused, 2, 'test_copy_into_itself_by_another_name: both copies are refused');
+    unlike($out, qr/^d.* copy$/m, 'test_copy_into_itself_by_another_name: and make no copy');
+}
+
+# -----------------------------------------------------------------------
+# test_copy_tree_onto_a_directory_of_a_file_name: cp -r into a copy that
+# holds a directory at a file's name fails for that file, and the file
+# does not land inside the directory
+# -----------------------------------------------------------------------
+{
+    my $out = afpcmd_pipe(
+                          $AFP_URL,
+                          'mkdir cptree.src',
+                          'touch cptree.src/x',
+                          'mkdir cptree.dst',
+                          'mkdir cptree.dst/cptree.src',
+                          'mkdir cptree.dst/cptree.src/x',
+                          'cp -r cptree.src cptree.dst',
+                          'ls cptree.dst/cptree.src/x',
+                          'rm -r cptree.src',
+                          'rm -r cptree.dst',
+                          'quit'
+    );
+    like( $out, qr/Could not open target file for writing/,
+          'test_copy_tree_onto_a_directory_of_a_file_name: the file\'s copy fails');
+    unlike($out, qr/^-.* x$/m, 'test_copy_tree_onto_a_directory_of_a_file_name: and lands nowhere');
+}
+
+# -----------------------------------------------------------------------
+# test_copy_tree_without_unix_privileges: cp -r on a volume without UNIX
+# privileges copies a directory of the tree as a directory
+# -----------------------------------------------------------------------
+{
+    my $out = afpcmd_pipe(
+                          "afp://${AFP_USER}:${AFP_PASS}\@${AFP_HOST}/${AFP_VOL_NOUNIX}",
+                          'mkdir nucopy.src',
+                          'mkdir nucopy.src/sub',
+                          'touch nucopy.src/sub/f',
+                          'cp -r nucopy.src nucopy.dst',
+                          'ls nucopy.dst/sub',
+                          'rm -r nucopy.src',
+                          'rm -r nucopy.dst',
+                          'quit'
+    );
+    like($out, qr/^-.* f$/m, 'test_copy_tree_without_unix_privileges: the directory\'s file is copied');
 }
 
 # -----------------------------------------------------------------------
@@ -274,7 +649,7 @@ sub pagination_setup_commands {
            'test_command_recursive_flag: command-local -r parses');
     like( $out, qr/Cannot copy a directory into itself/,
           'test_command_recursive_flag: trailing slash self-copy is rejected');
-    like( $out, qr/Copy target exists and is not a directory:/,
+    like( $out, qr/exists and is not a directory/,
           'test_command_recursive_flag: directory-to-file collision is rejected');
     like( $out, qr/file\.txt/,
           'test_command_recursive_flag: cp recursively copied nested file');
@@ -399,10 +774,10 @@ sub pagination_setup_commands {
                           '1',
                           'quit'
     );
-    like($out, qr/Detached from volume/, 'test_exit_reconnect: exit detaches');
-    like($out, qr/Available volumes on/, 'test_exit_reconnect: picker opens');
-    like($out, qr/\s1\s+\Q$AFP_VOL\E/,   'test_exit_reconnect: picker numbers volume');
-    like($out, qr/Attached to volume/,   'test_exit_reconnect: number reattaches');
+    like($out, qr/Detached from volume/,         'test_exit_reconnect: exit detaches');
+    like($out, qr/Available volumes on/,         'test_exit_reconnect: picker opens');
+    like($out, qr/^[ \t]+1[ \t]+\Q$AFP_VOL\E$/m, 'test_exit_reconnect: picker numbers volume');
+    like($out, qr/Attached to volume/,           'test_exit_reconnect: number reattaches');
 }
 
 # -----------------------------------------------------------------------
@@ -411,10 +786,10 @@ sub pagination_setup_commands {
 {
     my $server_url = "afp://${AFP_USER}:${AFP_PASS}\@${AFP_HOST}";
     my $out        = afpcmd_pipe($server_url, '1', 'quit');
-    like($out, qr/Available volumes on/, 'test_initial_volume_picker: picker opens');
-    like($out, qr/\s1\s+\Q$AFP_VOL\E/,   'test_initial_volume_picker: volume numbered');
-    like($out, qr/q\s+Quit/,             'test_initial_volume_picker: quit action labeled');
-    like($out, qr/Attached to volume/,   'test_initial_volume_picker: number attaches');
+    like($out, qr/Available volumes on/,         'test_initial_volume_picker: picker opens');
+    like($out, qr/^[ \t]+1[ \t]+\Q$AFP_VOL\E$/m, 'test_initial_volume_picker: volume numbered');
+    like($out, qr/q\s+Quit/,                     'test_initial_volume_picker: quit action labeled');
+    like($out, qr/Attached to volume/,           'test_initial_volume_picker: number attaches');
     unlike($out, qr/Use 'ls' to list available volumes/,
            'test_initial_volume_picker: no obsolete help text');
 }

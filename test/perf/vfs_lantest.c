@@ -286,12 +286,19 @@ static void list_names(const char *path)
 /*!
  * @brief Store the timed region of one test and print its progress line
  *
+ * A run under a millisecond counts as one: the dashboard's log axis has no 0.
+ *
  * @param[in] test       test index
  * @param[in] iteration  iteration index, from 0
  */
 static void record(int test, int iteration)
 {
     uint64_t ms = vfs_timer_us() / 1000;
+
+    if (ms == 0) {
+        ms = 1;
+    }
+
     samples[iteration * NUM_TESTS + test] = ms;
     valid[iteration * NUM_TESTS + test] = true;
     fprintf(stderr, "Run %d => %-*.*s %6" PRIu64 " ms", iteration + 1,
