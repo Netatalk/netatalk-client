@@ -90,7 +90,9 @@ int (*afp_replies[])(struct afp_server * server, char *buf, unsigned int len,
     afp_blank_reply, NULL, afp_getcomment_reply, afp_byterangelockext_reply,
     afp_readext_reply, afp_writeext_reply,
     NULL, afp_login_reply,            /*56 - 63 */
-    afp_getsessiontoken_reply, afp_blank_reply, afp_enumerateext_reply, NULL,
+    /* FPEnumerateExt's replies share FPEnumerateExt2's layout, a 16-bit length
+     * before each entry; the requests differ in index and size widths alone. */
+    afp_getsessiontoken_reply, afp_blank_reply, afp_enumerateext2_reply, NULL,
     afp_enumerateext2_reply, afp_getextattr_reply, afp_blank_reply, afp_blank_reply, /*64 - 71 */
     afp_listextattrs_reply, afp_blank_reply, afp_blank_reply, afp_blank_reply,
     NULL, NULL, afp_blank_reply, afp_blank_reply,                       /*72 - 79 */

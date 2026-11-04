@@ -24,7 +24,7 @@ void ml_set_created_mode(struct afp_volume * volume, const char *path,
 
 int ml_readdir(struct afp_volume * volume,
                const char *path,
-               struct afp_file_info **base);
+               struct afp_listing *l);
 
 int ml_read(struct afp_volume * volume,
             char *buf, size_t size, off_t offset,
@@ -79,7 +79,7 @@ int ml_utime(struct afp_volume * vol, const char *path,
 int ml_setattr(struct afp_volume * vol, const char *path, unsigned int which,
                mode_t mode, uid_t uid, gid_t gid, time_t mtime);
 
-int ml_carries_time(const struct afp_file_info *fp);
+int ml_carries_time(const struct afp_dirent *e);
 
 /* The type and creator of a symlink's Finder information */
 #define ML_SYMLINK_FINDERINFO "slnkrhap"
@@ -93,8 +93,6 @@ int ml_exchange(struct afp_volume * vol,
                 const char *path_from, const char *path_to);
 
 int ml_statfs(struct afp_volume * vol, const char *path, struct statvfs *stat);
-
-void afp_ml_filebase_free(struct afp_file_info **filebase);
 
 int ml_passwd(struct afp_server *server,
               char *username, char *oldpasswd, char *newpasswd);

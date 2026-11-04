@@ -2,9 +2,9 @@
 #define __AFP_REPLIES_H_
 
 int parse_reply_block(struct afp_server *server, const char *buf,
-                      unsigned int size, unsigned char isdir,
+                      size_t size, unsigned char isdir,
                       unsigned int filebitmap, unsigned int dirbitmap,
-                      struct afp_file_info * filecur);
+                      struct afp_dirent *e, char *name, size_t name_len);
 
 int afp_reply(unsigned short subcommand, struct afp_server * server,
               void *other);
@@ -54,9 +54,6 @@ int afp_getfiledirparms_reply(struct afp_server *server, char *buf,
 
 int afp_enumerate_reply(struct afp_server *server, char *buf,
                         unsigned int size, void *other);
-
-int afp_enumerateext_reply(struct afp_server *server, char *buf,
-                           unsigned int size, void *other);
 
 int afp_enumerateext2_reply(struct afp_server *server, char *buf,
                             unsigned int size, void *other);

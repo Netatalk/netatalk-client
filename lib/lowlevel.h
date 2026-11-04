@@ -4,14 +4,8 @@
 #include <sys/types.h>
 #include <stdint.h>
 
-int ll_get_directory_entry(struct afp_volume * volume,
-                           char *basename,
-                           unsigned int dirid,
-                           unsigned int filebitmap, unsigned int dirbitmap,
-                           struct afp_file_info *p);
-
 int ll_readdir(struct afp_volume * volume, const char *path,
-               struct afp_file_info **fb, int resource);
+               struct afp_listing *l, int resource);
 int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
                int resourcefork);
 

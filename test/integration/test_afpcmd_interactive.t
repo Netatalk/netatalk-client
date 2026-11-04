@@ -601,6 +601,24 @@ sub pagination_setup_commands {
 }
 
 # -----------------------------------------------------------------------
+# test_remove_tree_without_unix_privileges: without UNIX privileges a listing
+# shows a directory as one, at the mount's size, and rm -r removes the tree
+# -----------------------------------------------------------------------
+{
+    my $out = afpcmd_pipe(
+                          "afp://${AFP_USER}:${AFP_PASS}\@${AFP_HOST}/${AFP_VOL_NOUNIX}",
+                          'mkdir nurm',
+                          'mkdir nurm/sub',
+                          'touch nurm/sub/f',
+                          'ls nurm',
+                          'rm -r nurm',
+                          'quit'
+    );
+    like($out, qr/^d\S* +58 .* sub$/m, 'test_remove_tree_without_unix_privileges: a folder lists as one at its size');
+    like($out, qr/^Deleted directory: nurm$/m, 'test_remove_tree_without_unix_privileges: rm -r removes the tree');
+}
+
+# -----------------------------------------------------------------------
 # test_directory_lifecycle: mkdir, rmdir, rmdir error cases
 # -----------------------------------------------------------------------
 {

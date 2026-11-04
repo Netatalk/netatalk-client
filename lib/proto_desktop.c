@@ -382,6 +382,15 @@ int afp_getappl(struct afp_volume *volume, unsigned int filecreator,
                          DSI_DEFAULT_TIMEOUT, afpGetAPPL, appl);
 }
 
+/*!
+ * @brief Parse an FPGetAPPL reply into the application record
+ *
+ * @param[in]  server  the server, for the dates
+ * @param[in]  buf     the reply
+ * @param[in]  size    its length
+ * @param[out] other   the struct afp_appl to fill
+ * @returns 0, or non-zero for an error reply or a malformed one
+ */
 int afp_getappl_reply(struct afp_server *server, char *buf,
                       unsigned int size, void *other)
 {
@@ -406,7 +415,8 @@ int afp_getappl_reply(struct afp_server *server, char *buf,
     bitmap = ntohs(reply->bitmap);
 
     if (parse_reply_block(server, buf + sizeof(*reply), size - sizeof(*reply),
-                          0, bitmap, 0, &appl->file) < 0) {
+                          0, bitmap, 0, &appl->file, appl->name,
+                          sizeof(appl->name)) < 0) {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
                        "getappl response has malformed file parameters");
         return -1;

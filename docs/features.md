@@ -254,9 +254,13 @@ This speaks AFP 2.1 or 2.2, which presents certain restrictions, such as:
     at 2 GiB with EOVERFLOW
   - 'df' will report a max of 4GB.
 - no support for Unix privileges; all files are reported as 0600, directories
-  as 0700.
-- for directories, timestamps are reported as the mount times, which is what
-  the Mac OS X client does.
+  as 0700, and the `.AppleDouble` view's pseudo-files as regular files of
+  their object's mode.
+- a folder shows the dates the server reports, as a file does, and the
+  volume's root the time of the mount.
+- a folder of 65 535 entries or more fails to list with EOVERFLOW, as the
+  protocol's index stops there; an AFP 3.0 session has the same limit, and
+  `afpcmd` reports a directory it could not read.
 
 Out of the classic Mac OS charsets, only MacRoman is supported presently.
 

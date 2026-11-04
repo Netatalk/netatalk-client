@@ -231,7 +231,7 @@ static int utest_volume_open_fails_unmounted(void)
 /*!
  * @brief A listing the transport refused leaves an empty list
  *
- * The caller's pointer is emptied, whatever it held.
+ * The caller's listing is emptied, whatever count it held.
  *
  * @returns 0, or the number of the step that failed
  */
@@ -239,18 +239,19 @@ static int utest_failed_listing_leaves_an_empty_list(void)
 {
     struct afp_server *server;
     struct afp_volume volume;
-    struct afp_file_info *files;
+    struct afp_listing files;
     int ret = 0;
 
     if (suspended_volume_open(&volume, &server) != 0) {
         return 1;
     }
 
-    files = (struct afp_file_info *) &files;
+    memset(&files, 0, sizeof(files));
+    files.count = 1;
 
     if (ll_readdir(&volume, "/", &files, 0) != -EIO) {
         ret = 2;
-    } else if (files != NULL) {
+    } else if (files.count != 0 || files.entries != NULL) {
         ret = 3;
     }
 
@@ -267,7 +268,7 @@ static int utest_appledouble_listing_fails_with_the_listing(void)
 {
     struct afp_server *server;
     struct afp_volume volume;
-    struct afp_file_info *files;
+    struct afp_listing files;
     int ret = 0;
 
     if (suspended_volume_open(&volume, &server) != 0) {
@@ -275,11 +276,12 @@ static int utest_appledouble_listing_fails_with_the_listing(void)
     }
 
     volume.extra_flags |= VOLUME_EXTRA_FLAGS_SHOW_APPLEDOUBLE;
-    files = (struct afp_file_info *) &files;
+    memset(&files, 0, sizeof(files));
+    files.count = 1;
 
     if (ml_readdir(&volume, "/.AppleDouble", &files) != -EIO) {
         ret = 2;
-    } else if (files != NULL) {
+    } else if (files.count != 0 || files.entries != NULL) {
         ret = 3;
     }
 

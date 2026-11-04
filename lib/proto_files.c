@@ -48,15 +48,17 @@ static char *put_word(char *p, uint32_t value)
  * @param[in] command   afpSetFileDirParms or afpSetDirParms
  * @param[in] dirid     its directory
  * @param[in] pathname  its AFP name in dirid
- * @param[in] bitmap    the parameters to set
- * @param[in] fp        their values; kFPOwnerIDBit and kFPGroupIDBit, which a
+ * @param[in] bitmap    the parameters to set: kFPAttributeBit, the creation
+ *                      and modification dates, kFPFinderInfoBit, the owner,
+ *                      the group and kFPUnixPrivsBit
+ * @param[in] e         their values; kFPOwnerIDBit and kFPGroupIDBit, which a
  *                      directory alone has, take unixprivs' uid and gid
  * @returns the server's answer, ETIMEDOUT for a request without one, or a
  *          negative errno for one that failed otherwise, sent or not
  */
 static int set_params(struct afp_volume * volume, uint8_t command,
                       unsigned int dirid, const char *pathname,
-                      unsigned short bitmap, struct afp_file_info *fp)
+                      unsigned short bitmap, const struct afp_dirent *e)
 {
     struct {
         struct dsi_header dsi_header __attribute__((__packed__));
@@ -99,43 +101,39 @@ static int set_params(struct afp_volume * volume, uint8_t command,
     unixpath_to_afppath(volume, pathptr);
 
     if (bitmap & kFPAttributeBit) {
-        uint16_t attributes = htons(fp->attributes);
+        uint16_t attributes = htons(e->attributes);
         memcpy(p, &attributes, sizeof(attributes));
         p += sizeof(attributes);
     }
 
     if (bitmap & kFPCreateDateBit) {
         p = put_word(p, afp_date_from_unix(volume->server,
-                                           fp->creation_date));
+                                           afp_sec_from_ns(e->create_ns)));
     }
 
     if (bitmap & kFPModDateBit) {
         p = put_word(p, afp_date_from_unix(volume->server,
-                                           fp->modification_date));
-    }
-
-    if (bitmap & kFPBackupDateBit) {
-        p = put_word(p, afp_date_from_unix(volume->server, fp->backup_date));
+                                           afp_sec_from_ns(e->mod_ns)));
     }
 
     if (bitmap & kFPFinderInfoBit) {
-        memcpy(p, fp->finderinfo, 32);
+        memcpy(p, e->finderinfo, 32);
         p += 32;
     }
 
     if (bitmap & kFPOwnerIDBit) {
-        p = put_word(p, htonl(fp->unixprivs.uid));
+        p = put_word(p, htonl(e->unixprivs.uid));
     }
 
     if (bitmap & kFPGroupIDBit) {
-        p = put_word(p, htonl(fp->unixprivs.gid));
+        p = put_word(p, htonl(e->unixprivs.gid));
     }
 
     if (bitmap & kFPUnixPrivsBit) {
-        p = put_word(p, htonl(fp->unixprivs.uid));
-        p = put_word(p, htonl(fp->unixprivs.gid));
-        p = put_word(p, htonl(fp->unixprivs.permissions));
-        p = put_word(p, htonl(fp->unixprivs.ua_permissions));
+        p = put_word(p, htonl(e->unixprivs.uid));
+        p = put_word(p, htonl(e->unixprivs.gid));
+        p = put_word(p, htonl(e->unixprivs.permissions));
+        p = put_word(p, htonl(e->unixprivs.ua_permissions));
     }
 
     ret = afpc_dsi_send(server, (char *) msg, p - msg, DSI_DEFAULT_TIMEOUT,
@@ -151,15 +149,15 @@ static int set_params(struct afp_volume * volume, uint8_t command,
  * @param[in] dirid     its directory
  * @param[in] pathname  its AFP name in dirid
  * @param[in] bitmap    the parameters to set
- * @param[in] fp        their values
+ * @param[in] e         their values
  * @returns the server's answer, ETIMEDOUT for a request without one, or a
  *          negative errno for one that failed otherwise, sent or not
  */
 int afp_setfiledirparms(struct afp_volume * volume, unsigned int dirid,
                         const char *pathname, unsigned short bitmap,
-                        struct afp_file_info *fp)
+                        const struct afp_dirent *e)
 {
-    return set_params(volume, afpSetFileDirParms, dirid, pathname, bitmap, fp);
+    return set_params(volume, afpSetFileDirParms, dirid, pathname, bitmap, e);
 }
 
 /*!
@@ -169,15 +167,15 @@ int afp_setfiledirparms(struct afp_volume * volume, unsigned int dirid,
  * @param[in] dirid     its parent directory
  * @param[in] pathname  its AFP name in dirid
  * @param[in] bitmap    the parameters to set
- * @param[in] fp        their values
+ * @param[in] e         their values
  * @returns the server's answer, ETIMEDOUT for a request without one, or a
  *          negative errno for one that failed otherwise, sent or not
  */
 int afp_setdirparms(struct afp_volume * volume, unsigned int dirid,
                     const char *pathname, unsigned short bitmap,
-                    struct afp_file_info *fp)
+                    const struct afp_dirent *e)
 {
-    return set_params(volume, afpSetDirParms, dirid, pathname, bitmap, fp);
+    return set_params(volume, afpSetDirParms, dirid, pathname, bitmap, e);
 }
 
 int afp_delete(struct afp_volume * volume,
@@ -439,6 +437,15 @@ int afp_readext_reply(struct afp_server *server _U_,
     return 0;
 }
 
+/*!
+ * @brief Parse an FPGetFileDirParms reply into a record
+ *
+ * @param[in]  server  the server, for the dates
+ * @param[in]  buf     the reply
+ * @param[in]  size    its length
+ * @param[out] other   the struct afp_dirent to fill
+ * @returns 0, or non-zero for an error reply or a malformed one
+ */
 int afp_getfiledirparms_reply(struct afp_server *server, char *buf,
                               unsigned int size,
                               void *other)
@@ -450,7 +457,7 @@ int afp_getfiledirparms_reply(struct afp_server *server, char *buf,
         uint8_t isdir;
         uint8_t pad;
     }  __attribute__((__packed__)) * reply_packet = (void *) buf;
-    struct afp_file_info * filecur = other;
+    struct afp_dirent *e = other;
 
     if (size < sizeof(*reply_packet)) {
         return -1;
@@ -466,18 +473,30 @@ int afp_getfiledirparms_reply(struct afp_server *server, char *buf,
                           reply_packet->isdir,
                           ntohs(reply_packet->filebitmap),
                           ntohs(reply_packet->dirbitmap),
-                          filecur) < 0) {
+                          e, NULL, 0) < 0) {
         return -1;
     }
 
-    filecur->isdir = reply_packet->isdir;
     return 0;
 }
 
 
+/*!
+ * @brief Read one file's or directory's parameters with FPGetFileDirParms
+ *
+ * @param[in]  volume      volume of the object
+ * @param[in]  did         its directory
+ * @param[in]  filebitmap  parameters to read for a file
+ * @param[in]  dirbitmap   parameters to read for a directory
+ * @param[in]  pathname    AFP name of the object in did
+ * @param[out] e           receives them
+ * @returns the server's AFP result, afpc_dsi_send()'s error when the
+ *          request fails, or -1 without a pathname or memory for the
+ *          request
+ */
 int afp_getfiledirparms(struct afp_volume *volume, unsigned int did,
                         unsigned int filebitmap, unsigned int dirbitmap, const char *pathname,
-                        struct afp_file_info *fpp)
+                        struct afp_dirent *e)
 {
     struct {
         struct dsi_header dsi_header __attribute__((__packed__));
@@ -517,7 +536,7 @@ int afp_getfiledirparms(struct afp_volume *volume, unsigned int did,
     copy_path(volume, path, pathname, strlen(pathname));
     unixpath_to_afppath(volume, path);
     ret = afpc_dsi_send(server, (char *) getfiledirparms, len, DSI_DEFAULT_TIMEOUT,
-                        afpGetFileDirParms, (void *) fpp);
+                        afpGetFileDirParms, e);
     free(msg);
     return ret;
 }

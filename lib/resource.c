@@ -154,6 +154,29 @@ static int extra_translate(
 }
 
 /*!
+ * @brief Whether the AppleDouble view answers for a name in a directory
+ *
+ * The view's folder in every directory and the server icon in the root
+ * stand in for an object of that name the server lists.
+ *
+ * @param[in] volume  volume of the directory
+ * @param[in] dir     path of the directory
+ * @param[in] name    a name listed in it
+ * @returns 1 when the view answers for the name, 0 otherwise
+ */
+int appledouble_shadows(const struct afp_volume *volume, const char *dir,
+                        const char *name)
+{
+    if (~volume->extra_flags & VOLUME_EXTRA_FLAGS_SHOW_APPLEDOUBLE) {
+        return 0;
+    }
+
+    return strcmp(name, appledouble) == 0
+           || (strcmp(dir, "/") == 0
+               && strcmp(name, &servericon_string[1]) == 0);
+}
+
+/*!
  * @brief Open the volume's Desktop database once
  *
  * Apple's servers from OS X 10.6 have none; one refusal stands for the volume.
@@ -446,7 +469,7 @@ int appledouble_write(struct afp_volume * volume, struct afp_file_info *fp,
     int towrite = size;
     int keeps_time;
     unsigned short bitmap;
-    struct afp_file_info fp2;
+    struct afp_dirent fp2;
 
     switch (fp->resource) {
     case AFP_META_RESOURCE:
@@ -476,23 +499,22 @@ int appledouble_write(struct afp_volume * volume, struct afp_file_info *fp,
                  | ((volume->extra_flags & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX)
                     ? kFPUnixPrivsBit : 0);
         memset(&fp2, 0, sizeof(fp2));
-        ret = ll_get_directory_entry(volume, fp->basename, fp->did, bitmap,
-                                     bitmap, &fp2);
+        ret = afp_getfiledirparms(volume, fp->did, bitmap, bitmap,
+                                  fp->basename, &fp2);
 
         if (ret != kFPNoErr) {
             return -ll_answer_errno(ret);
         }
 
-        memcpy(fp->finderinfo, fp2.finderinfo, sizeof(fp->finderinfo));
-        memcpy(fp->finderinfo + offset, data, towrite);
-        fp->modification_date = fp2.modification_date;
         /* afpd makes a file a symlink when its Finder information names one,
          * and then sets the time on the target. */
-        keeps_time = ml_carries_time(&fp2)
-                     && memcmp(fp->finderinfo, ML_SYMLINK_FINDERINFO, 8) != 0;
+        keeps_time = ml_carries_time(&fp2);
+        memcpy(fp2.finderinfo + offset, data, towrite);
+        keeps_time = keeps_time
+                     && memcmp(fp2.finderinfo, ML_SYMLINK_FINDERINFO, 8) != 0;
         ret = afp_setfiledirparms(volume, fp->did, fp->basename,
                                   kFPFinderInfoBit
-                                  | (keeps_time ? kFPModDateBit : 0), fp);
+                                  | (keeps_time ? kFPModDateBit : 0), &fp2);
 
         if (ret != kFPNoErr) {
             return -ll_answer_errno(ret);
@@ -574,7 +596,7 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
 {
     int tocopy;
     int ret;
-    struct afp_file_info info;
+    struct afp_dirent info;
     *amount_read = 0;
     *eof = 0;
 
@@ -597,9 +619,8 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
             return -EFAULT;
         }
 
-        ret = ll_get_directory_entry(volume, fp->basename, fp->did,
-                                     kFPFinderInfoBit, kFPFinderInfoBit,
-                                     &info);
+        ret = afp_getfiledirparms(volume, fp->did, kFPFinderInfoBit,
+                                  kFPFinderInfoBit, fp->basename, &info);
 
         if (ret != kFPNoErr) {
             return -ll_answer_errno(ret);
@@ -648,7 +669,6 @@ int appledouble_read(struct afp_volume * volume, struct afp_file_info *fp,
         tocopy = min(size, (AFP_SERVER_ICON_LEN - (unsigned long) offset));
         memcpy(buf, volume->server->icon + offset, tocopy);
         *eof = 1;
-        fp->eof = 1;
         *amount_read = tocopy;
         return 1;
     }
@@ -913,8 +933,7 @@ int appledouble_getattr(struct afp_volume * volume,
             goto error;
         }
 
-        stbuf->st_mode = (stbuf->st_mode & ~S_IFMT) | S_IFREG;
-        stbuf->st_size = 32;
+        afp_pseudo_file_stat(stbuf, 32);
         goto okay;
 
     case AFP_META_COMMENT: {
@@ -938,14 +957,13 @@ int appledouble_getattr(struct afp_volume * volume,
             goto error;
         }
 
-        stbuf->st_mode = (stbuf->st_mode & ~S_IFMT) | S_IFREG;
-        stbuf->st_size = ret;
+        afp_pseudo_file_stat(stbuf, ret);
         goto okay;
     }
 
     case AFP_META_SERVER_ICON:
-        stbuf->st_mode = S_IFREG | 0444;
-        stbuf->st_size = AFP_SERVER_ICON_LEN;
+        stbuf->st_mode = 0444;
+        afp_pseudo_file_stat(stbuf, AFP_SERVER_ICON_LEN);
         goto okay;
     }
 
@@ -959,48 +977,35 @@ error:
 }
 
 /*!
- * @brief Add a regular pseudo-file for a listed entry to a chain
+ * @brief Whether a name in the view reads as a pseudo-file
  *
- * @param[in,out] newchain  the chain, which gets the new entry first
- * @param[in]     fp        the listed entry the pseudo-file stands for
- * @param[in]     suffix    appended to the entry's name
- * @param[in]     size      the pseudo-file's length
- * @returns 0, or 1 without memory
+ * @param[in] name  a name in the .AppleDouble directory
+ * @returns 1 when it ends in the Finder information's or the comment's
+ *          suffix, 0 otherwise
  */
-static int add_fp(struct afp_file_info **newchain, struct afp_file_info *fp,
-                  char *suffix, unsigned int size)
+static int names_pseudo_file(const char *name)
 {
-    struct afp_file_info * newfp;
-    newfp = malloc(sizeof(struct afp_file_info));
-
-    if (!newfp) {
-        return 1;
-    }
-
-    memcpy(newfp, fp, sizeof(struct afp_file_info));
-    strcat(newfp->name, suffix);
-    newfp->resourcesize = size;
-    newfp->unixprivs.permissions = (newfp->unixprivs.permissions & ~S_IFMT)
-                                   | S_IFREG;
-    newfp->next = *newchain;
-    *newchain = newfp;
-    return 0;
+    size_t len = strlen(name);
+    size_t info = strlen(finderinfo_string);
+    size_t note = strlen(comment_string);
+    return (len >= info && strcmp(name + len - info, finderinfo_string) == 0)
+           || (len >= note && strcmp(name + len - note, comment_string) == 0);
 }
 
 /*!
  * @brief List the .AppleDouble directory at path
  *
- * Each file of the directory beside it lists its Finder information, its
- * comment when it has one, and its resource fork when that is not empty.
+ * Every entry beside it lists its Finder information and any comment, each
+ * file a non-empty resource fork unless its name reads as a pseudo-file.
  *
- * @param[in]  volume  volume of the directory
- * @param[in]  path    AFP path
- * @param[out] base    receives the entries, which the caller frees
+ * @param[in]     volume  volume of the directory
+ * @param[in]     path    AFP path
+ * @param[in,out] l       an empty listing, which receives the entries
  * @returns 1 for the .AppleDouble directory, 0 for another path, or a
  *          negative errno: -ENOTDIR for a pseudo-file
  */
 int appledouble_readdir(struct afp_volume * volume,
-                        const char *path, struct afp_file_info **base)
+                        const char *path, struct afp_listing *l)
 {
     int resource;
     char *newpath;
@@ -1015,44 +1020,60 @@ int appledouble_readdir(struct afp_volume * volume,
         return 0;
 
     case AFP_META_APPLEDOUBLE: {
-        struct afp_file_info *newchain = NULL;
-        int ret = ll_readdir(volume, newpath, base, 1);
+        uint32_t real, kept = 0;
+        int ret = ll_readdir(volume, newpath, l, 1);
 
         if (ret < 0) {
             free(newpath);
             return ret;
         }
 
-        for (struct afp_file_info *fp = *base; fp;) {
-            struct afp_file_info *next = fp->next;
-            /* A listed name is in the client's form, a request's in the
-             * volume's. */
-            char afp_name[AFPC_MAX_NAME_BYTES];
-            add_fp(&newchain, fp, finderinfo_string, 32);
+        real = l->count;
 
-            if (convert_path_to_afp(volume->path_encoding, afp_name, fp->name,
-                                    (int) sizeof(afp_name)) == 0) {
-                int size = read_comment(volume, afp_name, fp->did, NULL, 0);
+        for (uint32_t i = 0; i < real && ret == 0; i++) {
+            /* A copy: the appends may move the array. A listed name is in
+             * the client's form, a request's in the volume's. */
+            struct afp_dirent e = l->entries[i];
+            char afp_name[AFPC_MAX_NAME_BYTES];
+            ret = afp_listing_append(l, &e, finderinfo_string,
+                                     AFP_META_FINDERINFO, 32);
+
+            if (ret == 0
+                    && convert_path_to_afp(volume->path_encoding, afp_name,
+                                           afp_dirent_name(l, &e),
+                                           (int) sizeof(afp_name)) == 0) {
+                int size = read_comment(volume, afp_name, e.parent_did, NULL,
+                                        0);
 
                 if (size > 0) {
-                    add_fp(&newchain, fp, comment_string, 32);
+                    ret = afp_listing_append(l, &e, comment_string,
+                                             AFP_META_COMMENT, (uint64_t) size);
                 }
             }
 
-            /* The file's own entry is its resource fork, which only a regular
-             * file has; without privileges the type is ll_getattr()'s. */
-            if ((fp->unixprivs.permissions ? S_ISREG(fp->unixprivs.permissions)
-                    : !fp->isdir) && fp->resourcesize != 0) {
-                fp->next = newchain;
-                newchain = fp;
-            } else {
-                free(fp);
+            /* A file's resource fork stays listed, but not under a name the
+             * view's lookup reads as another file's pseudo-file. */
+            if (S_ISREG(afp_dirent_mode(&e)) && e.resourcesize != 0
+                    && !names_pseudo_file(afp_dirent_name(l, &e))) {
+                e.kind = AFP_META_RESOURCE;
+                l->entries[kept++] = e;
             }
-
-            fp = next;
         }
 
-        *base = newchain;
+        if (ret < 0) {
+            afp_listing_free(l);
+            free(newpath);
+            return ret;
+        }
+
+        /* The pseudo-files close up behind the entries kept; an empty
+         * listing has no array. */
+        if (l->count > real) {
+            memmove(&l->entries[kept], &l->entries[real],
+                    (l->count - real) * sizeof(*l->entries));
+        }
+
+        l->count -= real - kept;
         free(newpath);
         return 1;
     }

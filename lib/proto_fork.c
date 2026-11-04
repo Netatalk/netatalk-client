@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -179,7 +180,7 @@ int afp_openfork_reply(struct afp_server *server,
                        char *buf, unsigned int size, void *x)
 {
     struct afp_file_info *fp = (struct afp_file_info *)x;
-    struct afp_file_info params;
+    struct afp_dirent params;
     unsigned short bitmap;
     struct {
         struct dsi_header header __attribute__((__packed__));
@@ -202,9 +203,9 @@ int afp_openfork_reply(struct afp_server *server,
 
         if (bitmap && parse_reply_block(server, buf + sizeof(reply),
                                         size - sizeof(reply), 0, bitmap, 0,
-                                        &params) == 0) {
+                                        &params, NULL, 0) == 0) {
             if (bitmap & kFPNodeIDBit) {
-                fp->fileid = params.fileid;
+                fp->cnid = params.cnid;
             }
 
             if (bitmap & kFPExtDataForkLenBit) {

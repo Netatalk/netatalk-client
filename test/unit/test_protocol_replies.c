@@ -53,7 +53,7 @@ int main(int argc, char **argv)
     struct afp_comment comment;
     struct afp_icon_info icon_info;
     struct afp_appl appl;
-    struct afp_file_info file_info;
+    struct afp_dirent file_info;
     struct afp_server close_server;
     struct afp_volume close_volume;
     struct afp_file_info open_fork;
@@ -97,13 +97,15 @@ int main(int argc, char **argv)
     CHECK(afp_date_to_unix(&server,
                            afp_date_from_unix(&server, (time_t)1700000000))
           == (time_t)1700000000);
-    memset(&file_info, 0, sizeof(file_info));
     wire32 = htonl(UINT32_C(0x80000000));
     CHECK(parse_reply_block(&server, (const char *)&wire32, sizeof(wire32),
-                            0, kFPModDateBit, 0, &file_info) == 0);
-    CHECK(file_info.modification_date
-          == (time_t)(AD_DATE_DELTA - INT64_C(0x80000000) - 3600));
-    CHECK(file_info.modification_date_is_unset);
+                            0, kFPModDateBit, 0, &file_info, NULL, 0) == 0);
+    CHECK(!(file_info.valid & kFPModDateBit) && file_info.mod_ns == 0);
+    wire32 = afp_date_from_unix(&server, (time_t)1700000000);
+    CHECK(parse_reply_block(&server, (const char *)&wire32, sizeof(wire32),
+                            0, kFPModDateBit, 0, &file_info, NULL, 0) == 0);
+    CHECK((file_info.valid & kFPModDateBit)
+          && file_info.mod_ns == INT64_C(1700000000) * AFP_NS_PER_SEC);
     server.using_version = NULL;
     server.time_offset = 0;
     {
@@ -179,6 +181,18 @@ int main(int argc, char **argv)
     CHECK(written32 == 0);
     CHECK(afp_write_reply(NULL, (char *)reply, sizeof(reply), NULL) == 0);
     CHECK(afp_writeext_reply(NULL, (char *)reply, sizeof(reply), NULL) == 0);
+    memset(reply, 0, sizeof(reply));
+    wire32 = htonl(UINT32_C(0x12345678));
+    memcpy(reply + sizeof(struct dsi_header), &wire32, sizeof(wire32));
+    written32 = UINT32_MAX;
+    CHECK(afp_createdir_reply(NULL, (char *)reply, sizeof(reply), &written32)
+          == 0);
+    CHECK(written32 == UINT32_C(0x12345678));
+    header->return_code.error_code = 1;
+    written32 = UINT32_MAX;
+    CHECK(afp_createdir_reply(NULL, (char *)reply, sizeof(reply), &written32)
+          != 0);
+    CHECK(written32 == 0);
     memset(&xattr_reply, 0, sizeof(xattr_reply));
     memset(&xattr_info, 0, sizeof(xattr_info));
     xattr_info.maxsize = 2;
@@ -267,11 +281,11 @@ int main(int argc, char **argv)
         appl_reply.did = htonl(123);
         appl_reply.name_offset = htons(6);
         appl_reply.name_len = 3;
-        memcpy(appl_reply.name, "App", 3);
+        memcpy(appl_reply.name, "Ap\x8e", 3);
         CHECK(afp_getappl_reply(&server, (char *)&appl_reply,
                                 sizeof(appl_reply), &appl) == 0);
-        CHECK(appl.tag == 99 && appl.file.did == 123
-              && strcmp(appl.file.name, "App") == 0);
+        CHECK(appl.tag == 99 && appl.file.parent_did == 123
+              && strcmp(appl.name, "Ap\xc3\xa9") == 0);
     }
     {
         /* A volume's locks work from the reply that lists it; on macOS a

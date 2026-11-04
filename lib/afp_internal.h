@@ -44,38 +44,77 @@ struct afp_rx_buffer {
 };
 
 
+#define AFP_NS_PER_SEC INT64_C(1000000000)
+
+/*! @brief A time in seconds as the record's nanoseconds, saturated */
+static inline int64_t afp_ns_from_sec(time_t sec)
+{
+    /* Widened, so a 32-bit time_t meets the bounds without a warning */
+    int64_t s = sec;
+
+    if (s > INT64_MAX / AFP_NS_PER_SEC) {
+        return INT64_MAX;
+    }
+
+    if (s < INT64_MIN / AFP_NS_PER_SEC) {
+        return INT64_MIN;
+    }
+
+    return s * AFP_NS_PER_SEC;
+}
+
+/*! @brief The record's nanoseconds as whole seconds, toward zero */
+static inline time_t afp_sec_from_ns(int64_t ns)
+{
+    return (time_t)(ns / AFP_NS_PER_SEC);
+}
+
+/*! @brief One file's or directory's parameters, as a reply carries them */
+struct afp_dirent {
+    uint64_t size;
+    uint64_t resourcesize;
+    int64_t create_ns;      /*!< nanoseconds since 1970 */
+    int64_t mod_ns;         /*!< nanoseconds since 1970 */
+    uint32_t valid;         /*!< members carried, as isdir's bitmap bits */
+    uint32_t cnid;
+    uint32_t parent_did;
+    struct afpc_unix_privileges unixprivs;
+    uint32_t name_off;      /*!< the name's offset in the listing's pool */
+    uint16_t attributes;
+    uint16_t offspring;
+    uint8_t isdir;
+    uint8_t kind;           /*!< AFP_META_NONE, or a pseudo-file's kind */
+    char finderinfo[32];
+};
+
+/* Ordered by size: 104 bytes on LP64 */
+_Static_assert(sizeof(struct afp_dirent) <= 104, "afp_dirent packs");
+
+/*! @brief A directory listing; a zeroed one is empty */
+struct afp_listing {
+    struct afp_dirent *entries;
+    uint32_t count;
+    uint32_t capacity;
+    char *pool;
+    uint32_t pool_used;
+    uint32_t pool_cap;
+};
+
+/*! @brief An open fork: the file it names and the open's client state */
 struct afp_file_info {
-    unsigned short attributes;
+    struct afp_file_info *largelist_next;
+    unsigned long long size;
     unsigned int did;
-    time_t creation_date;
-    time_t modification_date;
-    time_t backup_date;
-    /* The signed AFP date value 0x80000000 denotes an unset date. */
-    unsigned char creation_date_is_unset;
-    unsigned char modification_date_is_unset;
-    unsigned char backup_date_is_unset;
-    unsigned int fileid;
-    unsigned short offspring;
+    /*! The node ID from the open or AFP 2's query, 0 without one */
+    unsigned int cnid;
+    unsigned int resource;
+    unsigned short forkid;
     unsigned char sync;
     unsigned char writable;
     unsigned char dirty;
-    /* This record's open created the file. */
+    /*! This record's open created the file */
     unsigned char created;
-    char finderinfo[32];
-    char name[AFPC_MAX_NAME_BYTES];
     char basename[AFPC_MAX_NAME_BYTES];
-    char translated_name[AFPC_MAX_NAME_BYTES];
-    struct afpc_unix_privileges unixprivs;
-    unsigned int accessrights;
-    struct afp_file_info *next;
-    struct afp_file_info *largelist_next;
-    unsigned char isdir;
-    unsigned long long size;
-    unsigned long long resourcesize;
-    unsigned int resource;
-    unsigned short forkid;
-    struct afp_icon *icon;
-    int eof;
 };
 
 #if 0
@@ -367,16 +406,15 @@ struct afp_icon_info {
     uint8_t icontype;
 };
 
+/*! @brief An FPGetAPPL answer: the application's tag, parameters and name */
 struct afp_appl {
     uint16_t bitmap;
     uint32_t tag;
-    struct afp_file_info file;
+    struct afp_dirent file;
+    char name[AFPC_MAX_NAME_BYTES];
 };
 
 #define AFP_DEFAULT_ATTENTION_QUANTUM 1024
-
-void afp_unixpriv_to_stat(struct afp_file_info *fp,
-                          struct stat *stat);
 
 int init_uams(void);
 
@@ -593,7 +631,7 @@ int afp_volopen(struct afp_volume * volume,
 
 int afp_getfiledirparms(struct afp_volume *volume, unsigned int did,
                         unsigned int filebitmap, unsigned int dirbitmap, const char *pathname,
-                        struct afp_file_info *fp);
+                        struct afp_dirent *e);
 
 int afp_enumerate(struct afp_volume * volume,
                   unsigned int dirid,
@@ -601,7 +639,7 @@ int afp_enumerate(struct afp_volume * volume,
                   unsigned short reqcount,
                   unsigned short startindex,
                   char *path,
-                  struct afp_file_info **file_p);
+                  struct afp_listing *l);
 
 int afp_enumerateext(struct afp_volume * volume,
                      unsigned int dirid,
@@ -609,7 +647,7 @@ int afp_enumerateext(struct afp_volume * volume,
                      unsigned short reqcount,
                      unsigned short startindex,
                      char *path,
-                     struct afp_file_info **file_p);
+                     struct afp_listing *l);
 
 int afp_enumerateext2(struct afp_volume * volume,
                       unsigned int dirid,
@@ -617,7 +655,7 @@ int afp_enumerateext2(struct afp_volume * volume,
                       unsigned short reqcount,
                       unsigned long startindex,
                       char *path,
-                      struct afp_file_info **file_p);
+                      struct afp_listing *l);
 
 int afp_openfork(struct afp_volume * volume,
                  unsigned char forktype,
@@ -669,10 +707,10 @@ int afp_syncfork(struct afp_volume * volume, unsigned short forkid,
 int afp_closefork(struct afp_volume * volume, unsigned short forkid);
 int afp_setfiledirparms(struct afp_volume * volume,
                         unsigned int dirid, const char *pathname, unsigned short bitmap,
-                        struct afp_file_info *fp);
+                        const struct afp_dirent *e);
 int afp_setdirparms(struct afp_volume * volume, unsigned int dirid,
                     const char *pathname, unsigned short bitmap,
-                    struct afp_file_info *fp);
+                    const struct afp_dirent *e);
 
 int afp_volclose(struct afp_volume * volume);
 
@@ -735,6 +773,27 @@ char *afp_get_command_name(unsigned char code);
 time_t afp_date_to_unix(const struct afp_server *server, uint32_t date);
 uint32_t afp_date_from_unix(const struct afp_server *server, time_t date);
 
-void add_file_by_name(struct afp_file_info **base, const char *filename);
+/* The listing's records and pool (listing.c) */
+int afp_listing_reserve(struct afp_listing *l, uint32_t entries,
+                        size_t bytes);
+int afp_listing_append(struct afp_listing *l, const struct afp_dirent *e,
+                       const char *suffix, unsigned int kind, uint64_t size);
+void afp_listing_commit(struct afp_listing *l);
+void afp_listing_drop_unnamed(struct afp_listing *l);
+void afp_listing_free(struct afp_listing *l);
+mode_t afp_dirent_mode(const struct afp_dirent *e);
+int afp_dirent_to_stat(struct afp_volume *volume, const struct afp_dirent *e,
+                       struct stat *stbuf);
+struct timespec afp_dirent_time(const struct afp_volume *volume,
+                                const struct afp_dirent *e, uint32_t bit,
+                                int64_t ns);
+void afp_pseudo_file_stat(struct stat *stbuf, off_t size);
+
+/*! @brief An entry's NUL-terminated name in the UNIX form, in the pool */
+static inline const char *afp_dirent_name(const struct afp_listing *l,
+                                          const struct afp_dirent *e)
+{
+    return l->pool + e->name_off;
+}
 
 #endif

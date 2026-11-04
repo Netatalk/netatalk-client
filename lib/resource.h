@@ -25,7 +25,10 @@ int appledouble_getattr(struct afp_volume * volume,
 
 
 int appledouble_readdir(struct afp_volume * volume,
-                        const char *path, struct afp_file_info **base);
+                        const char *path, struct afp_listing *l);
+
+int appledouble_shadows(const struct afp_volume *volume, const char *dir,
+                        const char *name);
 
 int appledouble_open(struct afp_volume * volume, const char *path, int flags,
                      struct afp_file_info *newfp);

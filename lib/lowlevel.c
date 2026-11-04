@@ -24,24 +24,43 @@
 
 #include "afp_internal.h"
 #include "afp_protocol.h"
-#include "codepage.h"
 #include "compat.h"
 #include "did.h"
 #include "forklist.h"
 #include "lowlevel.h"
-#include "midlevel.h"
-#include "users.h"
+#include "resource.h"
 #include "utils.h"
 
-static void set_nonunix_perms(unsigned int *mode, struct afp_file_info *fp)
+/*!
+ * @brief The bitmap bit of a fork's length
+ *
+ * AFP 3 carries a length in 64 bits; AirPort Extreme 7.1.1 crashes on an
+ * AFP 3 request with the 32-bit bit.
+ *
+ * @param[in] volume    volume of the fork
+ * @param[in] resource  1 for the resource fork, 0 for the data fork
+ * @returns kFPExtRsrcForkLenBit or kFPExtDataForkLenBit from AFP 3.0, the
+ *          32-bit bits before it
+ */
+static unsigned int fork_length_bit(const struct afp_volume *volume,
+                                    int resource)
 {
-    if (fp->isdir) {
-        *mode = 0700 | S_IFDIR;
-    } else {
-        *mode = 0600 | S_IFREG;
+    if (volume->server->using_version->av_number < 30) {
+        return resource ? kFPRsrcForkLenBit : kFPDataForkLenBit;
     }
+
+    return resource ? kFPExtRsrcForkLenBit : kFPExtDataForkLenBit;
 }
 
+/*!
+ * @brief Unlock a byte range of an open fork
+ *
+ * @param[in] volume         volume of the fork
+ * @param[in] forkid         the open fork
+ * @param[in] offset         start of the range
+ * @param[in] sizetorequest  bytes of the range
+ * @returns 0, or -1 when the server refuses the unlock
+ */
 int ll_handle_unlocking(struct afp_volume * volume, unsigned short forkid,
                         uint64_t offset, uint64_t sizetorequest)
 {
@@ -74,6 +93,17 @@ int ll_handle_unlocking(struct afp_volume * volume, unsigned short forkid,
     return 0;
 }
 
+/*!
+ * @brief Lock a byte range of an open fork
+ *
+ * @param[in] volume         volume of the fork
+ * @param[in] forkid         the open fork
+ * @param[in] offset         start of the range
+ * @param[in] sizetorequest  bytes of the range
+ * @returns 0 once locked or once ten tries found the range held or the
+ *          server out of locks, or -1 when the server refuses the lock for
+ *          another reason
+ */
 int ll_handle_locking(struct afp_volume * volume, unsigned short forkid,
                       uint64_t offset, uint64_t sizetorequest)
 {
@@ -144,16 +174,7 @@ int ll_setfork_size(struct afp_volume * volume, unsigned short forkid,
         return EFBIG;
     }
 
-    /* AirPort Extreme 7.1.1 crashes on an AFP 3 request with the 32-bit
-     * length bit. */
-    if (volume->server->using_version->av_number < 30) {
-        bitmap = (resource ?
-                  kFPRsrcForkLenBit : kFPDataForkLenBit);
-    } else {
-        bitmap = (resource ?
-                  kFPExtRsrcForkLenBit : kFPExtDataForkLenBit);
-    }
-
+    bitmap = fork_length_bit(volume, resource);
     ret = afp_setforkparms(volume, forkid, bitmap, size);
 
     switch (ret) {
@@ -183,25 +204,6 @@ int ll_setfork_size(struct afp_volume * volume, unsigned short forkid,
     return ret;
 }
 
-
-/* get_directory_entry is used to abstract afp_getfiledirparms
- *  * because in AFP<3.0 there is only afp_getfileparms and afp_getdirparms.
- *   */
-
-int ll_get_directory_entry(struct afp_volume * volume,
-                           char *basename,
-                           unsigned int dirid,
-                           unsigned int filebitmap, unsigned int dirbitmap,
-                           struct afp_file_info *p)
-{
-    int ret;
-    char tmpname[AFPC_MAX_NAME_BYTES];
-    memcpy(tmpname, p->basename, sizeof(tmpname));
-    ret = afp_getfiledirparms(volume, dirid,
-                              filebitmap, dirbitmap, basename, p);
-    memcpy(p->basename, tmpname, sizeof(p->basename));
-    return ret;
-}
 
 /*!
  * @brief Create a file with a soft FPCreateFile
@@ -369,15 +371,13 @@ int ll_open(struct afp_volume * volume,
     }
 
     if (volume->server->using_version->av_number < 30) {
-        rc = ll_get_directory_entry(volume, fp->basename, fp->did,
-                                    kFPParentDirIDBit | kFPNodeIDBit
-                                    | (resource ? kFPRsrcForkLenBit
-                                       : kFPDataForkLenBit), 0, fp);
+        struct afp_dirent entry;
+        rc = afp_getfiledirparms(volume, fp->did, kFPNodeIDBit
+                                 | fork_length_bit(volume, resource), 0,
+                                 fp->basename, &entry);
         ret = ll_answer_errno(rc);
-        /* ll_get_directory_entry() clears fp, its fork type included. */
-        fp->resource = resource;
 
-        if (!ret && fp->isdir) {
+        if (!ret && entry.isdir) {
             ret = EISDIR;
         }
 
@@ -387,13 +387,10 @@ int ll_open(struct afp_volume * volume,
 
         /* The read's AFP 2 bound weighs size, which a truncation keeps for
          * either fork. */
-        if (resource) {
-            fp->size = fp->resourcesize;
-        }
+        fp->size = resource ? entry.resourcesize : entry.size;
+        fp->cnid = entry.cnid;
     }
 
-    /* These are client-side open state, not AFP reply parameters.  Set them
-     * after the AFP 2.x parameter query, whose reply parser clears fp. */
     fp->sync = (flags & O_SYNC) != 0;
     fp->writable = (aflags & AFP_OPENFORK_ALLOWWRITE) ? 1 : 0;
     fp->dirty = 0;
@@ -468,15 +465,15 @@ error:
 static int afp2_fork_reaches(struct afp_volume * volume,
                              struct afp_file_info * fp, uint64_t offset)
 {
-    struct afp_file_info now;
+    struct afp_dirent now;
     uint64_t length = fp->size;
     int ret;
 
     if (length <= offset && length < UINT32_MAX) {
         memset(&now, 0, sizeof(now));
-        ret = ll_get_directory_entry(volume, fp->basename, fp->did,
-                                     fp->resource ? kFPRsrcForkLenBit
-                                     : kFPDataForkLenBit, 0, &now);
+        ret = afp_getfiledirparms(volume, fp->did,
+                                  fork_length_bit(volume, fp->resource), 0,
+                                  fp->basename, &now);
 
         if (ret != kFPNoErr) {
             return -ll_answer_errno(ret);
@@ -652,47 +649,43 @@ error:
 /*!
  * @brief List the directory at path, a page per request
  *
- * From AFP 3.1, FPEnumerateExt2 asks for more entries than a reply holds, so
- * the reply budget sizes the page. Older versions use FPEnumerateExt or
- * FPEnumerate. The listing returns names in precomposed UTF-8.
+ * Names come in the UNIX form, never empty. A folder a cached ID misses is
+ * resolved and listed again; the cache forgets IDs the entries contradict.
  *
- * @param[in]  volume    volume of the directory
- * @param[in]  path      AFP path of the directory
- * @param[out] fb        the entries, a list the caller frees; NULL when
- *                       the listing fails
- * @param[in]  resource  1 for the files' resource fork lengths, 0 for their
- *                       data fork lengths
- * @returns 0, or a negative errno
+ * @param[in]     volume    volume of the directory
+ * @param[in]     path      AFP path of the directory
+ * @param[in,out] l         the listing the entries join, empty before and
+ *                          after a listing that fails
+ * @param[in]     resource  1 for the files' resource fork lengths, 0 for
+ *                          their data fork lengths
+ * @returns 0, or a negative errno: -EOVERFLOW for an AFP 2 or 3.0 folder
+ *          of 65 535 entries or more
  */
 int ll_readdir(struct afp_volume * volume, const char *path,
-               struct afp_file_info **fb, int resource)
+               struct afp_listing *l, int resource)
 {
-    struct afp_file_info * p, *filebase = NULL, *base, *last = NULL;
     unsigned short reqcount = 256;
     unsigned long startindex = 1;
-    int rc = 0, ret = 0, exit = 0;
+    int rc = 0, ret = 0, exit = 0, resolved = 0;
     unsigned int filebitmap, dirbitmap;
     char basename[AFPC_MAX_NAME_BYTES];
-    char converted_name[AFPC_MAX_NAME_BYTES];
-    unsigned int dirid;
-    *fb = NULL;
+    unsigned int dirid, newdid;
 
     if (invalid_filename(volume, path)) {
-        return -ENAMETOOLONG;
+        ret = ENAMETOOLONG;
+        goto error;
     }
 
     if (get_dirid(volume, path, basename, &dirid) < 0) {
-        return -ENOENT;
+        ret = ENOENT;
+        goto error;
     }
 
-    /* We need to handle length bits differently for AFP < 3.0 */
     filebitmap = kFPAttributeBit | kFPParentDirIDBit |
                  kFPCreateDateBit | kFPModDateBit |
-                 kFPBackupDateBit |
                  kFPNodeIDBit;
     dirbitmap = kFPAttributeBit | kFPParentDirIDBit |
                 kFPCreateDateBit | kFPModDateBit |
-                kFPBackupDateBit |
                 kFPNodeIDBit | kFPOffspringCountBit |
                 kFPOwnerIDBit | kFPGroupIDBit;
 
@@ -709,15 +702,10 @@ int ll_readdir(struct afp_volume * volume, const char *path,
         filebitmap |= kFPLongNameBit | kFPShortNameBit;
     }
 
-    if (volume->server->using_version->av_number < 30) {
-        filebitmap |= (resource ? kFPRsrcForkLenBit : kFPDataForkLenBit);
-    } else {
-        filebitmap |= (resource ? kFPRsrcForkLenBit : kFPExtDataForkLenBit);
-    }
+    filebitmap |= fork_length_bit(volume, resource);
 
     while (!exit) {
-        unsigned int entries_returned = 0;
-        base = NULL;
+        uint32_t before = l->count;
 
         /* Select appropriate enumerate command based on AFP version:
          * AFP < 3.0: afp_enumerate (16-bit fields, 4GB volume limit)
@@ -726,43 +714,35 @@ int ll_readdir(struct afp_volume * volume, const char *path,
         if (volume->server->using_version->av_number < 30) {
             rc = afp_enumerate(volume, dirid,
                                filebitmap, dirbitmap, reqcount,
-                               startindex, basename, &base);
+                               (unsigned short) startindex, basename, l);
         } else if (volume->server->using_version->av_number == 30) {
             rc = afp_enumerateext(volume, dirid,
                                   filebitmap, dirbitmap, reqcount,
-                                  startindex, basename, &base);
+                                  (unsigned short) startindex, basename, l);
         } else {
             /* The count asks for more entries than any reply holds, within
              * the signed range Apple servers read, so the reply budget sizes
              * the page. */
             rc = afp_enumerateext2(volume, dirid,
                                    filebitmap, dirbitmap, INT16_MAX,
-                                   startindex, basename, &base);
+                                   startindex, basename, l);
         }
 
         switch (rc) {
         case 0:
         case kFPObjectNotFound:
-            if (filebase == NULL) {
-                filebase = base;
-            } else {
-                last->next = base;
-            }
-
-            for (p = base; p; p = p->next) {
-                startindex++;
-                entries_returned++;
-                last = p;
-            }
+            startindex += l->count - before;
 
             /* Some Apple AFP servers report end-of-directory as a successful
              * enumeration with zero entries instead of kFPObjectNotFound. */
-            if (entries_returned == 0) {
+            if (l->count == before || rc == kFPObjectNotFound) {
                 exit = 1;
-            }
-
-            if (rc == kFPObjectNotFound) {
-                exit = 1;
+            } else if (startindex > UINT16_MAX
+                       && volume->server->using_version->av_number <= 30) {
+                /* FPEnumerate's and FPEnumerateExt's index is 16 bits
+                 * wide: the next page's would wrap to the folder's start. */
+                ret = EOVERFLOW;
+                goto error;
             }
 
             break;
@@ -772,6 +752,23 @@ int ll_readdir(struct afp_volume * volume, const char *path,
             goto error;
 
         case kFPDirNotFound:
+
+            /* The folder is gone, or a cached ID on its path names no
+             * folder since another session replaced one. */
+            if (!resolved) {
+                resolved = 1;
+                remove_did_lineage(volume, path);
+
+                if (get_dirid(volume, path, basename, &newdid) == 0
+                        && newdid != dirid) {
+                    dirid = newdid;
+                    startindex = 1;
+                    l->count = 0;
+                    l->pool_used = 0;
+                    break;
+                }
+            }
+
             ret = ENOENT;
             goto error;
 
@@ -787,56 +784,45 @@ int ll_readdir(struct afp_volume * volume, const char *path,
         }
     }
 
-    for (p = filebase; p; p = p->next) {
-        /* Convert all the names back to precomposed */
-        convert_path_to_unix(
-            volume->path_encoding,
-            converted_name, p->name, sizeof(converted_name));
-        snprintf(p->name, sizeof(p->name), "%s", converted_name);
-        p->name[sizeof(p->name) - 1U] = '\0';
-        startindex++;
+    afp_listing_drop_unnamed(l);
+
+    /* The entries carry the folder's ID and its folders', which the cache
+     * checks; an empty folder's is in none, and nothing stands beneath it. */
+    if (l->count == 0) {
+        remove_did_subtree(volume, path);
+    } else {
+        check_did_entry(volume, path,
+                        l->entries[0].valid & kFPParentDirIDBit
+                        ? l->entries[0].parent_did : 0, l);
     }
 
-    if (volume->server->using_version->av_number < 30) {
-        for (p = filebase; p; p = p->next) {
-            unsigned int temp_permissions = p->unixprivs.permissions;
-            set_nonunix_perms(&temp_permissions, p);
-            p->unixprivs.permissions = temp_permissions;
-
-            /* Some AFP 2.x servers return the unset-date sentinel for
-             * directory times.  Preserve every real server timestamp; only
-             * use the connection time where the protocol says no date exists.
-             */
-            if (p->isdir) {
-                if (p->creation_date_is_unset) {
-                    p->creation_date = volume->server->connect_time;
-                }
-
-                if (p->modification_date_is_unset) {
-                    p->modification_date = volume->server->connect_time;
-                }
-            }
-        }
-    }
-
-    *fb = filebase;
     return 0;
 error:
-    afp_ml_filebase_free(&filebase);
+    afp_listing_free(l);
     return -ret;
 }
 
 
+/*!
+ * @brief Read a path's parameters for stat(2)
+ *
+ * The root shows the time of the mount, or of afpsld's attach.
+ *
+ * @param[in]  volume    volume of the path
+ * @param[in]  path      AFP path
+ * @param[out] stbuf     receives the attributes
+ * @param[in]  resource  1 for the resource view, whose size is the resource
+ *                       fork's
+ * @returns 0, or a negative errno
+ */
 int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
                int resource)
 {
-    struct afp_file_info fp;
+    struct afp_dirent entry;
     unsigned int dirid;
     int rc;
     unsigned int filebitmap, dirbitmap;
     char basename[AFPC_MAX_NAME_BYTES];
-    time_t creation_date;
-    time_t modification_date;
     memset(stbuf, 0, sizeof(struct stat));
 
     if ((volume->server) &&
@@ -858,19 +844,15 @@ int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
                  kFPFinderInfoBit |
                  kFPParentDirIDBit;
 
-    if (volume->server->using_version->av_number < 30) {
-        if (path[0] == '/' && path[1] == '\0') {
-            /* This will sound odd, but when referring to /, AFP 2.x
-               clients check on a 'file' with the volume name. */
-            snprintf(basename, sizeof(basename), "%s",
-                     volume->volume_name);
-            dirid = 1;
-        }
-
-        filebitmap |= (resource ? kFPRsrcForkLenBit : kFPDataForkLenBit);
-    } else {
-        filebitmap |= (resource ? kFPExtRsrcForkLenBit : kFPExtDataForkLenBit);
+    if (volume->server->using_version->av_number < 30
+            && path[0] == '/' && path[1] == '\0') {
+        /* AFP 2 reads the root as the volume's name in its parent, DID 1. */
+        snprintf(basename, sizeof(basename), "%s",
+                 volume->volume_name);
+        dirid = 1;
     }
+
+    filebitmap |= fork_length_bit(volume, resource);
 
     if (volume->extra_flags & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX) {
         dirbitmap |= kFPUnixPrivsBit;
@@ -880,7 +862,7 @@ int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
     }
 
     rc = afp_getfiledirparms(volume, dirid, filebitmap, dirbitmap,
-                             (char *) basename, &fp);
+                             (char *) basename, &entry);
 
     switch (rc) {
     case kFPAccessDenied:
@@ -899,62 +881,21 @@ int ll_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf,
         return -EIO;
     }
 
-    if (volume->server->using_version->av_number >= 30
-            && fp.unixprivs.permissions != 0) {
-        stbuf->st_mode |= fp.unixprivs.permissions;
-    } else {
-        set_nonunix_perms((unsigned int *)&stbuf->st_mode, &fp);
+    /* A folder another session replaced has another ID: the cache forgets
+     * the old one and those beneath it. */
+    if (entry.isdir && (entry.valid & kFPNodeIDBit)) {
+        check_did_entry(volume, path, entry.cnid, NULL);
     }
 
-    stbuf->st_ino = fp.fileid;
-    stbuf->st_uid = fp.unixprivs.uid;
-    stbuf->st_gid = fp.unixprivs.gid;
+    entry.kind = resource ? AFP_META_RESOURCE : AFP_META_NONE;
 
-    if (translate_uidgid_to_client(volume,
-                                   &stbuf->st_uid, &stbuf->st_gid)) {
-        return -EIO;
+    if (path[0] == '/' && path[1] == '\0' && entry.isdir) {
+        entry.create_ns = afp_ns_from_sec(volume->mount_time);
+        entry.mod_ns = entry.create_ns;
+        entry.valid |= kFPCreateDateBit | kFPModDateBit;
     }
 
-    if (stbuf->st_mode & S_IFDIR) {
-        stbuf->st_nlink = fp.offspring + 2;
-        stbuf->st_size = resource ? 0 : (fp.offspring * 34) + 24;
-        stbuf->st_blksize = 4096;
-        stbuf->st_blocks = (stbuf->st_size + 511) / 512;
-        /* This slight voodoo was taken from Mac OS X 10.2 */
-    } else {
-        stbuf->st_nlink = 1;
-        stbuf->st_size = (resource ? fp.resourcesize : fp.size);
-        stbuf->st_blksize = 4096;
-        stbuf->st_blocks = (stbuf->st_size + 511) / 512;
-    }
-
-    if ((volume->server->using_version->av_number < 30) &&
-            (stbuf->st_mode & S_IFDIR)) {
-        /* AFP 2.x doesn't give ctime and mtime for directories*/
-        creation_date = volume->server->connect_time;
-        modification_date = volume->server->connect_time;
-    } else if ((path[0] == '/' && path[1] == '\0') && (stbuf->st_mode & S_IFDIR)) {
-        /* For the root directory, use the mount time as creation/modification date */
-        creation_date = volume->mount_time;
-        modification_date = volume->mount_time;
-    } else {
-        creation_date = fp.creation_date;
-        modification_date = fp.modification_date;
-    }
-
-#ifdef __linux__
-    stbuf->st_ctim.tv_sec = creation_date;
-    stbuf->st_mtim.tv_sec = modification_date;
-#else
-    stbuf->st_ctime = creation_date;
-    stbuf->st_mtime = modification_date;
-#endif
-#ifdef __APPLE__
-    /* On macOS, set birthtimespec for Finder display (handled by stat_to_darwin_attr) */
-    stbuf->st_birthtimespec.tv_sec = creation_date;
-    stbuf->st_birthtimespec.tv_nsec = 0;
-#endif
-    return 0;
+    return afp_dirent_to_stat(volume, &entry, stbuf);
 }
 
 

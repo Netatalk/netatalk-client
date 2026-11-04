@@ -2327,13 +2327,35 @@ static unsigned char process_metadata(struct daemon_client *c)
     return 0;
 }
 
-static int compare_afp_file_info(const void *a, const void *b)
+/*! @brief A listing entry under its name, for the sort */
+struct readdir_name {
+    const char *name;
+    const struct afp_dirent *e;
+};
+
+/*!
+ * @brief Order two listing entries by name, case folded
+ *
+ * @param[in] a  a struct readdir_name
+ * @param[in] b  another
+ * @returns strcasecmp()'s result on their names
+ */
+static int compare_readdir_names(const void *a, const void *b)
 {
-    const struct afp_file_info *fa = *(struct afp_file_info * const *)a;
-    const struct afp_file_info *fb = *(struct afp_file_info * const *)b;
-    return strcasecmp(fa->name, fb->name);
+    const struct readdir_name *na = a;
+    const struct readdir_name *nb = b;
+    return strcasecmp(na->name, nb->name);
 }
 
+/*!
+ * @brief Answer a readdir request with a slice of the directory's listing
+ *
+ * Every request lists the directory whole, sorted by name case folded; the
+ * slice goes out in the stat form, with the end flag at the last entry.
+ *
+ * @param[in] c  the client, with the request
+ * @returns AFPSL_IPC_RESULT_OK, or AFPSL_IPC_RESULT_ERROR
+ */
 static unsigned char process_readdir(struct daemon_client * c)
 {
     struct afpsl_ipc_readdir_request * req = (void *) c->complete_packet;
@@ -2344,10 +2366,12 @@ static unsigned char process_readdir(struct daemon_client * c)
     const char *path;
     size_t request_len;
     char *data, *p;
-    struct afp_file_info *filebase, *fp;
-    unsigned int numfiles = 0;
+    struct afp_listing listing;
+    struct readdir_name *names = NULL;
+    unsigned int numfiles;
     int i;
     int ret;
+    memset(&listing, 0, sizeof(listing));
 
     if ((size_t)c->completed_packet_size < sizeof(*req) || req->start < 0) {
         result = AFPSL_IPC_RESULT_ERROR;
@@ -2379,44 +2403,32 @@ static unsigned char process_readdir(struct daemon_client * c)
         goto error;
     }
 
-    ret = ml_readdir(v, path, &filebase);
+    ret = ml_readdir(v, path, &listing);
 
     if (ret) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto error;
     }
 
-    for (fp = filebase; fp; fp = fp->next) {
-        numfiles++;
-    }
+    numfiles = listing.count;
 
-    /* Sort the file list alphabetically */
-    if (numfiles > 1) {
-        struct afp_file_info **file_array = malloc(numfiles * sizeof(
-                                                       struct afp_file_info *));
+    /* The names sort; the records stay in the server's order. */
+    if (numfiles > 0) {
+        names = malloc(numfiles * sizeof(*names));
 
-        if (file_array) {
-            int idx = 0;
-
-            for (fp = filebase; fp; fp = fp->next) {
-                file_array[idx++] = fp;
-            }
-
-            qsort(file_array, numfiles, sizeof(struct afp_file_info *),
-                  compare_afp_file_info);
-            /* Rebuild linked list */
-            filebase = file_array[0];
-
-            for (i = 0; i < (int)numfiles - 1; i++) {
-                file_array[i]->next = file_array[i + 1];
-            }
-
-            file_array[numfiles - 1]->next = NULL;
-            free(file_array);
-        } else {
+        if (names == NULL) {
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "Out of memory sorting file list");
+            result = AFPSL_IPC_RESULT_ERROR;
+            goto error;
         }
+
+        for (i = 0; i < (int) numfiles; i++) {
+            names[i].e = &listing.entries[i];
+            names[i].name = afp_dirent_name(&listing, names[i].e);
+        }
+
+        qsort(names, numfiles, sizeof(*names), compare_readdir_names);
     }
 
     /* Make sure we're not running off the end */
@@ -2425,19 +2437,14 @@ static unsigned char process_readdir(struct daemon_client * c)
         goto error;
     }
 
-    /* Make sure we don't respond with more than asked */
-    if (numfiles > (unsigned int)req->count) {
-        numfiles = req->count;
-    }
-
     /* We allocate max buffer, actual length will be determined during packing */
     response = alloc_response(AFPSL_IPC_MAX_RESPONSE, sizeof(*response));
 
     if (!response) {
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Out of memory allocating readdir response");
-        afp_ml_filebase_free(&filebase);
-        return AFPSL_IPC_RESULT_ERROR;
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto error;
     }
 
     result = AFPSL_IPC_RESULT_OK;
@@ -2446,29 +2453,20 @@ static unsigned char process_readdir(struct daemon_client * c)
     data = (char *) response + sizeof(struct afpsl_ipc_readdir_response);
     const char *end = (char *) response + AFPSL_IPC_MAX_RESPONSE;
     p = data;
-    fp = filebase;
-
-    /* Advance to the first one */
-    for (i = 0; i < req->start; i++) {
-        if (!fp) {
-            response->eod = 1;
-            response->numfiles = 0;
-            afp_ml_filebase_free(&filebase);
-            goto done;
-        }
-
-        fp = fp->next;
-    }
 
     /* Pack data into variable length format to save space */
 
-    for (i = 0; i < (int)numfiles; i++) {
-        if (!fp) {
-            response->eod = 1;
-            break;
-        }
-
-        size_t name_len = strlen(fp->name);
+    /* A negative count asks for every entry the response holds. */
+    for (i = 0; (req->count < 0 || i < req->count)
+            && req->start + i < (int) numfiles; i++) {
+        const struct afp_dirent *e = names[req->start + i].e;
+        const char *name = names[req->start + i].name;
+        struct afpc_unix_privileges privs;
+        struct stat st;
+        int64_t creation_date;
+        int64_t modification_date;
+        uint64_t size;
+        size_t name_len = strlen(name);
         size_t entry_size = sizeof(uint32_t) + name_len +
                             sizeof(int64_t) * 2 +
                             sizeof(struct afpc_unix_privileges) +
@@ -2479,43 +2477,57 @@ static unsigned char process_readdir(struct daemon_client * c)
             break;
         }
 
+        if (afp_dirent_to_stat(v, e, &st) < 0) {
+            result = AFPSL_IPC_RESULT_ERROR;
+            break;
+        }
+
+        privs = e->unixprivs;
+        privs.uid = st.st_uid;
+        privs.gid = st.st_gid;
+        privs.permissions = st.st_mode;
+        creation_date = st.st_ctime;
+        modification_date = st.st_mtime;
+        size = (uint64_t) st.st_size;
         uint32_t nl = name_len;
         memcpy(p, &nl, sizeof(uint32_t));
         p += sizeof(uint32_t);
-        memcpy(p, fp->name, name_len);
+        memcpy(p, name, name_len);
         p += name_len;
-        {
-            int64_t creation_date = fp->creation_date;
-            int64_t modification_date = fp->modification_date;
-            memcpy(p, &creation_date, sizeof(creation_date));
-            p += sizeof(creation_date);
-            memcpy(p, &modification_date, sizeof(modification_date));
-            p += sizeof(modification_date);
-        }
-        memcpy(p, &fp->unixprivs, sizeof(struct afpc_unix_privileges));
-        p += sizeof(struct afpc_unix_privileges);
-        memcpy(p, &fp->size, sizeof(uint64_t));
-        p += sizeof(uint64_t);
-        fp = fp->next;
+        memcpy(p, &creation_date, sizeof(creation_date));
+        p += sizeof(creation_date);
+        memcpy(p, &modification_date, sizeof(modification_date));
+        p += sizeof(modification_date);
+        memcpy(p, &privs, sizeof(privs));
+        p += sizeof(privs);
+        memcpy(p, &size, sizeof(size));
+        p += sizeof(size);
     }
 
     response->numfiles = i;
 
-    if (!fp) {
+    if (req->start + i >= (int) numfiles) {
         response->eod = 1;
     }
 
-    afp_ml_filebase_free(&filebase);
+    free(names);
+    afp_listing_free(&listing);
     goto done;
 error:
     /* Reset len for error case */
     len = sizeof(struct afpsl_ipc_readdir_response);
     response = alloc_response(len, sizeof(*response));
+    free(names);
+    afp_listing_free(&listing);
 
     if (!response) {
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Out of memory in readdir error path");
-        afp_ml_filebase_free(&filebase);
+
+        if (v) {
+            afp_server_release(v->server);
+        }
+
         return AFPSL_IPC_RESULT_ERROR;
     }
 
@@ -3215,6 +3227,14 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer a desktop database request
+ *
+ * The answer, its errno included, goes to the client from here.
+ *
+ * @param[in] c  the client, with the request
+ * @returns 0
+ */
 static unsigned char process_desktop_code(struct daemon_client *c)
 {
     struct afpsl_ipc_desktop_code_request *request = (void *)c->complete_packet;
@@ -3309,15 +3329,21 @@ static unsigned char process_desktop_code(struct daemon_client *c)
         response.error = ret;
 
         if (ret == 0) {
+            struct timespec created = afp_dirent_time(volume, &appl.file,
+                                                      kFPCreateDateBit,
+                                                      appl.file.create_ns);
+            struct timespec modified = afp_dirent_time(volume, &appl.file,
+                                                       kFPModDateBit,
+                                                       appl.file.mod_ns);
             response.file_bitmap = appl.bitmap;
             response.tag = appl.tag;
-            response.directory_id = appl.file.did;
-            response.file_id = appl.file.fileid;
-            response.creation_date = appl.file.creation_date;
-            response.modification_date = appl.file.modification_date;
+            response.directory_id = appl.file.parent_did;
+            response.file_id = appl.file.cnid;
+            response.creation_date = created.tv_sec;
+            response.modification_date = modified.tv_sec;
             response.data_fork_size = appl.file.size;
             response.resource_fork_size = appl.file.resourcesize;
-            strlcpy(response.pathname, appl.file.name, sizeof(response.pathname));
+            strlcpy(response.pathname, appl.name, sizeof(response.pathname));
         }
 
         finish_response(c, send_command(c, sizeof(response), (char *)&response),
@@ -3594,28 +3620,18 @@ int process_command(struct daemon_client * c)
     return 0;
 }
 
-/* command_sub_attach_volume()
+/*!
+ * @brief Attach to a volume of a server
  *
- * Attaches to a volume and returns a created volume structure.
- *
- * Returns:
- * NULL if it could not attach
- *
- * Sets response_result to:
- *
- * AFPSL_IPC_RESULT_OK:
- * 	Attached properly
- * AFPSL_IPC_RESULT_NOVOLUME:
- * 	No volume exists by that name
- * AFPSL_IPC_RESULT_ALREADY_ATTACHED:
- * 	Volume's AFP session is already active
- * AFPSL_IPC_RESULT_VOLPASS_NEEDED:
- * 	A volume password is needed
- * AFPSL_IPC_RESULT_ERROR_UNKNOWN:
- * 	An unknown error occured when attaching.
- *
+ * @param[in]  c                the client asking, for its log
+ * @param[in]  server           the server of the volume
+ * @param[in]  volname          the volume's name
+ * @param[in]  volpassword      its password, NULL or empty for none
+ * @param[out] response_result  AFPSL_IPC_RESULT_OK, or _NOVOLUME,
+ *                              _ALREADY_ATTACHED, _VOLPASS_NEEDED or
+ *                              _ERROR_UNKNOWN; may be NULL
+ * @returns the volume, or NULL when it could not be attached
  */
-
 struct afp_volume *command_sub_attach_volume(struct daemon_client *c,
                                              struct afp_server *server,
                                              char *volname,
@@ -3698,6 +3714,8 @@ struct afp_volume *command_sub_attach_volume(struct daemon_client *c,
     afp_detect_mapping(using_volume);
     log_for_client((void *) c, AFPFSD, LOG_DEBUG, "Volume mapping detected: %d",
                    using_volume->mapping);
+    /* The root's dates show the attach's time. */
+    using_volume->mount_time = time(NULL);
     return using_volume;
 error:
     return NULL;

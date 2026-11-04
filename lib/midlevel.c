@@ -154,15 +154,35 @@ static int is_netatalk_meta_xattr(const char *name)
  * @param[in]  basename  its AFP name in dirid
  * @param[in]  bitmap    the parameters, bits the file and directory bitmaps
  *                       share
- * @param[out] fp        receives them
+ * @param[out] e         receives them
  * @returns 0, or a negative errno, as ll_answer_errno() gives it
  */
 static int get_parameters(struct afp_volume * vol, unsigned int dirid,
                           char *basename, unsigned short bitmap,
-                          struct afp_file_info * fp)
+                          struct afp_dirent *e)
 {
-    int ret = ll_get_directory_entry(vol, basename, dirid, bitmap, bitmap, fp);
+    int ret = afp_getfiledirparms(vol, dirid, bitmap, bitmap, basename, e);
     return -ll_answer_errno(ret);
+}
+
+/*!
+ * @brief Whether a name in a directory names a directory
+ *
+ * The server answers every probe: a cached ID would answer for a folder
+ * another session replaced with a file.
+ *
+ * @param[in] vol       volume of the directory
+ * @param[in] dirid     the directory's ID
+ * @param[in] basename  the name, in the volume's form
+ * @returns 1 for a directory, 0 for another object, or a negative errno
+ *          when the read fails, as ll_answer_errno() gives it
+ */
+static int is_dir(struct afp_volume * vol, unsigned int dirid,
+                  char *basename)
+{
+    struct afp_dirent e;
+    int ret = get_parameters(vol, dirid, basename, 0, &e);
+    return ret ? ret : e.isdir != 0;
 }
 
 /*!
@@ -175,7 +195,7 @@ static int get_parameters(struct afp_volume * vol, unsigned int dirid,
  * @param[in] dirid     its directory
  * @param[in] basename  its AFP name in dirid
  * @param[in] bitmap    the parameters
- * @param[in] fp        their values
+ * @param[in] e         their values
  * @returns 0, or a negative errno: -EPERM for a refused change of the
  *          privileges or the ids, -EACCES for another, -ENOSYS for a
  *          parameter the server does not set, -ENOENT, -EROFS, or -EIO for
@@ -183,11 +203,11 @@ static int get_parameters(struct afp_volume * vol, unsigned int dirid,
  */
 static int set_parameters(struct afp_volume * vol, unsigned int dirid,
                           const char *basename, unsigned short bitmap,
-                          struct afp_file_info * fp)
+                          const struct afp_dirent *e)
 {
     int rc = (bitmap & (kFPOwnerIDBit | kFPGroupIDBit))
-             ? afp_setdirparms(vol, dirid, basename, bitmap, fp)
-             : afp_setfiledirparms(vol, dirid, basename, bitmap, fp);
+             ? afp_setdirparms(vol, dirid, basename, bitmap, e)
+             : afp_setfiledirparms(vol, dirid, basename, bitmap, e);
 
     switch (rc) {
     case kFPNoErr:
@@ -231,11 +251,11 @@ static int set_parameters(struct afp_volume * vol, unsigned int dirid,
  *          set alone, or another negative errno
  */
 static int set_owner(struct afp_volume * vol, unsigned int dirid,
-                     char *basename, struct afp_file_info * fp,
+                     char *basename, struct afp_dirent *fp,
                      unsigned int mode, unsigned int uid, unsigned int gid)
 {
-    struct afp_file_info check;
-    struct afp_file_info sent;
+    struct afp_dirent check;
+    struct afp_dirent sent;
     unsigned int was_uid = fp->unixprivs.uid;
     unsigned int was_gid = fp->unixprivs.gid;
     unsigned short bitmap;
@@ -258,8 +278,7 @@ static int set_owner(struct afp_volume * vol, unsigned int dirid,
         if (!fp->isdir) {
             fp->unixprivs.uid = uid;
             fp->unixprivs.gid = gid;
-            bitmap = kFPUnixPrivsBit
-                     | (fp->modification_date_is_unset ? 0 : kFPModDateBit);
+            bitmap = kFPUnixPrivsBit | (fp->valid & kFPModDateBit);
         } else {
             bitmap = (fp->unixprivs.uid != uid ? kFPOwnerIDBit : 0)
                      | (fp->unixprivs.gid != gid ? kFPGroupIDBit : 0);
@@ -299,68 +318,6 @@ static int set_owner(struct afp_volume * vol, unsigned int dirid,
     }
 
     return ret;
-}
-
-void add_file_by_name(struct afp_file_info **base, const char *filename)
-{
-    struct afp_file_info * t, *new_file;
-    new_file = malloc(sizeof(*new_file));
-
-    if (!new_file) {
-        return;
-    }
-
-    strlcpy(new_file->name, filename, sizeof(new_file->name));
-    new_file->next = NULL;
-
-    if (*base == NULL) {
-        *base = new_file;
-    } else {
-        for (t = *base; t->next; t = t->next);
-
-        t->next = new_file;
-    }
-}
-
-void afp_ml_filebase_free(struct afp_file_info **filebase)
-{
-    struct afp_file_info * p, *next;
-
-    if (filebase == NULL) {
-        return;
-    }
-
-    p = *filebase;
-
-    while (p) {
-        next = p->next;
-        free(p);
-        p = next;
-    }
-
-    *filebase = NULL;
-}
-
-
-
-
-
-static int map_filebase_uidgid_to_client(struct afp_volume * volume,
-                                         struct afp_file_info * filebase)
-{
-    for (struct afp_file_info * fp = filebase; fp; fp = fp->next) {
-        unsigned int uid = fp->unixprivs.uid;
-        unsigned int gid = fp->unixprivs.gid;
-
-        if (translate_uidgid_to_client(volume, &uid, &gid)) {
-            return -EIO;
-        }
-
-        fp->unixprivs.uid = uid;
-        fp->unixprivs.gid = gid;
-    }
-
-    return 0;
 }
 
 /*!
@@ -531,7 +488,7 @@ static int takes_created_mode(const struct afp_volume * volume)
 static void set_created_mode(struct afp_volume * volume, unsigned int dirid,
                              char *basename, mode_t mode)
 {
-    struct afp_file_info fp;
+    struct afp_dirent fp;
     int ret;
 
     if (!takes_created_mode(volume)) {
@@ -584,11 +541,20 @@ void ml_set_created_mode(struct afp_volume * volume, const char *path,
 
 
 
+/*!
+ * @brief List the directory at path
+ *
+ * @param[in]     volume  volume of the directory
+ * @param[in]     path    UTF-8 path of the directory
+ * @param[in,out] l       the listing the entries join, empty before, and
+ *                        after a listing that fails; the caller frees it
+ * @returns 0, or a negative errno
+ */
 int ml_readdir(struct afp_volume * volume,
                const char *path,
-               struct afp_file_info **fb)
+               struct afp_listing *l)
 {
-    int ret = 0;
+    int ret;
     char *converted_path;
     ret = convert_path_to_afp_alloc(volume->path_encoding, path,
                                     &converted_path);
@@ -597,34 +563,14 @@ int ml_readdir(struct afp_volume * volume,
         return ret;
     }
 
-    ret = appledouble_readdir(volume, converted_path, fb);
+    ret = appledouble_readdir(volume, converted_path, l);
 
-    if (ret < 0) {
-        free(converted_path);
-        return ret;
+    if (ret == 0) {
+        ret = ll_readdir(volume, converted_path, l, 0);
     }
 
-    if (ret == 1) {
-        goto done;
-    }
-
-    ret = ll_readdir(volume, converted_path, fb, 0);
-
-    if (ret < 0) {
-        free(converted_path);
-        return ret;
-    }
-
-done:
     free(converted_path);
-    ret = map_filebase_uidgid_to_client(volume, *fb);
-
-    if (ret < 0) {
-        afp_ml_filebase_free(fb);
-        return ret;
-    }
-
-    return ret;
+    return ret < 0 ? ret : 0;
 }
 
 /*!
@@ -669,14 +615,14 @@ int ml_read(struct afp_volume * volume,
  * afpd stamps its clock on a change without a time, but would set a symlink's
  * time on its target and store one before 1970 as one after 2068.
  *
- * @param[in] fp  the object's parameters as read
- * @returns 1 when a change can carry fp's modification time, or 0
+ * @param[in] e  the object's parameters as read
+ * @returns 1 when a change can carry e's modification time, or 0
  */
-int ml_carries_time(const struct afp_file_info *fp)
+int ml_carries_time(const struct afp_dirent *e)
 {
-    return !fp->modification_date_is_unset && fp->modification_date >= 0
-           && !S_ISLNK(fp->unixprivs.permissions)
-           && memcmp(fp->finderinfo, ML_SYMLINK_FINDERINFO, 8) != 0;
+    return (e->valid & kFPModDateBit) && e->mod_ns >= 0
+           && !S_ISLNK(e->unixprivs.permissions)
+           && memcmp(e->finderinfo, ML_SYMLINK_FINDERINFO, 8) != 0;
 }
 
 /*!
@@ -700,8 +646,8 @@ int ml_setattr(struct afp_volume * vol, const char *path, unsigned int which,
                mode_t mode, uid_t uid, gid_t gid, time_t mtime)
 {
     unsigned int privs = which & (ML_SET_MODE | ML_SET_UID | ML_SET_GID);
-    struct afp_file_info fp;
-    struct afp_file_info now;
+    struct afp_dirent fp;
+    struct afp_dirent now;
     char basename[AFPC_MAX_NAME_BYTES];
     char *converted_path;
     unsigned short bitmap = 0;
@@ -785,7 +731,7 @@ int ml_setattr(struct afp_volume * vol, const char *path, unsigned int which,
         was = fp.unixprivs.permissions;
 
         if (!ml_carries_time(&fp)) {
-            fp.modification_date_is_unset = 1;
+            fp.valid &= ~(uint32_t) kFPModDateBit;
         }
     }
 
@@ -795,13 +741,12 @@ int ml_setattr(struct afp_volume * vol, const char *path, unsigned int which,
     }
 
     if (which & ML_SET_MTIME) {
-        fp.modification_date = mtime;
-        fp.modification_date_is_unset = 0;
+        fp.mod_ns = afp_ns_from_sec(mtime);
+        fp.valid |= kFPModDateBit;
     }
 
     /* afpd stamps its clock on a change of the privileges that has no time. */
-    if ((bitmap || (which & ML_SET_MTIME))
-            && !fp.modification_date_is_unset) {
+    if ((bitmap || (which & ML_SET_MTIME)) && (fp.valid & kFPModDateBit)) {
         bitmap |= kFPModDateBit;
     }
 
@@ -983,7 +928,7 @@ int ml_unlink(struct afp_volume * vol, const char *path)
     ret = delete_errno(afp_delete(vol, dirid, basename));
 
     if (ret == 0) {
-        remove_did_entry(vol, converted_path);
+        remove_did_subtree(vol, converted_path);
     }
 
     free(converted_path);
@@ -1069,6 +1014,9 @@ int ml_mkdir(struct afp_volume * vol, const char *path, mode_t mode)
     }
 
     if (ret == 0) {
+        /* The cache may hold the path, and folders beneath it, from a folder
+         * another session removed. */
+        remove_did_subtree(vol, converted_path);
         set_created_mode(vol, dirid, basename, mode);
     }
 
@@ -1096,10 +1044,6 @@ int ml_close(struct afp_volume * volume, struct afp_file_info * fp)
        fork must already be closed. */
     if (!fp) {
         return -EBADF;
-    }
-
-    if (fp->icon) {
-        free(fp->icon);
     }
 
     if (fp->resource) {
@@ -1307,12 +1251,12 @@ int ml_write(struct afp_volume * volume,
  */
 static int fork_still_named(struct afp_volume *volume,
                             struct afp_file_info *fp, unsigned int bitmap,
-                            struct afp_file_info *params)
+                            struct afp_dirent *params)
 {
-    return fp->fileid != 0
+    return fp->cnid != 0
            && afp_getfiledirparms(volume, fp->did, bitmap | kFPNodeIDBit, 0,
                                   fp->basename, params) == kFPNoErr
-           && params->fileid == fp->fileid;
+           && params->cnid == fp->cnid;
 }
 
 /*!
@@ -1351,8 +1295,8 @@ static ssize_t copy_lost_fork(struct afp_volume *volume,
 static ssize_t copy_into_destination(struct afp_volume *volume,
                                      struct afp_file_info *fp_in,
                                      struct afp_file_info *fp_out,
-                                     const struct afp_file_info *src,
-                                     struct afp_file_info *dst)
+                                     const struct afp_dirent *src,
+                                     struct afp_dirent *dst)
 {
     unsigned short bitmap;
     int deleted;
@@ -1394,7 +1338,7 @@ static ssize_t copy_into_destination(struct afp_volume *volume,
     }
 
     /* A reply without the node ID leaves 0, never the deleted file's. */
-    fp_out->fileid = 0;
+    fp_out->cnid = 0;
 
     /* The fork opens read-write, as every writable fork does. A mode without
      * the owner's write permission would refuse that open. */
@@ -1410,7 +1354,7 @@ static ssize_t copy_into_destination(struct afp_volume *volume,
     if (exists) {
         if (deleted && rc == ETIMEDOUT && fp_out->size == src->size) {
             rc = kFPNoErr;
-        } else if (deleted || fp_out->fileid != dst->fileid) {
+        } else if (deleted || fp_out->cnid != dst->cnid) {
             afp_closefork(volume, fp_out->forkid);
             return copy_lost_fork(volume, fp_out);
         }
@@ -1423,7 +1367,7 @@ static ssize_t copy_into_destination(struct afp_volume *volume,
 
         if (rc == kFPNoErr) {
             bitmap |= kFPModDateBit;
-            dst->modification_date = time(NULL);
+            dst->mod_ns = afp_ns_from_sec(time(NULL));
         }
 
         if (bitmap && afp_setfiledirparms(volume, fp_out->did,
@@ -1468,8 +1412,8 @@ static ssize_t copy_range_on_server(struct afp_volume *volume,
                               & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX;
     uint64_t cap = afp_server_drops_long_commands(volume->server)
                    ? AFP_COPY_OFFLOAD_MAX_BYTES : UINT64_MAX;
-    struct afp_file_info src;
-    struct afp_file_info dst;
+    struct afp_dirent src;
+    struct afp_dirent dst;
     ssize_t copied;
 
     if (fp_in->resource != AFP_META_NONE || fp_out->resource != AFP_META_NONE
@@ -1866,6 +1810,8 @@ int ml_rmdir(struct afp_volume * vol, const char *path)
     ret = is_dir(vol, dirid, basename);
 
     if (ret <= 0) {
+        /* An ID cached for a path where the server finds no folder is stale. */
+        remove_did_subtree(vol, converted_path);
         free(converted_path);
         return ret < 0 ? ret : -ENOTDIR;
     }
@@ -1873,7 +1819,7 @@ int ml_rmdir(struct afp_volume * vol, const char *path)
     ret = delete_errno(afp_delete(vol, dirid, basename));
 
     if (ret == 0) {
-        remove_did_entry(vol, converted_path);
+        remove_did_subtree(vol, converted_path);
     }
 
     free(converted_path);
@@ -2018,6 +1964,7 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
 {
     int ret;
     struct afp_file_info fp;
+    struct afp_dirent marker;
     uint64_t written;
     size_t converted_path1_len;
     int rc;
@@ -2139,9 +2086,9 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
         goto error;
     }
 
-    memset(&fp.finderinfo, 0, sizeof(fp.finderinfo));
-    memcpy(fp.finderinfo, ML_SYMLINK_FINDERINFO, 8);
-    ret = -set_parameters(vol, dirid2, basename2, kFPFinderInfoBit, &fp);
+    memset(&marker, 0, sizeof(marker));
+    memcpy(marker.finderinfo, ML_SYMLINK_FINDERINFO, 8);
+    ret = -set_parameters(vol, dirid2, basename2, kFPFinderInfoBit, &marker);
 error:
 
     /* A link the steps after the create could not finish leaves no file
@@ -2162,12 +2109,22 @@ close_error:
     return -ret;
 }
 
+/*!
+ * @brief Rename or move a file or folder with FPMoveAndRename
+ *
+ * A folder destination takes the object inside it; a file destination is
+ * exchanged with the source and the source deleted, or deleted and moved over.
+ *
+ * @param[in] vol        volume of both paths
+ * @param[in] path_from  UTF-8 path of the object
+ * @param[in] path_to    UTF-8 path it takes
+ * @returns 0, or a negative errno
+ */
 int ml_rename(struct afp_volume * vol,
               const char *path_from, const char *path_to)
 {
     int ret, rc;
-    int dst_lookup_rc;
-    struct afp_file_info dst_info;
+    int dst_type;
     char basename_from[AFPC_MAX_NAME_BYTES];
     char basename_to[AFPC_MAX_NAME_BYTES];
     char *converted_path_from;
@@ -2210,15 +2167,13 @@ int ml_rename(struct afp_volume * vol,
         return ret;
     }
 
-    memset(&dst_info, 0, sizeof(dst_info));
-    dst_lookup_rc = afp_getfiledirparms(vol, dirid_to,
-                                        0, 0, basename_to, &dst_info);
+    dst_type = is_dir(vol, dirid_to, basename_to);
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "ml_rename: from dirid=%u name=%s  to dirid=%u name=%s dst_lookup=%d dst_isdir=%u",
-                   dirid_from, basename_from, dirid_to, basename_to,
-                   dst_lookup_rc, dst_info.isdir);
+                   "ml_rename: from dirid=%u name=%s  to dirid=%u name=%s "
+                   "dst_type=%d", dirid_from, basename_from, dirid_to,
+                   basename_to, dst_type);
 
-    if (dst_lookup_rc == kFPNoErr && dst_info.isdir) {
+    if (dst_type == 1) {
         rc = afp_moveandrename(vol,
                                dirid_from, dirid_to,
                                basename_from, basename_to, basename_from);
@@ -2230,7 +2185,7 @@ int ml_rename(struct afp_volume * vol,
          * (which becomes the inode), preventing macOS from seeing a stale vnode
          * and reporting "file does not exist" after a safe-save rename.
          * After exchange, the source path holds the old content; delete it. */
-        if (dst_lookup_rc == kFPNoErr && !(vol->attributes & kNoExchangeFiles)) {
+        if (dst_type == 0 && !(vol->attributes & kNoExchangeFiles)) {
             rc = afp_exchangefiles(vol,
                                    dirid_from, dirid_to,
                                    basename_from, basename_to);
@@ -2241,9 +2196,8 @@ int ml_rename(struct afp_volume * vol,
                 int del_rc = afp_delete(vol, dirid_from, basename_from);
                 log_for_client(NULL, AFPFSD, LOG_DEBUG,
                                "ml_rename: afp_delete(src) rc=%d", del_rc);
-                free(converted_path_from);
-                free(converted_path_to);
-                return 0;
+                ret = 0;
+                goto done;
             }
 
             /* Exchange failed (dst doesn't exist, or not supported); fall
@@ -2344,6 +2298,11 @@ int ml_rename(struct afp_volume * vol,
         ret = EIO;
     }
 
+done:
+    /* The move may happen whatever the answer, so the IDs cached under both
+     * paths may be stale; a folder that takes the source resolves again. */
+    remove_did_subtree(vol, converted_path_from);
+    remove_did_subtree(vol, converted_path_to);
     free(converted_path_from);
     free(converted_path_to);
     return -ret;
