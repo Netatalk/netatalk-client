@@ -20,6 +20,7 @@ libafpclient_sources = files(
     'explicit_bzero.c',
     'forklist.c',
     'identify.c',
+    'listing.c',
     'log.c',
     'loop.c',
     'lowlevel.c',

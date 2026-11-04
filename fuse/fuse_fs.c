@@ -51,10 +51,22 @@
 #include "lib/compat.h"
 #include "lib/dsi.h"
 #include "lib/midlevel.h"
+#include "lib/resource.h"
 #include "lib/xattr.h"
 
 #include "fuse_error.h"
 #include "fuse_fs.h"
+
+/* Linux pages a listing by the offsets libfuse's fill hands it, attributes
+ * included, from 3.2.5; FUSE_VERSION names no patch release. */
+#if defined(__linux__) && FUSE_USE_VERSION >= 30 && FUSE_NEW_API
+#if FUSE_VERSION >= FUSE_MAKE_VERSION(3, 3)
+#define AFP_READDIRPLUS 1
+#endif
+#endif
+#ifndef AFP_READDIRPLUS
+#define AFP_READDIRPLUS 0
+#endif
 
 /* Define xattr constants if not provided by system headers */
 #ifndef XATTR_CREATE
@@ -412,7 +424,178 @@ static int fuse_removexattr(const char *path, const char *name)
 }
 
 
-/* Function signature differs by platform and FUSE version */
+#if AFP_READDIRPLUS
+/*! @brief A directory stream: its listing, and whether one was taken */
+struct dir_stream {
+    struct afp_listing listing;
+    int listed;
+};
+
+/*!
+ * @brief Whether a lookup of a listed name may find another object
+ *
+ * The AppleDouble view answers for its own names, getattr cuts a path at
+ * "(null)", and libfuse passes a NULL path once a folder above is removed.
+ *
+ * @param[in] volume  volume of the directory
+ * @param[in] dir     path of the directory, or NULL
+ * @param[in] name    a name listed in it
+ * @returns 1 when it may, 0 otherwise
+ */
+static int lookup_differs(const struct afp_volume *volume, const char *dir,
+                          const char *name)
+{
+    return dir == NULL || appledouble_shadows(volume, dir, name)
+           || strstr(dir, "(null)") != NULL || strstr(name, "(null)") != NULL;
+}
+
+/*! @brief A listed name and its entry's index, sorted to find repeats */
+struct listed_name {
+    const char *name;
+    uint32_t index;
+};
+
+/*!
+ * @brief Order two listed names
+ *
+ * @param[in] a  one name
+ * @param[in] b  the other
+ * @returns strcmp(3)'s order of the names
+ */
+static int listed_name_cmp(const void *a, const void *b)
+{
+    return strcmp(((const struct listed_name *) a)->name,
+                  ((const struct listed_name *) b)->name);
+}
+
+/*!
+ * @brief Flag the entries whose name the listing holds more than once
+ *
+ * A lookup of such a name reaches one of its objects, whose attributes no
+ * entry of the name can promise.
+ *
+ * @param[in] l  the listing
+ * @returns a flag per entry, set for a repeated name, which the caller
+ *          frees, or NULL without memory
+ */
+static uint8_t *repeated_names(const struct afp_listing *l)
+{
+    uint8_t *repeated = calloc(l->count, sizeof(*repeated));
+    struct listed_name *names = malloc(l->count * sizeof(*names));
+
+    if (repeated == NULL || names == NULL) {
+        free(repeated);
+        free(names);
+        return NULL;
+    }
+
+    for (uint32_t i = 0; i < l->count; i++) {
+        names[i].name = afp_dirent_name(l, &l->entries[i]);
+        names[i].index = i;
+    }
+
+    qsort(names, l->count, sizeof(*names), listed_name_cmp);
+
+    for (uint32_t i = 1; i < l->count; i++) {
+        if (strcmp(names[i - 1].name, names[i].name) == 0) {
+            repeated[names[i - 1].index] = 1;
+            repeated[names[i].index] = 1;
+        }
+    }
+
+    free(names);
+    return repeated;
+}
+
+/*!
+ * @brief Fill a directory stream's page from its listing
+ *
+ * The stream's listing, taken at its first read and at a rewind, serves the
+ * pages by offset; the page that took it carries attributes when asked.
+ *
+ * @param[in]  path    UTF-8 path of the directory
+ * @param[out] buf     the kernel's page, for filler
+ * @param[in]  filler  libfuse's fill
+ * @param[in]  offset  the kernel's position: the offset of the last entry
+ *                     it took, or a seekdir(3) value
+ * @param[in]  fi      the stream, its listing in fh
+ * @param[in]  flags   FUSE_READDIR_PLUS when the kernel asks for attributes
+ * @returns 0, or a negative errno
+ */
+static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+                        off_t offset, struct fuse_file_info *fi,
+                        enum fuse_readdir_flags flags)
+{
+    struct dir_stream *s = (struct dir_stream *)(uintptr_t) fi->fh;
+    struct afp_listing *l = &s->listing;
+    struct afp_volume * volume = fuse_get_context()->private_data;
+    uint8_t *repeated = NULL;
+
+    /* A stream's first read may come past its start, as a re-export's
+     * resumes at the offset it handed out. */
+    if (offset == 0 || !s->listed) {
+        int ret;
+        log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** readdir of %s", path);
+        l->count = 0;
+        l->pool_used = 0;
+        ret = ml_readdir(volume, path, l);
+        s->listed = ret == 0;
+
+        if (ret) {
+            return ret;
+        }
+
+        /* Only this page carries attributes: a later page's, older than its
+         * request, would undo the mount's changes since the listing. */
+        if (flags & FUSE_READDIR_PLUS) {
+            repeated = repeated_names(l);
+        }
+    }
+
+    for (off_t o = offset; o < (off_t) l->count + 2; o++) {
+        const struct afp_dirent *e = o < 2 ? NULL : &l->entries[o - 2];
+        const char *name = e != NULL ? afp_dirent_name(l, e)
+                           : o == 0 ? "." : "..";
+        int other = e != NULL && lookup_differs(volume, path, name);
+        struct stat st;
+        int attrs = repeated != NULL && e != NULL && !other
+                    && !repeated[o - 2]
+                    && afp_dirent_to_stat(volume, e, &st) == 0;
+
+        /* A name alone keeps its type, which libfuse from 3.10.3 passes on a
+         * READDIRPLUS page too, unless its lookup may find another object. */
+        if (!attrs) {
+            memset(&st, 0, sizeof(st));
+
+            if (!other) {
+                st.st_mode = e != NULL ? afp_dirent_mode(e) & S_IFMT : S_IFDIR;
+            }
+        }
+
+        if (filler(buf, name, &st, o + 1, attrs ? FUSE_FILL_DIR_PLUS : 0)) {
+            break;
+        }
+    }
+
+    free(repeated);
+    return 0;
+}
+
+#else
+/*!
+ * @brief List a directory by names, where the offset mode does not serve
+ *
+ * The whole listing goes to libfuse's fill at offset 0, which serves the
+ * kernel's pages from its copy.
+ *
+ * @param[in]  path    UTF-8 path of the directory
+ * @param[out] buf     the kernel's page, for filler
+ * @param[in]  filler  libfuse's fill
+ * @param[in]  offset  unused
+ * @param[in]  fi      unused
+ * @param[in]  flags   unused; FUSE 2 and BSD FUSE 3 pass none
+ * @returns 0, or a negative errno
+ */
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30
 static int fuse_readdir_darwin(const char *path, void *buf,
                                fuse_darwin_fill_dir_t filler,
@@ -420,20 +603,19 @@ static int fuse_readdir_darwin(const char *path, void *buf,
                                struct fuse_file_info *fi _U_,
                                enum fuse_readdir_flags flags _U_)
 #elif FUSE_USE_VERSION >= 30 && FUSE_NEW_API
-/* Linux FUSE 3.10+ with fuse_readdir_flags */
 static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
                         off_t offset _U_, struct fuse_file_info *fi _U_,
                         enum fuse_readdir_flags flags _U_)
 #else
-/* BSD FUSE 3.x and FUSE 2.x - older API without fuse_readdir_flags */
 static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
                         off_t offset _U_, struct fuse_file_info *fi _U_)
 #endif
 {
-    struct afp_file_info * filebase = NULL;
+    struct afp_listing listing;
     int ret;
     struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** readdir of %s", path);
+    memset(&listing, 0, sizeof(listing));
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30 || (FUSE_USE_VERSION >= 30 && FUSE_NEW_API)
     filler(buf, ".", NULL, 0, 0);
     filler(buf, "..", NULL, 0, 0);
@@ -441,25 +623,25 @@ static int fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     filler(buf, ".", NULL, 0);
     filler(buf, "..", NULL, 0);
 #endif
-    ret = ml_readdir(volume, path, &filebase);
+    ret = ml_readdir(volume, path, &listing);
 
     if (ret) {
-        goto error;
+        return ret;
     }
 
-    for (struct afp_file_info *p = filebase; p; p = p->next) {
+    for (uint32_t i = 0; i < listing.count; i++) {
+        const char *name = afp_dirent_name(&listing, &listing.entries[i]);
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30 || (FUSE_USE_VERSION >= 30 && FUSE_NEW_API)
-        filler(buf, p->name, NULL, 0, 0);
+        filler(buf, name, NULL, 0, 0);
 #else
-        filler(buf, p->name, NULL, 0);
+        filler(buf, name, NULL, 0);
 #endif
     }
 
-    afp_ml_filebase_free(&filebase);
+    afp_listing_free(&listing);
     return 0;
-error:
-    return ret;
 }
+#endif
 
 /*!
  * @brief Refuse mknod(2) of a FIFO, a socket or a device node
@@ -738,6 +920,42 @@ static int fuse_fsyncdir(const char *path _U_,
                          int datasync _U_,
                          struct fuse_file_info *fi _U_)
 {
+    return 0;
+}
+#elif AFP_READDIRPLUS
+/*!
+ * @brief Open a directory stream, whose pages one listing serves
+ *
+ * Linux sends a stream's release after the reads that hold it.
+ *
+ * @param[in]  path  UTF-8 path of the directory, unused
+ * @param[out] fi    receives the stream in fh
+ * @returns 0, or -ENOMEM
+ */
+static int fuse_opendir(const char *path _U_, struct fuse_file_info *fi)
+{
+    struct dir_stream *s = calloc(1, sizeof(*s));
+
+    if (s == NULL) {
+        return -ENOMEM;
+    }
+
+    fi->fh = (uintptr_t) s;
+    return 0;
+}
+
+/*!
+ * @brief Free a directory stream and its listing
+ *
+ * @param[in] path  UTF-8 path of the directory, unused
+ * @param[in] fi    the stream, in fh
+ * @returns 0
+ */
+static int fuse_releasedir(const char *path _U_, struct fuse_file_info *fi)
+{
+    struct dir_stream *s = (struct dir_stream *)(uintptr_t) fi->fh;
+    afp_listing_free(&s->listing);
+    free(s);
     return 0;
 }
 #endif
@@ -1538,9 +1756,11 @@ static struct fuse_operations afp_oper = {
     .open       = fuse_open,
     .read       = fuse_read,
     .mkdir      = fuse_mkdir,
-#ifdef __APPLE__
+#if defined(__APPLE__) || AFP_READDIRPLUS
     .opendir    = fuse_opendir,
     .releasedir = fuse_releasedir,
+#endif
+#ifdef __APPLE__
     .fsyncdir   = fuse_fsyncdir,
 #endif
     .readlink   = fuse_readlink,

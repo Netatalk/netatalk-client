@@ -437,6 +437,23 @@ test(
     verbose: true,
 )
 
+listing_test = executable(
+    'test_listing',
+    sources: ['test_listing.c'],
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'directory listings',
+    listing_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
 metadata_requests_test = executable(
     'test_metadata_requests',
     sources: files(

@@ -16,6 +16,7 @@
  * Supports UTF-8 (kFPUTF8Name) and Mac Roman (kFPLongName) encodings.
  */
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -357,57 +358,53 @@ static int convert_utf8_to_mac_roman(const char *src, int src_len,
 }
 
 /*!
- * @brief Convert a path from the server into the UTF-8 the client shows
+ * @brief Convert a name from an AFP encoding to the UNIX form
  *
- * A name from the server is shown as it decodes, a replaced sequence
- * included.
+ * The UNIX form is precomposed UTF-8 with each AFP '/' as the ':' it stands
+ * for; a name shows as it decodes, a replaced or cut sequence included.
  *
  * @param[in]  encoding  kFPUTF8Name or kFPLongName
- * @param[out] dest      receives the UTF-8 path, AFP slashes as colons
- * @param[in]  src       the server's path, read up to dest_len bytes
+ * @param[in]  src       the name's bytes, which need no terminator
+ * @param[in]  src_len   bytes of src
+ * @param[out] dest      receives the NUL-terminated name
  * @param[in]  dest_len  capacity of dest
- * @returns 0, or -1 for an unknown encoding or a UTF-8 path that does not
- *          convert or fit
+ * @returns 0, or -1 for a UTF-8 name that does not convert into dest or
+ *          an encoding that is neither
  */
-int convert_path_to_unix(char encoding, char *dest,
-                         char *src, int dest_len)
+int convert_name_to_unix(char encoding, const char *src, size_t src_len,
+                         char *dest, size_t dest_len)
 {
-    char *p;
-    int src_len;
-
-    if (!src || !dest || dest_len <= 0) {
+    if (!src || !dest || dest_len == 0 || src_len > INT_MAX
+            || dest_len > INT_MAX) {
         return -1;
     }
 
     dest[0] = '\0';
-    src_len = (int)strnlen(src, (size_t)dest_len);
 
     switch (encoding) {
     case kFPUTF8Name:
-        if (utf8_is_ascii(src, (size_t)src_len)) {
-            if (copy_identity(src, (size_t)src_len, dest,
-                              (size_t)dest_len) < 0) {
+        if (utf8_is_ascii(src, src_len)) {
+            if (copy_identity(src, src_len, dest, dest_len) < 0) {
                 return -1;
             }
 
             break;
         }
 
-        if (copy_if_supplementary_utf8(src, src_len, dest,
-                                       (size_t)dest_len) < 0) {
+        if (copy_if_supplementary_utf8(src, src_len, dest, dest_len) < 0) {
             return -1;
         }
 
         if (!dest[0] && src_len > 0
-                && convert_utf8dec_to_utf8pre(src, src_len, dest,
-                                              dest_len) < 0) {
+                && convert_utf8dec_to_utf8pre(src, (int) src_len, dest,
+                                              (int) dest_len) < 0) {
             return -1;
         }
 
         break;
 
     case kFPLongName:
-        convert_mac_roman_to_utf8(src, strnlen(src, dest_len), dest, dest_len);
+        convert_mac_roman_to_utf8(src, (int) src_len, dest, (int) dest_len);
         break;
 
     default:
@@ -415,17 +412,34 @@ int convert_path_to_unix(char encoding, char *dest,
     }
 
     /* The reverse of unixpath_to_afppath(): an AFP '/' is a Unix ':'. */
-    p = dest;
-
-    while (*p && (p < dest + dest_len - 1)) {
+    for (char *p = dest; *p && p < dest + dest_len - 1; p++) {
         if (*p == '/') {
             *p = ':';
         }
-
-        p++;
     }
 
     return 0;
+}
+
+/*!
+ * @brief Convert a NUL-terminated AFP path to the UNIX form
+ *
+ * @param[in]  encoding  kFPUTF8Name or kFPLongName
+ * @param[out] dest      receives the path
+ * @param[in]  src       the AFP path, read up to dest_len bytes
+ * @param[in]  dest_len  capacity of dest
+ * @returns convert_name_to_unix()'s result
+ */
+int convert_path_to_unix(char encoding, char *dest,
+                         char *src, int dest_len)
+{
+    if (!src || !dest || dest_len <= 0) {
+        return -1;
+    }
+
+    return convert_name_to_unix(encoding, src,
+                                strnlen(src, (size_t) dest_len), dest,
+                                (size_t) dest_len);
 }
 
 /*!

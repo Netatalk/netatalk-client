@@ -16,6 +16,7 @@ use Test::More;
 use Config;
 use Cwd qw(getcwd);
 use File::Spec;
+use File::Path   qw(make_path remove_tree);
 use Errno        ();
 use Fcntl        qw(O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_SYNC O_DSYNC);
 use Getopt::Long qw(GetOptions);
@@ -329,6 +330,28 @@ sub unmount_or_bail {
       if $rc != 0;
 }
 
+# Return the names a directory lists, or undef when it cannot be opened.
+sub listing_of {
+    my ($dir) = @_;
+    opendir(my $dh, $dir) or return undef;
+    my @names = grep { $_ ne '.' && $_ ne '..' } readdir $dh;
+    closedir $dh;
+    return \@names;
+}
+
+# Replace the folder at $path with one holding the file at $inside, made
+# before the old one goes: its new inode makes the server refuse the old ID.
+sub replace_folder {
+    my ($path, $inside) = @_;
+    my $new  = "$path.new";
+    my $file = "$new/$inside";
+    (my $parent = $file) =~ s{/[^/]+\z}{};
+    make_path($parent);
+    write_bytes($file, 0);
+    remove_tree($path);
+    rename $new, $path or BAIL_OUT("Cannot rename $new: $!");
+}
+
 # -----------------------------------------------------------------------
 # prepare test environment: ensure mount directory exists, start afpfsd
 # -----------------------------------------------------------------------
@@ -481,10 +504,8 @@ SKIP: {
     }
 
     my $before = request_counts();
-    opendir(my $dh, $dir) or BAIL_OUT("Cannot open $dir: $!");
-    my @names = grep { $_ ne '.' && $_ ne '..' } readdir $dh;
-    closedir $dh;
-    my $after = request_counts();
+    my @names  = @{listing_of($dir) // BAIL_OUT("Cannot open $dir: $!")};
+    my $after  = request_counts();
     is(scalar @names, 800, 'fuse_listing: 800 entries listed');
     is(request_delta($before, $after, 'afpEnumerateExt2'), 2,
        'fuse_listing: 800 entries are one page and the end page');
@@ -983,6 +1004,9 @@ SKIP: {
     is($copied, $size, 'fuse_copy_renamed: copy_file_range copies the whole source');
     is(offload_delta($before, $after), 0,
        'fuse_copy_renamed: the renamed destination is not copied on the server');
+    # The listing cached the renamed destination's size while it was empty;
+    # the sleep outlasts the kernel's attribute cache, so cmp reads the copy.
+    sleep 2;
     is(system('cmp', '-s', $src, $kept), 0, 'fuse_copy_renamed: the renamed destination holds the copy');
     ok(-e $dst && -z $dst, 'fuse_copy_renamed: the file at the old name stays empty');
     unlink $src, $dst, $kept;
@@ -1622,6 +1646,403 @@ mount_or_bail('fuse_create_mode: authenticated mount succeeds', 'mount_afpfs', $
 }
 
 unmount_or_bail('fuse_create_mode: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_readdirplus: a fresh mount's first listing page fills the kernel's
+# caches, so a stat(2) of each entry sends no FPGetFileDirParms.
+# -----------------------------------------------------------------------
+mount_or_bail('fuse_readdirplus: the creating mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+
+{
+    my $dir = "$mnt_dir/readdirplus";
+    mkdir $dir or BAIL_OUT("Cannot create $dir: $!");
+
+    write_bytes(sprintf('%s/f%03d', $dir, $_), 0) for 0 .. 19;
+
+    # A READDIRPLUS entry is 152 bytes plus its name padded to 8, so ten of
+    # these 254-byte names fill a 4 KB page and 80 glibc's 32 KB buffer.
+    my $grown = "$mnt_dir/readdirplus_grown";
+    mkdir $grown or BAIL_OUT("Cannot create $grown: $!");
+    write_bytes(sprintf('%s/%s%03d', $grown, 'g' x 251, $_), 0) for 0 .. 199;
+
+    # More pages than a stream's first read takes; 200-byte names, as afpd
+    # deletes no file whose "._" name passes 255 bytes.
+    my $gone = "$mnt_dir/readdirplus_gone";
+    mkdir $gone         or BAIL_OUT("Cannot create $gone: $!");
+    mkdir "$gone/inner" or BAIL_OUT("Cannot create $gone/inner: $!");
+    write_bytes(sprintf('%s/inner/%s%03d', $gone, 'g' x 197, $_), 0) for 0 .. 99;
+}
+
+unmount_or_bail('fuse_readdirplus: the creating mount unmounts');
+mount_or_bail(
+              'fuse_readdirplus: a mount with long timeouts succeeds',
+              'mount_afpfs', '-o', 'entry_timeout=30,attr_timeout=30', $AFP_AUTH_URL, $mnt_dir
+);
+
+{
+    my $dir    = "$mnt_dir/readdirplus";
+    my $before = request_counts();
+    my @names  = @{listing_of($dir) // BAIL_OUT("Cannot open $dir: $!")};
+    my $listed = request_counts();
+    my $sizes  = grep { defined((stat "$dir/$_")[7]) } @names;
+    my $after  = request_counts();
+    is(scalar @names, 20, 'fuse_readdirplus: 20 entries listed');
+    is($sizes,        20, 'fuse_readdirplus: every listed entry stats');
+  SKIP: {
+        skip 'these counts follow the Linux kernel caches', 1 unless $^O eq 'linux';
+        is(request_delta($listed, $after, 'afpGetFileDirParms'), 0,
+           'fuse_readdirplus: a stat(2) of every listed entry sends no FPGetFileDirParms');
+    }
+    is(request_delta($before, $listed, 'afpEnumerateExt2'), 2,
+       'fuse_readdirplus: the listing is one page and the end page');
+
+    # A rewind lists the folder again, for attributes as new as its read.
+    opendir(my $again, $dir) or BAIL_OUT("Cannot open $dir: $!");
+    readdir $again for 1 .. 22;
+    my $read = request_counts();
+    rewinddir $again;
+    my @reread = grep { $_ ne '.' && $_ ne '..' } readdir $again;
+    closedir $again;
+    is(scalar @reread, 20, 'fuse_readdirplus: a rewound stream lists every entry again');
+    is(request_delta($read, request_counts(), 'afpEnumerateExt2'), 2,
+       'fuse_readdirplus: the rewind lists the folder again');
+
+  SKIP: {
+        # On a 64-bit host glibc's and musl's telldir(3) is the kernel's
+        # offset, which a second stream may seek to.
+        skip 'another stream\'s telldir(3) is the kernel\'s offset on Linux', 1 unless $^O eq 'linux';
+        opendir(my $first, $dir) or BAIL_OUT("Cannot open $dir: $!");
+        readdir $first for 1 .. 10;
+        my $pos  = telldir $first;
+        my $next = readdir $first;
+        opendir(my $second, $dir) or BAIL_OUT("Cannot open $dir: $!");
+        seekdir $second, $pos;
+        is(scalar readdir $second, $next, 'fuse_readdirplus: a stream seeked to another\'s place reads on from there');
+        closedir $first;
+        closedir $second;
+    }
+    unlink map {"$dir/$_"} @names;
+    rmdir $dir;
+
+    # An append between two reads revalidates an entry of the first page,
+    # which makes the kernel ask the next page for attributes.
+    my $grown = "$mnt_dir/readdirplus_grown";
+    my @files = map { sprintf('%s/%s%03d', $grown, 'g' x 251, $_) } 0 .. 199;
+    opendir(my $dh, $grown) or BAIL_OUT("Cannot open $grown: $!");
+    readdir $dh;
+
+    for my $file (@files) {
+        open(my $fh, '>>', $file) or BAIL_OUT("Cannot append to $file: $!");
+        print {$fh} 'x' x 10;
+        close $fh;
+    }
+
+    my @rest = readdir $dh;
+    closedir $dh;
+    is(scalar(grep { (stat $_)[7] != 10 } @files), 0,
+       'fuse_readdirplus: no later page undoes a size grown through the mount');
+    unlink @files;
+    rmdir $grown;
+
+    # libfuse hands no path to a stream beneath a folder this mount removes;
+    # the stream's own folder goes through another mount, or Linux ends it.
+    my $gone  = "$mnt_dir/readdirplus_gone";
+    my $other = "$mnt_dir.other";
+    mkdir $other unless -d $other;
+    mount_or_bail('fuse_readdirplus: a second mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $other);
+    opendir(my $open, "$gone/inner") or BAIL_OUT("Cannot open $gone/inner: $!");
+    readdir $open;
+    system('rm', '-rf', "$other/readdirplus_gone/inner") == 0
+      or BAIL_OUT("Cannot remove $other/readdirplus_gone/inner");
+    ok(rmdir($gone), 'fuse_readdirplus: the folder above an open stream removes');
+    my @later = grep { $_ ne '.' && $_ ne '..' } readdir $open;
+    closedir $open;
+    is(scalar @later, 100, 'fuse_readdirplus: a stream reads on once the mount removes a folder above it');
+    is(system('afpc', 'fs', 'unmount', $other), 0, 'fuse_readdirplus: the second mount unmounts');
+    rmdir $other;
+}
+
+unmount_or_bail('fuse_readdirplus: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_listing_moved: another session replaces folders whose IDs this mount
+# caches; listings, lookups and removals beneath reach the folders that stand.
+# -----------------------------------------------------------------------
+{
+    my $other = "$mnt_dir.other";
+    mkdir $other unless -d $other;
+    mount_or_bail('fuse_listing_moved: a second mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $other);
+
+    # Long timeouts make the listing the first request to meet the stale IDs.
+    mount_or_bail(
+                  'fuse_listing_moved: a mount with long timeouts succeeds',
+                  'mount_afpfs', '-o', 'entry_timeout=30,attr_timeout=30', $AFP_AUTH_URL, $mnt_dir
+    );
+    mkdir "$mnt_dir/moved"       or BAIL_OUT("Cannot create $mnt_dir/moved: $!");
+    mkdir "$mnt_dir/moved/inner" or BAIL_OUT("Cannot create $mnt_dir/moved/inner: $!");
+    # A stat, not a listing: after one the kernel refetches the folder's
+    # attributes at opendir(3), which would meet the stale IDs first.
+    ok(-d "$mnt_dir/moved/inner", 'fuse_listing_moved: the new folder is a directory');
+    replace_folder("$other/moved", 'inner/x');
+    is_deeply(listing_of("$mnt_dir/moved/inner"), ['x'],
+              'fuse_listing_moved: the replaced folder lists its file through the stale IDs');
+    unmount_or_bail('fuse_listing_moved: the mount with long timeouts unmounts');
+
+    # The kernel keeps no entry or attribute, so its lookup of the parent
+    # meets the new folder first.
+    mount_or_bail(
+                  'fuse_listing_moved: a mount with zero timeouts succeeds',
+                  'mount_afpfs', '-o', 'entry_timeout=0,attr_timeout=0', $AFP_AUTH_URL, $mnt_dir
+    );
+    mkdir "$mnt_dir/moved2"       or BAIL_OUT("Cannot create $mnt_dir/moved2: $!");
+    mkdir "$mnt_dir/moved2/inner" or BAIL_OUT("Cannot create $mnt_dir/moved2/inner: $!");
+    write_bytes("$mnt_dir/moved2/inner/y", 0);
+    is_deeply(listing_of("$mnt_dir/moved2/inner"), ['y'], 'fuse_listing_moved: the second folder lists its file');
+    replace_folder("$other/moved2", 'inner/x');
+    is_deeply(listing_of("$mnt_dir/moved2/inner"), ['x'],
+              'fuse_listing_moved: the replaced folder lists its file after the kernel looks its parent up');
+    unmount_or_bail('fuse_listing_moved: the mount with zero timeouts unmounts');
+
+    # Only the listed folder's cached ID is stale: the listing reaches the
+    # folder by name, and its entries' new ID makes it forget the stale one.
+    mount_or_bail(
+                  'fuse_listing_moved: a third mount with long timeouts succeeds',
+                  'mount_afpfs', '-o', 'entry_timeout=30,attr_timeout=30', $AFP_AUTH_URL, $mnt_dir
+    );
+    mkdir "$mnt_dir/moved3"       or BAIL_OUT("Cannot create $mnt_dir/moved3: $!");
+    mkdir "$mnt_dir/moved3/inner" or BAIL_OUT("Cannot create $mnt_dir/moved3/inner: $!");
+    write_bytes("$mnt_dir/moved3/inner/y", 0);
+    # The create left the folder's attributes stale in the kernel; the stat
+    # renews them, so the listing is the first request after the replacement.
+    ok(-d "$mnt_dir/moved3/inner", 'fuse_listing_moved: the third folder is a directory');
+    replace_folder("$other/moved3/inner", 'x');
+    is_deeply(listing_of("$mnt_dir/moved3/inner"), ['x'],
+              'fuse_listing_moved: the folder replaced under its own cached ID lists its file');
+    ok(open(my $fh, '<', "$mnt_dir/moved3/inner/x"),
+       'fuse_listing_moved: the listed file opens once the folder\'s stale ID is forgotten');
+    close $fh if $fh;
+    unmount_or_bail('fuse_listing_moved: the third mount unmounts');
+
+    # Zero timeouts let the kernel's lookup meet the file; the unlink asks the
+    # server what stands there, where the folder's cached ID would say EISDIR.
+    mount_or_bail(
+                  'fuse_listing_moved: a fourth mount with zero timeouts succeeds',
+                  'mount_afpfs', '-o', 'entry_timeout=0,attr_timeout=0', $AFP_AUTH_URL, $mnt_dir
+    );
+    mkdir "$mnt_dir/moved4"       or BAIL_OUT("Cannot create $mnt_dir/moved4: $!");
+    mkdir "$mnt_dir/moved4/inner" or BAIL_OUT("Cannot create $mnt_dir/moved4/inner: $!");
+    write_bytes("$mnt_dir/moved4/inner/y", 0);
+    remove_tree("$other/moved4/inner");
+    write_bytes("$other/moved4/inner", 0);
+    ok(unlink("$mnt_dir/moved4/inner"), "fuse_listing_moved: a file in a folder's old place unlinks");
+
+    unmount_or_bail('fuse_listing_moved: the fourth mount unmounts');
+
+    # Long timeouts: no lookup comes between a listing and a request beneath
+    # it, so the listing itself forgets a replaced child folder's cached ID.
+    mount_or_bail(
+                  'fuse_listing_moved: a fifth mount with long timeouts succeeds',
+                  'mount_afpfs', '-o', 'entry_timeout=30,attr_timeout=30', $AFP_AUTH_URL, $mnt_dir
+    );
+    mkdir "$mnt_dir/moved5"     or BAIL_OUT("Cannot create $mnt_dir/moved5: $!");
+    mkdir "$mnt_dir/moved5/sub" or BAIL_OUT("Cannot create $mnt_dir/moved5/sub: $!");
+    write_bytes("$mnt_dir/moved5/sub/x", 0);
+    mkdir "$mnt_dir/moved6" or BAIL_OUT("Cannot create $mnt_dir/moved6: $!");
+    write_bytes("$mnt_dir/moved6/x", 0);
+    replace_folder("$other/moved5/sub", 'y');
+    replace_folder("$other/moved6",     'y');
+    is_deeply(listing_of("$mnt_dir/moved5"), ['sub'], 'fuse_listing_moved: the fifth folder lists its folder');
+    ok(open(my $fh5, '<', "$mnt_dir/moved5/sub/y"),
+       'fuse_listing_moved: the file of a folder replaced beneath a listed folder opens');
+    close $fh5 if $fh5;
+    ok((grep { $_ eq 'moved6' } @{listing_of($mnt_dir) // []}),
+       'fuse_listing_moved: the mount root lists the sixth folder');
+    ok(open(my $fh6, '<', "$mnt_dir/moved6/y"),
+       'fuse_listing_moved: the file of a folder replaced beneath the listed root opens');
+    close $fh6 if $fh6;
+
+    # Listing the folder beneath caches the seventh folder's ID alone; once it
+    # is replaced, a walk from that ID fails and starts over from the root.
+    make_path("$other/moved7/inner/deep");
+    is_deeply(listing_of("$mnt_dir/moved7/inner"), ['deep'], 'fuse_listing_moved: the seventh folder lists its folder');
+    replace_folder("$other/moved7", 'inner/deep/x');
+    is_deeply(listing_of("$mnt_dir/moved7/inner/deep"), ['x'],
+              'fuse_listing_moved: a folder beneath a replaced cached folder lists its file');
+
+    # A file another session put where a cached folder stood: the removal
+    # asks the server what stands there and leaves the file.
+    mkdir "$mnt_dir/moved8"   or BAIL_OUT("Cannot create $mnt_dir/moved8: $!");
+    mkdir "$mnt_dir/moved8/x" or BAIL_OUT("Cannot create $mnt_dir/moved8/x: $!");
+    write_bytes("$mnt_dir/moved8/x/y", 0);
+    remove_tree("$other/moved8/x");
+    write_bytes("$other/moved8/x", 0);
+    ok(!rmdir("$mnt_dir/moved8/x") && $!{ENOTDIR},
+       'fuse_listing_moved: an rmdir(2) of a file in a cached folder\'s place fails with ENOTDIR');
+    # A listing asks the server; the second mount's kernel keeps the file's
+    # entry for its own timeout.
+    is_deeply(listing_of("$other/moved8"), ['x'], 'fuse_listing_moved: the file in the cached folder\'s place stays');
+
+    # A replaced folder's empty listing carries no ID, so it forgets the
+    # cached one, and a create beneath reaches the new folder.
+    mkdir "$mnt_dir/moved9"       or BAIL_OUT("Cannot create $mnt_dir/moved9: $!");
+    mkdir "$mnt_dir/moved9/inner" or BAIL_OUT("Cannot create $mnt_dir/moved9/inner: $!");
+    write_bytes("$mnt_dir/moved9/inner/y", 0);
+    # The stat caches the folder's attributes again, as for the third
+    # folder, so the listing is the first request after the replacement.
+    ok(-d "$mnt_dir/moved9/inner", 'fuse_listing_moved: the ninth folder is a directory');
+    remove_tree("$other/moved9/inner");
+    make_path("$other/moved9/inner.new");
+    rename "$other/moved9/inner.new", "$other/moved9/inner"
+      or BAIL_OUT("Cannot rename $other/moved9/inner.new: $!");
+    # A failed listing reads as no names, not even "." and "..".
+    opendir(my $emptied, "$mnt_dir/moved9/inner") or BAIL_OUT("Cannot open $mnt_dir/moved9/inner: $!");
+    is_deeply([sort readdir $emptied], ['.', '..'], 'fuse_listing_moved: the emptied folder lists nothing');
+    closedir $emptied;
+    ok(open(my $fh9, '>', "$mnt_dir/moved9/inner/z"),
+       'fuse_listing_moved: a create beneath a folder replaced with an empty one succeeds');
+    close $fh9 if $fh9;
+
+    # The listing's retry finds the parent's ID unchanged and fails with ENOENT.
+    mkdir "$mnt_dir/moved10" or BAIL_OUT("Cannot create $mnt_dir/moved10: $!");
+    ok(-d "$mnt_dir/moved10", 'fuse_listing_moved: the tenth folder is a directory');
+    rmdir "$other/moved10" or BAIL_OUT("Cannot remove $other/moved10: $!");
+  SKIP: {
+        # On Linux the listing comes at the first readdir(3); glibc and musl
+        # end a stream at ENOENT with errno kept, where another error sets it.
+        skip 'the listing\'s ENOENT reads this way on Linux alone', 1 unless $^O eq 'linux';
+        opendir(my $gone, "$mnt_dir/moved10") or BAIL_OUT("Cannot open $mnt_dir/moved10: $!");
+        $! = 0;
+        my @left = readdir $gone;
+        ok(!@left && !$!, 'fuse_listing_moved: a folder another session removed fails to list with ENOENT')
+          or diag("listed: @left; errno: " . ($! + 0));
+        closedir $gone;
+    }
+
+    remove_tree(map {"$mnt_dir/$_"} 'moved', 'moved2', 'moved3', 'moved4', 'moved5', 'moved6', 'moved7', 'moved8',
+                'moved9');
+
+    is(system('afpc', 'fs', 'unmount', $other), 0, 'fuse_listing_moved: the second mount unmounts');
+    rmdir $other;
+    unmount_or_bail('fuse_listing_moved: unmount succeeds');
+}
+
+# -----------------------------------------------------------------------
+# fuse_rename_cache: a rename forgets the IDs cached under both its paths, so
+# a create beneath either reaches the folder that stands there.
+# -----------------------------------------------------------------------
+mount_or_bail(
+              'fuse_rename_cache: a mount with long timeouts succeeds',
+              'mount_afpfs', '-o', 'entry_timeout=30,attr_timeout=30', $AFP_AUTH_URL, $mnt_dir
+);
+
+{
+    my $other  = "$mnt_dir.other";
+    my $moved  = "$mnt_dir/renamed_away";
+    my $second = "$mnt_dir/renamed_second";
+    my $kept   = "$mnt_dir/renamed_kept";
+    my $onto   = "$mnt_dir/renamed_onto";
+    my $in     = "$mnt_dir/renamed_in";
+    mkdir $other unless -d $other;
+    mount_or_bail('fuse_rename_cache: a second mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $other);
+    mkdir $moved  or BAIL_OUT("Cannot create $moved: $!");
+    mkdir $second or BAIL_OUT("Cannot create $second: $!");
+    # A file under the folder resolves the folder, which caches its ID.
+    write_bytes("$moved/x", 0);
+    rename $moved,  $kept  or BAIL_OUT("Cannot rename $moved: $!");
+    rename $second, $moved or BAIL_OUT("Cannot rename $second: $!");
+    write_bytes("$moved/y", 0);
+    is_deeply(listing_of($kept),  ['x'], 'fuse_rename_cache: the folder renamed away holds its file alone');
+    is_deeply(listing_of($moved), ['y'], 'fuse_rename_cache: the folder renamed into the place holds the new file');
+    # Another session moves a cached folder away; a rename onto its old
+    # path forgets the ID cached there.
+    mkdir $onto or BAIL_OUT("Cannot create $onto: $!");
+    write_bytes("$onto/x", 0);
+    mkdir $in or BAIL_OUT("Cannot create $in: $!");
+    rename "$other/renamed_onto", "$other/renamed_onto.old"
+      or BAIL_OUT("Cannot rename $other/renamed_onto: $!");
+    rename $in, $onto or BAIL_OUT("Cannot rename $in: $!");
+    write_bytes("$onto/y", 0);
+    is_deeply(listing_of("$other/renamed_onto.old"), ['x'],
+              'fuse_rename_cache: the folder moved away holds its file alone');
+    is_deeply(listing_of("$other/renamed_onto"), ['y'],
+              'fuse_rename_cache: the folder renamed onto its old path holds the new file');
+    remove_tree($kept, $moved, "$other/renamed_onto", "$other/renamed_onto.old");
+    is(system('afpc', 'fs', 'unmount', $other), 0, 'fuse_rename_cache: the second mount unmounts');
+    rmdir $other;
+}
+
+unmount_or_bail('fuse_rename_cache: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_afp2_dates: on an AFP 2.2 session a folder shows the dates the
+# server reports, as a file does.
+# -----------------------------------------------------------------------
+mount_or_bail(
+              'fuse_afp2_dates: an AFP 2.2 mount succeeds',
+              'afpc', 'fs', 'mount', '-u', $AFP_USER, '-p', $AFP_PASS, '-f', '2.2', "$AFP_HOST:$AFP_VOL", $mnt_dir
+);
+
+{
+    my $dir = "$mnt_dir/afp2_dates";
+    mkdir $dir or BAIL_OUT("Cannot create $dir: $!");
+    utime 1577934245, 1577934245, $dir or BAIL_OUT("Cannot date $dir: $!");
+    is((stat $dir)[9], 1577934245, 'fuse_afp2_dates: a folder shows the date it was given');
+    rmdir $dir;
+}
+
+unmount_or_bail('fuse_afp2_dates: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_appledouble_listing: without UNIX privileges the .AppleDouble view lists
+# forks and comments at their lengths, Finder information at its object's mode.
+# -----------------------------------------------------------------------
+my $AFP_NOUNIX_URL = sprintf(
+                             'afp://%s:%s@%s/afpfs_test_nounix',
+                             url_escape_component($AFP_USER), url_escape_component($AFP_PASS), $AFP_HOST
+);
+mount_or_bail('fuse_appledouble_listing: the creating mount succeeds', 'mount_afpfs', $AFP_NOUNIX_URL, $mnt_dir);
+
+{
+    my $dir  = "$mnt_dir/adlist";
+    my $view = "$dir/.AppleDouble";
+    mkdir $dir       or BAIL_OUT("Cannot create $dir: $!");
+    mkdir "$dir/sub" or BAIL_OUT("Cannot create $dir/sub: $!");
+    write_bytes("$dir/withfork",  0);
+    write_bytes("$view/withfork", 100);
+    write_bytes("$dir/plain",     0);
+    open(my $note, '>', "$view/plain.comment") or BAIL_OUT("Cannot comment on $dir/plain: $!");
+    print {$note} 'note';
+    close $note;
+    # The view reads this name as the Finder information of a file "clash".
+    write_bytes("$dir/clash.finderinfo", 0);
+    set_resource_fork("$dir/clash.finderinfo", 'r' x 100) if defined $setxattr_nr;
+}
+
+unmount_or_bail('fuse_appledouble_listing: the creating mount unmounts');
+mount_or_bail(
+              'fuse_appledouble_listing: a mount with long timeouts succeeds',
+              'mount_afpfs', '-o', 'entry_timeout=30,attr_timeout=30', $AFP_NOUNIX_URL, $mnt_dir
+);
+
+{
+    my $dir  = "$mnt_dir/adlist";
+    my $view = "$dir/.AppleDouble";
+    is_deeply(
+          [sort @{listing_of($view) // []}],
+          [qw(clash.finderinfo.finderinfo plain.comment plain.finderinfo sub.finderinfo withfork withfork.finderinfo)],
+          'fuse_appledouble_listing: the view lists the resource fork, the comment and every Finder information'
+    );
+    is((stat "$view/withfork")[7],      100, 'fuse_appledouble_listing: the resource fork lists at its length');
+    is((stat "$view/plain.comment")[7], 4,   'fuse_appledouble_listing: the comment lists at its length');
+    ok(-f "$view/sub.finderinfo", 'fuse_appledouble_listing: a folder\'s Finder information is a regular file');
+    is(
+       (stat "$view/sub.finderinfo")[2] & 07777, (stat "$dir/sub")[2] & 07777,
+       'fuse_appledouble_listing: a folder\'s Finder information has the folder\'s mode'
+    );
+    remove_tree($dir);
+}
+
+unmount_or_bail('fuse_appledouble_listing: unmount succeeds');
 
 # -----------------------------------------------------------------------
 # fuse_mount_time: ten mounts in a row each complete within 5 s. Every

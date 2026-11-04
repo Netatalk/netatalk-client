@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -83,17 +84,17 @@ static unsigned int enumerate_max_reply_size(struct afp_server *server)
     return min(AFP_ENUMERATE_MAX_REPLY_SIZE, max_payload);
 }
 
-static void free_file_list(struct afp_file_info *base)
-{
-    struct afp_file_info *next;
-
-    while (base) {
-        next = base->next;
-        free(base);
-        base = next;
-    }
-}
-
+/*!
+ * @brief Swap two files' contents with FPExchangeFiles
+ *
+ * @param[in] volume    volume of both files
+ * @param[in] src_did   directory of the first
+ * @param[in] dst_did   directory of the second
+ * @param[in] src_path  AFP name of the first in src_did
+ * @param[in] dst_path  AFP name of the second in dst_did
+ * @returns the server's AFP result, afpc_dsi_send()'s error when the request
+ *          fails, or -1 without memory for the request
+ */
 int afp_exchangefiles(struct afp_volume *volume,
                       unsigned int src_did,
                       unsigned int dst_did,
@@ -142,6 +143,19 @@ int afp_exchangefiles(struct afp_volume *volume,
     return ret;
 }
 
+/*!
+ * @brief Move an object, renaming it, with FPMoveAndRename
+ *
+ * @param[in] volume    volume of the object
+ * @param[in] src_did   its directory
+ * @param[in] dst_did   the directory it moves to
+ * @param[in] src_path  AFP name of the object in src_did
+ * @param[in] dst_path  AFP name of a folder in dst_did to move into, or
+ *                      NULL
+ * @param[in] new_name  the name it takes
+ * @returns the server's AFP result, afpc_dsi_send()'s error when the request
+ *          fails, or -1 without memory for the request
+ */
 int afp_moveandrename(struct afp_volume *volume,
                       unsigned int src_did,
                       unsigned int dst_did,
@@ -213,6 +227,16 @@ int afp_moveandrename(struct afp_volume *volume,
     return ret;
 }
 
+/*!
+ * @brief Rename an object within its directory with FPRename
+ *
+ * @param[in] volume     volume of the object
+ * @param[in] dirid      its directory
+ * @param[in] path_from  its AFP name
+ * @param[in] path_to    the AFP name it takes
+ * @returns the server's AFP result, afpc_dsi_send()'s error when the request
+ *          fails, or -1 without memory for the request
+ */
 int afp_rename(struct afp_volume *volume,
                unsigned int dirid,
                char *path_from, char *path_to)
@@ -255,6 +279,17 @@ int afp_rename(struct afp_volume *volume,
     return ret;
 }
 
+/*!
+ * @brief Create a folder with FPCreateDir
+ *
+ * @param[in]  volume    volume of the folder
+ * @param[in]  dirid     its parent's directory ID
+ * @param[in]  pathname  its AFP name in dirid
+ * @param[out] did_p     receives the new folder's ID from a reply, 0 from
+ *                       a reply without one
+ * @returns the server's AFP result, afpc_dsi_send()'s error when the request
+ *          fails, or -1 without memory for the request
+ */
 int afp_createdir(struct afp_volume * volume, unsigned int dirid,
                   const char *pathname, unsigned int *did_p)
 {
@@ -293,187 +328,172 @@ int afp_createdir(struct afp_volume * volume, unsigned int dirid,
     return ret;
 }
 
+/*!
+ * @brief Read the new directory's ID from an FPCreateDir reply
+ *
+ * @param[in]  server  unused
+ * @param[in]  buf     the reply
+ * @param[in]  size    its length
+ * @param[out] other   unsigned int, receives the ID, or 0 without one
+ * @returns 0, or non-zero for an error reply or one too short for the ID
+ */
 int afp_createdir_reply(struct afp_server *server _U_,
                         char *buf, unsigned int size, void *other)
 {
-    /* We're actually just going to ignore the return bitmap and forkid. */
     struct {
         struct dsi_header header __attribute__((__packed__));
-        uint16_t bitmap;
-        uint16_t forkid;
+        uint32_t did;
     } __attribute__((__packed__)) * reply_packet = (void *) buf;
-    unsigned short *dir_p = (void *) other;
-    *dir_p = 0;
+    unsigned int *did_p = other;
+    *did_p = 0;
 
     if (reply_packet->header.return_code.error_code) {
-        return (reply_packet->header.return_code.error_code);
+        return reply_packet->header.return_code.error_code;
     }
 
     if (size < sizeof(*reply_packet)) {
         return -1;
     }
 
+    *did_p = ntohl(reply_packet->did);
     return 0;
 }
 
+/*!
+ * @brief Parse an enumerate reply's entries into a listing
+ *
+ * A malformed entry, a name too long or a page the listing cannot hold
+ * drops the whole page.
+ *
+ * @param[in]     server  server of the session
+ * @param[in]     buf     the reply, DSI header first
+ * @param[in]     size    bytes of buf
+ * @param[in]     ext     1 for the FPEnumerateExt and FPEnumerateExt2
+ *                        entry header, 0 for FPEnumerate's
+ * @param[in,out] l       the listing the entries join
+ * @returns 0, or non-zero for an error reply or a malformed one
+ */
+static int enumerate_reply(struct afp_server *server, char *buf,
+                           unsigned int size, int ext, struct afp_listing *l)
+{
+    struct {
+        struct dsi_header dsi_header __attribute__((__packed__));
+        uint16_t filebitmap;
+        uint16_t dirbitmap;
+        uint16_t reqcount;
+    } __attribute__((__packed__)) * reply = (void *) buf;
+    const char *p = buf + sizeof(*reply);
+    const char *max = buf + size;
+    size_t header = ext ? sizeof(ext2_reply_entry) : sizeof(reply_entry);
+    uint32_t count = l->count;
+    uint32_t pool_used = l->pool_used;
+    int i;
+
+    if (size < sizeof(reply->dsi_header)) {
+        return -1;
+    }
+
+    if (reply->dsi_header.return_code.error_code) {
+        return reply->dsi_header.return_code.error_code;
+    }
+
+    if (size < sizeof(*reply)) {
+        return -1;
+    }
+
+    for (i = 0; i < ntohs(reply->reqcount); i++) {
+        struct afp_dirent *e;
+        unsigned int entry_size;
+        unsigned char isdir;
+        char *name;
+
+        if ((size_t)(max - p) < header) {
+            goto malformed;
+        }
+
+        if (ext) {
+            const ext2_reply_entry *entry = (const void *) p;
+            entry_size = ntohs(entry->size);
+            isdir = entry->isdir;
+        } else {
+            const reply_entry *entry = (const void *) p;
+            entry_size = entry->size;
+            isdir = entry->isdir;
+        }
+
+        if (entry_size < header || (size_t)(max - p) < entry_size
+                || afp_listing_reserve(l, 1, AFPC_MAX_NAME_BYTES) < 0) {
+            goto malformed;
+        }
+
+        e = &l->entries[l->count];
+        name = l->pool + l->pool_used;
+
+        if (parse_reply_block(server, p + header, entry_size - header, isdir,
+                              ntohs(reply->filebitmap),
+                              ntohs(reply->dirbitmap), e, name,
+                              AFPC_MAX_NAME_BYTES) < 0) {
+            goto malformed;
+        }
+
+        afp_listing_commit(l);
+        p += entry_size;
+    }
+
+    return 0;
+malformed:
+    l->count = count;
+    l->pool_used = pool_used;
+    return -1;
+}
+
+/*!
+ * @brief Parse an FPEnumerate reply into the listing other points at
+ *
+ * @param[in]     server  server of the session
+ * @param[in]     buf     the reply, DSI header first
+ * @param[in]     size    bytes of buf
+ * @param[in,out] other   the struct afp_listing the entries join
+ * @returns enumerate_reply()'s result
+ */
 int afp_enumerate_reply(struct afp_server *server, char *buf,
                         unsigned int size, void *other)
 {
-    struct {
-        struct dsi_header dsi_header __attribute__((__packed__));
-        uint16_t filebitmap;
-        uint16_t dirbitmap;
-        uint16_t reqcount;
-    } __attribute__((__packed__)) * reply = (void *) buf;
-    const reply_entry *entry;
-    const char *p = buf + sizeof(*reply);
-    int i;
-    const char *max = buf + size;
-    struct afp_file_info * filebase = NULL, *filecur = NULL, *prev = NULL;
-    void **x = other;
-
-    if (size < sizeof(reply->dsi_header)) {
-        return -1;
-    }
-
-    if (reply->dsi_header.return_code.error_code) {
-        return reply->dsi_header.return_code.error_code;
-    }
-
-    if (size < sizeof(*reply)) {
-        return -1;
-    }
-
-    for (i = 0; i < ntohs(reply->reqcount); i++) {
-        unsigned int entry_size;
-
-        if ((size_t)(max - p) < sizeof(*entry)) {
-            free_file_list(filebase);
-            return -1;
-        }
-
-        entry = (const void *) p;
-        entry_size = entry->size;
-
-        if (entry_size < sizeof(*entry) || (size_t)(max - p) < entry_size) {
-            free_file_list(filebase);
-            return -1;
-        }
-
-        prev = filecur;
-
-        if ((filecur = malloc(sizeof(struct afp_file_info))) == NULL) {
-            free_file_list(filebase);
-            return -1;
-        }
-
-        if (filebase == NULL) {
-            filebase = filecur;
-            prev = filecur;
-        } else {
-            prev->next = filecur;
-        }
-
-        if (parse_reply_block(server, p + sizeof(*entry),
-                              entry_size - sizeof(*entry), entry->isdir,
-                              ntohs(reply->filebitmap),
-                              ntohs(reply->dirbitmap),
-                              filecur) < 0) {
-            free_file_list(filebase);
-            return -1;
-        }
-
-        p += entry_size;
-    }
-
-    *x = filebase;
-    return 0;
+    return enumerate_reply(server, buf, size, 0, other);
 }
 
-int afp_enumerateext_reply(struct afp_server *server, char *buf,
-                           unsigned int size, void *other)
-{
-    /* AFP 3.0 FPEnumerateExt uses the same reply format as FPEnumerateExt2 */
-    return afp_enumerateext2_reply(server, buf, size, other);
-}
-
+/*!
+ * @brief Parse an FPEnumerateExt or FPEnumerateExt2 reply into a listing
+ *
+ * The two commands share the entry header.
+ *
+ * @param[in]     server  server of the session
+ * @param[in]     buf     the reply, DSI header first
+ * @param[in]     size    bytes of buf
+ * @param[in,out] other   the struct afp_listing the entries join
+ * @returns enumerate_reply()'s result
+ */
 int afp_enumerateext2_reply(struct afp_server *server, char *buf,
                             unsigned int size, void *other)
 {
-    struct {
-        struct dsi_header dsi_header __attribute__((__packed__));
-        uint16_t filebitmap;
-        uint16_t dirbitmap;
-        uint16_t reqcount;
-    } __attribute__((__packed__)) * reply = (void *) buf;
-    const ext2_reply_entry *entry;
-    const char *p = buf + sizeof(*reply);
-    const char *max = buf + size;
-    int i;
-    struct afp_file_info *filebase = NULL;
-    struct afp_file_info *filecur = NULL;
-    struct afp_file_info *new_file = NULL;
-    struct afp_file_info **x = (struct afp_file_info **) other;
-
-    if (size < sizeof(reply->dsi_header)) {
-        return -1;
-    }
-
-    if (reply->dsi_header.return_code.error_code) {
-        return reply->dsi_header.return_code.error_code;
-    }
-
-    if (size < sizeof(*reply)) {
-        return -1;
-    }
-
-    for (i = 0; i < ntohs(reply->reqcount); i++) {
-        unsigned int entry_size;
-
-        if ((size_t)(max - p) < sizeof(*entry)) {
-            free_file_list(filebase);
-            return -1;
-        }
-
-        entry = (const void *) p;
-        entry_size = ntohs(entry->size);
-
-        if (entry_size < sizeof(*entry) || (size_t)(max - p) < entry_size) {
-            free_file_list(filebase);
-            return -1;
-        }
-
-        if ((new_file = malloc(sizeof(struct afp_file_info))) == NULL) {
-            free_file_list(filebase);
-            return -1;
-        }
-
-        new_file->next = NULL;
-
-        if (filecur) {
-            filecur->next = new_file;
-            filecur = new_file;
-        } else {
-            filebase = new_file;
-            filecur = new_file;
-        }
-
-        if (parse_reply_block(server, p + sizeof(*entry),
-                              entry_size - sizeof(*entry), entry->isdir,
-                              ntohs(reply->filebitmap),
-                              ntohs(reply->dirbitmap),
-                              filecur) < 0) {
-            free_file_list(filebase);
-            return -1;
-        }
-
-        p += entry_size;
-    }
-
-    *x = filebase;
-    return 0;
+    return enumerate_reply(server, buf, size, 1, other);
 }
 
+/*!
+ * @brief List a page of a directory with FPEnumerate
+ *
+ * @param[in]     volume      volume of the directory
+ * @param[in]     dirid       its parent's ID
+ * @param[in]     filebitmap  parameters to read for a file
+ * @param[in]     dirbitmap   parameters to read for a directory
+ * @param[in]     reqcount    entries asked for
+ * @param[in]     startindex  index of the first, from 1
+ * @param[in]     pathname    AFP name of the directory in dirid
+ * @param[in,out] l           the listing the page's entries join
+ * @returns the server's AFP result, kFPObjectNotFound past the last entry,
+ *          afpc_dsi_send()'s error when the request fails, or -1 without
+ *          memory for the request or the listing, or for a malformed reply
+ */
 int afp_enumerate(
     struct afp_volume * volume,
     unsigned int dirid,
@@ -481,7 +501,7 @@ int afp_enumerate(
     unsigned short reqcount,
     unsigned short startindex,
     char *pathname,
-    struct afp_file_info **file_p)
+    struct afp_listing *l)
 {
     struct {
         struct dsi_header dsi_header __attribute__((__packed__));
@@ -498,7 +518,6 @@ int afp_enumerate(
     unsigned short len;
     char *data;
     int rc;
-    struct afp_file_info * files = NULL;
     struct afp_server * server = volume->server;
     char *path;
     len = sizeof_path_header(volume) + strlen(pathname) +
@@ -527,12 +546,26 @@ int afp_enumerate(
     copy_path(volume, path, pathname, strlen(pathname));
     unixpath_to_afppath(volume, path);
     rc = afpc_dsi_send(server, data, len, DSI_DEFAULT_TIMEOUT,
-                       afpEnumerate, (void **) &files);
-    *file_p = files;
+                       afpEnumerate, l);
     free(data);
     return rc;
 }
 
+/*!
+ * @brief List a page of a directory with FPEnumerateExt
+ *
+ * @param[in]     volume      volume of the directory
+ * @param[in]     dirid       its parent's ID
+ * @param[in]     filebitmap  parameters to read for a file
+ * @param[in]     dirbitmap   parameters to read for a directory
+ * @param[in]     reqcount    entries asked for
+ * @param[in]     startindex  index of the first, from 1
+ * @param[in]     pathname    AFP name of the directory in dirid
+ * @param[in,out] l           the listing the page's entries join
+ * @returns the server's AFP result, kFPObjectNotFound past the last entry,
+ *          afpc_dsi_send()'s error when the request fails, or -1 without
+ *          memory for the request or the listing, or for a malformed reply
+ */
 int afp_enumerateext(
     struct afp_volume * volume,
     unsigned int dirid,
@@ -540,7 +573,7 @@ int afp_enumerateext(
     unsigned short reqcount,
     unsigned short startindex,
     char *pathname,
-    struct afp_file_info **file_p)
+    struct afp_listing *l)
 {
     struct {
         struct dsi_header dsi_header __attribute__((__packed__));
@@ -557,7 +590,6 @@ int afp_enumerateext(
     unsigned short len;
     char *data;
     int rc;
-    struct afp_file_info * files = NULL;
     struct afp_server * server = volume->server;
     char *path;
     len = sizeof_path_header(volume) + strlen(pathname) +
@@ -586,8 +618,7 @@ int afp_enumerateext(
     copy_path(volume, path, pathname, strlen(pathname));
     unixpath_to_afppath(volume, path);
     rc = afpc_dsi_send(server, data, len, DSI_DEFAULT_TIMEOUT,
-                       afpEnumerateExt, (void **) &files);
-    *file_p = files;
+                       afpEnumerateExt, l);
     free(data);
     return rc;
 }
@@ -598,16 +629,17 @@ int afp_enumerateext(
  * Offers the receive buffer less the headers as the reply's 32-bit budget.
  * The reply's wait grows with that budget.
  *
- * @param[in]  volume      volume of the directory
- * @param[in]  dirid       parent of the directory
- * @param[in]  filebitmap  parameters to read for each file
- * @param[in]  dirbitmap   parameters to read for each directory
- * @param[in]  reqcount    the cap on entries to return
- * @param[in]  startindex  index of the first entry, from 1
- * @param[in]  pathname    AFP name of the directory in dirid
- * @param[out] file_p      the page's entries, a list the caller frees
+ * @param[in]     volume      volume of the directory
+ * @param[in]     dirid       parent of the directory
+ * @param[in]     filebitmap  parameters to read for each file
+ * @param[in]     dirbitmap   parameters to read for each directory
+ * @param[in]     reqcount    the cap on entries to return
+ * @param[in]     startindex  index of the first entry, from 1
+ * @param[in]     pathname    AFP name of the directory in dirid
+ * @param[in,out] l           the listing the page's entries join
  * @returns the server's AFP result, kFPObjectNotFound past the last entry,
- *          or afpc_dsi_send()'s error when the request fails
+ *          afpc_dsi_send()'s error when the request fails, or -1 without
+ *          memory for the request or the listing, or for a malformed reply
  */
 int afp_enumerateext2(
     struct afp_volume * volume,
@@ -616,7 +648,7 @@ int afp_enumerateext2(
     unsigned short reqcount,
     unsigned long startindex,
     char *pathname,
-    struct afp_file_info **file_p)
+    struct afp_listing *l)
 {
     struct {
         struct dsi_header dsi_header __attribute__((__packed__));
@@ -633,7 +665,6 @@ int afp_enumerateext2(
     unsigned short len;
     char *data;
     int rc;
-    struct afp_file_info * files = NULL;
     struct afp_server * server = volume->server;
     unsigned int payload = enumerate_max_payload(server);
     char *path;
@@ -664,8 +695,7 @@ int afp_enumerateext2(
     rc = afpc_dsi_send(server, data, len,
                        afpc_dsi_transfer_wait(server, payload,
                                               AFP_ENUMERATE_BYTES_PER_SECOND),
-                       afpEnumerateExt2, (void **) &files);
-    *file_p = files;
+                       afpEnumerateExt2, l);
     free(data);
     return rc;
 }

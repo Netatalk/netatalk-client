@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -109,22 +110,6 @@ unsigned char unixpath_to_afppath(
 
     return 0;
 }
-
-void afp_unixpriv_to_stat(struct afp_file_info *fp,
-                          struct stat *stat)
-{
-    memset(stat, 0, sizeof(*stat));
-
-    if (fp->unixprivs.permissions) {
-        stat->st_mode = fp->unixprivs.permissions;
-    } else {
-        stat->st_mode = fp->unixprivs.ua_permissions;
-    }
-
-    stat->st_uid = fp->unixprivs.uid;
-    stat->st_gid = fp->unixprivs.gid;
-}
-
 
 unsigned char copy_from_pascal(char *dest, char *pascal, unsigned int max_len)
 {
