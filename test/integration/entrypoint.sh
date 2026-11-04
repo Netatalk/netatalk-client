@@ -60,7 +60,7 @@ stop_afpsld() {
 adduser --no-create-home --disabled-password --gecos '' "$TEST_USR" > /dev/null 2>&1 || true
 echo "$TEST_USR:$TEST_PWD" | chpasswd
 # Guest AFP sessions need read and traverse access to the volume.
-install -d -m 0755 -o "$TEST_USR" -g "$TEST_USR" /mnt/afpfs
+install -d -m 0755 -o "$TEST_USR" -g "$TEST_USR" /mnt/afpfs /mnt/afpfs_nounix
 rm -f /var/lock/netatalk
 
 cat << EOF > /etc/netatalk/afp.conf
@@ -69,10 +69,15 @@ log file = $AFP_SERVER_LOG
 log level = default:debug
 server name = afpfs_testsrv
 uam list = uams_guest.so uams_dhx2.so
+[afpfs_test_nounix]
+path = /mnt/afpfs_nounix
+volume name = afpfs_test_nounix
+unix priv = no
 [afpfs_test]
 path = /mnt/afpfs
 volume name = afpfs_test
 EOF
+# afpd lists the volumes last defined first: afpfs_test is the picker's 1.
 
 netatalk
 sleep 2

@@ -150,6 +150,10 @@ sub load_history {
     for my $k (keys %hist) {
         $hist{$k} =
           [grep { defined $_->{pr} && defined $_->{value} && $_->{value} =~ /^-?\d+(?:\.\d+)?$/ } @{$hist{$k}}];
+        # 1 ms is the smallest runtime, as in lantest.
+        if ($k =~ /_ms$/) {
+            $_->{value} = 1 for grep { $_->{value} + 0 < 1 } @{$hist{$k}};
+        }
     }
     return \%hist;
 }

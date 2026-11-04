@@ -11,8 +11,8 @@
  * accommodate one raw icon plus the fixed response and log trailer. */
 #define AFPSL_IPC_MAX_RESPONSE (UINT16_MAX + 1024U)
 #define AFPSL_IPC_PROTOCOL_MAGIC UINT32_C(0x41465053)
-#define AFPSL_IPC_PROTOCOL_MAJOR 2U
-#define AFPSL_IPC_PROTOCOL_MINOR 2U
+#define AFPSL_IPC_PROTOCOL_MAJOR 3U
+#define AFPSL_IPC_PROTOCOL_MINOR 0U
 
 /* Unix socket shared by afpsld and libafpsl. */
 #define AFPSL_IPC_SOCKET_PATH "/tmp/afp_sl"
