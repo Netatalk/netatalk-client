@@ -3,6 +3,7 @@ readme_docs_files = [
     'developer.md',
     'features.md',
     'getting_started.md',
+    'installation.md',
     'reporting_bugs.md',
 ]
 
