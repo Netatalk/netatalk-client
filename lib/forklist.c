@@ -13,6 +13,7 @@
  * @brief A volume's list of open forks, and the flushes and checks it serves
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
 #include <string.h>
@@ -24,9 +25,7 @@
 
 struct dirty_fork_record {
     unsigned short forkid;
-    unsigned int did;
     unsigned int resource;
-    char basename[AFPC_MAX_NAME_BYTES];
 };
 
 /*!
@@ -43,14 +42,31 @@ static int names_file(const struct afp_file_info *p, unsigned int did,
     return p->did == did && strcmp(p->basename, basename) == 0;
 }
 
+/*!
+ * @brief Put an open fork on the volume's list, counting it if writable
+ *
+ * @param[in,out] volume  volume of the fork
+ * @param[in,out] fp      the fork's record
+ */
 void add_opened_fork(struct afp_volume * volume, struct afp_file_info * fp)
 {
     pthread_mutex_lock(&volume->open_forks_mutex);
     fp->largelist_next = volume->open_forks;
     volume->open_forks = fp;
+
+    if (fp->writable) {
+        __atomic_add_fetch(&volume->writable_forks, 1, __ATOMIC_RELAXED);
+    }
+
     pthread_mutex_unlock(&volume->open_forks_mutex);
 }
 
+/*!
+ * @brief Take an open fork off the volume's list and its writable count
+ *
+ * @param[in,out] volume  volume of the fork
+ * @param[in]     fp      the fork's record, if the list holds it
+ */
 void remove_opened_fork(struct afp_volume * volume, struct afp_file_info * fp)
 {
     struct afp_file_info * p, *prev = NULL;
@@ -62,6 +78,11 @@ void remove_opened_fork(struct afp_volume * volume, struct afp_file_info * fp)
                 prev->largelist_next = p->largelist_next;
             } else {
                 volume->open_forks = p->largelist_next;
+            }
+
+            if (fp->writable) {
+                __atomic_sub_fetch(&volume->writable_forks, 1,
+                                   __ATOMIC_RELAXED);
             }
 
             goto done;
@@ -78,8 +99,9 @@ done:
  * @brief Flush the file's other written forks of fp's kind with FPFlushFork
  *
  * Runs before a read, as the compatibility measure for Apple servers, Time
- * Capsule included. Flushes the forks outside the list's mutex. One whose
- * flush fails is dirty again.
+ * Capsule included, and walks the list only while a writable fork is open.
+ * Flushes the forks outside the list's mutex. One whose flush fails is
+ * dirty again.
  *
  * @param[in] volume  volume of the file
  * @param[in] fp      the fork about to be read
@@ -92,6 +114,12 @@ void flush_dirty_forks_for_file(struct afp_volume * volume,
     size_t capacity = 0;
 
     if (!volume || !fp) {
+        return;
+    }
+
+    /* A dirty fork is a writable one; with none open, the common case,
+     * the walk has nothing to find. */
+    if (__atomic_load_n(&volume->writable_forks, __ATOMIC_RELAXED) == 0) {
         return;
     }
 
@@ -123,10 +151,7 @@ void flush_dirty_forks_for_file(struct afp_volume * volume,
         }
 
         records[count].forkid = p->forkid;
-        records[count].did = p->did;
         records[count].resource = p->resource;
-        memcpy(records[count].basename, p->basename,
-               sizeof(records[count].basename));
         count++;
         p->dirty = 0;
     }
@@ -145,11 +170,12 @@ void flush_dirty_forks_for_file(struct afp_volume * volume,
                            records[i].forkid, rc);
             pthread_mutex_lock(&volume->open_forks_mutex);
 
+            /* The fork's number finds it, as a rename may have given it
+             * another name since. */
             for (struct afp_file_info *p = volume->open_forks;
                     p; p = p->largelist_next) {
                 if (p->forkid == records[i].forkid &&
-                        p->resource == records[i].resource &&
-                        names_file(p, records[i].did, records[i].basename)) {
+                        p->resource == records[i].resource) {
                     p->dirty = 1;
                     break;
                 }
@@ -188,25 +214,144 @@ int other_fork_open(struct afp_volume * volume, struct afp_file_info * fp)
 }
 
 /*!
+ * @brief Give an open fork's record the directory and names of a resolved path
+ *
+ * @param[out] fp  the record
+ * @param[in]  t   the resolved path
+ */
+void fork_now_named(struct afp_file_info *fp, const struct ml_target *t)
+{
+    fp->did = t->did;
+    snprintf(fp->name, sizeof(fp->name), "%s", t->name);
+    snprintf(fp->basename, sizeof(fp->basename), "%s", t->afp_name);
+}
+
+/*!
+ * @brief Copy an open fork's directory, names and node ID
+ *
+ * A rename or an exchange through this client rewrites them under the
+ * open-fork list's lock while the list holds the fork, so every reader of
+ * a listed fork's names copies them here first.
+ *
+ * @param[in]  volume  volume of the fork
+ * @param[in]  fp      the open fork
+ * @param[out] t       its directory and names
+ * @returns the node ID its record holds, or 0
+ */
+unsigned int fork_names(struct afp_volume *volume,
+                        const struct afp_file_info *fp, struct ml_target *t)
+{
+    unsigned int cnid;
+    pthread_mutex_lock(&volume->open_forks_mutex);
+    t->did = fp->did;
+    snprintf(t->name, sizeof(t->name), "%s", fp->name);
+    snprintf(t->afp_name, sizeof(t->afp_name), "%s", fp->basename);
+    cnid = fp->cnid;
+    pthread_mutex_unlock(&volume->open_forks_mutex);
+    return cnid;
+}
+
+/*!
+ * @brief Carry a renamed file's open forks to its new directory and name
+ *
+ * The read-time flush and the copy offload find a file's forks by its
+ * directory and name. The caller holds the volume's open lock for writing
+ * from before its request, so every fork ll_open() had the server open
+ * before the rename is listed, and none it has opened after.
+ *
+ * @param[in,out] volume  volume of the file
+ * @param[in]     from    the directory and name the forks' records hold
+ * @param[in]     to      the directory and name the file has
+ */
+void rename_opened_forks(struct afp_volume *volume,
+                         const struct ml_target *from,
+                         const struct ml_target *to)
+{
+    struct afp_file_info *p;
+    pthread_mutex_lock(&volume->open_forks_mutex);
+
+    for (p = volume->open_forks; p; p = p->largelist_next) {
+        if (names_file(p, from->did, from->afp_name)) {
+            fork_now_named(p, to);
+        }
+    }
+
+    pthread_mutex_unlock(&volume->open_forks_mutex);
+}
+
+/*!
+ * @brief Carry an exchange of two files into their open forks
+ *
+ * FPExchangeFiles swaps the files' contents, and the names keep their
+ * node IDs, so a fork's record keeps none. An exchange done swaps the
+ * forks' names; one without an answer, which the server may have carried
+ * out, leaves them. The caller holds the volume's open lock for writing
+ * from before its request, as for a rename.
+ *
+ * @param[in,out] volume  volume of the files
+ * @param[in]     a       one file's directory and name
+ * @param[in]     b       the other's
+ * @param[in]     done    1 when the server answered that it swapped them
+ */
+void exchange_opened_forks(struct afp_volume *volume,
+                           const struct ml_target *a,
+                           const struct ml_target *b, int done)
+{
+    struct afp_file_info *p;
+    pthread_mutex_lock(&volume->open_forks_mutex);
+
+    for (p = volume->open_forks; p; p = p->largelist_next) {
+        if (names_file(p, a->did, a->afp_name)) {
+            if (done) {
+                fork_now_named(p, b);
+            }
+
+            p->cnid = 0;
+        } else if (names_file(p, b->did, b->afp_name)) {
+            if (done) {
+                fork_now_named(p, a);
+            }
+
+            p->cnid = 0;
+        }
+    }
+
+    pthread_mutex_unlock(&volume->open_forks_mutex);
+}
+
+/*!
  * @brief Close and free every fork still open on the volume, at unmount
  *
- * A flush_on_close mount flushes each written fork first.
+ * A flush_on_close mount flushes each written fork first. A fork leaves
+ * the list under its lock and is flushed and closed outside it: the
+ * flush tells the cache through the fork's record, whose names it reads
+ * under the lock.
  *
  * @param[in,out] volume  volume to unmount
  */
 void remove_fork_list(struct afp_volume * volume)
 {
-    struct afp_file_info * p, *next;
-    pthread_mutex_lock(&volume->open_forks_mutex);
+    struct afp_file_info *p;
 
-    for (p = volume->open_forks; p; p = next) {
-        next = p->largelist_next;
+    for (;;) {
+        pthread_mutex_lock(&volume->open_forks_mutex);
+        p = volume->open_forks;
+
+        if (p) {
+            volume->open_forks = p->largelist_next;
+        } else {
+            __atomic_store_n(&volume->writable_forks, 0, __ATOMIC_RELAXED);
+        }
+
+        pthread_mutex_unlock(&volume->open_forks_mutex);
+
+        if (p == NULL) {
+            break;
+        }
+
         /* At unmount, the kernel drops the releases it has not sent. */
         ml_close_flush(volume, p);
         afp_closefork(volume, p->forkid);
-        volume->open_forks = p->largelist_next;
         free(p);
     }
-
-    pthread_mutex_unlock(&volume->open_forks_mutex);
 }

@@ -17,6 +17,7 @@
 #include "lib/afp_internal.h"
 #include "lib/afp_protocol.h"
 #include "lib/client.h"
+#include "lib/did.h"
 #include "lib/lowlevel.h"
 #include "lib/midlevel.h"
 #include "tap.h"
@@ -108,11 +109,24 @@ static int suspended_volume_open(struct afp_volume *volume,
     (*server)->using_version = &afp34;
     afp_server_set_suspended(*server, 1);
     memset(volume, 0, sizeof(*volume));
-    pthread_mutex_init(&volume->did_cache_mutex, NULL);
+    dir_cache_init(volume);
     volume->server = *server;
     volume->path_encoding = kFPUTF8Name;
     volume->signature = AFP_VOL_FIXED;
     return 0;
+}
+
+/*!
+ * @brief Take down a volume suspended_volume_open() set up
+ *
+ * @param[in,out] volume  the volume, whose cache goes
+ * @param[in]     server  its server, released
+ */
+static void suspended_volume_close(struct afp_volume *volume,
+                                   struct afp_server *server)
+{
+    dir_cache_destroy(volume);
+    afp_server_release(server);
 }
 
 /*!
@@ -134,7 +148,7 @@ static int utest_unlink_fails_with_the_transport(void)
     }
 
     rc = ml_unlink(&volume, "/file");
-    afp_server_release(server);
+    suspended_volume_close(&volume, server);
     return rc == -EIO ? 0 : 2;
 }
 
@@ -154,7 +168,7 @@ static int utest_mkdir_fails_with_the_transport(void)
     }
 
     rc = ml_mkdir(&volume, "/dir", 0755);
-    afp_server_release(server);
+    suspended_volume_close(&volume, server);
     return rc == -EIO ? 0 : 2;
 }
 
@@ -176,7 +190,7 @@ static int utest_rmdir_fails_with_the_transport(void)
     }
 
     rc = ml_rmdir(&volume, "/dir");
-    afp_server_release(server);
+    suspended_volume_close(&volume, server);
     return rc == -EIO ? 0 : 2;
 }
 
@@ -197,7 +211,7 @@ static int utest_readlink_fails_with_the_transport(void)
     }
 
     rc = ml_readlink(&volume, "/link", target, sizeof(target));
-    afp_server_release(server);
+    suspended_volume_close(&volume, server);
     return rc == -EIO ? 0 : 2;
 }
 
@@ -224,7 +238,7 @@ static int utest_volume_open_fails_unmounted(void)
         ret = 3;
     }
 
-    afp_server_release(server);
+    suspended_volume_close(&volume, server);
     return ret;
 }
 
@@ -249,13 +263,13 @@ static int utest_failed_listing_leaves_an_empty_list(void)
     memset(&files, 0, sizeof(files));
     files.count = 1;
 
-    if (ll_readdir(&volume, "/", &files, 0) != -EIO) {
+    if (ll_readdir(&volume, AFP_ROOT_DID, "", &files) != -EIO) {
         ret = 2;
     } else if (files.count != 0 || files.entries != NULL) {
         ret = 3;
     }
 
-    afp_server_release(server);
+    suspended_volume_close(&volume, server);
     return ret;
 }
 
@@ -285,7 +299,7 @@ static int utest_appledouble_listing_fails_with_the_listing(void)
         ret = 3;
     }
 
-    afp_server_release(server);
+    suspended_volume_close(&volume, server);
     return ret;
 }
 

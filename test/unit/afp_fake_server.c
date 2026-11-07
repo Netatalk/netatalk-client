@@ -18,6 +18,7 @@
 
 #include "afp_fake_server.h"
 #include "lib/afp_protocol.h"
+#include "lib/did.h"
 #include "lib/dsi.h"
 #include "lib/dsi_protocol.h"
 #include "lib/utils.h"
@@ -286,8 +287,14 @@ static int answer(struct afp_fake_server *fake,
                && length >= 12) {
         /* An object the session owns, of mode 0644 or 0755 unless params_mode
          * says, with the time, a file's fork lengths and the privileges. */
-        uint32_t mode = fake->params_dir ? 040755 : 0100644;
+        const int is_dir = fake->params_dir
+                           || (fake->params_answers < 16U
+                               && (fake->params_dirs
+                                   >> fake->params_answers) & 1U);
+        uint32_t mode = is_dir ? 040755 : 0100644;
         uint32_t privs[4];
+        const uint32_t cnid = htonl(fake->params_cnid);
+        const uint16_t cnid_bit = fake->params_cnid ? kFPNodeIDBit : 0;
         const uint32_t data_length = htonl(fake->data_length);
         const uint32_t resource_length = htonl(fake->resource_length);
 
@@ -311,24 +318,31 @@ static int answer(struct afp_fake_server *fake,
 
         privs[2] = htonl(mode);
         privs[3] = htonl(kUserIsOwner);
+        fake->params_answers++;
 
-        if (fake->params_dir) {
+        if (is_dir) {
             memcpy(&value, payload + 10, sizeof(value));
-            bitmap = ntohs(value) & (kFPModDateBit | kFPUnixPrivsBit);
+            bitmap = ntohs(value) & (kFPModDateBit | cnid_bit
+                                     | kFPUnixPrivsBit);
         } else {
-            bitmap &= kFPModDateBit | kFPDataForkLenBit | kFPRsrcForkLenBit
-                      | kFPUnixPrivsBit;
+            bitmap &= kFPModDateBit | cnid_bit | kFPDataForkLenBit
+                      | kFPRsrcForkLenBit | kFPUnixPrivsBit;
         }
 
         value = htons(bitmap);
         memset(data, 0, 6);
-        memcpy(data + (fake->params_dir ? 2 : 0), &value, sizeof(value));
-        data[4] = fake->params_dir ? 0x80 : 0;
+        memcpy(data + (is_dir ? 2 : 0), &value, sizeof(value));
+        data[4] = is_dir ? 0x80 : 0;
         body_len = 6;
 
         if (bitmap & kFPModDateBit) {
             memcpy(data + body_len, &fake->params_date, 4);
             body_len += 4;
+        }
+
+        if (bitmap & kFPNodeIDBit) {
+            memcpy(data + body_len, &cnid, sizeof(cnid));
+            body_len += sizeof(cnid);
         }
 
         if (bitmap & kFPDataForkLenBit) {
@@ -525,7 +539,7 @@ static void release(struct afp_fake_server *fake)
     fake->volume.server = NULL;
     pthread_rwlock_destroy(&fake->volume.open_lock);
     pthread_mutex_destroy(&fake->volume.open_forks_mutex);
-    pthread_mutex_destroy(&fake->volume.did_cache_mutex);
+    dir_cache_destroy(&fake->volume);
 }
 
 /*!
@@ -558,7 +572,7 @@ int afp_fake_server_start(struct afp_fake_server *fake)
     fake->server->fd = fds[0];
     fake->server->connect_state = SERVER_STATE_CONNECTED;
     fake->peer = fds[1];
-    pthread_mutex_init(&fake->volume.did_cache_mutex, NULL);
+    dir_cache_init(&fake->volume);
     pthread_mutex_init(&fake->volume.open_forks_mutex, NULL);
     pthread_rwlock_init(&fake->volume.open_lock, NULL);
     fake->volume.server = fake->server;

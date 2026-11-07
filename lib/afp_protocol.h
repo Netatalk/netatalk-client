@@ -62,6 +62,10 @@ enum {
 #define AFP_FORKTYPE_DATA 0x0
 #define AFP_FORKTYPE_RESOURCE 0x80
 
+/* AFP Reference: FPWrite > Parameters > Flag: the offset counts from the
+ * fork's end */
+#define AFP_WRITE_FROM_END 0x80
+
 /* AFP Reference: FPOpenFork > Parameters > AccessMode */
 #define AFP_OPENFORK_ALLOWREAD 1
 #define AFP_OPENFORK_ALLOWWRITE 2

@@ -142,6 +142,16 @@ sub request_delta {
     return ($after->{$command} // 0) - ($before->{$command} // 0);
 }
 
+# Return the directory cache's counters of the mounted server, by name,
+# from the status text's "    cache: 12 entries, 40 hits, ..." line; an
+# empty hash without the line. request_delta() reads the change of one.
+sub cache_counts {
+    my ($line) = status_text() =~ /^\s+cache: (.*)$/m;
+    return {} unless defined $line;
+    my %counts = reverse($line =~ /(\d+) ([a-z]+(?: [a-z]+)?)/g);
+    return \%counts;
+}
+
 # Return the flushes between two counts, by FPFlushFork or FPSyncFork.
 sub flush_delta {
     my ($before, $after) = @_;
@@ -489,9 +499,9 @@ SKIP: {
 }
 
 # -----------------------------------------------------------------------
-# fuse_listing: 800 entries list in two FPEnumerateExt2 requests, a page and
-# the end page. The server's 64 KiB reply buffer holds about a thousand of
-# them per page.
+# fuse_listing: 800 entries list in three FPEnumerateExt2 requests, two
+# pages and the end page. The server's 64 KiB reply buffer holds fewer than
+# 800 of them per page, each with its Finder info and both fork lengths.
 # -----------------------------------------------------------------------
 {
     my $dir = "$mnt_dir/listing";
@@ -507,8 +517,8 @@ SKIP: {
     my @names  = @{listing_of($dir) // BAIL_OUT("Cannot open $dir: $!")};
     my $after  = request_counts();
     is(scalar @names, 800, 'fuse_listing: 800 entries listed');
-    is(request_delta($before, $after, 'afpEnumerateExt2'), 2,
-       'fuse_listing: 800 entries are one page and the end page');
+    is(request_delta($before, $after, 'afpEnumerateExt2'), 3,
+       'fuse_listing: 800 entries are two pages and the end page');
     unlink map {"$dir/$_"} @names;
     rmdir $dir;
     ok(!-e $dir, 'fuse_listing: listing directory removed');
@@ -1004,8 +1014,9 @@ SKIP: {
     is($copied, $size, 'fuse_copy_renamed: copy_file_range copies the whole source');
     is(offload_delta($before, $after), 0,
        'fuse_copy_renamed: the renamed destination is not copied on the server');
-    # The listing cached the renamed destination's size while it was empty;
-    # the sleep outlasts the kernel's attribute cache, so cmp reads the copy.
+    # The listing cached the renamed destination's size while it was empty,
+    # and the copy's writes forgot it through the fork's node ID; the sleep
+    # outlasts the kernel's attribute cache, so cmp reads the copy.
     sleep 2;
     is(system('cmp', '-s', $src, $kept), 0, 'fuse_copy_renamed: the renamed destination holds the copy');
     ok(-e $dst && -z $dst, 'fuse_copy_renamed: the file at the old name stays empty');
@@ -1252,8 +1263,9 @@ unmount_or_bail('fuse_flush_on_close: unmount succeeds');
 # -----------------------------------------------------------------------
 # fuse_timeouts: mount_afpfs -o passes attr_timeout, entry_timeout and
 # negative_timeout to libfuse, up to 255 bytes together. With the first two
-# at zero, a stat(2) looks the name up and reads the attributes; a missing
-# name's lookup lasts the negative timeout.
+# at zero, a stat(2) looks the name up and reads the attributes, which the
+# client's cache answers once it holds them; a missing name's lookup lasts
+# the negative timeout.
 # -----------------------------------------------------------------------
 # Leading zeros pad the timeouts to 255 bytes and keep negative_timeout at 30.
 my $timeouts       = 'attr_timeout=0,entry_timeout=0,negative_timeout=';
@@ -1273,19 +1285,25 @@ SKIP: {
 }
 
 SKIP: {
-    skip 'these counts follow the Linux kernel caches', 2 unless $^O eq 'linux';
+    skip 'these counts follow the Linux kernel caches', 4 unless $^O eq 'linux';
     my $path = "$mnt_dir/timeouts.txt";
     write_bytes($path, 4096);
     my $before = request_counts();
+    my $cached = cache_counts();
     stat $path for 1 .. 5;
     my $after = request_counts();
-    cmp_ok(request_delta($before, $after, 'afpGetFileDirParms'), '>=', 10,
-           'fuse_timeouts: five stat(2) of a file ask the server at least ten times');
+    cmp_ok(request_delta($before, $after, 'afpGetFileDirParms'), '<=', 1,
+           'fuse_timeouts: five stat(2) of a file ask the server once at most');
+    cmp_ok(request_delta($cached, cache_counts(), 'stat hits'), '>=', 9,
+           'fuse_timeouts: the cache answered the kernel nine more times, a lookup and a getattr a stat(2)');
     $before = $after;
+    $cached = cache_counts();
     stat "$mnt_dir/timeouts.absent" for 1 .. 5;
     $after = request_counts();
     is(request_delta($before, $after, 'afpGetFileDirParms'), 1,
        'fuse_timeouts: five stat(2) of a missing name ask the server once');
+    is(request_delta($cached, cache_counts(), 'negative hits'), 0,
+       'fuse_timeouts: the kernel answers the four after the first, as the negative timeout holds');
     unlink $path;
 }
 
@@ -1294,6 +1312,53 @@ refused_mount(
               'fuse_timeouts: mount_afpfs -o refuses 256 bytes of timeouts',
               'mount_afpfs', '-o', "${timeouts}0${timeout_zeros}30", $AFP_AUTH_URL
 );
+
+# -----------------------------------------------------------------------
+# fuse_append_shared: an append lands at the end the server has for the
+# file, past another session's append since the client's record of the
+# file; the zero timeouts send the open's lookup to the client, whose
+# record holds the length before that append.
+# -----------------------------------------------------------------------
+mount_or_bail(
+              'fuse_append_shared: a mount with zero timeouts succeeds',
+              'mount_afpfs', '-o', 'entry_timeout=0,attr_timeout=0', $AFP_AUTH_URL, $mnt_dir
+);
+
+{
+    my $other = "$mnt_dir.other";
+    my $path  = "$mnt_dir/append.log";
+    mkdir $other unless -d $other;
+    mount_or_bail('fuse_append_shared: a second mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $other);
+    write_bytes($path, 1000);
+    stat($path)                                 or BAIL_OUT("Cannot stat $path: $!");
+    open(my $theirs, '>>', "$other/append.log") or BAIL_OUT("Cannot open $other/append.log: $!");
+    print {$theirs} 'o' x 200;
+    close $theirs;
+  SKIP: {
+        skip 'only Linux sends each write its file\'s flags', 3 unless $^O eq 'linux';
+        open(my $ours, '>>', $path) or BAIL_OUT("Cannot open $path: $!");
+        print {$ours} 'm' x 10;
+        close $ours;
+        is(-s $path, 1210, "fuse_append_shared: an append lands after another session's");
+        open(my $fh, '>>', $path)                   or BAIL_OUT("Cannot open $path: $!");
+        my $flags = fcntl($fh, Fcntl::F_GETFL(), 0) or BAIL_OUT("Cannot read the flags of $path: $!");
+        fcntl($fh, Fcntl::F_SETFL(), $flags & ~Fcntl::O_APPEND())
+          or BAIL_OUT("Cannot clear O_APPEND on $path: $!");
+        sysseek($fh, 0, Fcntl::SEEK_SET()) or BAIL_OUT("Cannot seek $path: $!");
+        syswrite($fh, 'X', 1) == 1         or BAIL_OUT("Cannot write $path: $!");
+        close $fh;
+        is(-s $path, 1210, 'fuse_append_shared: a write after fcntl(2) clears O_APPEND adds nothing at the end');
+        open(my $in, '<', $path) or BAIL_OUT("Cannot open $path: $!");
+        read($in, my $first, 1);
+        close $in;
+        is($first, 'X', 'fuse_append_shared: and lands at its offset');
+    }
+    is(system('afpc', 'fs', 'unmount', $other), 0, 'fuse_append_shared: the second mount unmounts');
+    rmdir $other;
+    unlink $path;
+}
+
+unmount_or_bail('fuse_append_shared: unmount succeeds');
 
 # -----------------------------------------------------------------------
 # fuse_flush_afp30: an AFP 3.0 session has no FPSyncFork and flushes with
@@ -1361,8 +1426,9 @@ mount_or_bail('fuse_truncate_path: authenticated mount succeeds', 'mount_afpfs',
     my $denied    = $!{EACCES};
     ok(!$truncated && $denied,
        'fuse_truncate_path: truncate(2) of a file the server will not open for writing fails with EACCES');
-    # The sleep outlasts the kernel's attribute cache, so stat(2) asks the
-    # server.
+    # The sleep outlasts the kernel's attribute cache, so stat(2) reaches
+    # the client, whose record the getattr after the chmod fetched; the
+    # refused truncate changed nothing.
     sleep 2;
     is(-s $path, 4096, 'fuse_truncate_path: that file keeps its length');
     chmod 0644, $path;
@@ -1684,14 +1750,18 @@ mount_or_bail(
     my $before = request_counts();
     my @names  = @{listing_of($dir) // BAIL_OUT("Cannot open $dir: $!")};
     my $listed = request_counts();
+    my $cached = cache_counts();
     my $sizes  = grep { defined((stat "$dir/$_")[7]) } @names;
     my $after  = request_counts();
+    my $asked  = cache_counts();
     is(scalar @names, 20, 'fuse_readdirplus: 20 entries listed');
     is($sizes,        20, 'fuse_readdirplus: every listed entry stats');
   SKIP: {
-        skip 'these counts follow the Linux kernel caches', 1 unless $^O eq 'linux';
+        skip 'these counts follow the Linux kernel caches', 2 unless $^O eq 'linux';
         is(request_delta($listed, $after, 'afpGetFileDirParms'), 0,
            'fuse_readdirplus: a stat(2) of every listed entry sends no FPGetFileDirParms');
+        is(request_delta($cached, $asked, 'hits') + request_delta($cached, $asked, 'misses'), 0,
+           'fuse_readdirplus: nor asks the client, as the listing filled the kernel');
     }
     is(request_delta($before, $listed, 'afpEnumerateExt2'), 2,
        'fuse_readdirplus: the listing is one page and the end page');
@@ -1788,8 +1858,9 @@ unmount_or_bail('fuse_readdirplus: unmount succeeds');
               'fuse_listing_moved: the replaced folder lists its file through the stale IDs');
     unmount_or_bail('fuse_listing_moved: the mount with long timeouts unmounts');
 
-    # The kernel keeps no entry or attribute, so its lookup of the parent
-    # meets the new folder first.
+    # The kernel keeps no entry or attribute, so each of its lookups asks
+    # the client, whose record of the parent, seconds old, still holds the
+    # old folder; the listing beneath it is refused and resolves again.
     mount_or_bail(
                   'fuse_listing_moved: a mount with zero timeouts succeeds',
                   'mount_afpfs', '-o', 'entry_timeout=0,attr_timeout=0', $AFP_AUTH_URL, $mnt_dir
@@ -1823,8 +1894,10 @@ unmount_or_bail('fuse_readdirplus: unmount succeeds');
     close $fh if $fh;
     unmount_or_bail('fuse_listing_moved: the third mount unmounts');
 
-    # Zero timeouts let the kernel's lookup meet the file; the unlink asks the
-    # server what stands there, where the folder's cached ID would say EISDIR.
+    # A file stands where a folder was: the create beneath the folder
+    # forgot the folder's parameters, so the kernel's lookup, which the
+    # zero timeouts send, fetches the file's record, and the unlink takes
+    # the type from it.
     mount_or_bail(
                   'fuse_listing_moved: a fourth mount with zero timeouts succeeds',
                   'mount_afpfs', '-o', 'entry_timeout=0,attr_timeout=0', $AFP_AUTH_URL, $mnt_dir
@@ -1861,19 +1934,22 @@ unmount_or_bail('fuse_readdirplus: unmount succeeds');
        'fuse_listing_moved: the file of a folder replaced beneath the listed root opens');
     close $fh6 if $fh6;
 
-    # Listing the folder beneath caches the seventh folder's ID alone; once it
-    # is replaced, a walk from that ID fails and starts over from the root.
+    # The listing beneath caches the seventh folder's ID; once another
+    # session replaces it, the server refuses the listing under that ID,
+    # and the client resolves the path again from the server.
     make_path("$other/moved7/inner/deep");
     is_deeply(listing_of("$mnt_dir/moved7/inner"), ['deep'], 'fuse_listing_moved: the seventh folder lists its folder');
     replace_folder("$other/moved7", 'inner/deep/x');
     is_deeply(listing_of("$mnt_dir/moved7/inner/deep"), ['x'],
               'fuse_listing_moved: a folder beneath a replaced cached folder lists its file');
 
-    # A file another session put where a cached folder stood: the removal
-    # asks the server what stands there and leaves the file.
+    # A file another session put where a cached folder stood, whose record
+    # a listing left fresh: the removal asks the server what stands there
+    # and leaves the file.
     mkdir "$mnt_dir/moved8"   or BAIL_OUT("Cannot create $mnt_dir/moved8: $!");
     mkdir "$mnt_dir/moved8/x" or BAIL_OUT("Cannot create $mnt_dir/moved8/x: $!");
     write_bytes("$mnt_dir/moved8/x/y", 0);
+    is_deeply(listing_of("$mnt_dir/moved8"), ['x'], 'fuse_listing_moved: the eighth folder lists its folder');
     remove_tree("$other/moved8/x");
     write_bytes("$other/moved8/x", 0);
     ok(!rmdir("$mnt_dir/moved8/x") && $!{ENOTDIR},
@@ -1927,8 +2003,9 @@ unmount_or_bail('fuse_readdirplus: unmount succeeds');
 }
 
 # -----------------------------------------------------------------------
-# fuse_rename_cache: a rename forgets the IDs cached under both its paths, so
-# a create beneath either reaches the folder that stands there.
+# fuse_rename_cache: a rename moves the ID cached under its old path to its
+# new one and forgets the one cached there, so a create beneath either reaches
+# the folder that stands there.
 # -----------------------------------------------------------------------
 mount_or_bail(
               'fuse_rename_cache: a mount with long timeouts succeeds',
@@ -1974,6 +2051,267 @@ mount_or_bail(
 unmount_or_bail('fuse_rename_cache: unmount succeeds');
 
 # -----------------------------------------------------------------------
+# fuse_deep_path: the directory IDs of a path stay known for two minutes,
+# so a stat(2) of a deep file 11 s after the last asks the server about the
+# file alone. The long entry timeout keeps the kernel from looking the
+# directories up afresh, which would ask about each of them.
+# -----------------------------------------------------------------------
+mount_or_bail(
+              'fuse_deep_path: a mount with a 30 s entry timeout succeeds',
+              'mount_afpfs', '-o', 'entry_timeout=30', $AFP_AUTH_URL, $mnt_dir
+);
+
+{
+    my $dir = "$mnt_dir/deep/a/b/c";
+    make_path($dir);
+    write_bytes("$dir/x", 16);
+    stat "$dir/x";
+    sleep 11;
+    my $before = request_counts();
+    my $cached = cache_counts();
+    stat "$dir/x";
+    my $after = request_counts();
+    is(request_delta($before, $after, 'afpGetFileDirParms'), 1,
+       'fuse_deep_path: a stat(2) 11 s after the last asks about the file alone');
+    cmp_ok(request_delta($cached, cache_counts(), 'hits'), '>=', 4,
+           'fuse_deep_path: the four directories of the path came from the cache');
+    remove_tree("$mnt_dir/deep");
+}
+
+unmount_or_bail('fuse_deep_path: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_stat_cache: the attributes a listing carried answer a stat(2) of
+# every entry after the kernel forgot them: a file's attributes hold in the
+# client for 4 s at least, the folder's from its own stat after the listing.
+# -----------------------------------------------------------------------
+mount_or_bail('fuse_stat_cache: authenticated mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+
+{
+    my $dir = "$mnt_dir/statcache";
+    mkdir $dir or BAIL_OUT("Cannot create $dir: $!");
+
+    write_bytes(sprintf('%s/f%02d', $dir, $_), 0) for 0 .. 49;
+    my @names = @{listing_of($dir) // BAIL_OUT("Cannot open $dir: $!")};
+    stat $dir;
+    select(undef, undef, undef, 1.1);
+    my $before = request_counts();
+    my $sizes  = grep { defined((stat "$dir/$_")[7]) } @names;
+    my $after  = request_counts();
+    is($sizes, 50, 'fuse_stat_cache: every listed entry stats');
+    is(request_delta($before, $after, 'afpGetFileDirParms'), 0,
+       'fuse_stat_cache: a stat(2) of each entry after the kernel forgot it asks the server nothing');
+    unlink map {"$dir/$_"} @names;
+    rmdir $dir;
+}
+
+unmount_or_bail('fuse_stat_cache: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_rename_dir: a renamed directory's cached ID follows it. A directory
+# made at the old path afterwards lists its own contents, not the renamed
+# directory's. fuse_rename_open: a rename carries a file's open forks with
+# it, so a copy into a destination renamed after its open still copies on
+# the server.
+# -----------------------------------------------------------------------
+mount_or_bail('fuse_rename_dir: authenticated mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+
+{
+    my $old = "$mnt_dir/renamed_dir";
+    my $new = "$mnt_dir/renamed_dir.moved";
+    make_path("$old/sub");
+    write_bytes("$old/sub/kept", 16);
+    rename($old, $new) or BAIL_OUT("Cannot rename $old: $!");
+    make_path("$old/sub");
+    # A failed listing reads as no names, not even "." and "..".
+    opendir(my $dh, "$old/sub") or BAIL_OUT("Cannot open $old/sub: $!");
+    is_deeply([sort readdir $dh], ['.', '..'], 'fuse_rename_dir: the directory made at the old path lists empty');
+    closedir $dh;
+    ok(-e "$new/sub/kept", 'fuse_rename_dir: the renamed directory keeps its file');
+    remove_tree($old, $new);
+}
+
+SKIP: {
+    skip $SYSCALL_SKIP, 2 unless $copy_file_range_nr;
+    my $size = 1 << 20;
+    my $src  = "$mnt_dir/renamed_open.src";
+    my $dst  = "$mnt_dir/renamed_open.dst";
+    write_bytes($src, $size);
+    sysopen(my $in,  $src, O_RDONLY)                    or BAIL_OUT("Cannot open $src: $!");
+    sysopen(my $out, $dst, O_WRONLY | O_CREAT | O_EXCL) or BAIL_OUT("Cannot create $dst: $!");
+    rename($dst, "$dst.moved") or BAIL_OUT("Cannot rename $dst: $!");
+    my ($copied, $before, $after) = counted_copy($in, $out, $size);
+    close $out;
+    close $in;
+    is($copied, $size, 'fuse_rename_open: copy_file_range copies the whole source');
+    cmp_ok(offload_delta($before, $after), '>', 0,
+           'fuse_rename_open: the destination renamed after its open is copied on the server');
+    unlink $src, "$dst.moved";
+}
+
+unmount_or_bail('fuse_rename_dir: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_rename_exchange: a rename over a file exchanges the two, and the
+# open source's fork takes the destination's name, so a write through it
+# forgets the record the cache holds there. The zero timeouts send every
+# stat(2) to the client.
+# -----------------------------------------------------------------------
+mount_or_bail(
+              'fuse_rename_exchange: a mount with zero timeouts succeeds',
+              'mount_afpfs', '-o', 'entry_timeout=0,attr_timeout=0', $AFP_AUTH_URL, $mnt_dir
+);
+
+{
+    my $src = "$mnt_dir/exchange.src";
+    my $dst = "$mnt_dir/exchange.dst";
+    write_bytes($src, 16);
+    write_bytes($dst, 16);
+    sysopen(my $fh, $src, O_WRONLY) or BAIL_OUT("Cannot open $src: $!");
+    rename($src, $dst)              or BAIL_OUT("Cannot rename $src: $!");
+    my $before = (stat $dst)[7];
+    sysseek($fh, 16, 0)             or BAIL_OUT("Cannot seek in $src: $!");
+    syswrite($fh, 'x' x 100) == 100 or BAIL_OUT("Cannot write through $src: $!");
+    my $after = (stat $dst)[7];
+    close $fh;
+    is($before . '/' . $after, '16/116',
+       'fuse_rename_exchange: a write through the renamed source shows at its new name at once');
+    unlink $dst;
+}
+
+unmount_or_bail('fuse_rename_exchange: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_unlink_probe: the lookup after a create carried each file's record,
+# so no unlink(2) asks the server about the type; an rmdir(2) does, as
+# FPDelete would remove a file put where a cached folder stood. The long
+# timeouts keep the kernel's own lookups and stats of the names out of the
+# count.
+# -----------------------------------------------------------------------
+mount_or_bail(
+              'fuse_unlink_probe: a mount with 30 s entry and attribute timeouts succeeds',
+              'mount_afpfs', '-o', 'entry_timeout=30,attr_timeout=30', $AFP_AUTH_URL, $mnt_dir
+);
+
+{
+    my $dir = "$mnt_dir/probe";
+    mkdir $dir or BAIL_OUT("Cannot create $dir: $!");
+    my @files = map { sprintf('%s/f%02d', $dir, $_) } 0 .. 19;
+
+    write_bytes($_, 0) for @files;
+    mkdir "$dir/sub" or BAIL_OUT("Cannot create $dir/sub: $!");
+    my $before = settled_counts();
+    unlink @files;
+    my $after = request_counts();
+    is(request_delta($before, $after, 'afpDelete'), 20, 'fuse_unlink_probe: twenty files are deleted');
+    is(request_delta($before, $after, 'afpGetFileDirParms'), 0,
+       'fuse_unlink_probe: no unlink(2) asks the server about the type');
+    $before = request_counts();
+    rmdir "$dir/sub" or BAIL_OUT("Cannot remove $dir/sub: $!");
+    $after = request_counts();
+    is(request_delta($before, $after, 'afpGetFileDirParms'), 1,
+       'fuse_unlink_probe: an rmdir(2) asks the server what stands at the name');
+    rmdir $dir;
+}
+
+unmount_or_bail('fuse_unlink_probe: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_rename_probe: a rename over a file a listing carried knows whether
+# its destination exists, and what it is, from the listing. The long entry
+# timeout keeps the kernel's lookup of the source out of the count; its
+# lookup of the destination, which Linux makes at every rename, takes the
+# record the probe reads.
+# -----------------------------------------------------------------------
+mount_or_bail(
+              'fuse_rename_probe: a mount with a 30 s entry timeout succeeds',
+              'mount_afpfs', '-o', 'entry_timeout=30', $AFP_AUTH_URL, $mnt_dir
+);
+
+{
+    my $dir = "$mnt_dir/renames";
+    mkdir $dir or BAIL_OUT("Cannot create $dir: $!");
+    write_bytes("$dir/a", 16);
+    write_bytes("$dir/b", 16);
+    listing_of($dir) // BAIL_OUT("Cannot open $dir: $!");
+    my $before = settled_counts();
+    rename("$dir/a", "$dir/b") or BAIL_OUT("Cannot rename $dir/a: $!");
+    my $after = request_counts();
+    is(request_delta($before, $after, 'afpGetFileDirParms'), 0,
+       'fuse_rename_probe: a rename over a listed file asks the server nothing about the destination');
+    ok(!-e "$dir/a" && -e "$dir/b", 'fuse_rename_probe: the file moved');
+    unlink "$dir/b";
+    rmdir $dir;
+}
+
+unmount_or_bail('fuse_rename_probe: unmount succeeds');
+
+# -----------------------------------------------------------------------
+# fuse_metadata_cache: the Finder info's length and a resource fork's
+# absence, which a listing carried, answer getxattr(2)'s first question, as
+# cp -a asks the size and then the value; the Finder info's bytes come from
+# the server. An attribute's value read once answers the second question,
+# and a set or a removal of it is read back at once. The long entry timeout
+# keeps the kernel's own lookups of the folder out of the count.
+# -----------------------------------------------------------------------
+mount_or_bail(
+              'fuse_metadata_cache: a mount with a 30 s entry timeout succeeds',
+              'mount_afpfs', '-o', 'entry_timeout=30', $AFP_AUTH_URL, $mnt_dir
+);
+
+SKIP: {
+    skip $SYSCALL_SKIP, 8 unless $getxattr_nr && $setxattr_nr;
+    my $dir = "$mnt_dir/metadata";
+    mkdir $dir or BAIL_OUT("Cannot create $dir: $!");
+    my @files = map { sprintf('%s/f%02d', $dir, $_) } 0 .. 2;
+    write_bytes($_, 16) for @files;
+    my $finder = 'user.com.apple.FinderInfo';
+    my $rsrc   = 'user.com.apple.ResourceFork';
+    my $attr   = 'user.slot';
+    my $info   = 'TEXTttxt' . ("\0" x 24);
+    my $value  = 'value';
+    syscall($setxattr_nr, $files[0], $finder, $info, length $info, 0) == 0
+      or BAIL_OUT("Cannot set the Finder info of $files[0]: $!");
+    syscall($setxattr_nr, $files[2], $attr, $value, length $value, 0) == 0
+      or BAIL_OUT("Cannot set $attr of $files[2]: $!");
+    listing_of($dir) // BAIL_OUT("Cannot open $dir: $!");
+    my $before = request_counts();
+    my $buf    = "\0" x 32;
+    my $length = syscall($getxattr_nr, $files[0], $finder, 0,    0);
+    my $got    = syscall($getxattr_nr, $files[0], $finder, $buf, 32);
+    my $absent = errno_of(syscall($getxattr_nr, $files[1], $rsrc, 0, 0));
+    my $after  = request_counts();
+    is($length, 32,               'fuse_metadata_cache: the Finder info has 32 bytes');
+    is($got,    32,               'fuse_metadata_cache: the Finder info reads back');
+    is($absent, Errno::ENODATA(), 'fuse_metadata_cache: a file without a resource fork has no ResourceFork attribute');
+    is(request_delta($before, $after, 'afpGetFileDirParms'), 1,
+       'fuse_metadata_cache: the listing answered the two lengths, the server the bytes');
+    $before = request_counts();
+    $buf    = "\0" x 64;
+    $length = syscall($getxattr_nr, $files[2], $attr, 0,    0);
+    $got    = syscall($getxattr_nr, $files[2], $attr, $buf, 64);
+    $after  = request_counts();
+    is($length . '/' . $got, '5/5', 'fuse_metadata_cache: the attribute reads back');
+    is(request_delta($before, $after, 'afpGetExtAttr'), 1,
+       "fuse_metadata_cache: the size and the value of one attribute are one FPGetExtAttr");
+    $value = 'other';
+    # A question of the length keeps the value the set must forget.
+    syscall($getxattr_nr, $files[2], $attr, 0, 0);
+    syscall($setxattr_nr, $files[2], $attr, $value, length $value, 0) == 0
+      or BAIL_OUT("Cannot set $attr of $files[2]: $!");
+    $got = syscall($getxattr_nr, $files[2], $attr, $buf, 64);
+    is(substr($buf, 0, $got), 'other', 'fuse_metadata_cache: a value set reads back at once');
+    syscall($getxattr_nr, $files[2], $attr, 0, 0);
+    syscall($removexattr_nr, $files[2], $attr) == 0 or BAIL_OUT("Cannot remove $attr of $files[2]: $!");
+    is(errno_of(syscall($getxattr_nr, $files[2], $attr, $buf, 64)), Errno::ENODATA(),
+       'fuse_metadata_cache: a value removed is gone at once');
+    unlink @files;
+    rmdir $dir;
+}
+
+unmount_or_bail('fuse_metadata_cache: unmount succeeds');
+
+# -----------------------------------------------------------------------
 # fuse_afp2_dates: on an AFP 2.2 session a folder shows the dates the
 # server reports, as a file does.
 # -----------------------------------------------------------------------
@@ -1985,6 +2323,9 @@ mount_or_bail(
 {
     my $dir = "$mnt_dir/afp2_dates";
     mkdir $dir or BAIL_OUT("Cannot create $dir: $!");
+    # The mkdir made the kernel forget the root's attributes, so the stat
+    # asks the client, which reads the root as AFP 2 addresses it.
+    ok(-d $mnt_dir, 'fuse_afp2_dates: the volume root reads as a directory');
     utime 1577934245, 1577934245, $dir or BAIL_OUT("Cannot date $dir: $!");
     is((stat $dir)[9], 1577934245, 'fuse_afp2_dates: a folder shows the date it was given');
     rmdir $dir;

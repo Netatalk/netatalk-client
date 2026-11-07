@@ -23,6 +23,10 @@ struct afp_fake_server {
     uint8_t name_taken;     /*!< whether a soft create finds the name taken */
     uint8_t file_params;    /*!< whether FPGetFileDirParms answers an object */
     uint8_t params_dir;     /*!< whether it is a directory, not a file */
+    /*! the answers that are directories too, bit 0 for the first */
+    uint16_t params_dirs;
+    unsigned int params_answers; /*!< FPGetFileDirParms answered so far */
+    uint32_t params_cnid;   /*!< its node ID, or 0 for none in the answer */
     uint32_t params_mode;   /*!< its mode, or 0 for 0644 and 0755 */
     uint32_t params_date;   /*!< its modification date, in network order */
     uint32_t data_length;   /*!< that file's data fork length */

@@ -580,7 +580,7 @@ int afp_createfile(struct afp_volume * volume, unsigned char flag,
 }
 
 int afp_write(struct afp_volume * volume, unsigned short forkid,
-              uint32_t offset, uint32_t reqcount,
+              unsigned char flag, uint32_t offset, uint32_t reqcount,
               char *data, uint32_t *written)
 {
     struct {
@@ -611,7 +611,7 @@ int afp_write(struct afp_volume * volume, unsigned short forkid,
             *request_packet) - sizeof(struct dsi_header));
     /* For writing data, set the offset correctly */
     request_packet->command = afpWrite;
-    request_packet->flag = 0; /* we'll always do this from the start */
+    request_packet->flag = flag;
     request_packet->forkid = htons(forkid);
     request_packet->offset = htonl(offset);
     request_packet->reqcount = htonl(reqcount);
@@ -648,7 +648,7 @@ int afp_write_reply(struct afp_server *server _U_,
 }
 
 int afp_writeext(struct afp_volume * volume, unsigned short forkid,
-                 uint64_t offset, uint64_t reqcount,
+                 unsigned char flag, uint64_t offset, uint64_t reqcount,
                  char *data, uint64_t *written)
 {
     struct {
@@ -679,7 +679,7 @@ int afp_writeext(struct afp_volume * volume, unsigned short forkid,
             *request_packet) - sizeof(struct dsi_header));
     /* For writing data, set the offset correctly */
     request_packet->command = afpWriteExt;
-    request_packet->flag = 0; /* we'll always do this from the start */
+    request_packet->flag = flag;
     request_packet->forkid = htons(forkid);
     request_packet->offset = hton64(offset);
     request_packet->reqcount = hton64(reqcount);

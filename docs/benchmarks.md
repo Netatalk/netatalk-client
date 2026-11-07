@@ -102,7 +102,8 @@ Locks and directory listings go where the filesystem sends them. The kernel
 CIFS client sends byte-range locks to the server; a FUSE filesystem without a
 lock operation keeps them in the kernel. Repeated `stat` calls within the
 attribute cache timeout of a mount, one second for FUSE and CIFS by default,
-never reach the server.
+never reach the server; past it, the FUSE client answers from its own cache
+for a tenth of the file's age, 4 to 60 seconds.
 
 ## Mounts
 

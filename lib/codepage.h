@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 
+int utf8_is_ascii(const char *src, size_t src_len);
 int convert_utf8dec_to_utf8pre(const char *src, int src_len,
                                char *dest, int dest_len);
 int convert_utf8pre_to_utf8dec(const char *src, int src_len,

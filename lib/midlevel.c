@@ -166,26 +166,6 @@ static int get_parameters(struct afp_volume * vol, unsigned int dirid,
 }
 
 /*!
- * @brief Whether a name in a directory names a directory
- *
- * The server answers every probe: a cached ID would answer for a folder
- * another session replaced with a file.
- *
- * @param[in] vol       volume of the directory
- * @param[in] dirid     the directory's ID
- * @param[in] basename  the name, in the volume's form
- * @returns 1 for a directory, 0 for another object, or a negative errno
- *          when the read fails, as ll_answer_errno() gives it
- */
-static int is_dir(struct afp_volume * vol, unsigned int dirid,
-                  char *basename)
-{
-    struct afp_dirent e;
-    int ret = get_parameters(vol, dirid, basename, 0, &e);
-    return ret ? ret : e.isdir != 0;
-}
-
-/*!
  * @brief Set parameters of a file or a directory
  *
  * Owner and group are directory parameters, which the AFP Reference leaves to
@@ -321,6 +301,190 @@ static int set_owner(struct afp_volume * vol, unsigned int dirid,
 }
 
 /*!
+ * @brief Resolve a path to its parent's directory ID and its last component
+ *
+ * The parent's components resolve through the directory cache, one
+ * FPGetFileDirParms for each the cache cannot answer for. The last
+ * component comes in the spelling the cache keeps and in the volume's
+ * wire form.
+ *
+ * @param[in]  volume  volume of the path
+ * @param[in]  path    UTF-8 path
+ * @param[out] t       receives the parent's ID and the component
+ * @returns 0, or a negative errno: -ENOENT or -ENOTDIR on the parent's
+ *          path, -ENAMETOOLONG for a name the volume refuses, -EINVAL for
+ *          one its encoding does not hold, -ENOMEM, or a fetch's error, as
+ *          dir_cache_resolve() gives them
+ */
+int ml_resolve(struct afp_volume *volume, const char *path,
+               struct ml_target *t)
+{
+    int ret = dir_cache_resolve(volume, path, &t->did, t->name);
+    return ret ? ret : ll_wire_name(volume, t->name, t->afp_name);
+}
+
+/*!
+ * @brief Resolve a path into an open fork's directory and names
+ *
+ * @param[in]  volume  volume of the path
+ * @param[in]  path    UTF-8 path of the file
+ * @param[out] fp      receives the directory, the name and the wire name
+ * @returns ml_resolve()'s result
+ */
+int ml_resolve_fork(struct afp_volume *volume, const char *path,
+                    struct afp_file_info *fp)
+{
+    struct ml_target t;
+    int ret = ml_resolve(volume, path, &t);
+
+    if (ret) {
+        return ret;
+    }
+
+    fork_now_named(fp, &t);
+    return 0;
+}
+
+/*!
+ * @brief Read a resolved object's record
+ *
+ * @param[in]  volume  volume of the object
+ * @param[in]  t       the resolved path
+ * @param[in]  how     ML_ENTRY_CACHED, ML_ENTRY_FRESH or ML_ENTRY_FORK
+ * @param[out] e       receives the record
+ * @returns 0, or a negative errno: -ENOENT for a name known to hold nothing
+ */
+static int read_entry(struct afp_volume *volume, const struct ml_target *t,
+                      int how, struct afp_dirent *e)
+{
+    if (how != ML_ENTRY_FRESH) {
+        switch (dir_cache_lookup(volume, t->did, t->name, e)
+                & (DIR_CACHE_STAT | DIR_CACHE_NEGATIVE)) {
+        case DIR_CACHE_STAT:
+
+            /* A fork the record holds is measured on the server, so a
+             * read the answer sizes takes the fork whole. */
+            if (how != ML_ENTRY_FORK || e->resourcesize == 0) {
+                return 0;
+            }
+
+            break;
+
+        case DIR_CACHE_NEGATIVE:
+            return -ENOENT;
+        }
+    }
+
+    return dir_cache_fetch(volume, t->did, t->name, e);
+}
+
+/*!
+ * @brief Read an object's record
+ *
+ * @param[in]  volume  volume of the object
+ * @param[in]  path    UTF-8 path of the object
+ * @param[in]  how     ML_ENTRY_CACHED for the cache's record while its
+ *                     parameters hold, ML_ENTRY_FRESH for the server's,
+ *                     ML_ENTRY_FORK for the cache's unless it holds a
+ *                     resource fork
+ * @param[out] t       receives the resolved path
+ * @param[out] e       receives the record
+ * @returns 0, or a negative errno
+ */
+int ml_entry(struct afp_volume *volume, const char *path, int how,
+             struct ml_target *t, struct afp_dirent *e)
+{
+    int ret = ml_resolve(volume, path, t);
+
+    if (ret) {
+        return ret;
+    }
+
+    return read_entry(volume, t, how, e);
+}
+
+/*!
+ * @brief List the directory at a UNIX path
+ *
+ * A directory the server does not find under the path's cached IDs,
+ * because another session removed or replaced one on the path, is listed
+ * once more when the path, read again from the server component by
+ * component, resolves under another parent ID. A name no folder holds
+ * under that ID, or a file holds, goes. The folder's own entry takes the
+ * ID its entries carry, unless a removal or a rename came during the
+ * listing. An empty listing's folder goes with its objects; where the
+ * cache holds no identity for it, the read of its ID stores its record,
+ * and its objects go. An empty root takes its objects with it.
+ *
+ * @param[in]     volume  volume of the directory
+ * @param[in]     path    UTF-8 path of the directory
+ * @param[in,out] l       the listing the entries join, zeroed by the
+ *                        caller; empty when the listing fails
+ * @returns 0, or a negative errno
+ */
+int ml_list_directory(struct afp_volume *volume, const char *path,
+                      struct afp_listing *l)
+{
+    struct ml_target t;
+    struct afp_dirent e;
+    unsigned int refused_did;
+    uint64_t sent;
+    int ret = ml_resolve(volume, path, &t);
+
+    if (ret) {
+        return ret;
+    }
+
+    sent = dir_cache_changes(volume);
+    ret = ll_readdir(volume, t.did, t.afp_name, l);
+
+    if (ret == -ENOENT) {
+        refused_did = t.did;
+        ret = dir_cache_resolve_fresh(volume, path, &t.did, t.name);
+
+        if (ret) {
+            return ret;
+        }
+
+        /* The same parent refuses the name again. */
+        if (t.did == refused_did) {
+            ret = -ENOENT;
+        } else {
+            sent = dir_cache_changes(volume);
+            ret = ll_readdir(volume, t.did, t.afp_name, l);
+        }
+    }
+
+    /* No folder holds the name, or a file does: the name goes. */
+    if (ret == -ENOENT || ret == -ENOTDIR) {
+        dir_cache_remove(volume, t.did, t.name);
+        return ret;
+    }
+
+    /* The server lists the folder by its name under the parent, and its
+     * entries carry the ID it has, which the requests beneath it take; an
+     * empty folder's ID is in no entry, and the cache may hold another
+     * folder's. */
+    if (ret == 0 && l->count == 0) {
+        /* The root has no name to forget, only its objects; a folder whose
+         * identity the cache does not hold is read for its ID. */
+        if (t.name[0] == '\0') {
+            dir_cache_listed(volume, t.did, 0);
+        } else if (!dir_cache_listed_empty(volume, t.did, t.name)
+                   && dir_cache_fetch(volume, t.did, t.name, &e) == 0
+                   && e.isdir) {
+            dir_cache_listed(volume, e.cnid, 0);
+        }
+    } else if (ret == 0 && t.name[0]
+               && (l->entries[0].valid & kFPParentDirIDBit)) {
+        dir_cache_insert_dir(volume, t.did, t.name, l->entries[0].parent_did,
+                             sent);
+    }
+
+    return ret;
+}
+
+/*!
  * @brief Open a file's data fork, or an AppleDouble pseudo-file, at path
  *
  * @param[in]  volume  volume of the file
@@ -336,63 +500,34 @@ int ml_open(struct afp_volume * volume, const char *path, int flags,
 {
     struct afp_file_info * fp;
     int ret;
-    unsigned int dirid;
-    char *converted_path;
-    ret = convert_path_to_afp_alloc(volume->path_encoding, path,
-                                    &converted_path);
-
-    if (ret) {
-        return ret;
-    }
-
-    if (invalid_filename(volume, converted_path)) {
-        free(converted_path);
-        return -ENAMETOOLONG;
-    }
 
     if (volume_is_readonly(volume) &&
             (flags & (O_WRONLY | O_RDWR | O_TRUNC | O_APPEND | O_CREAT))) {
-        free(converted_path);
         return -EROFS;
     }
 
     if ((fp = malloc(sizeof(*fp))) == NULL) {
-        free(converted_path);
         return -ENOMEM;
     }
 
     memset(fp, 0, sizeof(*fp));
-    ret = appledouble_open(volume, converted_path, flags, fp);
+    ret = appledouble_open(volume, path, flags, fp);
+
+    if (ret == 0) {
+        ret = ml_resolve_fork(volume, path, fp);
+    }
+
+    if (ret == 0) {
+        ret = ll_open(volume, path, flags, fp);
+    }
 
     if (ret < 0) {
-        goto error;
+        free(fp);
+        return ret;
     }
 
-    if (ret == 1) {
-        goto out;
-    }
-
-    ret = get_dirid(volume, converted_path, fp->basename, &dirid);
-
-    if (ret) {
-        goto error;
-    }
-
-    fp->did = dirid;
-    ret = ll_open(volume, converted_path, flags, fp);
-
-    if (ret < 0) {
-        goto error;
-    }
-
-out:
     *newfp = fp;
-    free(converted_path);
     return 0;
-error:
-    free(fp);
-    free(converted_path);
-    return ret;
 }
 
 
@@ -413,53 +548,33 @@ error:
 int ml_creat(struct afp_volume * volume, const char *path, mode_t mode,
              unsigned char *created)
 {
+    struct ml_target t;
     int ret;
-    char basename[AFPC_MAX_NAME_BYTES];
-    unsigned int dirid;
-    char *converted_path;
-    ret = convert_path_to_afp_alloc(volume->path_encoding, path,
-                                    &converted_path);
-
-    if (ret) {
-        return ret;
-    }
 
     if (volume_is_readonly(volume)) {
-        free(converted_path);
         return -EROFS;
     }
 
     ret = appledouble_creat(volume, path, mode);
 
-    if (ret < 0) {
-        free(converted_path);
+    if (ret) {
+        return ret < 0 ? ret : 0;
+    }
+
+    ret = ml_resolve(volume, path, &t);
+
+    if (ret) {
         return ret;
     }
 
-    if (ret == 1) {
-        free(converted_path);
-        return 0;
-    }
-
-    if (invalid_filename(volume, converted_path)) {
-        free(converted_path);
-        return -ENAMETOOLONG;
-    }
-
-    ret = get_dirid(volume, converted_path, basename, &dirid);
-
-    if (ret < 0) {
-        free(converted_path);
-        return ret;
-    }
-
-    ret = ll_createfile(volume, dirid, basename);
+    ret = ll_createfile(volume, t.did, t.afp_name);
 
     if (ret == 0 && created) {
         *created = 1;
     }
 
-    free(converted_path);
+    /* Whatever the create's answer, the name may hold another object now. */
+    dir_cache_remove(volume, t.did, t.name);
     return ret;
 }
 
@@ -479,14 +594,14 @@ static int takes_created_mode(const struct afp_volume * volume)
  *
  * Netatalk keeps ids of -1, so the mode goes without a read; another server
  * gets the ids read first. A mode the server cannot set stays the server's.
+ * The object's cached parameters go.
  *
- * @param[in] volume    volume of the object
- * @param[in] dirid     its directory
- * @param[in] basename  its AFP name in dirid
- * @param[in] mode      the mode asked for
+ * @param[in] volume  volume of the object
+ * @param[in] t       its resolved path
+ * @param[in] mode    the mode asked for
  */
-static void set_created_mode(struct afp_volume * volume, unsigned int dirid,
-                             char *basename, mode_t mode)
+static void set_created_mode(struct afp_volume * volume, struct ml_target *t,
+                             mode_t mode)
 {
     struct afp_dirent fp;
     int ret;
@@ -499,17 +614,20 @@ static void set_created_mode(struct afp_volume * volume, unsigned int dirid,
     fp.unixprivs.uid = UINT32_MAX;
     fp.unixprivs.gid = UINT32_MAX;
     ret = afp_server_keeps_unset_ids(volume->server) ? 0
-          : get_parameters(volume, dirid, basename, kFPUnixPrivsBit, &fp);
+          : get_parameters(volume, t->did, t->afp_name, kFPUnixPrivsBit, &fp);
 
     if (ret == 0) {
         fp.unixprivs.permissions = mode & ~S_IFMT;
-        ret = set_parameters(volume, dirid, basename, kFPUnixPrivsBit, &fp);
+        ret = set_parameters(volume, t->did, t->afp_name, kFPUnixPrivsBit,
+                             &fp);
     }
 
     if (ret != 0) {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
-                       "%s keeps the server's mode", basename);
+                       "%s keeps the server's mode", t->name);
     }
+
+    dir_cache_invalidate(volume, t->did, t->name, 0);
 }
 
 /*!
@@ -522,21 +640,13 @@ static void set_created_mode(struct afp_volume * volume, unsigned int dirid,
 void ml_set_created_mode(struct afp_volume * volume, const char *path,
                          mode_t mode)
 {
-    char basename[AFPC_MAX_NAME_BYTES];
-    char *converted_path;
-    unsigned int dirid;
+    struct ml_target t;
 
-    if (!takes_created_mode(volume)
-            || convert_path_to_afp_alloc(volume->path_encoding, path,
-                                         &converted_path) != 0) {
-        return;
+    if (takes_created_mode(volume) && ml_resolve(volume, path, &t) == 0) {
+        set_created_mode(volume, &t, mode);
+        /* afpd dates the folder of a file whose privileges a set changes. */
+        dir_cache_forget_dir(volume, t.did);
     }
-
-    if (get_dirid(volume, converted_path, basename, &dirid) == 0) {
-        set_created_mode(volume, dirid, basename, mode);
-    }
-
-    free(converted_path);
 }
 
 
@@ -554,23 +664,13 @@ int ml_readdir(struct afp_volume * volume,
                const char *path,
                struct afp_listing *l)
 {
-    int ret;
-    char *converted_path;
-    ret = convert_path_to_afp_alloc(volume->path_encoding, path,
-                                    &converted_path);
+    int ret = appledouble_readdir(volume, path, l);
 
     if (ret) {
-        return ret;
+        return ret < 0 ? ret : 0;
     }
 
-    ret = appledouble_readdir(volume, converted_path, l);
-
-    if (ret == 0) {
-        ret = ll_readdir(volume, converted_path, l, 0);
-    }
-
-    free(converted_path);
-    return ret < 0 ? ret : 0;
+    return ml_list_directory(volume, path, l);
 }
 
 /*!
@@ -648,10 +748,8 @@ int ml_setattr(struct afp_volume * vol, const char *path, unsigned int which,
     unsigned int privs = which & (ML_SET_MODE | ML_SET_UID | ML_SET_GID);
     struct afp_dirent fp;
     struct afp_dirent now;
-    char basename[AFPC_MAX_NAME_BYTES];
-    char *converted_path;
+    struct ml_target t;
     unsigned short bitmap = 0;
-    unsigned int dirid;
     unsigned int was = 0;
     int result = 0;
     int ret;
@@ -666,26 +764,12 @@ int ml_setattr(struct afp_volume * vol, const char *path, unsigned int which,
         return ret;
     }
 
-    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
-                                    &converted_path);
-
-    if (ret) {
-        return ret;
-    }
-
-    if (invalid_filename(vol, converted_path)) {
-        ret = -ENAMETOOLONG;
-        goto out;
-    }
-
     /* AFP 2, and Netatalk with "unix priv = no", carry no UNIX privileges. */
     if (privs && !(vol->extra_flags & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX)) {
         if (!(vol->extra_flags & VOLUME_EXTRA_FLAGS_IGNORE_UNIXPRIVS)) {
             result = -ENOSYS;
         } else if (!(which & ML_SET_MTIME)) {
-            struct stat stbuf;
-            ret = ll_getattr(vol, converted_path, &stbuf, 0);
-            goto out;
+            return ml_entry(vol, path, ML_ENTRY_CACHED, &t, &fp);
         }
 
         privs = 0;
@@ -706,20 +790,19 @@ int ml_setattr(struct afp_volume * vol, const char *path, unsigned int which,
     }
 
     if (!privs && !(which & ML_SET_MTIME)) {
-        ret = result;
-        goto out;
+        return result;
     }
 
-    ret = get_dirid(vol, converted_path, basename, &dirid);
+    ret = ml_resolve(vol, path, &t);
 
     if (ret) {
-        goto out;
+        return ret;
     }
 
     memset(&fp, 0, sizeof(fp));
 
     if (privs) {
-        ret = get_parameters(vol, dirid, basename,
+        ret = get_parameters(vol, t.did, t.afp_name,
                              kFPUnixPrivsBit | kFPModDateBit, &fp);
 
         /* A time asked goes alone. */
@@ -762,20 +845,27 @@ int ml_setattr(struct afp_volume * vol, const char *path, unsigned int which,
             fp.unixprivs.gid = UINT32_MAX;
         }
 
-        ret = set_parameters(vol, dirid, basename, bitmap, &fp);
+        ret = set_parameters(vol, t.did, t.afp_name, bitmap, &fp);
         fp.unixprivs.uid = uid_read;
         fp.unixprivs.gid = gid_read;
 
         /* A server can refuse the time with the mode, or the mode alone. */
         if ((ret == -EPERM || ret == -ENOSYS) && (bitmap & kFPUnixPrivsBit)
                 && (which & ML_SET_MTIME)) {
-            int time_ret = set_parameters(vol, dirid, basename,
+            int time_ret = set_parameters(vol, t.did, t.afp_name,
                                           kFPModDateBit, &fp);
             ret = time_ret ? time_ret : ret;
         }
 
+        dir_cache_invalidate(vol, t.did, t.name, 0);
+
+        /* afpd dates the folder of a file whose privileges a set changes. */
+        if ((bitmap & kFPUnixPrivsBit) && !fp.isdir) {
+            dir_cache_forget_dir(vol, t.did);
+        }
+
         if (ret) {
-            goto out;
+            return ret;
         }
     }
 
@@ -795,10 +885,11 @@ int ml_setattr(struct afp_volume * vol, const char *path, unsigned int which,
 
         if (asked) {
             memset(&now, 0, sizeof(now));
-            ret = get_parameters(vol, dirid, basename, kFPUnixPrivsBit, &now);
+            ret = get_parameters(vol, t.did, t.afp_name, kFPUnixPrivsBit,
+                                 &now);
 
             if (ret) {
-                goto out;
+                return ret;
             }
 
             if (!(((now.unixprivs.permissions ^ was) & shown)
@@ -809,19 +900,22 @@ int ml_setattr(struct afp_volume * vol, const char *path, unsigned int which,
     }
 
     if (privs & (ML_SET_UID | ML_SET_GID)) {
-        ret = set_owner(vol, dirid, basename, &fp, was,
+        ret = set_owner(vol, t.did, t.afp_name, &fp, was,
                         (privs & ML_SET_UID) ? uid : fp.unixprivs.uid,
                         (privs & ML_SET_GID) ? gid : fp.unixprivs.gid);
+        dir_cache_invalidate(vol, t.did, t.name, 0);
+
+        /* A file's owner goes with its privileges, as for a mode. */
+        if (!fp.isdir) {
+            dir_cache_forget_dir(vol, t.did);
+        }
 
         if (ret) {
-            goto out;
+            return ret;
         }
     }
 
-    ret = result;
-out:
-    free(converted_path);
-    return ret;
+    return result;
 }
 
 /*!
@@ -865,74 +959,67 @@ static int delete_errno(int rc)
 }
 
 /*!
+ * @brief Delete a resolved object with FPDelete
+ *
+ * Whatever the answer, the cache forgets the name: a delete done or left
+ * unanswered took its object, and a refusal may answer for an object the
+ * cache's record no longer describes.
+ *
+ * @param[in,out] vol  volume of the object
+ * @param[in]     t    the resolved path
+ * @returns 0, or a negative errno, as delete_errno() gives it
+ */
+static int delete_target(struct afp_volume *vol, struct ml_target *t)
+{
+    int ret = delete_errno(afp_delete(vol, t->did, t->afp_name));
+    dir_cache_remove(vol, t->did, t->name);
+    return -ret;
+}
+
+/*!
  * @brief Delete the file at path with FPDelete
+ *
+ * The type comes from the cache's record while its parameters hold, so a
+ * folder another session put at a file's name since goes when empty and
+ * refuses with -ENOTEMPTY when full.
  *
  * @param[in] vol   volume of the file
  * @param[in] path  UTF-8 path of the file
- * @returns 0, or a negative errno: -EISDIR for a directory, -ENOTDIR for a
- *          path through a file, the lookups' errno when they fail, -EROFS
- *          for a read-only filesystem, -EPERM for a locked file, -EBUSY for
- *          one open elsewhere, -EIO for an unexpected answer or a request
+ * @returns 0, or a negative errno: -EISDIR for a directory, -ENOTEMPTY for
+ *          a full one a record took for a file, -ENOTDIR for a path through
+ *          a file, the lookups' errno when they fail, -EROFS for a
+ *          read-only filesystem, -EPERM for a locked file, -EBUSY for one
+ *          open elsewhere, -EIO for an unexpected answer or a request
  *          without one
  */
 int ml_unlink(struct afp_volume * vol, const char *path)
 {
+    struct ml_target t;
+    struct afp_dirent e;
     int ret;
-    unsigned int dirid;
-    char basename[AFPC_MAX_NAME_BYTES];
-    char *converted_path;
-    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
-                                    &converted_path);
-
-    if (ret) {
-        return ret;
-    }
-
-    if (invalid_filename(vol, converted_path)) {
-        free(converted_path);
-        return -ENAMETOOLONG;
-    }
 
     if (volume_is_readonly(vol)) {
-        free(converted_path);
         return -EROFS;
     }
 
     ret = appledouble_unlink(vol, path);
 
-    if (ret < 0) {
-        free(converted_path);
-        return ret;
+    if (ret) {
+        return ret < 0 ? ret : 0;
     }
 
-    if (ret == 1) {
-        free(converted_path);
-        return 0;
-    }
-
-    ret = get_dirid(vol, converted_path, basename, &dirid);
+    /* FPDelete removes an empty directory too; one goes by rmdir(2). */
+    ret = ml_entry(vol, path, ML_ENTRY_CACHED, &t, &e);
 
     if (ret) {
-        free(converted_path);
         return ret;
     }
 
-    /* FPDelete removes an empty directory too. */
-    ret = is_dir(vol, dirid, basename);
-
-    if (ret != 0) {
-        free(converted_path);
-        return ret < 0 ? ret : -EISDIR;
+    if (e.isdir) {
+        return -EISDIR;
     }
 
-    ret = delete_errno(afp_delete(vol, dirid, basename));
-
-    if (ret == 0) {
-        remove_did_subtree(vol, converted_path);
-    }
-
-    free(converted_path);
-    return -ret;
+    return delete_target(vol, &t);
 }
 
 
@@ -952,48 +1039,29 @@ int ml_unlink(struct afp_volume * vol, const char *path)
  */
 int ml_mkdir(struct afp_volume * vol, const char *path, mode_t mode)
 {
-    int ret, rc;
+    struct ml_target t;
     unsigned int result_did;
-    char basename[AFPC_MAX_NAME_BYTES];
-    char *converted_path;
-    unsigned int dirid;
-    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
-                                    &converted_path);
-
-    if (ret) {
-        return ret;
-    }
-
-    if (invalid_filename(vol, converted_path)) {
-        free(converted_path);
-        return -ENAMETOOLONG;
-    }
+    uint64_t sent;
+    int ret, rc;
 
     if (volume_is_readonly(vol)) {
-        free(converted_path);
         return -EROFS;
     }
 
     ret = appledouble_mkdir(vol, path, mode);
 
-    if (ret < 0) {
-        free(converted_path);
-        return ret;
+    if (ret) {
+        return ret < 0 ? ret : 0;
     }
 
-    if (ret == 1) {
-        free(converted_path);
-        return 0;
-    }
-
-    ret = get_dirid(vol, converted_path, basename, &dirid);
+    ret = ml_resolve(vol, path, &t);
 
     if (ret) {
-        free(converted_path);
         return ret;
     }
 
-    rc = afp_createdir(vol, dirid, basename, &result_did);
+    sent = dir_cache_changes(vol);
+    rc = afp_createdir(vol, t.did, t.afp_name, &result_did);
 
     switch (rc) {
     case kFPDiskFull:
@@ -1013,14 +1081,18 @@ int ml_mkdir(struct afp_volume * vol, const char *path, mode_t mode)
         ret = ll_answer_errno(rc);
     }
 
-    if (ret == 0) {
-        /* The cache may hold the path, and folders beneath it, from a folder
-         * another session removed. */
-        remove_did_subtree(vol, converted_path);
-        set_created_mode(vol, dirid, basename, mode);
+    /* Whatever the answer, the name may hold another object now; the
+     * directory made stays at it. */
+    if (ret == 0 && result_did != 0) {
+        dir_cache_made_dir(vol, t.did, t.name, result_did, sent);
+    } else {
+        dir_cache_remove(vol, t.did, t.name);
     }
 
-    free(converted_path);
+    if (ret == 0) {
+        set_created_mode(vol, &t, mode);
+    }
+
     return -ret;
 }
 
@@ -1115,6 +1187,11 @@ int ml_fsync(struct afp_volume * volume, struct afp_file_info * fp)
         rc = afp_flushfork(volume, fp->forkid, wait);
     }
 
+    /* Netatalk dates a written resource fork at its flush. */
+    if (was_dirty && fp->resource == AFP_META_RESOURCE) {
+        ll_fork_changed(volume, fp);
+    }
+
     if (rc == kFPNoErr) {
         return 0;
     }
@@ -1143,35 +1220,127 @@ int ml_close_flush(struct afp_volume * volume, struct afp_file_info * fp)
     return ml_fsync(volume, fp);
 }
 
-int ml_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf)
+/*!
+ * @brief Present a resolved object's record as its attributes
+ *
+ * The volume's root shows the mount's time.
+ *
+ * @param[in]     volume  volume of the object
+ * @param[in]     t       the object's directory and name
+ * @param[in,out] e       its record
+ * @param[out]    stbuf   receives the attributes
+ * @returns 0, or a negative errno, as afp_dirent_to_stat() gives it
+ */
+int ml_dirent_to_stat(struct afp_volume *volume, const struct ml_target *t,
+                      struct afp_dirent *e, struct stat *stbuf)
 {
-    char *converted_path;
+    if (t->did == AFP_ROOT_DID && t->name[0] == '\0') {
+        e->create_ns = afp_ns_from_sec(volume->mount_time);
+        e->mod_ns = e->create_ns;
+        e->valid |= kFPCreateDateBit | kFPModDateBit;
+    }
+
+    return afp_dirent_to_stat(volume, e, stbuf);
+}
+
+/*!
+ * @brief Read the attributes of the object at path
+ *
+ * A pseudo-file's come from its file's record as appledouble_getattr()
+ * reads it, whatever fresh says, and show no Finder info.
+ *
+ * @param[in]  volume      volume of the object
+ * @param[in]  path        UTF-8 path, of a file, a directory or a
+ *                         pseudo-file
+ * @param[in]  fresh       1 to ask the server, 0 to take the cache's
+ *                         record while its parameters hold
+ * @param[out] stbuf       receives the attributes
+ * @param[out] finderinfo  receives the 32 bytes of Finder info of the
+ *                         record the attributes come from, or NULL
+ * @returns 0, or a negative errno
+ */
+static int read_attributes(struct afp_volume *volume, const char *path,
+                           int fresh, struct stat *stbuf, char *finderinfo)
+{
+    struct ml_target t;
+    struct afp_dirent e;
     int ret;
     memset(stbuf, 0, sizeof(struct stat));
-    ret = convert_path_to_afp_alloc(volume->path_encoding, path,
-                                    &converted_path);
+
+    if (finderinfo) {
+        memset(finderinfo, 0, sizeof(e.finderinfo));
+    }
+
+    /* A pseudo-file takes the attributes of the file it belongs to. */
+    ret = appledouble_getattr(volume, path, stbuf);
+
+    if (ret) {
+        return ret < 0 ? ret : 0;
+    }
+
+    ret = ml_entry(volume, path, fresh ? ML_ENTRY_FRESH : ML_ENTRY_CACHED,
+                   &t, &e);
 
     if (ret) {
         return ret;
     }
 
-    /* If this is a fake file (comment, finderinfo, rsrc), continue since
-     * we'll use the permissions of the real file */
-    ret = appledouble_getattr(volume, converted_path, stbuf);
-
-    if (ret < 0) {
-        free(converted_path);
-        return ret;
+    if (finderinfo) {
+        memcpy(finderinfo, e.finderinfo, sizeof(e.finderinfo));
     }
 
-    if (ret > 0) {
-        free(converted_path);
-        return 0;
-    }
+    return ml_dirent_to_stat(volume, &t, &e, stbuf);
+}
 
-    ret = ll_getattr(volume, converted_path, stbuf, 0);
-    free(converted_path);
-    return ret;
+/*!
+ * @brief Read the attributes of the object at path, from the cache while
+ * it holds them
+ *
+ * @param[in]  volume  volume of the object
+ * @param[in]  path    UTF-8 path, of a file, a directory or a pseudo-file
+ * @param[out] stbuf   receives the attributes
+ * @returns 0, or a negative errno
+ */
+int ml_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf)
+{
+    return read_attributes(volume, path, 0, stbuf, NULL);
+}
+
+/*!
+ * @brief Read the attributes of the object at path and the Finder info of
+ * the record they come from, from the cache while it holds them
+ *
+ * A stat shows the invisible flag of the record it presents; the bytes a
+ * write sets back come from ml_getfinderinfo().
+ *
+ * @param[in]  volume      volume of the object
+ * @param[in]  path        UTF-8 path, of a file, a directory or a
+ *                         pseudo-file
+ * @param[out] stbuf       receives the attributes
+ * @param[out] finderinfo  receives the 32 bytes, all zero for a
+ *                         pseudo-file
+ * @returns 0, or a negative errno
+ */
+int ml_getattr_finderinfo(struct afp_volume *volume, const char *path,
+                          struct stat *stbuf, char *finderinfo)
+{
+    return read_attributes(volume, path, 0, stbuf, finderinfo);
+}
+
+/*!
+ * @brief Read the attributes of a file or a directory from the server
+ *
+ * A pseudo-file's come from its file's record as ml_getattr() takes it.
+ *
+ * @param[in]  volume  volume of the object
+ * @param[in]  path    UTF-8 path, of a file, a directory or a pseudo-file
+ * @param[out] stbuf   receives the attributes
+ * @returns 0, or a negative errno
+ */
+int ml_getattr_fresh(struct afp_volume *volume, const char *path,
+                     struct stat *stbuf)
+{
+    return read_attributes(volume, path, 1, stbuf, NULL);
 }
 
 /*!
@@ -1183,11 +1352,14 @@ int ml_getattr(struct afp_volume * volume, const char *path, struct stat *stbuf)
  * @param[in]     data    bytes to write
  * @param[in]     size    length of data
  * @param[in]     offset  byte offset to write at
+ * @param[in]     append  1 for an append, which goes to the fork's end on
+ *                        the server; the Finder info's and the comment's
+ *                        pseudo-files write at offset
  * @param[in,out] fp      the open fork, or an AppleDouble pseudo-file
  * @returns bytes written, or a negative errno
  */
 int ml_write(struct afp_volume * volume,
-             const char *data, size_t size, off_t offset,
+             const char *data, size_t size, off_t offset, int append,
              struct afp_file_info * fp)
 {
     int ret;
@@ -1195,6 +1367,14 @@ int ml_write(struct afp_volume * volume,
 
     if (volume_is_readonly(volume)) {
         return -EROFS;
+    }
+
+    /* The AppleDouble view's resource fork is the fork itself, whose
+     * length the view's stat takes from the cache where the record shows
+     * no fork, so an append goes to the fork's end as a data fork's does. */
+    if (fp->resource == AFP_META_RESOURCE) {
+        ret = ll_write(volume, data, size, offset, append, fp, &totalwritten);
+        return ret < 0 ? ret : (int) totalwritten;
     }
 
     ret = appledouble_write(volume, fp, data, size, offset, &totalwritten);
@@ -1207,7 +1387,7 @@ int ml_write(struct afp_volume * volume,
         return totalwritten;
     }
 
-    ret = ll_write(volume, data, size, offset, fp, &totalwritten);
+    ret = ll_write(volume, data, size, offset, append, fp, &totalwritten);
 
     if (ret < 0) {
         return ret;
@@ -1241,29 +1421,33 @@ int ml_write(struct afp_volume * volume,
  * @brief Read the file at a fork's name and test whether it is the fork's
  *
  * FPCopyFile and FPDelete go by name, so the file there must have the node
- * ID the fork's open reported.
+ * ID the fork's open reported. The copy's requests go to the names read
+ * here.
  *
  * @param[in]  volume  volume of the fork
  * @param[in]  fp      the open fork
  * @param[in]  bitmap  file parameters to read, with the node ID added
  * @param[out] params  the parameters of the file at the name
+ * @param[out] t       the fork's directory and names
  * @returns 1 when the name holds the file fp opened, 0 otherwise
  */
 static int fork_still_named(struct afp_volume *volume,
-                            struct afp_file_info *fp, unsigned int bitmap,
-                            struct afp_dirent *params)
+                            const struct afp_file_info *fp,
+                            unsigned int bitmap, struct afp_dirent *params,
+                            struct ml_target *t)
 {
-    return fp->cnid != 0
-           && afp_getfiledirparms(volume, fp->did, bitmap | kFPNodeIDBit, 0,
-                                  fp->basename, params) == kFPNoErr
-           && params->cnid == fp->cnid;
+    unsigned int cnid = fork_names(volume, fp, t);
+    return cnid != 0
+           && afp_getfiledirparms(volume, t->did, bitmap | kFPNodeIDBit, 0,
+                                  t->afp_name, params) == kFPNoErr
+           && params->cnid == cnid;
 }
 
 /*!
  * @brief Leave a handle without a fork
  *
  * The handle leaves the volume's open-fork list and keeps fork number 0, for
- * which the client sends no request.
+ * which the client sends no request. Its name may hold another file now.
  *
  * @param[in]     volume  volume of the fork
  * @param[in,out] fp      the handle
@@ -1274,6 +1458,7 @@ static ssize_t copy_lost_fork(struct afp_volume *volume,
 {
     remove_opened_fork(volume, fp);
     fp->forkid = 0;
+    dir_cache_remove(volume, fp->did, fp->name);
     return -EIO;
 }
 
@@ -1284,8 +1469,9 @@ static ssize_t copy_lost_fork(struct afp_volume *volume,
  * the name, its own or a new one, for the copy through the client.
  *
  * @param[in]     volume  volume of both forks
- * @param[in]     fp_in   the source's open data fork
  * @param[in,out] fp_out  the destination's open data fork, reopened here
+ * @param[in]     in      the source's directory and names
+ * @param[in]     out     the destination's
  * @param[in]     src     the source's parameters
  * @param[in,out] dst     the destination's parameters, whose mode and time
  *                        the new file takes
@@ -1293,8 +1479,9 @@ static ssize_t copy_lost_fork(struct afp_volume *volume,
  *          the handle left without a fork
  */
 static ssize_t copy_into_destination(struct afp_volume *volume,
-                                     struct afp_file_info *fp_in,
                                      struct afp_file_info *fp_out,
+                                     struct ml_target *in,
+                                     struct ml_target *out,
                                      const struct afp_dirent *src,
                                      struct afp_dirent *dst)
 {
@@ -1308,12 +1495,12 @@ static ssize_t copy_into_destination(struct afp_volume *volume,
     }
 
     fp_out->forkid = 0;
-    rc = afp_delete(volume, fp_out->did, fp_out->basename);
+    rc = afp_delete(volume, out->did, out->afp_name);
     deleted = rc == kFPNoErr;
 
     if (deleted) {
-        rc = afp_copyfile(volume, fp_in->did, fp_in->basename, fp_out->did,
-                          fp_out->basename,
+        rc = afp_copyfile(volume, in->did, in->afp_name, out->did,
+                          out->afp_name,
                           afpc_dsi_transfer_wait(volume->server,
                                                  src->size + src->resourcesize,
                                                  AFP_DISK_BYTES_PER_SECOND));
@@ -1323,8 +1510,8 @@ static ssize_t copy_into_destination(struct afp_volume *volume,
      * out, the file a refused delete left, or a new empty one for a copy
      * through the client. */
     if (rc != kFPNoErr) {
-        switch (afp_createfile(volume, kFPSoftCreate, fp_out->did,
-                               fp_out->basename)) {
+        switch (afp_createfile(volume, kFPSoftCreate, out->did,
+                               out->afp_name)) {
         case kFPNoErr:
             break;
 
@@ -1342,9 +1529,9 @@ static ssize_t copy_into_destination(struct afp_volume *volume,
 
     /* The fork opens read-write, as every writable fork does. A mode without
      * the owner's write permission would refuse that open. */
-    if (afp_openfork(volume, 0, fp_out->did,
+    if (afp_openfork(volume, 0, out->did,
                      AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE,
-                     kFPNodeIDBit | kFPExtDataForkLenBit, fp_out->basename,
+                     kFPNodeIDBit | kFPExtDataForkLenBit, out->afp_name,
                      fp_out) != kFPNoErr) {
         return copy_lost_fork(volume, fp_out);
     }
@@ -1370,14 +1557,16 @@ static ssize_t copy_into_destination(struct afp_volume *volume,
             dst->mod_ns = afp_ns_from_sec(time(NULL));
         }
 
-        if (bitmap && afp_setfiledirparms(volume, fp_out->did,
-                                          fp_out->basename, bitmap,
-                                          dst) != kFPNoErr) {
+        if (bitmap && afp_setfiledirparms(volume, out->did, out->afp_name,
+                                          bitmap, dst) != kFPNoErr) {
             log_for_client(NULL, AFPFSD, LOG_WARNING,
                            "copy to %s kept the server's mode or date",
-                           fp_out->basename);
+                           out->afp_name);
         }
     }
+
+    /* The name holds a new file, or the destination as it was. */
+    dir_cache_remove(volume, out->did, out->name);
 
     if (rc != kFPNoErr) {
         return 0;
@@ -1414,6 +1603,8 @@ static ssize_t copy_range_on_server(struct afp_volume *volume,
                    ? AFP_COPY_OFFLOAD_MAX_BYTES : UINT64_MAX;
     struct afp_dirent src;
     struct afp_dirent dst;
+    struct ml_target in;
+    struct ml_target out;
     ssize_t copied;
 
     if (fp_in->resource != AFP_META_NONE || fp_out->resource != AFP_META_NONE
@@ -1433,20 +1624,20 @@ static ssize_t copy_range_on_server(struct afp_volume *volume,
     if (other_fork_open(volume, fp_out)
             || !fork_still_named(volume, fp_in,
                                  kFPAttributeBit | kFPExtDataForkLenBit
-                                 | kFPExtRsrcForkLenBit, &src)
+                                 | kFPExtRsrcForkLenBit, &src, &in)
             || src.size != len
             || src.resourcesize > cap - src.size
             || (src.attributes & AFP_COPY_INHIBIT_ATTRIBUTES)
             || !fork_still_named(volume, fp_out,
                                  kFPExtDataForkLenBit | kFPExtRsrcForkLenBit
                                  | (unix_privs ? kFPUnixPrivsBit : 0),
-                                 &dst)
+                                 &dst, &out)
             || dst.size != 0 || dst.resourcesize != 0
             || (unix_privs && (~dst.unixprivs.ua_permissions
                                & (kUserCanRead | kUserCanWrite)))) {
         copied = 0;
     } else {
-        copied = copy_into_destination(volume, fp_in, fp_out, &src, &dst);
+        copied = copy_into_destination(volume, fp_out, &in, &out, &src, &dst);
     }
 
     pthread_rwlock_unlock(&volume->open_lock);
@@ -1496,7 +1687,7 @@ static ssize_t copy_range_through_client(struct afp_volume *volume,
         }
 
         ret = ml_write(volume, buf, (size_t) ret, off_out + (off_t) copied,
-                       fp_out);
+                       0, fp_out);
 
         if (ret <= 0) {
             break;
@@ -1635,10 +1826,8 @@ int ml_readlink(struct afp_volume * vol, const char *path,
     int rc, ret;
     struct afp_file_info fp;
     struct afp_rx_buffer buffer;
-    char basename[AFPC_MAX_NAME_BYTES];
-    char *converted_path;
+    struct ml_target t;
     char *link_path;
-    unsigned int dirid;
 
     if (size == 0 || size == SIZE_MAX || size > INT_MAX) {
         return -ENAMETOOLONG;
@@ -1655,26 +1844,23 @@ int ml_readlink(struct afp_volume * vol, const char *path,
     buffer.data = link_path;
     buffer.maxsize = size;
     buffer.size = 0;
-    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
-                                    &converted_path);
+    ret = ml_resolve(vol, path, &t);
 
     if (ret) {
-        free(link_path);
-        return ret;
-    }
-
-    ret = get_dirid(vol, converted_path, basename, &dirid);
-
-    if (ret) {
-        free(converted_path);
         free(link_path);
         return ret;
     }
 
     /* Open the fork to read it: a read-only volume refuses a write open. */
-    rc = afp_openfork(vol, 0, dirid, AFP_OPENFORK_ALLOWREAD, 0, basename,
+    rc = afp_openfork(vol, 0, t.did, AFP_OPENFORK_ALLOWREAD, 0, t.afp_name,
                       &fp);
     ret = ll_openfork_errno(rc);
+
+    /* No link holds the name, or a folder does: the record that sent the
+     * kernel here goes, as for an open. */
+    if (ret == ENOENT || ret == EISDIR) {
+        dir_cache_remove(vol, t.did, t.name);
+    }
 
     if (ret) {
         goto error;
@@ -1742,14 +1928,12 @@ int ml_readlink(struct afp_volume * vol, const char *path,
     }
 
     restore_link_separators(buf, link_path);
-    free(converted_path);
     free(link_path);
     return 0;
 close_error:
     afp_closefork(vol, fp.forkid);
     remove_opened_fork(vol, &fp);
 error:
-    free(converted_path);
     free(link_path);
     return -ret;
 }
@@ -1767,63 +1951,33 @@ error:
  */
 int ml_rmdir(struct afp_volume * vol, const char *path)
 {
+    struct ml_target t;
+    struct afp_dirent e;
     int ret;
-    unsigned int dirid;
-    char basename[AFPC_MAX_NAME_BYTES];
-    char *converted_path;
-    ret = convert_path_to_afp_alloc(vol->path_encoding, path,
-                                    &converted_path);
-
-    if (ret) {
-        return ret;
-    }
-
-    if (invalid_filename(vol, converted_path)) {
-        free(converted_path);
-        return -ENAMETOOLONG;
-    }
 
     if (volume_is_readonly(vol)) {
-        free(converted_path);
         return -EROFS;
     }
 
     ret = appledouble_rmdir(vol, path);
 
-    if (ret < 0) {
-        free(converted_path);
-        return ret;
+    if (ret) {
+        return ret < 0 ? ret : 0;
     }
 
-    if (ret == 1) {
-        free(converted_path);
-        return 0;
-    }
-
-    ret = get_dirid(vol, converted_path, basename, &dirid);
+    /* A file goes by unlink(2); FPDelete would remove a file put where a
+     * cached folder stood. */
+    ret = ml_entry(vol, path, ML_ENTRY_FRESH, &t, &e);
 
     if (ret) {
-        free(converted_path);
         return ret;
     }
 
-    ret = is_dir(vol, dirid, basename);
-
-    if (ret <= 0) {
-        /* An ID cached for a path where the server finds no folder is stale. */
-        remove_did_subtree(vol, converted_path);
-        free(converted_path);
-        return ret < 0 ? ret : -ENOTDIR;
+    if (!e.isdir) {
+        return -ENOTDIR;
     }
 
-    ret = delete_errno(afp_delete(vol, dirid, basename));
-
-    if (ret == 0) {
-        remove_did_subtree(vol, converted_path);
-    }
-
-    free(converted_path);
-    return -ret;
+    return delete_target(vol, &t);
 }
 
 /*!
@@ -1922,8 +2076,7 @@ int ml_ftruncate(struct afp_volume * vol, struct afp_file_info * fp,
         return -EIO;
     }
 
-    ret = -ll_setfork_size(vol, fp->forkid, fp->resource == AFP_META_RESOURCE,
-                           offset);
+    ret = -ll_setfork_size(vol, fp, offset);
 
     if (ret == 0) {
         fp->size = offset;
@@ -1968,19 +2121,17 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
     uint64_t written;
     size_t converted_path1_len;
     int rc;
-    unsigned int dirid2;
-    char basename2[AFPC_MAX_NAME_BYTES];
+    struct ml_target t;
     int created = 0;
     char *converted_path1 = NULL;
-    char *converted_path2 = NULL;
 
     if (vol->server->using_version->av_number < 30) {
         /* No symlinks for AFP 2.x. */
-        ret = ENOSYS;
-        goto error;
+        return -ENOSYS;
     }
 
     memset(&fp, 0, sizeof(fp));
+    /* The target is stored as the server reads a path. */
     ret = convert_path_to_afp_alloc(vol->path_encoding, path1,
                                     &converted_path1);
 
@@ -1988,45 +2139,28 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
         return ret;
     }
 
-    ret = convert_path_to_afp_alloc(vol->path_encoding, path2,
-                                    &converted_path2);
-
-    if (ret) {
-        free(converted_path1);
-        return ret;
-    }
-
     converted_path1_len = strlen(converted_path1);
 
     if (volume_is_readonly(vol)) {
         free(converted_path1);
-        free(converted_path2);
         return -EROFS;
     }
 
     ret = appledouble_symlink(vol, path1, path2);
 
-    if (ret < 0) {
+    if (ret) {
         free(converted_path1);
-        free(converted_path2);
-        return ret;
+        return ret < 0 ? ret : 0;
     }
 
-    if (ret == 1) {
-        free(converted_path1);
-        free(converted_path2);
-        return 0;
-    }
-
-    ret = get_dirid(vol, converted_path2, basename2, &dirid2);
+    ret = ml_resolve(vol, path2, &t);
 
     if (ret) {
         free(converted_path1);
-        free(converted_path2);
         return ret;
     }
 
-    ret = -ll_createfile(vol, dirid2, basename2);
+    ret = -ll_createfile(vol, t.did, t.afp_name);
 
     if (ret) {
         goto error;
@@ -2034,9 +2168,9 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
 
     created = 1;
     rc = afp_openfork(vol, 0,
-                      dirid2,
+                      t.did,
                       AFP_OPENFORK_ALLOWWRITE | AFP_OPENFORK_ALLOWREAD, 0,
-                      basename2, &fp);
+                      t.afp_name, &fp);
     ret = ll_openfork_errno(rc);
 
     /* The server may still open the fork, so the link's file stays. */
@@ -2049,7 +2183,7 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
     }
 
     add_opened_fork(vol, &fp);
-    rc = afp_writeext(vol, fp.forkid, 0, converted_path1_len,
+    rc = afp_writeext(vol, fp.forkid, 0, 0, converted_path1_len,
                       converted_path1, &written);
 
     switch (rc) {
@@ -2088,32 +2222,289 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
 
     memset(&marker, 0, sizeof(marker));
     memcpy(marker.finderinfo, ML_SYMLINK_FINDERINFO, 8);
-    ret = -set_parameters(vol, dirid2, basename2, kFPFinderInfoBit, &marker);
+    ret = -set_parameters(vol, t.did, t.afp_name, kFPFinderInfoBit, &marker);
 error:
 
     /* A link the steps after the create could not finish leaves no file
      * in its name, unless its open went unanswered. */
     if (ret && created) {
-        afp_delete(vol, dirid2, basename2);
+        afp_delete(vol, t.did, t.afp_name);
     }
 
+    /* The name holds the link, another object, or nothing again. */
+    dir_cache_remove(vol, t.did, t.name);
     free(converted_path1);
-    free(converted_path2);
     return -ret;
 close_error:
     afp_closefork(vol, fp.forkid);
     remove_opened_fork(vol, &fp);
-    afp_delete(vol, dirid2, basename2);
+    afp_delete(vol, t.did, t.afp_name);
+    dir_cache_remove(vol, t.did, t.name);
     free(converted_path1);
-    free(converted_path2);
     return -ret;
+}
+
+/*!
+ * @brief Map the answer of an FPMoveAndRename to an errno
+ *
+ * @param[in] rc  the answer, or the request's failure
+ * @returns 0 for kFPNoErr, or a positive errno: EACCES for a locked
+ *          object, EROFS for a name the server cannot change, or
+ *          ll_answer_errno()'s
+ */
+static int move_errno(int rc)
+{
+    switch (rc) {
+    case kFPObjectLocked:
+        return EACCES;
+
+    case kFPCantRename:
+        return EROFS;
+
+    default:
+        return ll_answer_errno(rc);
+    }
+}
+
+/*!
+ * @brief Carry a rename into the open forks and the cache
+ *
+ * The forks go first, so a write answered meanwhile forgets the name its
+ * file has now, whose entry the cache's rename then drops.
+ *
+ * @param[in,out] vol   volume of the object
+ * @param[in]     from  the directory and name the object had
+ * @param[in]     to    the directory and name it has
+ * @param[in]     cnid  its node ID the cache held before the move, or 0
+ */
+static void rename_done(struct afp_volume *vol, const struct ml_target *from,
+                        const struct ml_target *to, unsigned int cnid)
+{
+    rename_opened_forks(vol, from, to);
+    dir_cache_rename(vol, from->did, from->name, to->did, to->name, cnid);
+}
+
+/*!
+ * @brief Carry an exchange's answer into the open forks and the cache
+ *
+ * The names keep their node IDs and swap the contents and the parameters,
+ * so neither entry describes its name any more. The forks go first, as
+ * for a rename, and lose their node IDs: an exchange done swaps their
+ * names, and one without an answer, which the server may have carried
+ * out, leaves them. Every answer forgets both names, as a refusal may
+ * answer for objects another session put there.
+ *
+ * @param[in,out] vol  volume of the files
+ * @param[in]     rc   the exchange's answer, or its request's failure
+ * @param[in]     a    one file's directory and name
+ * @param[in]     b    the other's
+ */
+static void exchange_outcome(struct afp_volume *vol, int rc,
+                             const struct ml_target *a,
+                             const struct ml_target *b)
+{
+    if (rc == kFPNoErr || ll_unanswered(rc)) {
+        exchange_opened_forks(vol, a, b, rc == kFPNoErr);
+    }
+
+    dir_cache_remove(vol, a->did, a->name);
+    dir_cache_remove(vol, b->did, b->name);
 }
 
 /*!
  * @brief Rename or move a file or folder with FPMoveAndRename
  *
  * A folder destination takes the object inside it; a file destination is
- * exchanged with the source and the source deleted, or deleted and moved over.
+ * exchanged with the source and the source deleted, or deleted and moved
+ * over. A move the server finds the name taken for reads both objects
+ * from the server: it deletes an object of the source's kind there and
+ * moves again, moves again where nothing is there, fails with ENOTDIR or
+ * EISDIR for a folder over a file or a file over a folder, and with a
+ * read's error where a read fails. An exclusive rename sends the move
+ * alone, which fails with EEXIST where the server finds the name taken. A
+ * rename done moves the entry and the open forks to the new name; a move
+ * into a folder done carries the forks, and an exchange done swaps them,
+ * and both forget the names. On any other answer the cache forgets the
+ * names the requests went to: an unanswered change may have moved their
+ * objects, and a refusal may answer for objects another session put
+ * there.
+ *
+ * @param[in] vol        volume of both paths
+ * @param[in] path_from  UTF-8 path of the object
+ * @param[in] path_to    UTF-8 path it takes
+ * @param[in] excl       1 for an exclusive rename
+ * @returns 0, or a negative errno
+ */
+static int rename_object(struct afp_volume *vol, const char *path_from,
+                         const char *path_to, int excl)
+{
+    int ret, rc, del_rc;
+    int dst_ret;
+    /* The folder a move into a directory takes the object to, or 0 */
+    unsigned int into = 0;
+    /* The node ID the cache holds at the source's name, or 0 */
+    unsigned int moved = 0;
+    struct afp_dirent dst_info;
+    struct ml_target from;
+    struct ml_target to;
+
+    if (volume_is_readonly(vol)) {
+        return -EACCES;
+    }
+
+    ret = ml_resolve(vol, path_from, &from);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = ml_resolve(vol, path_to, &to);
+
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (dir_cache_lookup(vol, from.did, from.name, &dst_info)
+            & DIR_CACHE_DID) {
+        moved = dst_info.cnid;
+    }
+
+    memset(&dst_info, 0, sizeof(dst_info));
+    /* Whether the destination exists, and whether it is a directory, as
+     * the cache's record says while its parameters hold; an exclusive
+     * rename's move finds out itself. */
+    dst_ret = excl ? -ENOENT : read_entry(vol, &to, ML_ENTRY_CACHED,
+                                          &dst_info);
+    log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                   "ml_rename: from dirid=%u name=%s  to dirid=%u name=%s "
+                   "dst=%d dst_isdir=%u", from.did, from.afp_name, to.did,
+                   to.afp_name, dst_ret, dst_info.isdir);
+    /* From the first request that changes the names to the forks' walk,
+     * no ll_open() runs on the server: one before has listed its fork for
+     * the walk, and one after finds the names as they are. */
+    pthread_rwlock_wrlock(&vol->open_lock);
+
+    if (dst_ret == 0 && dst_info.isdir) {
+        /* Into the directory, under the source's own name */
+        into = dst_info.cnid;
+        rc = afp_moveandrename(vol, from.did, to.did, from.afp_name,
+                               to.afp_name, from.afp_name);
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "ml_rename: afp_moveandrename rc=%d", rc);
+    } else {
+        /* When the destination is an existing file, use FPExchangeFiles if the
+         * server supports it. This preserves the destination file's FileID
+         * (which becomes the inode), preventing macOS from seeing a stale vnode
+         * and reporting "file does not exist" after a safe-save rename.
+         * After exchange, the source path holds the old content; delete it. */
+        if (dst_ret == 0 && !(vol->attributes & kNoExchangeFiles)) {
+            rc = afp_exchangefiles(vol, from.did, to.did, from.afp_name,
+                                   to.afp_name);
+            log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                           "ml_rename: afp_exchangefiles rc=%d", rc);
+
+            if (rc == kFPNoErr) {
+                del_rc = afp_delete(vol, from.did, from.afp_name);
+                log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                               "ml_rename: afp_delete(src) rc=%d", del_rc);
+                exchange_outcome(vol, rc, &from, &to);
+                pthread_rwlock_unlock(&vol->open_lock);
+                return 0;
+            }
+
+            /* An exchange without an answer may have been carried out,
+             * which a move over the destination would undo. */
+            if (ll_unanswered(rc)) {
+                exchange_outcome(vol, rc, &from, &to);
+                pthread_rwlock_unlock(&vol->open_lock);
+                return -EIO;
+            }
+
+            /* Exchange failed (dst doesn't exist, or not supported); fall
+             * through to regular moveandrename. */
+        }
+
+        rc = afp_moveandrename(vol, from.did, to.did, from.afp_name, NULL,
+                               to.afp_name);
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "ml_rename: afp_moveandrename rc=%d", rc);
+    }
+
+    ret = move_errno(rc);
+
+    if (rc == kFPObjectExists && excl) {
+        ret = EEXIST;
+    } else if (rc == kFPObjectExists) {
+        struct afp_dirent src;
+        struct afp_dirent dst;
+        int src_ret;
+        int to_ret;
+
+        /* An object at the source's name inside the folder refused the
+         * move into it: that name goes, and the move goes over the folder
+         * where the two reads below allow it. */
+        if (into) {
+            dir_cache_remove(vol, into, from.name);
+            into = 0;
+        }
+
+        /* The kernel's checks and the probe may have read records older
+         * than the objects another session put there, so both kinds come
+         * from the server: the move goes over an object of the source's
+         * kind alone, and a folder over a file, or a file over a folder,
+         * fails as rename(2) fails, before any delete. */
+        memset(&src, 0, sizeof(src));
+        memset(&dst, 0, sizeof(dst));
+        src_ret = dir_cache_fetch(vol, from.did, from.name, &src);
+        to_ret = src_ret ? src_ret
+                 : dir_cache_fetch(vol, to.did, to.name, &dst);
+
+        if (src_ret || (to_ret && to_ret != -ENOENT)) {
+            ret = -to_ret;
+        } else if (to_ret == 0 && !src.isdir != !dst.isdir) {
+            ret = src.isdir ? ENOTDIR : EISDIR;
+        } else {
+            /* First, remove the old object; then, do the move again. */
+            if (to_ret == 0) {
+                (void) afp_delete(vol, to.did, to.afp_name);
+            }
+
+            rc = afp_moveandrename(vol, from.did, to.did, from.afp_name,
+                                   NULL, to.afp_name);
+            ret = rc == kFPObjectExists ? ENOENT : move_errno(rc);
+        }
+    }
+
+    if (ret == 0 && !into) {
+        rename_done(vol, &from, &to, moved);
+        pthread_rwlock_unlock(&vol->open_lock);
+        return 0;
+    }
+
+    /* A move into a folder took the object to its own name there. The
+     * folder's ID is the cache's for the destination's path, which may
+     * name a folder another session renamed away: the cache forgets the
+     * names rather than keep an entry under it, and the forks take it, as
+     * the copy offload checks a fork's name against its node ID. */
+    if (ret == 0) {
+        struct ml_target inside = from;
+        inside.did = into;
+        rename_opened_forks(vol, &from, &inside);
+    }
+
+    pthread_rwlock_unlock(&vol->open_lock);
+    dir_cache_remove(vol, from.did, from.name);
+    dir_cache_remove(vol, to.did, to.name);
+
+    if (into) {
+        dir_cache_remove(vol, into, from.name);
+    }
+
+    return -ret;
+}
+
+/*!
+ * @brief Rename or move a file or folder with FPMoveAndRename
  *
  * @param[in] vol        volume of both paths
  * @param[in] path_from  UTF-8 path of the object
@@ -2123,237 +2514,64 @@ close_error:
 int ml_rename(struct afp_volume * vol,
               const char *path_from, const char *path_to)
 {
-    int ret, rc;
-    int dst_type;
-    char basename_from[AFPC_MAX_NAME_BYTES];
-    char basename_to[AFPC_MAX_NAME_BYTES];
-    char *converted_path_from;
-    char *converted_path_to;
-    unsigned int dirid_from, dirid_to;
-    ret = convert_path_to_afp_alloc(vol->path_encoding, path_from,
-                                    &converted_path_from);
-
-    if (ret) {
-        return ret;
-    }
-
-    ret = convert_path_to_afp_alloc(vol->path_encoding, path_to,
-                                    &converted_path_to);
-
-    if (ret) {
-        free(converted_path_from);
-        return ret;
-    }
-
-    if (volume_is_readonly(vol)) {
-        free(converted_path_from);
-        free(converted_path_to);
-        return -EACCES;
-    }
-
-    ret = get_dirid(vol, converted_path_from, basename_from, &dirid_from);
-
-    if (ret < 0) {
-        free(converted_path_from);
-        free(converted_path_to);
-        return ret;
-    }
-
-    ret = get_dirid(vol, converted_path_to, basename_to, &dirid_to);
-
-    if (ret < 0) {
-        free(converted_path_from);
-        free(converted_path_to);
-        return ret;
-    }
-
-    dst_type = is_dir(vol, dirid_to, basename_to);
-    log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "ml_rename: from dirid=%u name=%s  to dirid=%u name=%s "
-                   "dst_type=%d", dirid_from, basename_from, dirid_to,
-                   basename_to, dst_type);
-
-    if (dst_type == 1) {
-        rc = afp_moveandrename(vol,
-                               dirid_from, dirid_to,
-                               basename_from, basename_to, basename_from);
-        log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                       "ml_rename: afp_moveandrename rc=%d", rc);
-    } else {
-        /* When the destination is an existing file, use FPExchangeFiles if the
-         * server supports it. This preserves the destination file's FileID
-         * (which becomes the inode), preventing macOS from seeing a stale vnode
-         * and reporting "file does not exist" after a safe-save rename.
-         * After exchange, the source path holds the old content; delete it. */
-        if (dst_type == 0 && !(vol->attributes & kNoExchangeFiles)) {
-            rc = afp_exchangefiles(vol,
-                                   dirid_from, dirid_to,
-                                   basename_from, basename_to);
-            log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                           "ml_rename: afp_exchangefiles rc=%d", rc);
-
-            if (rc == kFPNoErr) {
-                int del_rc = afp_delete(vol, dirid_from, basename_from);
-                log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                               "ml_rename: afp_delete(src) rc=%d", del_rc);
-                ret = 0;
-                goto done;
-            }
-
-            /* Exchange failed (dst doesn't exist, or not supported); fall
-             * through to regular moveandrename. */
-        }
-
-        rc = afp_moveandrename(vol,
-                               dirid_from, dirid_to,
-                               basename_from, NULL, basename_to);
-        log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                       "ml_rename: afp_moveandrename rc=%d", rc);
-    }
-
-    switch (rc) {
-    case kFPObjectLocked:
-    case kFPAccessDenied:
-        ret = EACCES;
-        break;
-
-    case kFPCantRename:
-        ret = EROFS;
-        break;
-
-    case kFPObjectExists:
-
-        /* First, remove the old file. */
-        switch (afp_delete(vol, dirid_to, basename_to)) {
-        case kFPAccessDenied:
-            ret = EACCES;
-            break;
-
-        case kFPObjectLocked:
-            ret = EBUSY;
-            break;
-
-        case kFPObjectNotFound:
-            ret = ENOENT;
-            break;
-
-        case kFPVolLocked:
-            ret = EACCES;
-            break;
-
-        case kFPDirNotEmpty:
-            ret = ENOTEMPTY;
-            break;
-
-        case kFPObjectTypeErr:
-        case kFPMiscErr:
-        case kFPParamErr:
-        case -1:
-            ret = EINVAL;
-            break;
-        }
-
-        /* Then, do the move again */
-        switch (afp_moveandrename(vol,
-                                  dirid_from, dirid_to,
-                                  basename_from, NULL, basename_to)) {
-        case kFPObjectLocked:
-        case kFPAccessDenied:
-            ret = EACCES;
-            break;
-
-        case kFPCantRename:
-            ret = EROFS;
-            break;
-
-        case kFPObjectExists:
-        case kFPObjectNotFound:
-            ret = ENOENT;
-            break;
-
-        case kFPParamErr:
-        case kFPMiscErr:
-            ret = EIO;
-            break;
-
-        default:
-        case kFPNoErr:
-            ret = 0;
-            break;
-        }
-
-        break;
-
-    case kFPObjectNotFound:
-        ret = ENOENT;
-        break;
-
-    case kFPNoErr:
-        ret = 0;
-        break;
-
-    default:
-    case kFPParamErr:
-    case kFPMiscErr:
-        ret = EIO;
-    }
-
-done:
-    /* The move may happen whatever the answer, so the IDs cached under both
-     * paths may be stale; a folder that takes the source resolves again. */
-    remove_did_subtree(vol, converted_path_from);
-    remove_did_subtree(vol, converted_path_to);
-    free(converted_path_from);
-    free(converted_path_to);
-    return -ret;
+    return rename_object(vol, path_from, path_to, 0);
 }
 
+/*!
+ * @brief Rename a file or folder to a name nothing holds
+ *
+ * @param[in] vol        volume of both paths
+ * @param[in] path_from  UTF-8 path of the object
+ * @param[in] path_to    UTF-8 path it takes
+ * @returns 0, or a negative errno: -EEXIST for a name taken
+ */
+int ml_rename_excl(struct afp_volume *vol,
+                   const char *path_from, const char *path_to)
+{
+    return rename_object(vol, path_from, path_to, 1);
+}
+
+/*!
+ * @brief Swap two files' contents and parameters with FPExchangeFiles
+ *
+ * @param[in] vol        volume of both files
+ * @param[in] path_from  UTF-8 path of one file
+ * @param[in] path_to    UTF-8 path of the other
+ * @returns 0, or a negative errno: -ENOSYS where the volume or the server
+ *          has no exchange, -EACCES for a read-only volume or a refusal
+ */
 int ml_exchange(struct afp_volume * vol,
                 const char *path_from, const char *path_to)
 {
     int ret;
     int rc;
-    char basename_from[AFPC_MAX_NAME_BYTES];
-    char basename_to[AFPC_MAX_NAME_BYTES];
-    char *converted_path_from;
-    char *converted_path_to;
-    unsigned int dirid_from;
-    unsigned int dirid_to;
+    struct ml_target from;
+    struct ml_target to;
 
     if (vol->attributes & kNoExchangeFiles) {
         return -ENOSYS;
     }
 
-    ret = convert_path_to_afp_alloc(vol->path_encoding, path_from,
-                                    &converted_path_from);
-
-    if (ret) {
-        return ret;
-    }
-
-    ret = convert_path_to_afp_alloc(vol->path_encoding, path_to,
-                                    &converted_path_to);
-
-    if (ret) {
-        free(converted_path_from);
-        return ret;
-    }
-
     if (volume_is_readonly(vol)) {
-        free(converted_path_from);
-        free(converted_path_to);
         return -EACCES;
     }
 
-    if (get_dirid(vol, converted_path_from, basename_from, &dirid_from) < 0
-            || get_dirid(vol, converted_path_to, basename_to, &dirid_to) < 0) {
-        free(converted_path_from);
-        free(converted_path_to);
-        return -ENOENT;
+    ret = ml_resolve(vol, path_from, &from);
+
+    if (ret == 0) {
+        ret = ml_resolve(vol, path_to, &to);
     }
 
-    rc = afp_exchangefiles(vol, dirid_from, dirid_to,
-                           basename_from, basename_to);
+    if (ret < 0) {
+        return ret;
+    }
+
+    /* No ll_open() runs on the server between the exchange and its walk. */
+    pthread_rwlock_wrlock(&vol->open_lock);
+    rc = afp_exchangefiles(vol, from.did, to.did, from.afp_name,
+                           to.afp_name);
+    exchange_outcome(vol, rc, &from, &to);
+    pthread_rwlock_unlock(&vol->open_lock);
 
     switch (rc) {
     case kFPNoErr:
@@ -2382,8 +2600,6 @@ int ml_exchange(struct afp_volume * vol,
         break;
     }
 
-    free(converted_path_from);
-    free(converted_path_to);
     return -ret;
 }
 
@@ -2437,34 +2653,6 @@ int ml_passwd(struct afp_server *server,
 }
 
 /* Extended Attributes (AFP 3.2+) */
-
-static int open_appledouble_meta(struct afp_volume *volume, const char *path,
-                                 unsigned int resource, int flags,
-                                 struct afp_file_info *fp)
-{
-    char *converted_path;
-    int ret;
-
-    if (!volume || !path || !fp) {
-        return -EINVAL;
-    }
-
-    ret = convert_path_to_afp_alloc(volume->path_encoding, path,
-                                    &converted_path);
-
-    if (ret) {
-        return ret;
-    }
-
-    if (invalid_filename(volume, converted_path)) {
-        free(converted_path);
-        return -ENAMETOOLONG;
-    }
-
-    ret = appledouble_open_meta(volume, converted_path, resource, flags, fp);
-    free(converted_path);
-    return ret;
-}
 
 static int validate_special_xattr_flags(int flags, int exists_ret)
 {
@@ -2539,12 +2727,48 @@ static int append_listed_xattr_name(char *list, size_t size, size_t *used,
     return 0;
 }
 
+/*!
+ * @brief Read the record of a file's resource fork
+ *
+ * A question of the fork's length takes the record the cache holds when
+ * the record holds no fork; a fork it holds is measured on the server, so
+ * a read the answer sizes takes the fork whole. A read of the fork and a
+ * check before its change ask the server too.
+ *
+ * @param[in]  volume  volume of the file
+ * @param[in]  path    UTF-8 path of the file
+ * @param[in]  fresh   1 to ask the server
+ * @param[out] t       receives the resolved path
+ * @param[out] e       receives the record
+ * @returns 0, -ENOATTR for an empty fork, or a negative errno
+ */
+static int resource_fork_entry(struct afp_volume *volume, const char *path,
+                               int fresh, struct ml_target *t,
+                               struct afp_dirent *e)
+{
+    int ret = ml_entry(volume, path, fresh ? ML_ENTRY_FRESH : ML_ENTRY_FORK,
+                       t, e);
+    return ret == 0 && e->resourcesize == 0 ? -ENOATTR : ret;
+}
+
+/*!
+ * @brief Read the resource fork of path, or its length
+ *
+ * @param[in]  volume    volume of the file
+ * @param[in]  path      UTF-8 path of the file
+ * @param[out] value     receives the bytes, or NULL
+ * @param[in]  size      capacity of value; 0 asks for the length alone
+ * @param[in]  position  offset in the fork of the first byte read
+ * @returns the length or the count of bytes read, -ENOATTR for an empty
+ *          fork, -EFBIG for a count past INT_MAX, -EINVAL for a NULL
+ *          value with a size, or another negative errno
+ */
 int ml_getresourcefork(struct afp_volume * volume, const char *path,
                        void *value, size_t size, off_t position)
 {
-    struct stat stbuf;
+    struct afp_dirent e;
+    struct ml_target t;
     struct afp_file_info fp;
-    char *converted_path;
     size_t total = 0;
     uint64_t remaining;
     int ret;
@@ -2553,48 +2777,30 @@ int ml_getresourcefork(struct afp_volume * volume, const char *path,
         return -EINVAL;
     }
 
-    ret = convert_path_to_afp_alloc(volume->path_encoding, path,
-                                    &converted_path);
+    ret = resource_fork_entry(volume, path, size > 0, &t, &e);
 
-    if (ret) {
+    if (ret < 0) {
         return ret;
-    }
-
-    ret = ll_getattr(volume, converted_path, &stbuf, 1);
-
-    if (ret < 0 && ret != -EFBIG) {
-        free(converted_path);
-        return ret;
-    }
-
-    if (stbuf.st_size == 0) {
-        free(converted_path);
-        return -ENOATTR;
     }
 
     if (size == 0) {
-        if (stbuf.st_size > INT_MAX) {
-            free(converted_path);
-            return -EFBIG;
-        }
-
-        free(converted_path);
-        return (int)stbuf.st_size;
+        return e.resourcesize > INT_MAX ? -EFBIG : (int) e.resourcesize;
     }
 
-    if (position < 0 || (uint64_t)position >= (uint64_t)stbuf.st_size) {
-        free(converted_path);
+    if (position < 0 || (uint64_t) position >= e.resourcesize) {
         return 0;
     }
 
-    ret = open_appledouble_meta(volume, path, AFP_META_RESOURCE, O_RDONLY, &fp);
+    memset(&fp, 0, sizeof(fp));
+    fp.resource = AFP_META_RESOURCE;
+    fork_now_named(&fp, &t);
+    ret = ll_open(volume, path, O_RDONLY, &fp);
 
     if (ret < 0) {
-        free(converted_path);
         return ret;
     }
 
-    remaining = (uint64_t)stbuf.st_size - (uint64_t)position;
+    remaining = e.resourcesize - (uint64_t) position;
 
     while (total < size && remaining > 0) {
         int eof = 0;
@@ -2605,13 +2811,11 @@ int ml_getresourcefork(struct afp_volume * volume, const char *path,
 
         if (ret < 0) {
             appledouble_close(volume, &fp);
-            free(converted_path);
             return ret;
         }
 
         if (ret != 1) {
             appledouble_close(volume, &fp);
-            free(converted_path);
             return -EIO;
         }
 
@@ -2628,14 +2832,7 @@ int ml_getresourcefork(struct afp_volume * volume, const char *path,
     }
 
     appledouble_close(volume, &fp);
-
-    if (total > INT_MAX) {
-        free(converted_path);
-        return -EFBIG;
-    }
-
-    free(converted_path);
-    return (int)total;
+    return total > INT_MAX ? -EFBIG : (int) total;
 }
 
 /*!
@@ -2673,7 +2870,7 @@ static int write_resource_fork(struct afp_volume * volume, const char *path,
         return -EROFS;
     }
 
-    ret = open_appledouble_meta(volume, path, AFP_META_RESOURCE, O_RDWR, &fp);
+    ret = appledouble_open_meta(volume, path, AFP_META_RESOURCE, O_RDWR, &fp);
 
     if (ret < 0) {
         return ret;
@@ -2753,9 +2950,11 @@ int ml_setresourcefork_flags(struct afp_volume * volume, const char *path,
     }
 
     if (flags & (kXAttrCreate | kXAttrReplace)) {
+        struct ml_target t;
+        struct afp_dirent e;
         ret = validate_special_xattr_flags(flags,
-                                           ml_getresourcefork(volume, path,
-                                                              NULL, 0, 0));
+                                           resource_fork_entry(volume, path,
+                                                               1, &t, &e));
 
         if (ret < 0) {
             return ret;
@@ -2795,7 +2994,7 @@ int ml_truncateresourcefork(struct afp_volume * volume, const char *path,
         return -EROFS;
     }
 
-    ret = open_appledouble_meta(volume, path, AFP_META_RESOURCE, O_RDWR, &fp);
+    ret = appledouble_open_meta(volume, path, AFP_META_RESOURCE, O_RDWR, &fp);
 
     if (ret < 0) {
         return ret;
@@ -2811,63 +3010,83 @@ int ml_truncateresourcefork(struct afp_volume * volume, const char *path,
     return close_ret < 0 ? close_ret : 0;
 }
 
+/*!
+ * @brief Remove the resource fork of path, which leaves it empty
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] path    UTF-8 path of the file
+ * @returns 0, -ENOATTR for a fork already empty, or a negative errno
+ */
 int ml_removeresourcefork(struct afp_volume * volume, const char *path)
 {
-    int ret = ml_getresourcefork(volume, path, NULL, 0, 0);
-
-    if (ret < 0 && ret != -EFBIG) {
-        return ret;
-    }
-
-    return ml_setresourcefork(volume, path, NULL, 0, 0);
+    struct ml_target t;
+    struct afp_dirent e;
+    int ret = resource_fork_entry(volume, path, 1, &t, &e);
+    return ret < 0 ? ret : ml_setresourcefork(volume, path, NULL, 0, 0);
 }
 
+/*!
+ * @brief Read the record of an object's Finder info
+ *
+ * @param[in]  volume  volume of the object
+ * @param[in]  path    UTF-8 path of the object
+ * @param[in]  fresh   1 to ask the server, 0 to take the cache's record
+ *                     while its parameters hold
+ * @param[out] e       receives the record
+ * @returns 0, -ENOATTR when the Finder info is all zero, or a negative
+ *          errno
+ */
+static int finderinfo_entry(struct afp_volume *volume, const char *path,
+                            int fresh, struct afp_dirent *e)
+{
+    static const char empty_finderinfo[32] = {0};
+    struct ml_target t;
+    int ret = ml_entry(volume, path, fresh ? ML_ENTRY_FRESH : ML_ENTRY_CACHED,
+                       &t, e);
+    return ret == 0 && memcmp(e->finderinfo, empty_finderinfo,
+                              sizeof(e->finderinfo)) == 0 ? -ENOATTR : ret;
+}
+
+/*!
+ * @brief Read the Finder info of the object at path
+ *
+ * The 32 bytes are part of every record: a question of their length takes
+ * the record the cache holds, and a read of them asks the server, as a
+ * read-modify-write of them must.
+ *
+ * @param[in]  volume  volume of the object
+ * @param[in]  path    UTF-8 path of the object
+ * @param[out] value   receives the Finder info, or NULL
+ * @param[in]  size    capacity of value; 0 asks for the length alone
+ * @returns 32, -ENOATTR when the Finder info is all zero, -ERANGE when
+ *          value is too small, or another negative errno
+ */
 int ml_getfinderinfo(struct afp_volume * volume, const char *path,
                      void *value, size_t size)
 {
-    struct afp_file_info fp;
-    char finderinfo[32];
-    static const char empty_finderinfo[32] = {0};
-    size_t amount_read = 0;
-    int eof = 0;
+    struct afp_dirent e;
     int ret;
 
     if (!volume || !path) {
         return -EINVAL;
     }
 
-    ret = open_appledouble_meta(volume, path, AFP_META_FINDERINFO, O_RDONLY, &fp);
+    ret = finderinfo_entry(volume, path, size != 0, &e);
 
     if (ret < 0) {
         return ret;
-    }
-
-    ret = appledouble_read(volume, &fp, finderinfo, sizeof(finderinfo), 0,
-                           &amount_read, &eof);
-    appledouble_close(volume, &fp);
-
-    if (ret < 0) {
-        return ret;
-    }
-
-    if (ret != 1 || amount_read != sizeof(finderinfo)) {
-        return -EIO;
-    }
-
-    if (memcmp(finderinfo, empty_finderinfo, sizeof(empty_finderinfo)) == 0) {
-        return -ENOATTR;
     }
 
     if (size == 0) {
-        return sizeof(finderinfo);
+        return sizeof(e.finderinfo);
     }
 
-    if (!value || size < sizeof(finderinfo)) {
+    if (!value || size < sizeof(e.finderinfo)) {
         return -ERANGE;
     }
 
-    memcpy(value, finderinfo, sizeof(finderinfo));
-    return sizeof(finderinfo);
+    memcpy(value, e.finderinfo, sizeof(e.finderinfo));
+    return sizeof(e.finderinfo);
 }
 
 /*!
@@ -2895,7 +3114,8 @@ int ml_setfinderinfo(struct afp_volume * volume, const char *path,
         return -EROFS;
     }
 
-    ret = open_appledouble_meta(volume, path, AFP_META_FINDERINFO, O_RDWR, &fp);
+    ret = appledouble_open_meta(volume, path, AFP_META_FINDERINFO, O_RDWR,
+                                &fp);
 
     if (ret < 0) {
         return ret;
@@ -2915,6 +3135,17 @@ int ml_setfinderinfo(struct afp_volume * volume, const char *path,
     return 0;
 }
 
+/*!
+ * @brief Set the Finder info of path as setxattr(2) asks
+ *
+ * @param[in] volume  volume of the object
+ * @param[in] path    UTF-8 path of the object
+ * @param[in] value   the 32 bytes
+ * @param[in] size    length of value
+ * @param[in] flags   kXAttrCreate, kXAttrReplace or 0
+ * @returns 0, -EEXIST or -ENOATTR where the flags refuse the set, -EINVAL
+ *          for flags it does not take, or another negative errno
+ */
 int ml_setfinderinfo_flags(struct afp_volume * volume, const char *path,
                            const void *value, size_t size, int flags)
 {
@@ -2925,9 +3156,10 @@ int ml_setfinderinfo_flags(struct afp_volume * volume, const char *path,
     }
 
     if (flags & (kXAttrCreate | kXAttrReplace)) {
+        struct afp_dirent e;
         ret = validate_special_xattr_flags(flags,
-                                           ml_getfinderinfo(volume, path,
-                                                            NULL, 0));
+                                           finderinfo_entry(volume, path, 1,
+                                                            &e));
 
         if (ret < 0) {
             return ret;
@@ -2961,10 +3193,10 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
                 const char *name, void *value, size_t size)
 {
     struct afp_extattr_info info;
-    unsigned int dirid;
-    char basename[AFPC_MAX_NAME_BYTES];
+    struct ml_target t;
     const char *afp_name;
     unsigned short afp_namelen;
+    uint64_t sent;
     int ret;
 
     if (!volume || !path || !name) {
@@ -3000,24 +3232,39 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
         return ret;
     }
 
-    /* Parse path into directory ID and basename */
-    ret = get_dirid(volume, path, basename, &dirid);
+    ret = ml_resolve(volume, path, &t);
 
     if (ret != 0) {
         return ret;
     }
 
+    /* The kernel asks the length, then the value. */
+    ret = dir_cache_get_xattr(volume, t.did, t.name, afp_name, value, size);
+
+    if (ret >= 0 || ret == -ERANGE) {
+        return ret;
+    }
+
+    sent = dir_cache_changes(volume);
     /* Time Capsule rejects small MaxReplySize values.  The reply buffer is
      * fixed-size, so cap the request at the storage we actually have. */
     info.maxsize = AFP_EXTATTR_DATA_MAX;
     info.size = 0;
     info.copied = 0;
     /* Get the extended attribute */
-    ret = afp_getextattr(volume, dirid, 0, info.maxsize,
-                         basename, afp_namelen, afp_name, &info);
+    ret = afp_getextattr(volume, t.did, 0, info.maxsize,
+                         t.afp_name, afp_namelen, afp_name, &info);
 
     switch (ret) {
     case kFPNoErr:
+
+        /* A question of the length precedes one of the value, which the
+         * value kept here answers. */
+        if (size == 0 && info.copied == info.size) {
+            dir_cache_set_xattr(volume, t.did, t.name, afp_name, info.data,
+                                info.size, sent);
+        }
+
         break;
 
     case kFPItemNotFound:
@@ -3077,8 +3324,7 @@ int ml_getxattr(struct afp_volume * volume, const char *path,
 int ml_setxattr(struct afp_volume * volume, const char *path,
                 const char *name, const void *value, size_t size, int flags)
 {
-    unsigned int dirid;
-    char basename[AFPC_MAX_NAME_BYTES];
+    struct ml_target t;
     const char *afp_name;
     unsigned short afp_namelen;
     unsigned short bitmap = 0;
@@ -3127,8 +3373,7 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
         return ret;
     }
 
-    /* Parse path into directory ID and basename */
-    ret = get_dirid(volume, path, basename, &dirid);
+    ret = ml_resolve(volume, path, &t);
 
     if (ret != 0) {
         return ret;
@@ -3144,8 +3389,9 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
     }
 
     /* Set the extended attribute */
-    ret = afp_setextattr(volume, dirid, bitmap, 0, basename,
+    ret = afp_setextattr(volume, t.did, bitmap, 0, t.afp_name,
                          afp_namelen, afp_name, size, value);
+    dir_cache_forget_xattr(volume, t.did, t.name);
 
     switch (ret) {
     case kFPNoErr:
@@ -3190,8 +3436,7 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
                  char *list, size_t size)
 {
     struct afp_extattr_info info;
-    unsigned int dirid;
-    char basename[AFPC_MAX_NAME_BYTES];
+    struct ml_target t;
     size_t filtered_size = 0;
     int ret = 0;
 
@@ -3200,8 +3445,7 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
     }
 
     if ((volume->attributes & kSupportsExtAttrs) && strcmp(path, "/") != 0) {
-        /* Parse path into directory ID and basename */
-        ret = get_dirid(volume, path, basename, &dirid);
+        ret = ml_resolve(volume, path, &t);
 
         if (ret != 0) {
             return ret;
@@ -3213,7 +3457,7 @@ int ml_listxattr(struct afp_volume * volume, const char *path,
         info.size = 0;
         info.copied = 0;
         /* List extended attributes */
-        ret = afp_listextattr(volume, dirid, 0, basename, &info);
+        ret = afp_listextattr(volume, t.did, 0, t.afp_name, &info);
 
         switch (ret) {
         case kFPNoErr:
@@ -3301,8 +3545,7 @@ out:
 int ml_removexattr(struct afp_volume * volume, const char *path,
                    const char *name)
 {
-    unsigned int dirid;
-    char basename[AFPC_MAX_NAME_BYTES];
+    struct ml_target t;
     const char *afp_name;
     unsigned short afp_namelen;
     int ret;
@@ -3344,14 +3587,15 @@ int ml_removexattr(struct afp_volume * volume, const char *path,
         return ret;
     }
 
-    ret = get_dirid(volume, path, basename, &dirid);
+    ret = ml_resolve(volume, path, &t);
 
     if (ret != 0) {
         return ret;
     }
 
-    ret = afp_removeextattr(volume, dirid, 0, basename,
+    ret = afp_removeextattr(volume, t.did, 0, t.afp_name,
                             afp_namelen, afp_name);
+    dir_cache_forget_xattr(volume, t.did, t.name);
 
     switch (ret) {
     case kFPNoErr:

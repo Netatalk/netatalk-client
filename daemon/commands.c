@@ -40,7 +40,6 @@
 #include "lib/codepage.h"
 #include "lib/compat.h"
 #include "lib/dsi.h"
-#include "lib/did.h"
 #include "lib/client.h"
 #include "lib/mapping.h"
 #include "lib/midlevel.h"
@@ -1249,7 +1248,7 @@ static unsigned char process_write(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_write(v, data, request->size, request->offset, fp);
+    ret = ml_write(v, data, request->size, request->offset, 0, fp);
 
     if (ret > 0) {
         written = ret;
@@ -2038,11 +2037,13 @@ static unsigned char process_stat(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_getattr(v, path, &response.stat);
+    /* A client compares a file's length with what it then reads, so the
+     * stat of a file or a directory asks the server. */
+    ret = ml_getattr_fresh(v, path, &response.stat);
 
     if (ret < 0) {
         log_for_client((void *) c, AFPFSD, LOG_DEBUG,
-                       "ml_getattr error for '%s': %d (%s)", path, ret,
+                       "ml_getattr_fresh error for '%s': %d (%s)", path, ret,
                        strerror(-ret));
     }
 
@@ -3091,10 +3092,9 @@ static unsigned char process_desktop_path(struct daemon_client *c)
     struct afp_volume *volume = NULL;
     struct afp_comment comment;
     struct stat st;
-    char basename[AFPC_MAX_NAME_BYTES];
+    struct ml_target t;
     char data[AFP_SL_DESKTOP_COMMENT_MAX];
     size_t expected;
-    unsigned int did;
     int ret;
 
     if ((size_t)c->completed_packet_size < sizeof(*request)
@@ -3122,20 +3122,22 @@ static unsigned char process_desktop_path(struct daemon_client *c)
     ret = desktop_ensure_open(volume);
 
     /* Verify the target before querying its comment so a missing comment
-     * remains distinct from a missing or inaccessible path. */
+     * remains distinct from a missing or inaccessible path; the server
+     * says, as the comment's answer does. */
     if (ret == 0) {
-        ret = ml_getattr(volume, request->path, &st);
+        ret = ml_getattr_fresh(volume, request->path, &st);
     }
 
-    if (ret == 0 && get_dirid(volume, request->path, basename, &did) < 0) {
-        ret = -EIO;
+    if (ret == 0) {
+        ret = ml_resolve(volume, request->path, &t);
     }
 
     if (ret == 0) {
         comment.data = data;
         comment.maxsize = sizeof(data);
         comment.size = 0;
-        ret = desktop_error(afp_getcomment(volume, did, basename, &comment), 1);
+        ret = desktop_error(afp_getcomment(volume, t.did, t.afp_name,
+                                           &comment), 1);
     }
 
     send_desktop_data_response(c, ret, ret == 0 ? data : NULL,
@@ -3151,9 +3153,8 @@ static unsigned char process_desktop_set_comment(struct daemon_client *c)
     struct afpsl_ipc_desktop_set_comment_response response;
     struct afp_volume *volume = NULL;
     struct stat st;
-    char basename[AFPC_MAX_NAME_BYTES];
+    struct ml_target t;
     size_t expected;
-    unsigned int did;
     size_t written = 0;
     uint8_t truncated = 0;
     int ret = -EINVAL;
@@ -3184,11 +3185,11 @@ static unsigned char process_desktop_set_comment(struct daemon_client *c)
     ret = desktop_ensure_open(volume);
 
     if (ret == 0) {
-        ret = ml_getattr(volume, request->data, &st);
+        ret = ml_getattr_fresh(volume, request->data, &st);
     }
 
-    if (ret == 0 && get_dirid(volume, request->data, basename, &did) < 0) {
-        ret = -EIO;
+    if (ret == 0) {
+        ret = ml_resolve(volume, request->data, &t);
     }
 
     written = request->text_len;
@@ -3202,7 +3203,7 @@ static unsigned char process_desktop_set_comment(struct daemon_client *c)
     }
 
     if (ret == 0) {
-        ret = desktop_error(afp_addcomment_sized(volume, did, basename,
+        ret = desktop_error(afp_addcomment_sized(volume, t.did, t.afp_name,
                                                  request->data + request->path_len + 1U,
                                                  written), 0);
     }

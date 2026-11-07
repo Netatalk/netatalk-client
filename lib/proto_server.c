@@ -22,6 +22,7 @@
 #include "afp_protocol.h"
 #include "codepage.h"
 #include "compat.h"
+#include "did.h"
 #include "dsi.h"
 #include "dsi_protocol.h"
 #include "utils.h"
@@ -172,7 +173,7 @@ int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
         vol = &newvolumes[i];
         vol->flags = *p;
         vol->server = server;
-        pthread_mutex_init(&vol->did_cache_mutex, NULL);
+        dir_cache_init(vol);
         pthread_mutex_init(&vol->open_forks_mutex, NULL);
         pthread_rwlock_init(&vol->open_lock, NULL);
         p++;
