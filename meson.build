@@ -11,6 +11,17 @@ cc = meson.get_compiler('c')
 host_os = host_machine.system()
 pkg = import('pkgconfig')
 uname = find_program('uname', required: false)
+
+pkgconfig_bin = find_program('pkg-config', 'pkgconf', required: false)
+if not pkgconfig_bin.found()
+    warning(
+        'The configure step found no pkg-config, so it cannot detect libfuse, '
+        + 'libedit, or avahi-client, and finds libgcrypt only through '
+        + 'libgcrypt-config. Install pkg-config (pkgconf), then run: '
+        + 'meson setup --reconfigure '
+        + meson.project_build_root(),
+    )
+endif
 uname_stdout = run_command(uname, '-a', check: false).stdout().strip()
 
 install_prefix = get_option('prefix')
@@ -155,10 +166,76 @@ if not fuse_dep.found() or get_option('force-fuse-v2')
     )
 endif
 
+# The macFUSE installer is not relocatable: its libraries and pkg-config files
+# live under /usr/local on every Mac, while MacPorts' pkg-config searches only
+# /opt/local. Ask pkg-config again with macFUSE's directory before giving up.
+macfuse_pkgconfig_dir = '/usr/local/lib/pkgconfig'
+if host_os == 'darwin' and not fuse_dep.found() and pkgconfig_bin.found()
+    macfuse_names = get_option('force-fuse-v2') ? ['fuse'] : ['fuse3', 'fuse']
+    foreach macfuse_name : macfuse_names
+        if fuse_dep.found()
+            continue
+        endif
+        macfuse_version = run_command(
+            pkgconfig_bin,
+            '--modversion', macfuse_name,
+            env: {'PKG_CONFIG_PATH': macfuse_pkgconfig_dir},
+            check: false,
+        )
+        if macfuse_version.returncode() != 0
+            continue
+        endif
+        macfuse_version = macfuse_version.stdout().strip()
+        macfuse_wanted = macfuse_name == 'fuse3' ? '>=3.0.0' : '>=2.9.0'
+        if not macfuse_version.version_compare(macfuse_wanted)
+            continue
+        endif
+        fuse_dep = declare_dependency(
+            compile_args: run_command(
+                pkgconfig_bin,
+                '--cflags', macfuse_name,
+                env: {'PKG_CONFIG_PATH': macfuse_pkgconfig_dir},
+                check: true,
+            ).stdout().split(),
+            link_args: run_command(
+                pkgconfig_bin,
+                '--libs', macfuse_name,
+                env: {'PKG_CONFIG_PATH': macfuse_pkgconfig_dir},
+                check: true,
+            ).stdout().split(),
+            version: macfuse_version,
+        )
+        message(
+            'Using @0@ @1@ from @2@'.format(
+                macfuse_name,
+                macfuse_version,
+                macfuse_pkgconfig_dir,
+            ),
+        )
+    endforeach
+endif
+
 with_afpcmd = readline_dep.found() or libedit_readline_header != ''
 with_fuse = get_option('enable-fuse') and fuse_dep.found()
 with_crypt = gcrypt_dep.found()
 with_perf_tools = get_option('with-testsuite') and host_os == 'linux'
+
+if get_option('enable-fuse') and not with_fuse
+    warning(
+        'The configure step found neither fuse3 >= 3.0.0 nor fuse >= 2.9.0, so the '
+        + 'build will omit afpfsd, mount_afpfs, and the afpc fs commands. Install '
+        + 'libfuse 3, or macFUSE on macOS, then run: meson setup --reconfigure '
+        + meson.project_build_root(),
+    )
+endif
+
+if not with_afpcmd
+    warning(
+        'The configure step found neither readline nor libedit, so the build will '
+        + 'omit afpcmd. Install one of them, then run: meson setup --reconfigure '
+        + meson.project_build_root(),
+    )
+endif
 
 # Check for Zeroconf discovery support. Prefer DNS-SD in the default link
 # environment (libSystem on macOS) before looking for a separate library.
