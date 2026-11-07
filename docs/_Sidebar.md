@@ -1,6 +1,7 @@
 Netatalk Client
 
 * [Documentation home](index.html)
+* [Installation](installation.html)
 * [Getting started](getting_started.html)
 * [Features and compatibility](features.html)
 * [Developer documentation](developer.html)
