@@ -105,12 +105,16 @@ if ($build eq 'fuse') {
 } else {
     afpc_expect('mount_without_fuse', 2,
                 'unavailable because FUSE support was not built', $afpc, 'mount');
+    afpc_expect('mount_without_fuse_hint', 2,
+                'client/manual/en/installation', $afpc, 'mount');
     afpc_expect('status_namespace', 2, "Try 'afpc sl status'.", $afpc, 'status');
     afpc_expect(
                 'fs_without_fuse', 2,
                 'namespace is unavailable because FUSE support was not built',
                 $afpc, 'fs', 'status'
     );
+    afpc_expect('fs_without_fuse_hint', 2,
+                'client/manual/en/installation', $afpc, 'fs', 'status');
 }
 
 done_testing;

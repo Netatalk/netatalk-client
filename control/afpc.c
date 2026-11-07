@@ -45,6 +45,16 @@ static void usage(FILE *stream)
           "  afpc version\n", stream);
 }
 
+#ifndef HAVE_AFPC_FS
+static void fuse_not_built_hint(void)
+{
+    fputs("Install libfuse 3, or macFUSE on macOS, then reconfigure with "
+          "-Denable-fuse=true, rebuild, and reinstall Netatalk Client.\n"
+          "Installation guide: https://netatalk.io/client/manual/en/installation\n",
+          stderr);
+}
+#endif
+
 static int missing_namespace(const char *command)
 {
     if (strcmp(command, "mount") == 0 || strcmp(command, "unmount") == 0
@@ -56,6 +66,7 @@ static int missing_namespace(const char *command)
         fprintf(stderr,
                 "afpc: '%s' is unavailable because FUSE support was not built\n",
                 command);
+        fuse_not_built_hint();
 #endif
         return 2;
     }
@@ -138,6 +149,7 @@ int main(int argc, char **argv)
 #else
         fputs("afpc: the 'fs' namespace is unavailable because FUSE support was not built\n",
               stderr);
+        fuse_not_built_hint();
         return 2;
 #endif
     }
