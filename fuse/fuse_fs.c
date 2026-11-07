@@ -93,6 +93,8 @@
 #ifndef RENAME_EXCL
 #define RENAME_EXCL 0x00000004
 #endif
+#elif !defined(RENAME_NOREPLACE)
+#define RENAME_NOREPLACE (1 << 0)
 #endif
 
 /* If not defined by the build system, default to 0 (old API) */
@@ -800,7 +802,8 @@ static int fuse_open(const char *path, struct fuse_file_info *fi)
  * @param[in] data    bytes to write
  * @param[in] size    length of data
  * @param[in] offset  byte offset to write at
- * @param[in] fi      the kernel's file info with the handle
+ * @param[in] fi      the kernel's file info with the handle, the file's
+ *                    flags and whether a page is being written back
  * @returns bytes written, or a negative errno
  */
 static int fuse_write(const char *path, const char *data,
@@ -809,10 +812,25 @@ static int fuse_write(const char *path, const char *data,
 {
     struct afp_file_info *fp = (struct afp_file_info *) fi->fh;
     struct afp_volume * volume = fuse_get_context()->private_data;
+#ifdef __linux__
+    /* The kernel takes an append's offset from the length it holds, which
+     * a cached record may have given it, so an append goes to the end the
+     * server has. Linux sends each write the file's flags, which fcntl(2)
+     * may have changed since the open; a page written back goes to its
+     * offset, as does every write where the kernel sends no O_APPEND, and
+     * a direct one, whose pieces the kernel sends together. */
+    int append = !fi->writepage
+                 && (fi->flags & (O_APPEND | O_DIRECT)) == O_APPEND;
+#else
+    /* Whether another kernel's write carries its file's flags, a page
+     * written back apart, is not known, and a page sent to the server's
+     * end would land twice. */
+    int append = 0;
+#endif
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** cache write \"%s\" offset=%llu size=%llu",
                    path, (unsigned long long) offset, (unsigned long long) size);
-    return ml_write(volume, data, size, offset, fp);
+    return ml_write(volume, data, size, offset, append, fp);
 }
 
 /* Linux clamps a copy to the source's end and copies pseudo-files itself on
@@ -1320,7 +1338,6 @@ static int fuse_rename(const char *path_from, const char *path_to,
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** rename %s -> %s flags=0x%x", path_from, path_to, flags);
 #ifdef __APPLE__
-    struct stat stbuf;
 
     if (flags & RENAME_SWAP) {
         ret = ml_exchange(volume, path_from, path_to);
@@ -1328,18 +1345,16 @@ static int fuse_rename(const char *path_from, const char *path_to,
     }
 
     if (flags & RENAME_EXCL) {
-        ret = ml_getattr(volume, path_to, &stbuf);
-
-        if (ret == 0) {
-            return -EEXIST;
-        }
-
-        if (ret != -ENOENT) {
-            return ret;
-        }
+        return ml_rename_excl(volume, path_from, path_to);
     }
 
 #else
+
+    /* The move alone, which fails with EEXIST where the server finds the
+     * name taken, where a lookup the cache answers might not. */
+    if (flags == RENAME_NOREPLACE) {
+        return ml_rename_excl(volume, path_from, path_to);
+    }
 
     if (flags != 0) {
         return -EINVAL;
@@ -1368,7 +1383,6 @@ static int fuse_renamex(const char *path_from, const char *path_to,
                         unsigned int flags)
 {
     int ret;
-    struct stat stbuf;
     struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** renamex %s -> %s flags=0x%x", path_from, path_to, flags);
@@ -1379,15 +1393,7 @@ static int fuse_renamex(const char *path_from, const char *path_to,
     }
 
     if (flags & RENAME_EXCL) {
-        ret = ml_getattr(volume, path_to, &stbuf);
-
-        if (ret == 0) {
-            return -EEXIST;
-        }
-
-        if (ret != -ENOENT) {
-            return ret;
-        }
+        return ml_rename_excl(volume, path_from, path_to);
     }
 
     ret = ml_rename(volume, path_from, path_to);
@@ -1569,6 +1575,7 @@ static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
                                struct fuse_file_info *fi _U_)
 {
     struct stat stbuf;
+    char finderinfo[32];
     char *normalized_path;
     struct afp_volume * volume = fuse_get_context()->private_data;
     int ret;
@@ -1583,15 +1590,13 @@ static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
         return ret;
     }
 
-    ret = ml_getattr(volume, path, &stbuf);
+    /* The record the stat presents holds the invisible flag. */
+    ret = ml_getattr_finderinfo(volume, path, &stbuf, finderinfo);
 
     if (ret == 0) {
-        char finderinfo[32];
         stat_to_darwin_attr(&stbuf, attr);
 
-        if (ml_getfinderinfo(volume, path, finderinfo, sizeof(finderinfo)) == 32
-                && (finderinfo_get_flags(finderinfo)
-                    & AFP_FINDERINFO_FLAG_INVISIBLE)) {
+        if (finderinfo_get_flags(finderinfo) & AFP_FINDERINFO_FLAG_INVISIBLE) {
             attr->flags |= UF_HIDDEN;
         }
 

@@ -188,6 +188,7 @@ static int utest_truncate_record_is_the_opens(void)
            && fake.listed.writable && !fake.listed.dirty
            && fake.listed.did == AFP_ROOT_DID
            && !fake.listed.largelist_next
+           && strcmp(fake.listed.name, "file") == 0
            && strcmp(fake.listed.basename, "file") == 0 ? 0 : 4;
 }
 

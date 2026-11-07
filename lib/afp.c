@@ -604,8 +604,9 @@ int afp_detach_volume(struct afp_volume * volume)
 
     server = volume->server;
     volume->attached = AFP_VOLUME_DETACHING;
-    free_entire_did_cache(volume);
+    /* The forks' flushes tell the cache, which empties after them. */
     remove_fork_list(volume);
+    dir_cache_purge(volume);
 
     if (volume->dtrefnum) {
         afp_closedt(server, volume->dtrefnum);
@@ -706,6 +707,12 @@ void afp_free_server(struct afp_server **sp)
     }
 
     if (volumes) {
+        int i;
+
+        for (i = 0; i < server->num_volumes; i++) {
+            dir_cache_destroy(&volumes[i]);
+        }
+
         free(volumes);
     }
 
@@ -1056,6 +1063,8 @@ int afp_connect_volume(struct afp_volume * volume, struct afp_server * server,
         bitmap |= kFPVolNameBit | kFPVolBlockSizeBit;
     }
 
+    /* A new session's directory IDs may differ from the last one's. */
+    dir_cache_purge(volume);
     ret = afp_volopen(volume, bitmap,
                       (strlen(volume->volpassword) > 0) ? volume->volpassword : NULL);
 

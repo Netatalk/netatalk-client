@@ -114,7 +114,65 @@ struct afp_file_info {
     unsigned char dirty;
     /*! This record's open created the file */
     unsigned char created;
+    /*! The file's name, the directory cache's key */
+    char name[AFPC_MAX_NAME_BYTES];
+    /*! The file's name in the volume's wire form */
     char basename[AFPC_MAX_NAME_BYTES];
+};
+
+struct dir_cache_entry;
+
+/* The directory cache's counters: the lookups', counted with atomics, and
+ * the changes', counted under the write lock */
+struct dir_cache_counts {
+    unsigned long hits;
+    unsigned long misses;
+    unsigned long negative_hits;
+    unsigned long stat_hits;
+    unsigned long fetches;
+    unsigned long inserts;
+    unsigned long evictions;
+    unsigned long invalidations;
+};
+
+/* The slots of the changes the directory cache finds by node ID */
+#define DIR_CACHE_CNID_SLOTS 64U
+
+/* The directory cache (did.c): the identity, the parameters and the
+ * absence of the volume's objects, keyed by their parent directory's ID
+ * and their name, and indexed by node ID and by parent. */
+struct dir_cache {
+    pthread_rwlock_t lock;
+    struct dir_cache_entry **by_name;
+    struct dir_cache_entry **by_cnid;
+    struct dir_cache_entry **by_parent;
+    uint32_t buckets;
+    uint32_t count;
+    uint32_t max_entries;
+    uint32_t clock_hand;
+    /* The listings begun so far, under the write lock: each one's serial */
+    uint64_t listings;
+    /* The changes counted so far, under the write lock: each removal and
+     * each invalidation takes the next number */
+    uint64_t changes;
+    /* The change at which a name last stopped denoting its object: a
+     * request sent before it may describe an object the name no longer
+     * holds */
+    uint64_t last_removal;
+    /* The latest change a dropped entry carried, which a new entry
+     * starts from */
+    uint64_t dropped_change;
+    /* The latest change found by node ID, in a slot per node ID's low
+     * bits, which a reply for the object under any name must postdate for
+     * its parameters to be kept */
+    uint64_t cnid_changes[DIR_CACHE_CNID_SLOTS];
+    /* The clock of the lives, CLOCK_BOOTTIME's seconds where the system
+     * has it and CLOCK_MONOTONIC's elsewhere, unless a test sets its own */
+    time_t (*clock)(void);
+    /* The wall clock an object's age is measured on, time(2) unless a
+     * test sets its own */
+    time_t (*wall)(void);
+    struct dir_cache_counts stats;
 };
 
 #if 0
@@ -160,25 +218,19 @@ struct afp_volume {
     unsigned int extra_flags; /* This is a Netatalk Client specific field */
     time_t mount_time; /* Time when the volume was mounted */
 
-    /* Our directory ID cache */
-    struct did_cache_entry *did_cache_base;
-    pthread_mutex_t did_cache_mutex;
+    /* The directory cache */
+    struct dir_cache cache;
 
-    /* Our journal of open forks */
+    /* Our journal of open forks, and how many of them are writable */
     struct afp_file_info *open_forks;
+    unsigned int writable_forks;
     pthread_mutex_t open_forks_mutex;
-    /* Read-locked by an open until listed, write-locked by an offload */
+    /* Read-locked by an open until listed; write-locked by a copy offload,
+     * and by a rename or an exchange from its request to its forks' walk */
     pthread_rwlock_t open_lock;
 
     /* Used to trigger startup */
     pthread_cond_t  startup_condition_cond;
-
-    struct {
-        uint64_t hits;
-        uint64_t misses;
-        uint64_t expired;
-        uint64_t force_removed;
-    } did_cache_stats;
 
     void *priv;   /* This is a private structure for fuse/cmdline, etc */
     pthread_t thread; /* This is the per-volume thread */
@@ -691,11 +743,11 @@ int afp_createfile(struct afp_volume * volume, unsigned char flag,
                    unsigned int did, char *pathname);
 
 int afp_write(struct afp_volume * volume, unsigned short forkid,
-              uint32_t offset, uint32_t reqcount,
+              unsigned char flag, uint32_t offset, uint32_t reqcount,
               char *data, uint32_t *written);
 
 int afp_writeext(struct afp_volume * volume, unsigned short forkid,
-                 uint64_t offset, uint64_t reqcount,
+                 unsigned char flag, uint64_t offset, uint64_t reqcount,
                  char *data, uint64_t *written);
 
 int afp_flushfork(struct afp_volume * volume, unsigned short forkid,

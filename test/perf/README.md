@@ -78,12 +78,12 @@ and once per pass otherwise.
 | Open, read 1024 bytes, close | `open`, `pread`, `close` | 6,000 | `FPOpenFork`, `FPReadExt`, `FPCloseFork` |
 | Copying 1000 files client-side | read a file, create and write another | 6,000 | both fork lifecycles and `FPSetFileDirParms` for the copy's mode; the kernel's capability probe before each write is answered locally |
 | Copying 2000 files server-side | `open` x2, `copy_file_range`, `close` x2 | 10,000 | thirteen requests per file: about five `FPGetFileDirParms`, two `FPOpenFork`, `FPCreateFile`, `FPSetFileDirParms` for the mode, `FPReadExt`, `FPWriteExt`, two `FPCloseFork`; the files are below 512 KiB, so the FUSE `copy_file_range` operation copies them through the client, and a whole file of 512 KiB and up, before Netatalk 4.5 with at most 1 GiB in its two forks, goes to a Netatalk server on AFP 3.4 as one `FPCopyFile` |
-| Stat 2000 files | `stat` | 2,000 | one `FPGetFileDirParms` per file |
+| Stat 2000 files | `stat` | 2,000 | one `FPGetFileDirParms` per file whose record's parameters have lapsed in the client's cache |
 | Enumerate dir with 2000 files | `opendir`, `readdir` with `fstatat` per entry, `closedir` | 2,002 | `FPEnumerateExt2` pages; the per-entry `fstatat` is answered by the kernel's attribute cache, which the preceding stat test refreshed |
 | Lock then unlock 2000 open forks | `fcntl` lock and unlock | 4,000 | kernel-local locks; no FUSE lock operation (an SMB mount sends them to the server) |
-| Deleting 2000 files | `unlink` | 2,000 | `FPDelete` plus the type probe |
+| Deleting 2000 files | `unlink` | 2,000 | `FPDelete`; the type comes from the record the listing or a lookup left, and a probe asks the server only once its parameters have lapsed |
 | Byte-range lock/unlock 2000 ranges | `fcntl` lock and unlock | 4,000 | kernel-local locks |
-| Directory cache hits | `stat` per directory and file | 2,020 | `FPGetFileDirParms` once the kernel's one-second attribute cache expires |
+| Directory cache hits | `stat` per directory and file | 2,020 | `FPGetFileDirParms` once both the kernel's one-second attribute cache and the parameters of the client's record have lapsed |
 | Mixed cache operations | `mknod`, `stat`, `stat`, `unlink`; `readdir` every tenth | 2,050 | create with `FPSetFileDirParms` for the mode, lookup, delete |
 | Deep path traversal | `stat` per level per walk | 2,000 | kernel dentry cache after the first walk |
 | Cache validation | four `stat` per file | 2,000 | kernel attribute cache |

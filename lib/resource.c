@@ -24,7 +24,6 @@
 #include "afp_protocol.h"
 #include "codepage.h"
 #include "compat.h"
-#include "did.h"
 #include "dsi.h"
 #include "forklist.h"
 #include "lowlevel.h"
@@ -62,7 +61,10 @@ static int extra_translate(
     char *newpath;
     *newpath_p = NULL;
 
-    if (~volume->extra_flags & VOLUME_EXTRA_FLAGS_SHOW_APPLEDOUBLE) {
+    /* No path, as libfuse gives a stream whose folder is gone, names no
+     * pseudo-file; the mid level refuses it. */
+    if (path == NULL
+            || (~volume->extra_flags & VOLUME_EXTRA_FLAGS_SHOW_APPLEDOUBLE)) {
         return 0;
     }
 
@@ -409,6 +411,7 @@ int appledouble_unlink(struct afp_volume * volume, const char *path)
 int appledouble_close(struct afp_volume * volume, struct afp_file_info * fp)
 {
     int ret;
+    int rc;
 
     switch (fp->resource) {
     case AFP_META_RESOURCE:
@@ -420,19 +423,15 @@ int appledouble_close(struct afp_volume * volume, struct afp_file_info * fp)
             ret = -EIO;
         }
 
-        switch (afp_closefork(volume, fp->forkid)) {
-        case kFPNoErr:
-            break;
+        rc = afp_closefork(volume, fp->forkid);
+        remove_opened_fork(volume, fp);
 
-        default:
-        case kFPParamErr:
-        case kFPMiscErr:
-            remove_opened_fork(volume, fp);
-            return -EIO;
+        /* Netatalk dates a written resource fork at its close. */
+        if (fp->dirty) {
+            ll_fork_changed(volume, fp);
         }
 
-        remove_opened_fork(volume, fp);
-        return ret;
+        return rc == kFPNoErr ? ret : -EIO;
 
     case AFP_META_APPLEDOUBLE:
         return -EBADF;
@@ -473,7 +472,7 @@ int appledouble_write(struct afp_volume * volume, struct afp_file_info *fp,
 
     switch (fp->resource) {
     case AFP_META_RESOURCE:
-        ret = ll_write(volume, data, size, offset, fp, totalwritten);
+        ret = ll_write(volume, data, size, offset, 0, fp, totalwritten);
 
         if (ret < 0) {
             return ret;
@@ -515,6 +514,7 @@ int appledouble_write(struct afp_volume * volume, struct afp_file_info *fp,
         ret = afp_setfiledirparms(volume, fp->did, fp->basename,
                                   kFPFinderInfoBit
                                   | (keeps_time ? kFPModDateBit : 0), &fp2);
+        ll_fork_changed(volume, fp);
 
         if (ret != kFPNoErr) {
             return -ll_answer_errno(ret);
@@ -762,7 +762,7 @@ int appledouble_ftruncate(struct afp_volume * volume,
  * Finder information and the server icon open without a request of their own.
  *
  * @param[in]     volume  volume of the file
- * @param[in]     path    AFP path
+ * @param[in]     path    UTF-8 path
  * @param[in]     flags   open(2) flags
  * @param[in,out] fp      the record, which receives the pseudo-file's type
  * @returns 1 when path is a pseudo-file's and it opened, 0 for another
@@ -782,7 +782,7 @@ int appledouble_open(struct afp_volume * volume, const char *path, int flags,
 
     switch ((fp->resource = resource)) {
     case AFP_META_RESOURCE:
-        ret = get_dirid(volume, newpath, fp->basename, &fp->did);
+        ret = ml_resolve_fork(volume, newpath, fp);
 
         if (ret < 0) {
             goto out;
@@ -802,7 +802,7 @@ int appledouble_open(struct afp_volume * volume, const char *path, int flags,
         goto out;
 
     case AFP_META_FINDERINFO:
-        ret = get_dirid(volume, newpath, fp->basename, &fp->did);
+        ret = ml_resolve_fork(volume, newpath, fp);
 
         if (ret < 0) {
             goto out;
@@ -812,7 +812,7 @@ int appledouble_open(struct afp_volume * volume, const char *path, int flags,
         goto out;
 
     case AFP_META_COMMENT:
-        ret = get_dirid(volume, newpath, fp->basename, &fp->did);
+        ret = ml_resolve_fork(volume, newpath, fp);
 
         if (ret < 0) {
             goto out;
@@ -854,7 +854,7 @@ out:
  * Finder information opens without a request of its own.
  *
  * @param[in]  volume    volume of the file
- * @param[in]  path      AFP path of the file
+ * @param[in]  path      UTF-8 path of the file
  * @param[in]  resource  AFP_META_RESOURCE or AFP_META_FINDERINFO
  * @param[in]  flags     open(2) flags, for a resource fork
  * @param[out] fp        receives the open record
@@ -875,11 +875,11 @@ int appledouble_open_meta(struct afp_volume * volume, const char *path,
 
     switch (resource) {
     case AFP_META_RESOURCE:
-        ret = get_dirid(volume, path, fp->basename, &fp->did);
+        ret = ml_resolve_fork(volume, path, fp);
         return ret < 0 ? ret : ll_open(volume, path, flags, fp);
 
     case AFP_META_FINDERINFO:
-        return get_dirid(volume, path, fp->basename, &fp->did);
+        return ml_resolve_fork(volume, path, fp);
 
     default:
         return -EINVAL;
@@ -887,19 +887,25 @@ int appledouble_open_meta(struct afp_volume * volume, const char *path,
 }
 
 /*!
- * @brief Describe the AppleDouble pseudo-file at path for stat(2)
+ * @brief Read the attributes of the pseudo-file at path
  *
- * @param[in]  volume  volume of the file
- * @param[in]  path    AFP path
+ * A pseudo-file takes the record of the file it belongs to, with its own
+ * kind and size: the cache's while its parameters hold, except for a
+ * resource fork the record holds, which the server measures.
+ *
+ * @param[in]  volume  volume of the path
+ * @param[in]  path    UTF-8 path
  * @param[out] stbuf   receives the attributes
- * @returns 1 when path is a pseudo-file's, 0 for another path, or a negative
- *          errno: -ENOENT for the resource fork of no regular file
+ * @returns 1 when path is a pseudo-file's, 0 for another path, or a
+ *          negative errno
  */
 int appledouble_getattr(struct afp_volume * volume,
                         const char *path, struct stat *stbuf)
 {
     int resource;
     char *newpath;
+    struct ml_target t;
+    struct afp_dirent e;
     int ret;
     resource = extra_translate(volume, path, &newpath);
 
@@ -908,62 +914,50 @@ int appledouble_getattr(struct afp_volume * volume,
     }
 
     switch (resource) {
-    case AFP_META_RESOURCE:
-        ret = ll_getattr(volume, newpath, stbuf, 1);
-
-        /* Only a regular file has a resource fork. */
-        if (ret == 0 && !S_ISREG(stbuf->st_mode)) {
-            ret = -ENOENT;
-        }
-
-        if (ret < 0) {
-            goto error;
-        }
-
-        goto okay;
-
     case AFP_META_APPLEDOUBLE:
         stbuf->st_mode = 0700 | S_IFDIR;
         goto okay;
 
-    case AFP_META_FINDERINFO:
-        ret = ll_getattr(volume, newpath, stbuf, 0);
-
-        if (ret < 0) {
-            goto error;
-        }
-
-        afp_pseudo_file_stat(stbuf, 32);
-        goto okay;
-
-    case AFP_META_COMMENT: {
-        unsigned int did;
-        char basename[AFPC_MAX_NAME_BYTES];
-        ret = ll_getattr(volume, newpath, stbuf, 0);
-
-        if (ret < 0) {
-            goto error;
-        }
-
-        ret = get_dirid(volume, newpath, basename, &did);
-
-        if (ret < 0) {
-            goto error;
-        }
-
-        ret = read_comment(volume, basename, did, NULL, 0);
-
-        if (ret < 0) {
-            goto error;
-        }
-
-        afp_pseudo_file_stat(stbuf, ret);
-        goto okay;
-    }
-
     case AFP_META_SERVER_ICON:
         stbuf->st_mode = 0444;
         afp_pseudo_file_stat(stbuf, AFP_SERVER_ICON_LEN);
+        goto okay;
+
+    case AFP_META_RESOURCE:
+    case AFP_META_FINDERINFO:
+    case AFP_META_COMMENT:
+        ret = ml_entry(volume, newpath, resource == AFP_META_RESOURCE
+                       ? ML_ENTRY_FORK : ML_ENTRY_CACHED, &t, &e);
+
+        if (ret < 0) {
+            goto error;
+        }
+
+        /* Only a regular file has a resource fork. */
+        if (resource == AFP_META_RESOURCE && !S_ISREG(afp_dirent_mode(&e))) {
+            ret = -ENOENT;
+            goto error;
+        }
+
+        if (resource == AFP_META_COMMENT) {
+            ret = read_comment(volume, t.afp_name, t.did, NULL, 0);
+
+            if (ret < 0) {
+                goto error;
+            }
+
+            e.size = (uint64_t) ret;
+        } else if (resource == AFP_META_FINDERINFO) {
+            e.size = 32;
+        }
+
+        e.kind = (uint8_t) resource;
+        ret = ml_dirent_to_stat(volume, &t, &e, stbuf);
+
+        if (ret < 0) {
+            goto error;
+        }
+
         goto okay;
     }
 
@@ -999,7 +993,7 @@ static int names_pseudo_file(const char *name)
  * file a non-empty resource fork unless its name reads as a pseudo-file.
  *
  * @param[in]     volume  volume of the directory
- * @param[in]     path    AFP path
+ * @param[in]     path    UTF-8 path
  * @param[in,out] l       an empty listing, which receives the entries
  * @returns 1 for the .AppleDouble directory, 0 for another path, or a
  *          negative errno: -ENOTDIR for a pseudo-file
@@ -1021,7 +1015,7 @@ int appledouble_readdir(struct afp_volume * volume,
 
     case AFP_META_APPLEDOUBLE: {
         uint32_t real, kept = 0;
-        int ret = ll_readdir(volume, newpath, l, 1);
+        int ret = ml_list_directory(volume, newpath, l);
 
         if (ret < 0) {
             free(newpath);
