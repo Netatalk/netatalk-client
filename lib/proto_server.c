@@ -22,16 +22,32 @@
 #include "afp_protocol.h"
 #include "codepage.h"
 #include "compat.h"
+#include "did.h"
 #include "dsi.h"
 #include "dsi_protocol.h"
+#include "forklist.h"
 #include "utils.h"
 
+/*!
+ * @brief Whether a server's dates are its local time, as AFP 2's are
+ *
+ * @param[in] server  the server, or NULL
+ * @returns 1 when they are
+ */
 static int server_uses_local_time(const struct afp_server *server)
 {
     return server && server->using_version
            && server->using_version->av_number < 30;
 }
 
+/*!
+ * @brief Convert an AFP date to a time
+ *
+ * @param[in] server  the server, whose AFP 2 dates are its local time, or
+ *                    NULL
+ * @param[in] date    the date in network order
+ * @returns the time
+ */
 time_t afp_date_to_unix(const struct afp_server *server, uint32_t date)
 {
     uint32_t wire_seconds = ntohl(date);
@@ -91,6 +107,13 @@ uint32_t afp_date_from_unix(const struct afp_server *server, time_t date)
     return htonl((uint32_t)seconds);
 }
 
+/*!
+ * @brief Ask a server for its time and volumes with FPGetSrvrParms
+ *
+ * @param[in,out] server  the server, which afp_getsrvrparms_reply() fills
+ * @returns the server's AFP result, or afpc_dsi_send()'s error when the
+ *          request fails
+ */
 int afp_getsrvrparms(struct afp_server *server)
 {
     struct {
@@ -172,9 +195,9 @@ int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
         vol = &newvolumes[i];
         vol->flags = *p;
         vol->server = server;
-        pthread_mutex_init(&vol->did_cache_mutex, NULL);
+        dir_cache_init(vol);
         pthread_mutex_init(&vol->open_forks_mutex, NULL);
-        pthread_rwlock_init(&vol->open_lock, NULL);
+        afp_open_lock_init(&vol->open_lock);
         p++;
         p += copy_from_pascal(vol->volume_name, p,
                               sizeof(vol->volume_name)) + 1;
@@ -205,6 +228,15 @@ int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
 }
 
 
+/*!
+ * @brief Copy the message an FPGetSrvrMsg reply carries
+ *
+ * @param[in]  server  unused
+ * @param[in]  buf     the reply
+ * @param[in]  size    its length
+ * @param[out] other   receives AFP_LOGINMESG_LEN bytes of message, or NULL
+ * @returns 0, or -1 for a reply cut short
+ */
 int afp_getsrvrmsg_reply(struct afp_server *server _U_,
                          char *buf, unsigned int size, void *other)
 {
@@ -238,6 +270,17 @@ int afp_getsrvrmsg_reply(struct afp_server *server _U_,
     return 0;
 }
 
+/*!
+ * @brief Ask a server for its login or server message with FPGetSrvrMsg
+ *
+ * @param[in]  server       the server
+ * @param[in]  messagetype  AFPMESG_LOGIN or AFPMESG_SERVER
+ * @param[in]  utf8         1 to ask for the message in UTF-8
+ * @param[in]  block        seconds to wait for the reply
+ * @param[out] mesg         receives AFP_LOGINMESG_LEN bytes, or NULL
+ * @returns the server's AFP result, or afpc_dsi_send()'s error when the
+ *          request fails
+ */
 int afp_getsrvrmsg(struct afp_server *server, unsigned short messagetype,
                    unsigned char utf8, unsigned char block, char *mesg)
 {
@@ -263,6 +306,13 @@ int afp_getsrvrmsg(struct afp_server *server, unsigned short messagetype,
     return rc;
 }
 
+/*!
+ * @brief Tell a server the session is going to sleep, with FPZzzzz
+ *
+ * @param[in] server  the server
+ * @returns the server's AFP result, or afpc_dsi_send()'s error when the
+ *          request fails
+ */
 int afp_zzzzz(struct afp_server *server)
 {
     struct {

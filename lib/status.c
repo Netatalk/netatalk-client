@@ -20,9 +20,17 @@
 #include <sys/socket.h>
 
 #include "afp_internal.h"
+#include "did.h"
 #include "dsi.h"
 #include "mapping.h"
 
+/*!
+ * @brief Write the status text's first lines, the client's version and UAMs
+ *
+ * @param[out]    text  receives the lines
+ * @param[in,out] len   capacity of text, then the room left after them
+ * @returns the bytes written, or -1 when the lines do not fit
+ */
 int afp_status_header(char *text, int *len)
 {
     int pos;
@@ -79,6 +87,8 @@ static void print_volume_status(struct afp_volume *v, struct afp_server *s,
                                 char *text, int *pos_p, int *len)
 {
     int mounted = v->mounted == AFP_VOLUME_MOUNTED;
+    struct dir_cache_counts k;
+    uint32_t entries;
     int n;
     n = snprintf(text + *pos_p, (size_t)(*len - *pos_p),
                  "Volume \"%s\"\n    id: %d\n    attribs: 0x%x\n"
@@ -89,14 +99,15 @@ static void print_volume_status(struct afp_volume *v, struct afp_server *s,
     status_advance(pos_p, *len, n);
 
     if (v->attached == AFP_VOLUME_ATTACHED) {
+        entries = dir_cache_counts(v, &k);
         n = snprintf(text + *pos_p, (size_t)(*len - *pos_p),
-                     "    did cache stats: %" PRIu64 " miss, %" PRIu64
-                     " hit, %" PRIu64 " expired, %" PRIu64 " force removal\n"
+                     "    cache: %u entries, %lu hits, %lu misses, %lu stat "
+                     "hits, %lu negative hits, %lu fetches, %lu inserts, "
+                     "%lu evictions, %lu invalidations\n"
                      "    uid/gid mapping: %s (%d/%d)\n",
-                     v->did_cache_stats.misses, v->did_cache_stats.hits,
-                     v->did_cache_stats.expired,
-                     v->did_cache_stats.force_removed,
-                     get_mapping_name(v),
+                     (unsigned) entries, k.hits, k.misses, k.stat_hits,
+                     k.negative_hits, k.fetches, k.inserts, k.evictions,
+                     k.invalidations, get_mapping_name(v),
                      s->server_uid, s->server_gid);
         status_advance(pos_p, *len, n);
         n = snprintf(text + *pos_p, (size_t)(*len - *pos_p),

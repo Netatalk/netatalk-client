@@ -40,7 +40,6 @@
 #include "lib/codepage.h"
 #include "lib/compat.h"
 #include "lib/dsi.h"
-#include "lib/did.h"
 #include "lib/client.h"
 #include "lib/mapping.h"
 #include "lib/midlevel.h"
@@ -64,6 +63,12 @@ static pthread_mutex_t file_handle_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Serialize all AFP server operations to prevent concurrent DSI calls */
 static pthread_mutex_t server_op_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/*!
+ * @brief The name of an afpsld command, for the log
+ *
+ * @param[in] command  the command
+ * @returns the name, or "UNKNOWN"
+ */
 static const char *afpsl_ipc_command_name(unsigned char command)
 {
     switch (command) {
@@ -201,6 +206,13 @@ static const char *afpsl_ipc_command_name(unsigned char command)
     }
 }
 
+/*!
+ * @brief Close or continue a client's connection after a response
+ *
+ * @param[in,out] c                the client
+ * @param[in]     send_result      send_command()'s result; a failure closes
+ * @param[in]     close_requested  1 when the request asked to close
+ */
 static void finish_response(struct daemon_client *c, int send_result,
                             int close_requested)
 {
@@ -215,6 +227,12 @@ static void finish_response(struct daemon_client *c, int send_result,
     }
 }
 
+/*!
+ * @brief Answer an afpsld hello request, which negotiates the IPC protocol
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, or -1 to close the client for a request of the wrong size
+ */
 static int process_hello(struct daemon_client *c)
 {
     const struct afpsl_ipc_hello_request *request = (const void *)
@@ -242,6 +260,13 @@ static int process_hello(struct daemon_client *c)
     return 0;
 }
 
+/*!
+ * @brief Allocate a response with its fixed part zeroed
+ *
+ * @param[in] len        bytes to allocate
+ * @param[in] fixed_len  leading bytes to zero
+ * @returns the response, or NULL
+ */
 static void *alloc_response(size_t len, size_t fixed_len)
 {
     void *response = malloc(len);
@@ -381,6 +406,12 @@ static void release_volume_handles(struct afp_volume *volume)
     pthread_mutex_unlock(&file_handle_mutex);
 }
 
+/*!
+ * @brief Whether a volume's server has a live connection
+ *
+ * @param[in] volume  the volume, or NULL
+ * @returns 1 when it has
+ */
 static int volume_server_is_connected(const struct afp_volume *volume)
 {
     return volume && volume->server
@@ -388,6 +419,14 @@ static int volume_server_is_connected(const struct afp_volume *volume)
            && volume->server->fd >= 0;
 }
 
+/*!
+ * @brief Map a desktop database request's result to a negative errno
+ *
+ * @param[in] ret      the AFP result, or a negative errno from the send
+ * @param[in] comment  1 for a comment request, whose kFPItemNotFound is
+ *                     AFP_SL_DESKTOP_COMMENT_MISSING
+ * @returns 0, or a negative errno
+ */
 static int desktop_error(int ret, int comment)
 {
     /* AFP result codes occupy their own negative range.  Transport and
@@ -423,6 +462,12 @@ static int desktop_error(int ret, int comment)
     }
 }
 
+/*!
+ * @brief Open a volume's desktop database, once per volume
+ *
+ * @param[in,out] volume  the volume, which keeps the reference
+ * @returns 0, -ENOTCONN without a live connection, or desktop_error()'s errno
+ */
 static int desktop_ensure_open(struct afp_volume *volume)
 {
     int ret;
@@ -603,6 +648,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld exit request; the daemon exits with its last client
+ *
+ * @param[in,out] c  the client, whose connection closes
+ * @returns 0
+ */
 static unsigned char process_exit(struct daemon_client * c)
 {
     struct afpsl_ipc_response_header response;
@@ -623,6 +674,12 @@ static unsigned char process_exit(struct daemon_client * c)
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld changepw request by changing a user's password
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result
+ */
 static unsigned char process_changepw(struct daemon_client * c)
 {
     struct afpsl_ipc_changepw_request *req = (void *)c->complete_packet;
@@ -743,6 +800,12 @@ done:
  * AFPSL_IPC_RESULT_OK: lookup succeeded, volumeid set
  */
 
+/*!
+ * @brief Answer an afpsld getvolid request with an attached volume's ID
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result and the ID
+ */
 static unsigned char process_getvolid(struct daemon_client * c)
 {
     struct afp_volume * v = NULL;
@@ -887,6 +950,13 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld getvols request with a range of a server's volumes
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0 once it sends the response, or AFPSL_IPC_RESULT_ERROR to close
+ *          the connection when it can build none
+ */
 static unsigned char process_getvols(struct daemon_client * c)
 {
     struct afpsl_ipc_getvols_request * request = (void *) c->complete_packet;
@@ -1249,7 +1319,7 @@ static unsigned char process_write(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_write(v, data, request->size, request->offset, fp);
+    ret = ml_write(v, data, request->size, request->offset, 0, fp);
 
     if (ret > 0) {
         written = ret;
@@ -1361,6 +1431,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld chmod request by setting an object's mode
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result
+ */
 static unsigned char process_chmod(struct daemon_client * c)
 {
     struct afpsl_ipc_chmod_response response;
@@ -1435,6 +1511,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld rename request by renaming or moving an object
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result
+ */
 static unsigned char process_rename(struct daemon_client * c)
 {
     struct afpsl_ipc_rename_response response;
@@ -1500,6 +1582,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld unlink request by deleting a file
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result
+ */
 static unsigned char process_unlink(struct daemon_client * c)
 {
     struct afpsl_ipc_unlink_response response;
@@ -1571,6 +1659,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld truncate request by setting a file's length
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result
+ */
 static unsigned char process_truncate(struct daemon_client * c)
 {
     struct afpsl_ipc_truncate_response response;
@@ -1642,6 +1736,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld utime request by setting an object's times
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result
+ */
 static unsigned char process_utime(struct daemon_client * c)
 {
     struct afpsl_ipc_utime_response response;
@@ -1707,6 +1807,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld mkdir request by creating a directory
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result
+ */
 static unsigned char process_mkdir(struct daemon_client * c)
 {
     struct afpsl_ipc_mkdir_response response;
@@ -1784,6 +1890,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld rmdir request by deleting an empty directory
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result
+ */
 static unsigned char process_rmdir(struct daemon_client * c)
 {
     struct afpsl_ipc_rmdir_response response;
@@ -1860,6 +1972,12 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld statfs request with a volume's size and free space
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result and the figures
+ */
 static unsigned char process_statfs(struct daemon_client * c)
 {
     struct afpsl_ipc_statfs_response response;
@@ -2038,11 +2156,12 @@ static unsigned char process_stat(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_getattr(v, path, &response.stat);
+    /* Fresh, as afpcmd checks a download's length against it. */
+    ret = ml_getattr_fresh(v, path, &response.stat);
 
     if (ret < 0) {
         log_for_client((void *) c, AFPFSD, LOG_DEBUG,
-                       "ml_getattr error for '%s': %d (%s)", path, ret,
+                       "ml_getattr_fresh error for '%s': %d (%s)", path, ret,
                        strerror(-ret));
     }
 
@@ -2069,6 +2188,17 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Send a metadata response
+ *
+ * Without memory for the response, the connection closes.
+ *
+ * @param[in,out] c              the client
+ * @param[in]     error          0, or the request's negative errno
+ * @param[in]     data           the bytes it returns, or NULL
+ * @param[in]     data_size      length of data
+ * @param[in]     reported_size  the size the response reports
+ */
 static void send_metadata_response(struct daemon_client *c, int error,
                                    const void *data, unsigned int data_size,
                                    unsigned int reported_size)
@@ -2096,6 +2226,12 @@ static void send_metadata_response(struct daemon_client *c, int error,
     free(response);
 }
 
+/*!
+ * @brief Answer an afpsld request on an attribute, FinderInfo or resource fork
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result
+ */
 static unsigned char process_metadata(struct daemon_client *c)
 {
     struct afpsl_ipc_metadata_request *request = (void *)c->complete_packet;
@@ -2550,6 +2686,13 @@ done:
     return 0;
 }
 
+/*!
+ * @brief Whether a server's connection uses one of a list's addresses
+ *
+ * @param[in] server   the server
+ * @param[in] address  the address list, or NULL
+ * @returns 1 when it does
+ */
 static int server_address_matches(struct afp_server *server,
                                   struct addrinfo *address)
 {
@@ -2568,6 +2711,14 @@ static int server_address_matches(struct afp_server *server,
     return 0;
 }
 
+/*!
+ * @brief Whether a saved session's user and UAM fit a reconnect's
+ *
+ * @param[in] server    the server
+ * @param[in] url       the reconnect's URL, with its user
+ * @param[in] uam_mask  the UAMs it allows, or 0 for any
+ * @returns 1 when they fit
+ */
 static int server_auth_matches_reconnect(struct afp_server *server,
                                          const struct afpc_url *url,
                                          unsigned int uam_mask)
@@ -2584,6 +2735,16 @@ static int server_auth_matches_reconnect(struct afp_server *server,
     return 1;
 }
 
+/*!
+ * @brief Find the one live session a connect without a password may resume
+ *
+ * @param[in]  priv      the client, for the log
+ * @param[in]  url       the URL, whose user may be empty
+ * @param[in]  uam_mask  the UAMs allowed, or 0 for any
+ * @param[out] error     receives EEXIST for several, EPROTO for a session
+ *                       without a signature, or ENOTCONN, or NULL
+ * @returns the server, held, or NULL
+ */
 static struct afp_server *find_resumable_server_hold(void *priv,
                                                      const struct afpc_url *url,
                                                      unsigned int uam_mask,
@@ -2656,6 +2817,19 @@ static struct afp_server *find_resumable_server_hold(void *priv,
     return match;
 }
 
+/*!
+ * @brief Find the disconnected session a connect reaches, by server signature
+ *
+ * @param[in]  priv              the client, for the log
+ * @param[in]  url               the URL
+ * @param[in]  uam_mask          the UAMs allowed, or 0 for any
+ * @param[out] resolved_address  receives the URL's addresses on a match, or
+ *                               NULL
+ * @param[out] error             receives EEXIST for several, EPROTO for a
+ *                               server whose signature is missing or
+ *                               another's, or ENOTCONN, or NULL
+ * @returns the server, held, or NULL
+ */
 static struct afp_server *find_disconnected_server_hold(void *priv,
                                                         const struct afpc_url *url,
                                                         unsigned int uam_mask,
@@ -2770,6 +2944,15 @@ done:
     return match;
 }
 
+/*!
+ * @brief Log a saved session back in at the URL's resolved address
+ *
+ * @param[in]     priv     the client, for the log
+ * @param[in,out] server   the session's server
+ * @param[in]     url      the URL, with the password
+ * @param[in]     address  the address list, which the server owns from then on
+ * @returns afp_server_reconnect()'s result
+ */
 static int reconnect_disconnected_server(void *priv,
                                          struct afp_server *server,
                                          const struct afpc_url *url,
@@ -2792,6 +2975,13 @@ static int reconnect_disconnected_server(void *priv,
     return ret;
 }
 
+/*!
+ * @brief Answer an afpsld connect request: resume, reconnect or log in anew
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result, or -1 to close the client
+ *          for a request cut short
+ */
 static int process_connect(struct daemon_client * c)
 {
     struct afpsl_ipc_connect_request * req;
@@ -2965,6 +3155,12 @@ done:
     return ret;
 }
 
+/*!
+ * @brief Answer an afpsld attach request by attaching a server's volume
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result and the volume's ID
+ */
 static int process_attach(struct daemon_client * c)
 {
     struct afpsl_ipc_attach_request * req = (void *) c->complete_packet;
@@ -3052,6 +3248,17 @@ done:
 }
 
 
+/*!
+ * @brief Send a desktop database response
+ *
+ * Data past AFPSL_IPC_MAX_RESPONSE goes as -E2BIG; without memory for the
+ * response, the connection closes.
+ *
+ * @param[in,out] c      the client
+ * @param[in]     error  0, or the request's negative errno
+ * @param[in]     data   the bytes it returns, or NULL
+ * @param[in]     size   length of data
+ */
 static void send_desktop_data_response(struct daemon_client *c, int error,
                                        const void *data, uint32_t size)
 {
@@ -3085,16 +3292,21 @@ static void send_desktop_data_response(struct daemon_client *c, int error,
     free(response);
 }
 
+/*!
+ * @brief Answer an afpsld desktop request for an object's Finder comment
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the errno and the comment
+ */
 static unsigned char process_desktop_path(struct daemon_client *c)
 {
     struct afpsl_ipc_desktop_path_request *request = (void *)c->complete_packet;
     struct afp_volume *volume = NULL;
     struct afp_comment comment;
     struct stat st;
-    char basename[AFPC_MAX_NAME_BYTES];
+    struct ml_target t;
     char data[AFP_SL_DESKTOP_COMMENT_MAX];
     size_t expected;
-    unsigned int did;
     int ret;
 
     if ((size_t)c->completed_packet_size < sizeof(*request)
@@ -3121,21 +3333,22 @@ static unsigned char process_desktop_path(struct daemon_client *c)
 
     ret = desktop_ensure_open(volume);
 
-    /* Verify the target before querying its comment so a missing comment
-     * remains distinct from a missing or inaccessible path. */
+    /* A fresh stat of the target keeps a missing comment distinct from a
+     * missing or inaccessible path. */
     if (ret == 0) {
-        ret = ml_getattr(volume, request->path, &st);
+        ret = ml_getattr_fresh(volume, request->path, &st);
     }
 
-    if (ret == 0 && get_dirid(volume, request->path, basename, &did) < 0) {
-        ret = -EIO;
+    if (ret == 0) {
+        ret = ml_resolve(volume, request->path, &t);
     }
 
     if (ret == 0) {
         comment.data = data;
         comment.maxsize = sizeof(data);
         comment.size = 0;
-        ret = desktop_error(afp_getcomment(volume, did, basename, &comment), 1);
+        ret = desktop_error(afp_getcomment(volume, t.did, t.afp_name,
+                                           &comment), 1);
     }
 
     send_desktop_data_response(c, ret, ret == 0 ? data : NULL,
@@ -3144,6 +3357,12 @@ static unsigned char process_desktop_path(struct daemon_client *c)
     return 0;
 }
 
+/*!
+ * @brief Answer an afpsld desktop request that sets an object's Finder comment
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the errno
+ */
 static unsigned char process_desktop_set_comment(struct daemon_client *c)
 {
     struct afpsl_ipc_desktop_set_comment_request *request =
@@ -3151,9 +3370,8 @@ static unsigned char process_desktop_set_comment(struct daemon_client *c)
     struct afpsl_ipc_desktop_set_comment_response response;
     struct afp_volume *volume = NULL;
     struct stat st;
-    char basename[AFPC_MAX_NAME_BYTES];
+    struct ml_target t;
     size_t expected;
-    unsigned int did;
     size_t written = 0;
     uint8_t truncated = 0;
     int ret = -EINVAL;
@@ -3184,11 +3402,11 @@ static unsigned char process_desktop_set_comment(struct daemon_client *c)
     ret = desktop_ensure_open(volume);
 
     if (ret == 0) {
-        ret = ml_getattr(volume, request->data, &st);
+        ret = ml_getattr_fresh(volume, request->data, &st);
     }
 
-    if (ret == 0 && get_dirid(volume, request->data, basename, &did) < 0) {
-        ret = -EIO;
+    if (ret == 0) {
+        ret = ml_resolve(volume, request->data, &t);
     }
 
     written = request->text_len;
@@ -3202,7 +3420,7 @@ static unsigned char process_desktop_set_comment(struct daemon_client *c)
     }
 
     if (ret == 0) {
-        ret = desktop_error(afp_addcomment_sized(volume, did, basename,
+        ret = desktop_error(afp_addcomment_sized(volume, t.did, t.afp_name,
                                                  request->data + request->path_len + 1U,
                                                  written), 0);
     }
@@ -3354,6 +3572,14 @@ static unsigned char process_desktop_code(struct daemon_client *c)
     return 0;
 }
 
+/*!
+ * @brief Run a client's complete request under the server operation lock
+ *
+ * A handler's failure closes the connection.
+ *
+ * @param[in,out] other  the client
+ * @returns NULL
+ */
 static void *process_command_thread(void *other)
 {
     struct daemon_client * c = other;
@@ -3529,6 +3755,13 @@ static void *process_command_thread(void *other)
     return NULL;
 }
 
+/*!
+ * @brief Read a client's request, and start a thread for it once complete
+ *
+ * @param[in,out] c  the client
+ * @returns 0 once the thread starts, 2 while the request is incomplete, or
+ *          -1 to close the client
+ */
 int process_command(struct daemon_client * c)
 {
     ssize_t ret;

@@ -7,6 +7,11 @@
     See the file COPYING.
 */
 
+/*!
+ * @file
+ * @brief Unit tests of the requests that creates and metadata changes send
+ */
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -300,7 +305,7 @@ static int utest_read_only_refusals_give_erofs(void)
         ret = 4;
     } else if (ml_open(&fake.volume, "/file", O_RDONLY, &fp) != 0) {
         ret = 5;
-    } else if (ll_setfork_size(&fake.volume, fp->forkid, 0, 100) != EROFS) {
+    } else if (ll_setfork_size(&fake.volume, fp, 100) != EROFS) {
         ret = 6;
     }
 
@@ -374,6 +379,7 @@ static int utest_read_only_volume_refuses_changes(void)
 static int utest_length_change_on_a_suspended_session_fails(void)
 {
     struct afp_fake_server fake;
+    struct afp_file_info fork;
     int rc;
     memset(&fake, 0, sizeof(fake));
 
@@ -383,7 +389,9 @@ static int utest_length_change_on_a_suspended_session_fails(void)
 
     fake.server->connect_state = SERVER_STATE_DISCONNECTED;
     afp_server_set_suspended(fake.server, 1);
-    rc = ll_setfork_size(&fake.volume, 1, 0, 100);
+    memset(&fork, 0, sizeof(fork));
+    fork.forkid = 1;
+    rc = ll_setfork_size(&fake.volume, &fork, 100);
     afp_fake_server_stop(&fake);
 
     if (rc != EIO) {
@@ -1813,6 +1821,64 @@ static int utest_created_mode_on_another_server_reads_the_ids(void)
 }
 
 /*!
+ * @brief Whether a request's bytes hold a name
+ *
+ * @param[in] request  the request's first bytes
+ * @param[in] size     how many of them
+ * @param[in] name     the name
+ * @returns 1 when the bytes hold it, 0 otherwise
+ */
+static int request_holds(const unsigned char *request, size_t size,
+                         const char *name)
+{
+    size_t len = strlen(name);
+
+    for (size_t i = 0; i + len <= size; i++) {
+        if (memcmp(request + i, name, len) == 0) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+/*!
+ * @brief An attribute's request names its file in the volume's form
+ *
+ * Both spellings of a name are one name on the wire, so both requests
+ * carry the decomposed one.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_attribute_name_takes_the_volume_form(void)
+{
+    struct afp_fake_server fake;
+    memset(&fake, 0, sizeof(fake));
+    fake.volume.attributes = kSupportsExtAttrs;
+
+    if (afp_fake_server_start(&fake) != 0) {
+        return 1;
+    }
+
+    ml_removexattr(&fake.volume, "/caf\xc3\xa9", "user.k");
+    ml_removexattr(&fake.volume, "/cafe\xcc\x81", "user.k");
+    afp_fake_server_stop(&fake);
+
+    if (fake.ncommands != 2 || fake.commands[0] != afpRemoveExtAttr) {
+        return 2;
+    }
+
+    if (fake.lengths[0] != fake.lengths[1]) {
+        return 3;
+    }
+
+    return request_holds(fake.requests[0], sizeof(fake.requests[0]),
+                         "cafe\xcc\x81")
+           && request_holds(fake.requests[1], sizeof(fake.requests[1]),
+                            "cafe\xcc\x81") ? 0 : 4;
+}
+
+/*!
  * @brief Check the requests each operation sends and what it returns
  *
  * @param[in] argc  argument count
@@ -1951,5 +2017,7 @@ int main(int argc, char **argv)
              "a created mode on another server carries the ids read first");
     TEST_int(utest_directory_owner_and_group_change_in_one_request(), 0,
              "a directory's owner and group change go in one FPSetDirParms");
+    TEST_int(utest_attribute_name_takes_the_volume_form(), 0,
+             "an attribute's request names its file in the volume's form");
     return test_tap_finish();
 }

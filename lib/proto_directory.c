@@ -500,7 +500,7 @@ int afp_enumerate(
     unsigned int filebitmap, unsigned int dirbitmap,
     unsigned short reqcount,
     unsigned short startindex,
-    char *pathname,
+    const char *pathname,
     struct afp_listing *l)
 {
     struct {
@@ -572,7 +572,7 @@ int afp_enumerateext(
     unsigned int filebitmap, unsigned int dirbitmap,
     unsigned short reqcount,
     unsigned short startindex,
-    char *pathname,
+    const char *pathname,
     struct afp_listing *l)
 {
     struct {
@@ -647,7 +647,7 @@ int afp_enumerateext2(
     unsigned int filebitmap, unsigned int dirbitmap,
     unsigned short reqcount,
     unsigned long startindex,
-    char *pathname,
+    const char *pathname,
     struct afp_listing *l)
 {
     struct {

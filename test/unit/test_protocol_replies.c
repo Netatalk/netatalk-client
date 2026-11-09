@@ -8,6 +8,11 @@
     See the file COPYING.
 */
 
+/*!
+ * @file
+ * @brief Unit tests of the parsing of the server's AFP replies
+ */
+
 #include <arpa/inet.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,6 +24,7 @@
 
 #include "lib/afp_internal.h"
 #include "lib/afp_replies.h"
+#include "lib/did.h"
 #include "lib/dsi.h"
 #include "lib/dsi_protocol.h"
 #include "tap.h"
@@ -289,7 +295,7 @@ int main(int argc, char **argv)
     }
     {
         /* A volume's locks work from the reply that lists it; on macOS a
-         * zeroed mutex is not one. */
+         * zeroed lock is not one. */
         struct afp_versions afp34 = { "AFP3.4", 34 };
         struct afp_server parms_server;
         struct {
@@ -309,9 +315,10 @@ int main(int argc, char **argv)
                                      sizeof(parms_reply), NULL) == 0);
         CHECK(parms_server.num_volumes == 1
               && strcmp(parms_server.volumes[0].volume_name, "vol") == 0);
-        CHECK(pthread_mutex_lock(&parms_server.volumes[0].did_cache_mutex)
+        CHECK(pthread_rwlock_rdlock(&parms_server.volumes[0].cache.lock)
               == 0);
-        pthread_mutex_unlock(&parms_server.volumes[0].did_cache_mutex);
+        pthread_rwlock_unlock(&parms_server.volumes[0].cache.lock);
+        dir_cache_destroy(&parms_server.volumes[0]);
         free(parms_server.volumes);
     }
     return test_tap_finish();
