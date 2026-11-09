@@ -13,6 +13,29 @@
 
 #include "afp_internal.h"
 
+/* A resolved path: parent ID, last component in UNIX and wire form */
+struct ml_target {
+    unsigned int did;
+    char name[AFPC_MAX_NAME_BYTES];
+    char afp_name[AFPC_MAX_NAME_BYTES];
+};
+
+int ml_resolve(struct afp_volume *volume, const char *path,
+               struct ml_target *t);
+int ml_resolve_fork(struct afp_volume *volume, const char *path,
+                    struct afp_file_info *fp);
+/* How ml_entry() reads a record */
+#define ML_ENTRY_CACHED 0
+#define ML_ENTRY_FRESH 1
+#define ML_ENTRY_FORK 2
+
+int ml_entry(struct afp_volume *volume, const char *path, int how,
+             struct ml_target *t, struct afp_dirent *e);
+int ml_dirent_to_stat(struct afp_volume *volume, const struct ml_target *t,
+                      struct afp_dirent *e, struct stat *stbuf);
+int ml_list_directory(struct afp_volume *volume, const char *path,
+                      struct afp_listing *l);
+
 int ml_open(struct afp_volume * volume, const char *path, int flags,
             struct afp_file_info **newfp);
 
@@ -44,9 +67,13 @@ int ml_close_flush(struct afp_volume * volume, struct afp_file_info * fp);
 
 int ml_getattr(struct afp_volume * volume, const char *path,
                struct stat *stbuf);
+int ml_getattr_finderinfo(struct afp_volume *volume, const char *path,
+                          struct stat *stbuf, char *finderinfo);
+int ml_getattr_fresh(struct afp_volume *volume, const char *path,
+                     struct stat *stbuf);
 
 int ml_write(struct afp_volume * volume,
-             const char *data, size_t size, off_t offset,
+             const char *data, size_t size, off_t offset, int append,
              struct afp_file_info * fp);
 
 ssize_t ml_copy_range(struct afp_volume * volume,
@@ -88,6 +115,8 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2);
 
 int ml_rename(struct afp_volume * vol,
               const char *path_from, const char *path_to);
+int ml_rename_excl(struct afp_volume *vol,
+                   const char *path_from, const char *path_to);
 
 int ml_exchange(struct afp_volume * vol,
                 const char *path_from, const char *path_to);

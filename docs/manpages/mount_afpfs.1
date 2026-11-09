@@ -75,13 +75,17 @@ Mount the volume as
 .Ar username .
 .It Cm attr_timeout Ns = Ns Ar seconds
 How long the kernel answers for a file's attributes from its cache before
-it asks the server again (default: 1).
+it asks the client again (default: 1).
+The client answers from its own cache for a tenth of the file's age, 4 to
+60 seconds, whatever the option says.
 .It Cm entry_timeout Ns = Ns Ar seconds
 How long the kernel answers a name's lookup from its cache (default: 1).
+The client keeps a folder's ID for two minutes, whatever the option says.
 .It Cm negative_timeout Ns = Ns Ar seconds
 How long the kernel on Linux and
 .Fx
 answers that a name does not exist (default: 0, asked every time).
+The client keeps an absence for one to two seconds.
 .El
 .It Ar afp_url
 The AFP URL to mount, in the format:

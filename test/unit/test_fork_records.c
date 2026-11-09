@@ -7,6 +7,11 @@
     See the file COPYING.
 */
 
+/*!
+ * @file
+ * @brief Unit tests of open-fork records and symbolic links
+ */
+
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -21,6 +26,11 @@
 
 /*!
  * @brief Swallow a log message
+ *
+ * @param[in] priv      unused
+ * @param[in] logtype   unused
+ * @param[in] loglevel  unused
+ * @param[in] message   unused
  */
 static void discard_log(void *priv, enum logtypes logtype, int loglevel,
                         const char *message)
@@ -188,6 +198,7 @@ static int utest_truncate_record_is_the_opens(void)
            && fake.listed.writable && !fake.listed.dirty
            && fake.listed.did == AFP_ROOT_DID
            && !fake.listed.largelist_next
+           && strcmp(fake.listed.name, "file") == 0
            && strcmp(fake.listed.basename, "file") == 0 ? 0 : 4;
 }
 

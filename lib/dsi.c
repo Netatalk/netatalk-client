@@ -65,7 +65,13 @@ struct dsi_attention_context {
     char packet[];
 };
 
-/* This sets up a DSI header. */
+/*!
+ * @brief Fill a DSI header with the session's next request ID
+ *
+ * @param[in,out] server   the server, whose last request ID advances
+ * @param[out]    header   the header
+ * @param[in]     command  the DSI command
+ */
 void afpc_dsi_setup_header(struct afp_server * server,
                            struct dsi_header * header,
                            char command)
@@ -160,6 +166,12 @@ int afpc_dsi_sendtickle(struct afp_server *server)
     return 0;
 }
 
+/*!
+ * @brief Open a DSI session, offering the client's attention quantum
+ *
+ * @param[in,out] server  the server
+ * @returns afpc_dsi_send()'s result
+ */
 int afpc_dsi_opensession(struct afp_server *server)
 {
     struct {
@@ -320,6 +332,19 @@ void afpc_dsi_fail_request_queue(struct afp_server *server, int error)
 }
 
 
+/*!
+ * @brief Send a request, whose reply its command's own parser reads
+ *
+ * @param[in]     server      server to send to
+ * @param[in,out] msg         request frame, DSI header first
+ * @param[in]     size        bytes of msg
+ * @param[in]     wait        seconds to wait for the reply, as
+ *                            afpc_dsi_send_with_reply() takes them
+ * @param[in]     subcommand  AFP command, or the DSI command of DSI's own
+ *                            exchanges
+ * @param[in,out] other       destination of the reply's contents
+ * @returns afpc_dsi_send_with_reply()'s result
+ */
 int afpc_dsi_send(struct afp_server *server, char *msg, int size, int wait,
                   unsigned char subcommand, void *other)
 {
@@ -358,9 +383,10 @@ void afpc_dsi_set_deadline(struct afp_server *server,
                            struct dsi_request *request)
 {
     struct timeval tv;
-    time_t wait = request->wait;
+    time_t wait;
     gettimeofday(&tv, NULL);
     pthread_mutex_lock(&server->request_queue_mutex);
+    wait = request->wait;
 
     /* Under send_mutex, only a request written ahead of this one has a
      * deadline. An answered one has a wait of 0. */
@@ -371,9 +397,9 @@ void afpc_dsi_set_deadline(struct afp_server *server,
         }
     }
 
-    pthread_mutex_unlock(&server->request_queue_mutex);
     request->deadline.tv_sec = tv.tv_sec + wait;
     request->deadline.tv_nsec = tv.tv_usec * 1000;
+    pthread_mutex_unlock(&server->request_queue_mutex);
 }
 
 /*!
@@ -684,6 +710,17 @@ out:
     return rc;
 }
 
+/*!
+ * @brief Hand a DSICommand reply to its AFP command's parser
+ *
+ * A read's data goes from the socket into the read's buffer.
+ *
+ * @param[in,out] server      the server, with the reply read so far
+ * @param[in]     subcommand  the AFP command the reply answers
+ * @param[in,out] other       the request's caller data
+ * @returns the parser's result, or -1 for a short reply, no command, or a
+ *          read that fails or finds the connection closed
+ */
 int afpc_dsi_command_reply(struct afp_server* server, unsigned short subcommand,
                            void *other)
 {
@@ -797,6 +834,13 @@ void afpc_dsi_opensession_reply(struct afp_server * server)
     server->quantum = quantum;
 }
 
+/*!
+ * @brief Take the AFP versions a status reply lists that the client knows
+ *
+ * @param[in,out] server  the server, whose versions receive them
+ * @param[in]     msg     the list: a count, then Pascal strings
+ * @returns 0
+ */
 static int afpc_dsi_parse_versions(struct afp_server * server, char *msg)
 {
     unsigned char num_versions = msg[0];
@@ -830,6 +874,13 @@ static int afpc_dsi_parse_versions(struct afp_server * server, char *msg)
     return 0;
 }
 
+/*!
+ * @brief Take the UAMs a status reply lists as the server's UAM mask
+ *
+ * @param[in,out] server  the server, whose supported_uams receives them
+ * @param[in]     msg     the list: a count, then Pascal strings
+ * @returns 0
+ */
 static int afpc_dsi_parse_uams(struct afp_server * server, char *msg)
 {
     unsigned char num_uams = msg[0];
@@ -859,6 +910,11 @@ static int afpc_dsi_parse_uams(struct afp_server * server, char *msg)
 /* The parsing of the return for DSI GetStatus is the same as for
  * AFP GetSrvrInfo (which we don't yet support) */
 
+/*!
+ * @brief Read a status reply into the server's description and signature
+ *
+ * @param[in,out] server  server whose receive buffer holds the reply
+ */
 void afpc_dsi_getstatus_reply(struct afp_server * server)
 {
     /* Todo: check for buffer overruns */
@@ -1674,8 +1730,9 @@ out:
                        "<<< Signalling %d, returning %d or %d", request->requestid,
                        result, rc);
 #endif
-        /* The sender removes the request once it has read the result. A
-         * disconnect or a flush that ended the wait first keeps its own. */
+        /* A deadline sums the waits under the queue's lock; a disconnect or
+         * a flush that ended the wait first keeps its own result. */
+        pthread_mutex_lock(&server->request_queue_mutex);
         pthread_mutex_lock(&request->waiting_mutex);
 
         if (!request->done_waiting) {
@@ -1686,6 +1743,7 @@ out:
         }
 
         pthread_mutex_unlock(&request->waiting_mutex);
+        pthread_mutex_unlock(&server->request_queue_mutex);
     }
 
     return 0;

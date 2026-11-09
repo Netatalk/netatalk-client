@@ -93,6 +93,8 @@
 #ifndef RENAME_EXCL
 #define RENAME_EXCL 0x00000004
 #endif
+#elif !defined(RENAME_NOREPLACE)
+#define RENAME_NOREPLACE (1 << 0)
 #endif
 
 /* If not defined by the build system, default to 0 (old API) */
@@ -101,12 +103,24 @@
 #endif
 
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30
+/*!
+ * @brief The Finder flags of a FinderInfo, its bytes 8 and 9
+ *
+ * @param[in] finderinfo  the 32 bytes
+ * @returns the flags
+ */
 static uint16_t finderinfo_get_flags(const char finderinfo[32])
 {
     return ((uint16_t)(unsigned char)finderinfo[8] << 8)
            | (uint16_t)(unsigned char)finderinfo[9];
 }
 
+/*!
+ * @brief Set the Finder flags of a FinderInfo
+ *
+ * @param[in,out] finderinfo  the 32 bytes
+ * @param[in]     flags       the flags
+ */
 static void finderinfo_set_flags(char finderinfo[32], uint16_t flags)
 {
     finderinfo[8] = (char)((flags >> 8) & 0xff);
@@ -114,9 +128,12 @@ static void finderinfo_set_flags(char finderinfo[32], uint16_t flags)
 }
 #endif
 
-/*
- * Work around malformed paths that macFUSE occasionally supplies as
- * <dir1>/<dir2>/(null) by truncating the path before "(null)".
+/*!
+ * @brief Cut a path before the "(null)" component macFUSE sometimes passes
+ *
+ * @param[in,out] path     the path, pointed at the cut copy when one is made
+ * @param[out]    storage  receives the copy for the caller to free, or NULL
+ * @returns 0, or -ENOMEM
  */
 static int strip_null_path_component(const char **path, char **storage)
 {
@@ -138,7 +155,12 @@ static int strip_null_path_component(const char **path, char **storage)
 
 
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30
-/* Helper function to convert struct stat to struct fuse_darwin_attr on macOS */
+/*!
+ * @brief Copy a stat into macFUSE's attributes, the birth time included
+ *
+ * @param[in]  st    the stat
+ * @param[out] attr  receives the attributes
+ */
 static void stat_to_darwin_attr(const struct stat *st,
                                 struct fuse_darwin_attr *attr)
 {
@@ -162,6 +184,14 @@ static void stat_to_darwin_attr(const struct stat *st,
 
 #endif
 
+/*!
+ * @brief Read a symbolic link's target for readlink(2)
+ *
+ * @param[in]  path  UTF-8 path of the link
+ * @param[out] buf   receives the target with its terminator
+ * @param[in]  size  capacity of buf
+ * @returns 0, or a negative errno
+ */
 static int fuse_readlink(const char *path, char *buf, size_t size)
 {
     int ret;
@@ -177,6 +207,12 @@ static int fuse_readlink(const char *path, char *buf, size_t size)
     return ret;
 }
 
+/*!
+ * @brief Delete an empty directory for rmdir(2)
+ *
+ * @param[in] path  UTF-8 path of the directory
+ * @returns 0, or a negative errno
+ */
 static int fuse_rmdir(const char *path)
 {
     int ret;
@@ -186,6 +222,12 @@ static int fuse_rmdir(const char *path)
     return ret;
 }
 
+/*!
+ * @brief Delete a file for unlink(2)
+ *
+ * @param[in] path  UTF-8 path of the file
+ * @returns 0, or a negative errno
+ */
 static int fuse_unlink(const char *path)
 {
     int ret;
@@ -377,6 +419,14 @@ static int fuse_setxattr(const char *path, const char *name,
     return ret;
 }
 
+/*!
+ * @brief List a file's extended attributes for listxattr(2)
+ *
+ * @param[in]  path  UTF-8 path of the file
+ * @param[out] list  receives the names, each NUL-terminated
+ * @param[in]  size  capacity of list, or 0 to ask the list's length
+ * @returns the list's length, or a negative errno
+ */
 static int fuse_listxattr(const char *path, char *list, size_t size)
 {
     int ret;
@@ -772,6 +822,14 @@ static int fuse_release(const char *path, struct fuse_file_info * fi)
     return ret;
 }
 
+/*!
+ * @brief Open a file for open(2)
+ *
+ * @param[in]     path  UTF-8 path of the file
+ * @param[in,out] fi    the kernel's file info with the open's flags, which
+ *                      receives the handle
+ * @returns 0, or a negative errno
+ */
 static int fuse_open(const char *path, struct fuse_file_info *fi)
 {
     struct afp_file_info * fp;
@@ -782,6 +840,15 @@ static int fuse_open(const char *path, struct fuse_file_info *fi)
 
     if (ret == 0) {
         fi->fh = (unsigned long) fp;
+#ifdef HAVE_FUSE_INVALIDATE_PATH
+
+        /* The kernel keeps the attributes the lookup before the open read
+         * from the record, for its attribute timeout. */
+        if (fp->stale) {
+            fuse_invalidate_path(fuse_get_context()->fuse, path);
+        }
+
+#endif
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "*** cache open \"%s\" flags=0x%x fh=%" PRIu64
                        " forkid=%d writable=%u resource=%u",
@@ -800,7 +867,8 @@ static int fuse_open(const char *path, struct fuse_file_info *fi)
  * @param[in] data    bytes to write
  * @param[in] size    length of data
  * @param[in] offset  byte offset to write at
- * @param[in] fi      the kernel's file info with the handle
+ * @param[in] fi      the kernel's file info with the handle, the file's
+ *                    flags and whether a page is being written back
  * @returns bytes written, or a negative errno
  */
 static int fuse_write(const char *path, const char *data,
@@ -809,10 +877,20 @@ static int fuse_write(const char *path, const char *data,
 {
     struct afp_file_info *fp = (struct afp_file_info *) fi->fh;
     struct afp_volume * volume = fuse_get_context()->private_data;
+#ifdef __linux__
+    /* The kernel's offset may come from a cached length, so an append goes
+     * to the server's end; a write-back and a direct write keep offsets. */
+    int append = !fi->writepage
+                 && (fi->flags & (O_APPEND | O_DIRECT)) == O_APPEND;
+#else
+    /* Other kernels may not pass a write's flags, and a write-back sent to
+     * the end would land twice. */
+    int append = 0;
+#endif
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** cache write \"%s\" offset=%llu size=%llu",
                    path, (unsigned long long) offset, (unsigned long long) size);
-    return ml_write(volume, data, size, offset, fp);
+    return ml_write(volume, data, size, offset, append, fp);
 }
 
 /* Linux clamps a copy to the source's end and copies pseudo-files itself on
@@ -878,6 +956,13 @@ static ssize_t fuse_copy_file_range(const char *path_in,
 #endif
 
 
+/*!
+ * @brief Create a directory for mkdir(2)
+ *
+ * @param[in] path  UTF-8 path of the new directory
+ * @param[in] mode  the mode asked for
+ * @returns 0, or a negative errno
+ */
 static int fuse_mkdir(const char *path, mode_t mode)
 {
     int ret;
@@ -888,6 +973,13 @@ static int fuse_mkdir(const char *path, mode_t mode)
 }
 
 #ifdef __APPLE__
+/*!
+ * @brief Check that a path names a directory, for opendir(3)
+ *
+ * @param[in]  path  UTF-8 path of the directory
+ * @param[out] fi    the kernel's file info, whose handle is cleared, or NULL
+ * @returns 0, -ENOTDIR for another object, or the lookup's negative errno
+ */
 static int fuse_opendir(const char *path, struct fuse_file_info *fi)
 {
     struct stat stbuf;
@@ -910,12 +1002,27 @@ static int fuse_opendir(const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
+/*!
+ * @brief Close a directory stream, which holds nothing on macOS
+ *
+ * @param[in] path  unused
+ * @param[in] fi    unused
+ * @returns 0
+ */
 static int fuse_releasedir(const char *path _U_,
                            struct fuse_file_info *fi _U_)
 {
     return 0;
 }
 
+/*!
+ * @brief Flush a directory for fsync(2), which has nothing buffered
+ *
+ * @param[in] path      unused
+ * @param[in] datasync  unused
+ * @param[in] fi        unused
+ * @returns 0
+ */
 static int fuse_fsyncdir(const char *path _U_,
                          int datasync _U_,
                          struct fuse_file_info *fi _U_)
@@ -1023,6 +1130,13 @@ static int fuse_read(const char *path, char *buf, size_t size, off_t offset,
 }
 
 #ifdef __APPLE__
+/*!
+ * @brief Answer access(2) on macOS: any mask passes for an object that exists
+ *
+ * @param[in] path  UTF-8 path of the object
+ * @param[in] mask  the access asked for
+ * @returns 0, or the lookup's negative errno
+ */
 static int fuse_access(const char *path, int mask)
 {
     struct stat stbuf;
@@ -1051,6 +1165,15 @@ static int fuse_access(const char *path, int mask)
 }
 #endif
 
+/*!
+ * @brief Change an object's owner and group for chown(2)
+ *
+ * @param[in] path  UTF-8 path of the object
+ * @param[in] uid   the owner, or -1 to keep it
+ * @param[in] gid   the group, or -1 to keep it
+ * @param[in] fi    unused, passed only where FUSE_NEW_API is set
+ * @returns 0, or a negative errno
+ */
 #if FUSE_NEW_API
 static int fuse_chown(const char *path, uid_t uid, gid_t gid,
                       struct fuse_file_info *fi _U_)
@@ -1117,6 +1240,13 @@ static int fuse_truncate(const char *path, off_t offset,
 }
 
 #else
+/*!
+ * @brief Truncate a file by path for truncate(2)
+ *
+ * @param[in] path    UTF-8 path of the file
+ * @param[in] offset  the new length
+ * @returns 0, or a negative errno
+ */
 static int fuse_truncate(const char *path, off_t offset)
 {
     int ret = 0;
@@ -1149,6 +1279,14 @@ static int fuse_ftruncate(const char *path _U_, off_t offset,
 #endif
 
 
+/*!
+ * @brief Change an object's mode for chmod(2)
+ *
+ * @param[in] path  UTF-8 path of the object
+ * @param[in] mode  the mode
+ * @param[in] fi    unused, passed only where FUSE_NEW_API is set
+ * @returns 0, also for bits the server cannot hold, or a negative errno
+ */
 #if FUSE_NEW_API
 static int fuse_chmod(const char *path, mode_t mode,
                       struct fuse_file_info *fi _U_)
@@ -1186,6 +1324,18 @@ static int fuse_chmod(const char *path, mode_t mode)
 }
 
 #if FUSE_USE_VERSION >= 30
+/*!
+ * @brief Set an object's modification time for utimensat(2)
+ *
+ * AFP keeps no access time.
+ *
+ * @param[in] path  UTF-8 path of the object
+ * @param[in] tv    the access and modification times, or NULL for the
+ *                  current time
+ * @param[in] fi    unused, passed only where FUSE_NEW_API is set
+ * @returns 0, also for a refusal, no support or a missing object, or
+ *          another negative errno
+ */
 #if FUSE_NEW_API
 static int fuse_utimens(const char *path, const struct timespec tv[2],
                         struct fuse_file_info *fi _U_)
@@ -1243,6 +1393,13 @@ static int fuse_utimens(const char *path, const struct timespec tv[2])
 }
 
 #else
+/*!
+ * @brief Set an object's modification time for utime(2)
+ *
+ * @param[in] path     UTF-8 path of the object
+ * @param[in] timebuf  the times, of which the modification time is set
+ * @returns 0, or a negative errno
+ */
 static int fuse_utime(const char *path, struct utimbuf *timebuf)
 {
     int ret = 0;
@@ -1255,6 +1412,11 @@ static int fuse_utime(const char *path, struct utimbuf *timebuf)
 
 #endif
 
+/*!
+ * @brief Unmount the volume at FUSE's destroy, unless an unmount is under way
+ *
+ * @param[in] ignore  unused
+ */
 static void afp_destroy(void *ignore _U_)
 {
     struct afp_volume *volume = fuse_get_context()->private_data;
@@ -1312,6 +1474,14 @@ static int fuse_symlink(const char *path1, const char *path2)
 }
 
 #if FUSE_NEW_API
+/*!
+ * @brief Rename or move an object for rename(2), with renameat2(2)'s flags
+ *
+ * @param[in] path_from  UTF-8 path of the object
+ * @param[in] path_to    UTF-8 path it takes
+ * @param[in] flags      RENAME_* flags
+ * @returns 0, or a negative errno, -EINVAL off macOS for flags it does not take
+ */
 static int fuse_rename(const char *path_from, const char *path_to,
                        unsigned int flags)
 {
@@ -1320,7 +1490,6 @@ static int fuse_rename(const char *path_from, const char *path_to,
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** rename %s -> %s flags=0x%x", path_from, path_to, flags);
 #ifdef __APPLE__
-    struct stat stbuf;
 
     if (flags & RENAME_SWAP) {
         ret = ml_exchange(volume, path_from, path_to);
@@ -1328,18 +1497,15 @@ static int fuse_rename(const char *path_from, const char *path_to,
     }
 
     if (flags & RENAME_EXCL) {
-        ret = ml_getattr(volume, path_to, &stbuf);
-
-        if (ret == 0) {
-            return -EEXIST;
-        }
-
-        if (ret != -ENOENT) {
-            return ret;
-        }
+        return ml_rename_excl(volume, path_from, path_to);
     }
 
 #else
+
+    /* The move alone, as a lookup the cache answers may miss a taken name. */
+    if (flags == RENAME_NOREPLACE) {
+        return ml_rename_excl(volume, path_from, path_to);
+    }
 
     if (flags != 0) {
         return -EINVAL;
@@ -1351,6 +1517,13 @@ static int fuse_rename(const char *path_from, const char *path_to,
 }
 
 #else
+/*!
+ * @brief Rename or move an object for rename(2)
+ *
+ * @param[in] path_from  UTF-8 path of the object
+ * @param[in] path_to    UTF-8 path it takes
+ * @returns 0, or a negative errno
+ */
 static int fuse_rename(const char *path_from, const char *path_to)
 {
     int ret;
@@ -1364,11 +1537,19 @@ static int fuse_rename(const char *path_from, const char *path_to)
 #endif
 
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30 && !FUSE_NEW_API
+/*!
+ * @brief Rename or move an object for macFUSE's renamex_np(2)
+ *
+ * @param[in] path_from  UTF-8 path of the object
+ * @param[in] path_to    UTF-8 path it takes
+ * @param[in] flags      RENAME_SWAP to exchange the two, RENAME_EXCL to
+ *                       refuse a taken name
+ * @returns 0, or a negative errno
+ */
 static int fuse_renamex(const char *path_from, const char *path_to,
                         unsigned int flags)
 {
     int ret;
-    struct stat stbuf;
     struct afp_volume * volume = fuse_get_context()->private_data;
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** renamex %s -> %s flags=0x%x", path_from, path_to, flags);
@@ -1379,21 +1560,21 @@ static int fuse_renamex(const char *path_from, const char *path_to,
     }
 
     if (flags & RENAME_EXCL) {
-        ret = ml_getattr(volume, path_to, &stbuf);
-
-        if (ret == 0) {
-            return -EEXIST;
-        }
-
-        if (ret != -ENOENT) {
-            return ret;
-        }
+        return ml_rename_excl(volume, path_from, path_to);
     }
 
     ret = ml_rename(volume, path_from, path_to);
     return ret;
 }
 
+/*!
+ * @brief Swap two files for macFUSE's exchangedata(2)
+ *
+ * @param[in] path_from  UTF-8 path of one file
+ * @param[in] path_to    UTF-8 path of the other
+ * @param[in] options    exchangedata(2)'s options, for the log
+ * @returns 0, or a negative errno
+ */
 static int fuse_exchange(const char *path_from, const char *path_to,
                          unsigned long options)
 {
@@ -1408,6 +1589,13 @@ static int fuse_exchange(const char *path_from, const char *path_to,
 #endif
 
 #ifdef __APPLE__
+/*!
+ * @brief Read a volume's size and free space for statfs(2) on macOS
+ *
+ * @param[in]  path  UTF-8 path on the volume
+ * @param[out] stat  receives the figures
+ * @returns 0, or a negative errno
+ */
 #if FUSE_USE_VERSION >= 30
 static int fuse_statfs(const char *path, struct statfs *stat)
 #else
@@ -1438,6 +1626,13 @@ static int fuse_statfs(const char *path, struct statvfs *stat)
 }
 
 #else
+/*!
+ * @brief Read a volume's size and free space for statfs(2)
+ *
+ * @param[in]  path  UTF-8 path on the volume
+ * @param[out] stat  receives the figures
+ * @returns 0, or a negative errno
+ */
 static int fuse_statfs(const char *path, struct statvfs *stat)
 {
     struct afp_volume * volume = fuse_get_context()->private_data;
@@ -1467,6 +1662,14 @@ static int fuse_statfs(const char *path, struct statvfs *stat)
 #define FUSE_SET_ATTR_FLAGS     (1U << 31)
 #endif
 
+/*!
+ * @brief Set or clear a file's invisible Finder flag from UF_HIDDEN
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] path    UTF-8 path of the file
+ * @param[in] flags   chflags(2) flags, of which only UF_HIDDEN counts
+ * @returns 0, or a negative errno
+ */
 static int fuse_apply_chflags(struct afp_volume *volume, const char *path,
                               unsigned int flags)
 {
@@ -1565,10 +1768,19 @@ static int fuse_setattr(const char *path, struct fuse_darwin_attr *attr,
     return 0;
 }
 
+/*!
+ * @brief Read an object's attributes for macFUSE, UF_HIDDEN included
+ *
+ * @param[in]  path  UTF-8 path of the object
+ * @param[out] attr  receives the attributes
+ * @param[in]  fi    unused
+ * @returns 0, or a negative errno, -EIO without a path
+ */
 static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
                                struct fuse_file_info *fi _U_)
 {
     struct stat stbuf;
+    char finderinfo[32];
     char *normalized_path;
     struct afp_volume * volume = fuse_get_context()->private_data;
     int ret;
@@ -1583,15 +1795,13 @@ static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
         return ret;
     }
 
-    ret = ml_getattr(volume, path, &stbuf);
+    /* The record the stat presents holds the invisible flag. */
+    ret = ml_getattr_finderinfo(volume, path, &stbuf, finderinfo);
 
     if (ret == 0) {
-        char finderinfo[32];
         stat_to_darwin_attr(&stbuf, attr);
 
-        if (ml_getfinderinfo(volume, path, finderinfo, sizeof(finderinfo)) == 32
-                && (finderinfo_get_flags(finderinfo)
-                    & AFP_FINDERINFO_FLAG_INVISIBLE)) {
+        if (finderinfo_get_flags(finderinfo) & AFP_FINDERINFO_FLAG_INVISIBLE) {
             attr->flags |= UF_HIDDEN;
         }
 
@@ -1611,6 +1821,14 @@ static int fuse_getattr_darwin(const char *path, struct fuse_darwin_attr *attr,
     return ret;
 }
 #else
+/*!
+ * @brief Read an object's attributes for stat(2)
+ *
+ * @param[in]  path   UTF-8 path of the object
+ * @param[out] stbuf  receives the attributes
+ * @param[in]  fi     unused, passed only where FUSE_NEW_API is set
+ * @returns 0, or a negative errno, -EIO without a path
+ */
 #if FUSE_NEW_API
 static int fuse_getattr(const char *path, struct stat *stbuf,
                         struct fuse_file_info *fi _U_)
@@ -1712,6 +1930,12 @@ static void *afp_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 }
 
 #else
+/*!
+ * @brief Set up the mount at FUSE init
+ *
+ * @param[in] o  unused
+ * @returns the volume, which FUSE keeps as the mount's private data
+ */
 static void *afp_init(struct fuse_conn_info * o _U_)
 {
     struct afp_volume * vol = fuse_get_context()->private_data;
@@ -1729,6 +1953,14 @@ static void *afp_init(struct fuse_conn_info * o _U_)
 #endif
 
 #if defined(__APPLE__) && FUSE_USE_VERSION >= 30
+/*!
+ * @brief Set a file's flags for chflags(2), of which only UF_HIDDEN counts
+ *
+ * @param[in] path   UTF-8 path of the file
+ * @param[in] fi     unused
+ * @param[in] flags  the flags
+ * @returns 0, or a negative errno
+ */
 static int fuse_chflags(const char *path,
                         struct fuse_file_info *fi _U_,
                         unsigned int flags)
@@ -1800,6 +2032,14 @@ static struct fuse_operations afp_oper = {
 };
 
 
+/*!
+ * @brief Run FUSE's loop for a volume's mount
+ *
+ * @param[in] argc    count of argv
+ * @param[in] argv    FUSE's arguments, the mount point among them
+ * @param[in] volume  the volume, the mount's private data
+ * @returns fuse_main()'s result
+ */
 int afp_fuse_main(int argc, char *argv[], struct afp_volume *volume)
 {
     int ret;

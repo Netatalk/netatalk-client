@@ -454,6 +454,46 @@ test(
     verbose: true,
 )
 
+dir_cache_test = executable(
+    'test_dir_cache',
+    sources: files(
+        'afp_fake_server.c',
+        'test_dir_cache.c',
+    ),
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'directory cache',
+    dir_cache_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+dir_cache_requests_test = executable(
+    'test_dir_cache_requests',
+    sources: files(
+        'afp_fake_server.c',
+        'test_dir_cache_requests.c',
+    ),
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'directory cache requests',
+    dir_cache_requests_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
 metadata_requests_test = executable(
     'test_metadata_requests',
     sources: files(

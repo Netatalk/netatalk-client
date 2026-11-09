@@ -1,3 +1,8 @@
+/*!
+ * @file
+ * @brief A fake AFP server for the unit tests: its knobs and its calls
+ */
+
 #ifndef NETATALK_CLIENT_TEST_AFP_FAKE_SERVER_H_
 #define NETATALK_CLIENT_TEST_AFP_FAKE_SERVER_H_
 
@@ -19,10 +24,19 @@ struct afp_fake_server {
     uint8_t refuse_privs;   /*!< whether a privileges change is refused */
     int32_t refusal;        /*!< their answer, kFPAccessDenied when 0 */
     uint8_t inspect;        /*!< command whose request copies listed, or 0 */
+    uint8_t hold;           /*!< command held until released, or 0 */
+    int held;               /*!< whether that request has arrived */
+    int released;           /*!< whether the test let its answer go */
+    pthread_mutex_t hold_mutex;
+    pthread_cond_t hold_cond;
     uint8_t read_only;      /*!< whether to answer as a read-only filesystem */
     uint8_t name_taken;     /*!< whether a soft create finds the name taken */
     uint8_t file_params;    /*!< whether FPGetFileDirParms answers an object */
     uint8_t params_dir;     /*!< whether it is a directory, not a file */
+    /*! the answers that are directories too, bit 0 for the first */
+    uint16_t params_dirs;
+    unsigned int params_answers; /*!< FPGetFileDirParms answered so far */
+    uint32_t params_cnid;   /*!< its node ID, or 0 for none in the answer */
     uint32_t params_mode;   /*!< its mode, or 0 for 0644 and 0755 */
     uint32_t params_date;   /*!< its modification date, in network order */
     uint32_t data_length;   /*!< that file's data fork length */
@@ -38,16 +52,20 @@ struct afp_fake_server {
     char comment[255];      /*!< the Finder comment */
     uint8_t comment_len;    /*!< its length, 0 for none */
     const char *read_data;  /*!< a link's target, which FPReadExt reads whole */
+    const char *xattr_value; /*!< FPGetExtAttr's value, or NULL */
     int inspected;          /*!< whether listed holds a copy */
     struct afp_file_info listed;
     uint8_t commands[16];   /*!< the first 16 commands received, in order */
     uint32_t lengths[16];   /*!< the length of each of those requests */
+    unsigned char requests[16][64]; /*!< the first 64 bytes of each */
     unsigned int ncommands;
     unsigned int forks_open;  /*!< forks granted and not closed */
 };
 
 int afp_fake_server_start(struct afp_fake_server *fake);
 void afp_fake_server_stop(struct afp_fake_server *fake);
+int afp_fake_server_wait_held(struct afp_fake_server *fake);
+void afp_fake_server_release(struct afp_fake_server *fake);
 void afp_fake_server_dirty_stack(void);
 
 #endif

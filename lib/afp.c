@@ -62,6 +62,12 @@ static int afp_blank_reply(struct afp_server *server, char *buf,
 static int connect_with_timeout(int fd, const struct sockaddr *addr,
                                 socklen_t addrlen, int timeout);
 
+/*!
+ * @brief Write a server signature as hexadecimal text
+ *
+ * @param[in]  signature  the signature
+ * @param[out] text       receives two digits a byte and a NUL
+ */
 static void format_server_signature(const char signature[AFP_SIGNATURE_LEN],
                                     char text[AFP_SIGNATURE_LEN * 2 + 1])
 {
@@ -152,7 +158,15 @@ int (*afp_replies[])(struct afp_server * server, char *buf, unsigned int len,
 
 };
 
-/* This is the simplest afp reply */
+/*!
+ * @brief Take the result of a reply that carries nothing more
+ *
+ * @param[in] server   unused
+ * @param[in] buf      the reply
+ * @param[in] size     unused
+ * @param[in] ignored  unused
+ * @returns the reply's error code
+ */
 static int afp_blank_reply(
     struct afp_server *server _U_,
     char *buf,
@@ -166,6 +180,15 @@ static int afp_blank_reply(
     return reply->header.return_code.error_code;
 }
 
+/*!
+ * @brief connect(2) a socket, waiting at most timeout seconds
+ *
+ * @param[in] fd       the socket
+ * @param[in] addr     the address
+ * @param[in] addrlen  its length
+ * @param[in] timeout  seconds to wait
+ * @returns 0, or -1 with errno set, ETIMEDOUT when the wait lapses
+ */
 static int connect_with_timeout(int fd, const struct sockaddr *addr,
                                 socklen_t addrlen, int timeout)
 {
@@ -236,7 +259,15 @@ static int connect_with_timeout(int fd, const struct sockaddr *addr,
     return 0;
 }
 
-/* Handle a reply packet */
+/*!
+ * @brief Hand a reply to its command's parser
+ *
+ * @param[in]     subcommand  the AFP command the reply answers
+ * @param[in,out] server      the server it came from
+ * @param[in,out] other       the request's caller data
+ * @returns the parser's result, 0 without a parser, or -1 for a reply
+ *          shorter than a DSI header
+ */
 int afp_reply(unsigned short subcommand, struct afp_server * server,
               void *other)
 {
@@ -266,16 +297,31 @@ static pthread_mutex_t server_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int auto_shutdown_on_unmount = 0;
 static int auto_disconnect_on_unmount = 1;
 
+/*!
+ * @brief Set whether the front end shuts down at the last unmount
+ *
+ * @param[in] enabled  1 to shut down
+ */
 void afp_set_auto_shutdown_on_unmount(int enabled)
 {
     auto_shutdown_on_unmount = enabled;
 }
 
+/*!
+ * @brief Whether the front end shuts down at the last unmount
+ *
+ * @returns 1 when it does
+ */
 int afp_get_auto_shutdown_on_unmount(void)
 {
     return auto_shutdown_on_unmount;
 }
 
+/*!
+ * @brief Set whether a server disconnects once no volume is attached
+ *
+ * @param[in] enabled  1 to disconnect
+ */
 void afp_set_auto_disconnect_on_unmount(int enabled)
 {
     auto_disconnect_on_unmount = enabled;
@@ -313,11 +359,22 @@ int server_still_valid(struct afp_server * server)
     }
 }
 
+/*!
+ * @brief The first server of the list
+ *
+ * @returns the server, or NULL
+ */
 struct afp_server *get_server_base(void)
 {
     return server_base;
 }
 
+/*!
+ * @brief Find a listed server by its signature
+ *
+ * @param[in] signature  AFP_SIGNATURE_LEN bytes
+ * @returns the server, or NULL
+ */
 struct afp_server *find_server_by_signature(char *signature)
 {
     struct afp_server * s;
@@ -331,6 +388,12 @@ struct afp_server *find_server_by_signature(char *signature)
     return NULL;
 }
 
+/*!
+ * @brief Find a listed server by any of its names
+ *
+ * @param[in] name  the name
+ * @returns the server, or NULL
+ */
 struct afp_server *find_server_by_name(char *name)
 {
     for (struct afp_server * s = get_server_base(); s; s = s->next) {
@@ -350,6 +413,12 @@ struct afp_server *find_server_by_name(char *name)
     return NULL;
 }
 
+/*!
+ * @brief Hold a server while the list still holds it
+ *
+ * @param[in] target  the server
+ * @returns the server, held, or NULL
+ */
 struct afp_server *find_server_by_pointer(struct afp_server *target)
 {
     pthread_mutex_lock(&server_list_mutex);
@@ -366,6 +435,12 @@ struct afp_server *find_server_by_pointer(struct afp_server *target)
     return NULL;
 }
 
+/*!
+ * @brief Find a listed server by any address of an address list
+ *
+ * @param[in] address  the address list
+ * @returns the server, or NULL
+ */
 struct afp_server *find_server_by_address(struct addrinfo *address)
 {
     struct afp_server *s;
@@ -385,6 +460,12 @@ struct afp_server *find_server_by_address(struct addrinfo *address)
     return NULL;
 }
 
+/*!
+ * @brief Whether a server has given a signature that is not all zero
+ *
+ * @param[in] server  the server, or NULL
+ * @returns 1 when it has
+ */
 int afp_server_has_valid_signature(const struct afp_server *server)
 {
     static const char zero_signature[AFP_SIGNATURE_LEN] = {0};
@@ -392,6 +473,13 @@ int afp_server_has_valid_signature(const struct afp_server *server)
                                     sizeof(zero_signature)) != 0;
 }
 
+/*!
+ * @brief Read a server's signature over a short status connection
+ *
+ * @param[in]  address    the server's address list, which the caller keeps
+ * @param[out] signature  receives AFP_SIGNATURE_LEN bytes
+ * @returns 0, or -1 with errno set
+ */
 int afp_server_probe_signature(struct addrinfo *address,
                                char signature[AFP_SIGNATURE_LEN])
 {
@@ -438,6 +526,12 @@ int afp_server_probe_signature(struct addrinfo *address,
     return -1;
 }
 
+/*!
+ * @brief Give a server a new address list, freeing the old one
+ *
+ * @param[in,out] server   the server, or NULL
+ * @param[in]     address  the list, which the server owns from then on
+ */
 void afp_server_replace_address(struct afp_server *server,
                                 struct addrinfo *address)
 {
@@ -456,11 +550,21 @@ void afp_server_replace_address(struct afp_server *server,
     server->used_address = NULL;
 }
 
+/*!
+ * @brief Take a reference on a server
+ *
+ * @param[in,out] s  the server
+ */
 void afp_server_hold(struct afp_server *s)
 {
     __atomic_add_fetch(&s->refcount, 1, __ATOMIC_RELAXED);
 }
 
+/*!
+ * @brief Drop a reference on a server, freeing it with the last
+ *
+ * @param[in,out] s  the server
+ */
 void afp_server_release(struct afp_server *s)
 {
     if (__atomic_sub_fetch(&s->refcount, 1, __ATOMIC_ACQ_REL) == 0) {
@@ -468,6 +572,12 @@ void afp_server_release(struct afp_server *s)
     }
 }
 
+/*!
+ * @brief Find a server by name, and hold it
+ *
+ * @param[in] name  the name
+ * @returns the server, held, or NULL
+ */
 struct afp_server *afp_server_find_by_name_hold(char *name)
 {
     struct afp_server * s;
@@ -482,6 +592,12 @@ struct afp_server *afp_server_find_by_name_hold(char *name)
     return s;
 }
 
+/*!
+ * @brief Find a server by address, and hold it
+ *
+ * @param[in] address  the address list
+ * @returns the server, held, or NULL
+ */
 struct afp_server *afp_server_find_by_address_hold(struct addrinfo * address)
 {
     struct afp_server * s;
@@ -496,6 +612,12 @@ struct afp_server *afp_server_find_by_address_hold(struct addrinfo * address)
     return s;
 }
 
+/*!
+ * @brief Find a volume by its address, and hold its server
+ *
+ * @param[in] id  the volume's address
+ * @returns the volume, or NULL
+ */
 struct afp_volume *afp_volume_find_by_pointer_hold(void *id)
 {
     struct afp_volume * v;
@@ -551,16 +673,28 @@ struct afp_volume *afp_volume_find_by_mountpoint_hold(const char *mountpoint)
     return NULL;
 }
 
+/*!
+ * @brief Lock the server list
+ */
 void afp_lock_server_list(void)
 {
     pthread_mutex_lock(&server_list_mutex);
 }
 
+/*!
+ * @brief Unlock the server list
+ */
 void afp_unlock_server_list(void)
 {
     pthread_mutex_unlock(&server_list_mutex);
 }
 
+/*!
+ * @brief Whether any of a server's volumes is mounted or unmounting
+ *
+ * @param[in] server  the server
+ * @returns 1 when one is
+ */
 int something_is_mounted(struct afp_server * server)
 {
     int i;
@@ -574,6 +708,12 @@ int something_is_mounted(struct afp_server * server)
     return 0;
 }
 
+/*!
+ * @brief Whether any of a server's volumes is attached
+ *
+ * @param[in] server  the server
+ * @returns 1 when one is
+ */
 int something_is_attached(struct afp_server * server)
 {
     for (int i = 0; i < server->num_volumes; i++) {
@@ -604,8 +744,9 @@ int afp_detach_volume(struct afp_volume * volume)
 
     server = volume->server;
     volume->attached = AFP_VOLUME_DETACHING;
-    free_entire_did_cache(volume);
+    /* The forks' flushes tell the cache, which empties after them. */
     remove_fork_list(volume);
+    dir_cache_purge(volume);
 
     if (volume->dtrefnum) {
         afp_closedt(server, volume->dtrefnum);
@@ -626,6 +767,12 @@ int afp_detach_volume(struct afp_volume * volume)
     return 0;
 }
 
+/*!
+ * @brief Detach every attached volume of a server
+ *
+ * @param[in,out] server  the server
+ * @returns 0, or 1 when a detach fails
+ */
 int afp_unmount_all_volumes(struct afp_server * server)
 {
     int i;
@@ -640,6 +787,12 @@ int afp_unmount_all_volumes(struct afp_server * server)
     return 0;
 }
 
+/*!
+ * @brief Unmount a mounted volume and detach it
+ *
+ * @param[in,out] volume  the volume, or NULL
+ * @returns 0, or -1 for a volume not mounted or one the front end keeps
+ */
 int afp_unmount_volume(struct afp_volume * volume)
 {
     if (volume == NULL) {
@@ -706,6 +859,10 @@ void afp_free_server(struct afp_server **sp)
     }
 
     if (volumes) {
+        for (int i = 0; i < server->num_volumes; i++) {
+            dir_cache_destroy(&volumes[i]);
+        }
+
         free(volumes);
     }
 
@@ -859,6 +1016,11 @@ void afp_server_fill_basic(const struct afp_server *server,
     basic->server_type = server->server_type;
 }
 
+/*!
+ * @brief Fill a session token with the client's fixed ID
+ *
+ * @param[out] token  the token
+ */
 static void setup_default_outgoing_token(struct afp_token * token)
 {
     char foo[] = {(char)0x54, (char)0xc0, (char)0x75, (char)0xb0, (char)0x15, (char)0xe6, (char)0x1c, (char)0x13,
@@ -868,6 +1030,12 @@ static void setup_default_outgoing_token(struct afp_token * token)
     memcpy(token->data, foo, 16);
 }
 
+/*!
+ * @brief Reclaim a server's session token after a reconnect
+ *
+ * @param[in,out] server  the server
+ * @returns afp_getsessiontoken()'s result
+ */
 static int resume_token(struct afp_server * server)
 {
     struct afp_token outgoing_token;
@@ -883,6 +1051,12 @@ static int resume_token(struct afp_server * server)
     return ret;
 }
 
+/*!
+ * @brief Get a session token after a login
+ *
+ * @param[in,out] server  the server
+ * @returns afp_getsessiontoken()'s result
+ */
 static int setup_token(struct afp_server * server)
 {
     time_t now;
@@ -898,6 +1072,15 @@ static int setup_token(struct afp_server * server)
     return ret;
 }
 
+/*!
+ * @brief Log in to a server and set up, or resume, its session token
+ *
+ * @param[in,out] server  the server
+ * @param[out]    mesg    receives the reason for a failure
+ * @param[in,out] l       the bytes mesg holds
+ * @param[in]     max     capacity of mesg
+ * @returns 0, or 1 with the reason in mesg
+ */
 int afp_server_login(struct afp_server *server,
                      char *mesg, unsigned int *l, unsigned int max)
 {
@@ -1056,6 +1239,8 @@ int afp_connect_volume(struct afp_volume * volume, struct afp_server * server,
         bitmap |= kFPVolNameBit | kFPVolBlockSizeBit;
     }
 
+    /* A new session's directory IDs may differ from the last one's. */
+    dir_cache_purge(volume);
     ret = afp_volopen(volume, bitmap,
                       (strlen(volume->volpassword) > 0) ? volume->volpassword : NULL);
 
@@ -1456,6 +1641,13 @@ error:
     return -error;
 }
 
+/*!
+ * @brief The highest AFP version both sides speak, at most the one asked for
+ *
+ * @param[in] versions   the server's version numbers, ending at a 0
+ * @param[in] requested  the version asked for, or 0 for any
+ * @returns the version, or NULL for none in common
+ */
 struct afp_versions *pick_version(unsigned char *versions,
                                   unsigned char requested)
 {
@@ -1492,6 +1684,13 @@ struct afp_versions *pick_version(unsigned char *versions,
     return NULL;
 }
 
+/*!
+ * @brief The highest UAM both masks hold
+ *
+ * @param[in] uam2  one mask
+ * @param[in] uam1  the other
+ * @returns the UAM's bit, or -1 for none
+ */
 int pick_uam(unsigned int uam2, unsigned int uam1)
 {
     int i;
@@ -1505,6 +1704,14 @@ int pick_uam(unsigned int uam2, unsigned int uam1)
     return -1;
 }
 
+/*!
+ * @brief Write a server's volume names, comma-separated
+ *
+ * @param[in]  server  the server
+ * @param[out] names   receives the names
+ * @param[in]  max     capacity of names
+ * @returns the length snprintf() counted
+ */
 int afp_list_volnames(struct afp_server * server, char *names, int max)
 {
     int len = 0;

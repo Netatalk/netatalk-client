@@ -178,6 +178,15 @@ int afp_setdirparms(struct afp_volume * volume, unsigned int dirid,
     return set_params(volume, afpSetDirParms, dirid, pathname, bitmap, e);
 }
 
+/*!
+ * @brief Delete a file or an empty directory with FPDelete
+ *
+ * @param[in] volume    volume of the object
+ * @param[in] dirid     its directory
+ * @param[in] pathname  AFP name of the object in dirid
+ * @returns the server's AFP result, afpc_dsi_send()'s error when the
+ *          request fails, or -1 without memory for the request
+ */
 int afp_delete(struct afp_volume * volume,
                unsigned int dirid, char *pathname)
 {
@@ -338,6 +347,18 @@ int afp_read(struct afp_volume * volume, unsigned short forkid,
     return rc;
 }
 
+/*!
+ * @brief Copy an FPRead reply's data into the read's buffer
+ *
+ * Data past the buffer is dropped, and logged.
+ *
+ * @param[in]     server  unused
+ * @param[in]     buf     the reply
+ * @param[in]     size    its length
+ * @param[in,out] other   the struct afp_rx_buffer, which receives the data,
+ *                        its length and the result
+ * @returns 0, or -1 for a reply shorter than a DSI header
+ */
 int afp_read_reply(struct afp_server *server _U_,
                    char *buf, unsigned int size,
                    void *other)
@@ -409,6 +430,18 @@ int afp_readext(struct afp_volume * volume, unsigned short forkid,
     return rc;
 }
 
+/*!
+ * @brief Copy an FPReadExt reply's data into the read's buffer
+ *
+ * Data past the buffer is dropped, and logged.
+ *
+ * @param[in]     server  unused
+ * @param[in]     buf     the reply
+ * @param[in]     size    its length
+ * @param[in,out] other   the struct afp_rx_buffer, which receives the data,
+ *                        its length and the result
+ * @returns 0, or -1 for a reply shorter than a DSI header
+ */
 int afp_readext_reply(struct afp_server *server _U_,
                       char *buf, unsigned int size,
                       void *other)
@@ -541,6 +574,16 @@ int afp_getfiledirparms(struct afp_volume *volume, unsigned int did,
     return ret;
 }
 
+/*!
+ * @brief Create a file with FPCreateFile
+ *
+ * @param[in] volume    volume of the file
+ * @param[in] flag      kFPSoftCreate, or kFPHardCreate to replace a file there
+ * @param[in] did       its directory
+ * @param[in] pathname  AFP name of the file in did
+ * @returns the server's AFP result, afpc_dsi_send()'s error when the
+ *          request fails, or -1 without memory for the request
+ */
 int afp_createfile(struct afp_volume * volume, unsigned char flag,
                    unsigned int did,
                    char *pathname)
@@ -579,8 +622,22 @@ int afp_createfile(struct afp_volume * volume, unsigned char flag,
     return ret;
 }
 
+/*!
+ * @brief Write to an open fork with FPWrite, the AFP 2 write
+ *
+ * @param[in]  volume    volume of the fork
+ * @param[in]  forkid    the open fork
+ * @param[in]  flag      0, or AFP_WRITE_FROM_END for an offset from the end
+ * @param[in]  offset    byte offset to write at
+ * @param[in]  reqcount  bytes to write
+ * @param[in]  data      the bytes
+ * @param[out] written   receives the offset past the last byte written, or
+ *                       NULL
+ * @returns the server's AFP result, afpc_dsi_send()'s error when the
+ *          request fails, or -1 without memory for the request
+ */
 int afp_write(struct afp_volume * volume, unsigned short forkid,
-              uint32_t offset, uint32_t reqcount,
+              unsigned char flag, uint32_t offset, uint32_t reqcount,
               char *data, uint32_t *written)
 {
     struct {
@@ -611,7 +668,7 @@ int afp_write(struct afp_volume * volume, unsigned short forkid,
             *request_packet) - sizeof(struct dsi_header));
     /* For writing data, set the offset correctly */
     request_packet->command = afpWrite;
-    request_packet->flag = 0; /* we'll always do this from the start */
+    request_packet->flag = flag;
     request_packet->forkid = htons(forkid);
     request_packet->offset = htonl(offset);
     request_packet->reqcount = htonl(reqcount);
@@ -622,6 +679,16 @@ int afp_write(struct afp_volume * volume, unsigned short forkid,
 }
 
 
+/*!
+ * @brief Take the offset an FPWrite reply carries
+ *
+ * @param[in]  server  unused
+ * @param[in]  buf     the reply
+ * @param[in]  size    its length
+ * @param[out] other   the uint32_t that receives the offset past the last
+ *                     byte written, 0 for an error reply, or NULL
+ * @returns 0
+ */
 int afp_write_reply(struct afp_server *server _U_,
                     char *buf, unsigned int size,
                     void *other)
@@ -647,8 +714,22 @@ int afp_write_reply(struct afp_server *server _U_,
     return 0;
 }
 
+/*!
+ * @brief Write to an open fork with FPWriteExt, the AFP 3 write
+ *
+ * @param[in]  volume    volume of the fork
+ * @param[in]  forkid    the open fork
+ * @param[in]  flag      0, or AFP_WRITE_FROM_END for an offset from the end
+ * @param[in]  offset    byte offset to write at
+ * @param[in]  reqcount  bytes to write
+ * @param[in]  data      the bytes
+ * @param[out] written   receives the offset past the last byte written, or
+ *                       NULL
+ * @returns the server's AFP result, afpc_dsi_send()'s error when the
+ *          request fails, or -1 without memory for the request
+ */
 int afp_writeext(struct afp_volume * volume, unsigned short forkid,
-                 uint64_t offset, uint64_t reqcount,
+                 unsigned char flag, uint64_t offset, uint64_t reqcount,
                  char *data, uint64_t *written)
 {
     struct {
@@ -679,7 +760,7 @@ int afp_writeext(struct afp_volume * volume, unsigned short forkid,
             *request_packet) - sizeof(struct dsi_header));
     /* For writing data, set the offset correctly */
     request_packet->command = afpWriteExt;
-    request_packet->flag = 0; /* we'll always do this from the start */
+    request_packet->flag = flag;
     request_packet->forkid = htons(forkid);
     request_packet->offset = hton64(offset);
     request_packet->reqcount = hton64(reqcount);
@@ -690,6 +771,16 @@ int afp_writeext(struct afp_volume * volume, unsigned short forkid,
 }
 
 
+/*!
+ * @brief Take the offset an FPWriteExt reply carries
+ *
+ * @param[in]  server  unused
+ * @param[in]  buf     the reply
+ * @param[in]  size    its length
+ * @param[out] other   the uint64_t that receives the offset past the last
+ *                     byte written, 0 for an error reply, or NULL
+ * @returns 0
+ */
 int afp_writeext_reply(struct afp_server *server _U_,
                        char *buf, unsigned int size,
                        void *other)

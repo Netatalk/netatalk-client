@@ -7,6 +7,11 @@
     See the file COPYING.
 */
 
+/*!
+ * @file
+ * @brief The fake AFP server's thread, which answers from the test's knobs
+ */
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <pthread.h>
@@ -14,12 +19,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "afp_fake_server.h"
 #include "lib/afp_protocol.h"
+#include "lib/did.h"
 #include "lib/dsi.h"
 #include "lib/dsi_protocol.h"
+#include "lib/forklist.h"
 #include "lib/utils.h"
 
 /* The largest request read; a larger one ends the server. */
@@ -286,8 +294,14 @@ static int answer(struct afp_fake_server *fake,
                && length >= 12) {
         /* An object the session owns, of mode 0644 or 0755 unless params_mode
          * says, with the time, a file's fork lengths and the privileges. */
-        uint32_t mode = fake->params_dir ? 040755 : 0100644;
+        const int is_dir = fake->params_dir
+                           || (fake->params_answers < 16U
+                               && (fake->params_dirs
+                                   >> fake->params_answers) & 1U);
+        uint32_t mode = is_dir ? 040755 : 0100644;
         uint32_t privs[4];
+        const uint32_t cnid = htonl(fake->params_cnid);
+        const uint16_t cnid_bit = fake->params_cnid ? kFPNodeIDBit : 0;
         const uint32_t data_length = htonl(fake->data_length);
         const uint32_t resource_length = htonl(fake->resource_length);
 
@@ -311,24 +325,31 @@ static int answer(struct afp_fake_server *fake,
 
         privs[2] = htonl(mode);
         privs[3] = htonl(kUserIsOwner);
+        fake->params_answers++;
 
-        if (fake->params_dir) {
+        if (is_dir) {
             memcpy(&value, payload + 10, sizeof(value));
-            bitmap = ntohs(value) & (kFPModDateBit | kFPUnixPrivsBit);
+            bitmap = ntohs(value) & (kFPModDateBit | cnid_bit
+                                     | kFPUnixPrivsBit);
         } else {
-            bitmap &= kFPModDateBit | kFPDataForkLenBit | kFPRsrcForkLenBit
-                      | kFPUnixPrivsBit;
+            bitmap &= kFPModDateBit | cnid_bit | kFPDataForkLenBit
+                      | kFPRsrcForkLenBit | kFPUnixPrivsBit;
         }
 
         value = htons(bitmap);
         memset(data, 0, 6);
-        memcpy(data + (fake->params_dir ? 2 : 0), &value, sizeof(value));
-        data[4] = fake->params_dir ? 0x80 : 0;
+        memcpy(data + (is_dir ? 2 : 0), &value, sizeof(value));
+        data[4] = is_dir ? 0x80 : 0;
         body_len = 6;
 
         if (bitmap & kFPModDateBit) {
             memcpy(data + body_len, &fake->params_date, 4);
             body_len += 4;
+        }
+
+        if (bitmap & kFPNodeIDBit) {
+            memcpy(data + body_len, &cnid, sizeof(cnid));
+            body_len += sizeof(cnid);
         }
 
         if (bitmap & kFPDataForkLenBit) {
@@ -377,18 +398,47 @@ static int answer(struct afp_fake_server *fake,
             memcpy(data + 1, fake->comment, data[0]);
             body_len = 1U + data[0];
         }
+    } else if (payload[0] == afpGetExtAttr && fake->xattr_value) {
+        /* No bitmap, then the value's length and the value. */
+        const uint32_t vlen = (uint32_t) strlen(fake->xattr_value);
+        const uint32_t wire_len = htonl(vlen);
+        memset(data, 0, 2);
+        memcpy(data + 2, &wire_len, sizeof(wire_len));
+        memcpy(data + 6, fake->xattr_value, vlen);
+        body_len = 6U + vlen;
     } else if (payload[0] == afpCreateDir) {
         /* The new directory's ID */
         const uint32_t did = htonl(17);
         memcpy(data, &did, sizeof(did));
         body_len = sizeof(did);
     } else if (payload[0] == afpOpenFork) {
-        /* No file parameters, then the fork number. */
-        value = 0;
+        /* The fork number, then the node ID and the data fork's length
+         * where the open asks for them. */
+        uint16_t asked = 0;
+
+        if (length >= 10) {
+            memcpy(&value, payload + 8, sizeof(value));
+            asked = ntohs(value) & (kFPNodeIDBit | kFPExtDataForkLenBit);
+        }
+
+        value = htons(asked);
         memcpy(data, &value, sizeof(value));
         value = htons(AFP_FAKE_SERVER_FORK);
         memcpy(data + 2, &value, sizeof(value));
         body_len = 4;
+
+        if (asked & kFPNodeIDBit) {
+            const uint32_t cnid = htonl(fake->params_cnid);
+            memcpy(data + body_len, &cnid, sizeof(cnid));
+            body_len += sizeof(cnid);
+        }
+
+        if (asked & kFPExtDataForkLenBit) {
+            const uint64_t fork_len = hton64((uint64_t) fake->data_length);
+            memcpy(data + body_len, &fork_len, sizeof(fork_len));
+            body_len += sizeof(fork_len);
+        }
+
         fake->forks_open++;
     } else if (payload[0] == afpCloseFork) {
         fake->forks_open--;
@@ -400,7 +450,16 @@ static int answer(struct afp_fake_server *fake,
         count = ntoh64(count);
 
         if (payload[0] == afpWriteExt) {
-            /* The end of the write. */
+            /* The end of the write; an append's counts from the fork's end,
+             * which a write past it moves. */
+            if (payload[1] & AFP_WRITE_FROM_END) {
+                offset += fake->data_length;
+            }
+
+            if (offset + count > fake->data_length) {
+                fake->data_length = (uint32_t)(offset + count);
+            }
+
             offset = hton64(offset + count);
             memcpy(data, &offset, sizeof(offset));
             body_len = 8;
@@ -445,6 +504,62 @@ static int answer(struct afp_fake_server *fake,
 }
 
 /*!
+ * @brief Hold a request's answer until the test releases it
+ *
+ * @param[in,out] fake  the fake server
+ */
+static void hold_until_released(struct afp_fake_server *fake)
+{
+    pthread_mutex_lock(&fake->hold_mutex);
+    fake->held = 1;
+    pthread_cond_broadcast(&fake->hold_cond);
+
+    while (!fake->released) {
+        pthread_cond_wait(&fake->hold_cond, &fake->hold_mutex);
+    }
+
+    pthread_mutex_unlock(&fake->hold_mutex);
+}
+
+/*!
+ * @brief Wait until the held request has arrived, for five seconds at most
+ *
+ * @param[in,out] fake  the fake server
+ * @returns 0 once it has, -1 when it did not arrive
+ */
+int afp_fake_server_wait_held(struct afp_fake_server *fake)
+{
+    struct timespec deadline;
+    int waited = 0;
+    int held;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += 5;
+    pthread_mutex_lock(&fake->hold_mutex);
+
+    while (!fake->held && waited == 0) {
+        waited = pthread_cond_timedwait(&fake->hold_cond, &fake->hold_mutex,
+                                        &deadline);
+    }
+
+    held = fake->held;
+    pthread_mutex_unlock(&fake->hold_mutex);
+    return held ? 0 : -1;
+}
+
+/*!
+ * @brief Let the held request's answer go
+ *
+ * @param[in,out] fake  the fake server
+ */
+void afp_fake_server_release(struct afp_fake_server *fake)
+{
+    pthread_mutex_lock(&fake->hold_mutex);
+    fake->released = 1;
+    pthread_cond_broadcast(&fake->hold_cond);
+    pthread_mutex_unlock(&fake->hold_mutex);
+}
+
+/*!
  * @brief Answer the client's requests until the session ends
  *
  * Each request gets the answer fake's fields ask for, or kFPNoErr alone; the
@@ -475,6 +590,9 @@ static void *serve(void *arg)
         }
 
         if (fake->ncommands < sizeof(fake->commands)) {
+            size_t kept = length < sizeof(fake->requests[0])
+                          ? length : sizeof(fake->requests[0]);
+            memcpy(fake->requests[fake->ncommands], payload, kept);
             fake->lengths[fake->ncommands] = length;
             fake->commands[fake->ncommands++] = payload[0];
         }
@@ -489,6 +607,10 @@ static void *serve(void *arg)
             }
 
             pthread_mutex_unlock(&fake->volume.open_forks_mutex);
+        }
+
+        if (fake->hold && payload[0] == fake->hold) {
+            hold_until_released(fake);
         }
 
         rc = answer(fake, &header, payload, length);
@@ -525,7 +647,9 @@ static void release(struct afp_fake_server *fake)
     fake->volume.server = NULL;
     pthread_rwlock_destroy(&fake->volume.open_lock);
     pthread_mutex_destroy(&fake->volume.open_forks_mutex);
-    pthread_mutex_destroy(&fake->volume.did_cache_mutex);
+    pthread_mutex_destroy(&fake->hold_mutex);
+    pthread_cond_destroy(&fake->hold_cond);
+    dir_cache_destroy(&fake->volume);
 }
 
 /*!
@@ -558,9 +682,11 @@ int afp_fake_server_start(struct afp_fake_server *fake)
     fake->server->fd = fds[0];
     fake->server->connect_state = SERVER_STATE_CONNECTED;
     fake->peer = fds[1];
-    pthread_mutex_init(&fake->volume.did_cache_mutex, NULL);
+    dir_cache_init(&fake->volume);
     pthread_mutex_init(&fake->volume.open_forks_mutex, NULL);
-    pthread_rwlock_init(&fake->volume.open_lock, NULL);
+    pthread_mutex_init(&fake->hold_mutex, NULL);
+    pthread_cond_init(&fake->hold_cond, NULL);
+    afp_open_lock_init(&fake->volume.open_lock);
     fake->volume.server = fake->server;
     fake->volume.path_encoding = kFPUTF8Name;
     fake->volume.signature = AFP_VOL_FIXED;

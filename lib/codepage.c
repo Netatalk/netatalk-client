@@ -63,7 +63,7 @@ static int contains_supplementary_utf8(const char *src, size_t src_len)
  * @param[in]  src_len  bytes of src to examine
  * @returns 1 when every byte is below 0x80, else 0
  */
-static int utf8_is_ascii(const char *src, size_t src_len)
+int utf8_is_ascii(const char *src, size_t src_len)
 {
     for (size_t i = 0; i < src_len; i++) {
         if ((unsigned char)src[i] >= 0x80U) {

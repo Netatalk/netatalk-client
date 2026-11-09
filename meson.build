@@ -424,6 +424,15 @@ if with_fuse
     )
         cflags += '-DHAVE_FUSE_COPY_FILE_RANGE=1'
     endif
+
+    # libfuse 3 tells the kernel to drop the attributes it holds for a path.
+    if cc.has_function(
+        'fuse_invalidate_path',
+        prefix: '#define FUSE_USE_VERSION 35\n#include <fuse.h>',
+        dependencies: fuse_dep,
+    )
+        cflags += '-DHAVE_FUSE_INVALIDATE_PATH=1'
+    endif
 endif
 
 incdir = include_directories(['.', 'include', include_dirs])
