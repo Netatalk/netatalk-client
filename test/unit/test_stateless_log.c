@@ -1,3 +1,19 @@
+/*
+ * test_stateless_log.c: libafpsl's framing of the daemon's answers, its
+ * log lines and its waits
+ *
+ * Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ * Copyright (C) 2026 Andy Lemin (andylemin)
+ *
+ * This program can be distributed under the terms of the GNU GPL.
+ * See the file COPYING.
+ */
+
+/*!
+ * @file
+ * @brief Unit tests of libafpsl's framing, log lines and waits
+ */
+
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -149,6 +165,13 @@ static int check_interrupted_framed_read(void)
     return 0;
 }
 
+/*!
+ * @brief Run libafpsl's framing, log and wait checks as TAP
+ *
+ * @param[in] argc  argument count
+ * @param[in] argv  arguments for the TAP harness
+ * @returns the harness's exit status
+ */
 int main(int argc, char **argv)
 {
     const char payload[] = "DATA";
@@ -197,5 +220,19 @@ int main(int argc, char **argv)
           == -1);
     CHECK(check_framed_read_errors() == 0);
     CHECK(check_interrupted_framed_read() == 0);
+    /* A call waits the usual 30 seconds and the time of its step's read
+     * and write at 32 KiB/s, a step of 1 MiB at most; a new target's call
+     * waits a second more for each MiB, within a week, when that is
+     * longer. */
+    CHECK(afp_sl_copy_wait(0, AFP_SL_COPY_NEW_TARGET) == 30);
+    CHECK(afp_sl_copy_wait(4ULL * 1024 * 1024, AFP_SL_COPY_NEW_TARGET)
+          == 30 + 64);
+    CHECK(afp_sl_copy_wait(1024ULL * 1024 * 1024, AFP_SL_COPY_NEW_TARGET)
+          == 30 + 1024);
+    CHECK(afp_sl_copy_wait(UINT64_MAX, AFP_SL_COPY_NEW_TARGET)
+          == 30 + 7 * 24 * 3600);
+    CHECK(afp_sl_copy_wait(0, 0) == 30);
+    CHECK(afp_sl_copy_wait(64ULL * 1024, 0) == 30 + 4);
+    CHECK(afp_sl_copy_wait(1024ULL * 1024 * 1024, 0) == 30 + 64);
     return test_tap_finish();
 }

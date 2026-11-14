@@ -4,17 +4,24 @@
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2007 Derrik Pates <dpates@dsdk12.net>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
+ */
+
+/*!
+ * @file
+ * @brief The client's UAMs: their registry, names, logins and password changes
  */
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 
-#include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef HAVE_LIBGCRYPT
 #include <gcrypt.h>
@@ -77,41 +84,30 @@ unsigned int default_uams_mask(void)
     return uam_mask;
 }
 
-char *get_uam_names_list(void)
+/*!
+ * @brief Write the names of the registered UAMs, separated by commas
+ *
+ * @param[out] names  receives the names, cut to fit
+ * @param[in]  size   bytes of names, above 0
+ * @returns names
+ */
+char *get_uam_names_list(char *names, size_t size)
 {
-    static char *names_list = NULL;
-    free(names_list);
-    names_list = NULL;
-    size_t total = 0;
+    size_t pos = 0;
+    names[0] = '\0';
 
-    for (struct afp_uam *u = uam_base; u; u = u->next) {
-        if (total > 0) {
-            total += 2;    /* ", " */
+    for (struct afp_uam *u = uam_base; u && pos < size; u = u->next) {
+        int n = snprintf(names + pos, size - pos, "%s%.*s",
+                         pos ? ", " : "", AFP_UAM_LENGTH, u->name);
+
+        if (n < 0) {
+            break;
         }
 
-        total += strnlen(u->name, AFP_UAM_LENGTH);
+        pos += (size_t) n;
     }
 
-    names_list = calloc(1, total + 1);
-
-    if (!names_list) {
-        return "";
-    }
-
-    char *p = names_list;
-
-    for (struct afp_uam *u = uam_base; u; u = u->next) {
-        if (p != names_list) {
-            memcpy(p, ", ", 2);
-            p += 2;
-        }
-
-        size_t nlen = strnlen(u->name, AFP_UAM_LENGTH);
-        memcpy(p, u->name, nlen);
-        p += nlen;
-    }
-
-    return names_list;
+    return names;
 }
 
 static int register_uam(struct afp_uam * uam)
@@ -163,10 +159,20 @@ unsigned int find_uam_by_name(const char *name)
     return 0;
 }
 
+/*!
+ * @brief Register the client's UAMs
+ *
+ * @returns 0, or -1 when one does not register
+ */
 int init_uams(void)
 {
     uam_base = NULL;
     int ret = 0;
+#ifdef HAVE_LIBGCRYPT
+    /* libgcrypt's first call sets it up, which two logins at once would
+     * race to do. */
+    (void) gcry_check_version(UAM_NEED_LIBGCRYPT_VERSION);
+#endif
     ret |= register_uam(&uam_cleartxt);
     ret |= register_uam(&uam_noauth);
 #ifdef HAVE_LIBGCRYPT

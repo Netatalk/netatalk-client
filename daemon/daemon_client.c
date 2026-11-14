@@ -3,9 +3,15 @@
  *
  *  Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
+ */
+
+/*!
+ * @file
+ * @brief afpsld's client connections: their pool, their requests and answers
  */
 
 #include <errno.h>
@@ -115,23 +121,51 @@ int continue_client_connection(struct daemon_client * c)
     return 0;
 }
 
+/*!
+ * @brief End a client's connection and free its slot
+ *
+ * The slot is free before the connection closes, so an exit the client
+ * sends once it has seen the close does not count it.
+ *
+ * @param[in,out] c  the client
+ * @returns 0, or -1 for no client
+ */
 int close_client_connection(struct daemon_client * c)
 {
+    int fd;
+
     if ((!c) || (c->fd == 0)) {
         return -1;
     }
 
+    fd = c->fd;
     reset_client_request(c);
-    rm_fd_and_signal(c->fd);
-    close(c->fd);
+    rm_fd_and_signal(fd);
     remove_client(&c);
+    close(fd);
     return 0;
 }
 
+/* Set once the last client's exit has counted the clients: a connection the
+ * listener accepts after it is turned away */
+static int pool_closed;
+
+/*!
+ * @brief Take a connection the listener accepted into the client pool
+ *
+ * @param[in] fd  the connection
+ * @returns 0, -1 when every slot is taken, or -2 once the last client's exit
+ *          has closed the pool
+ */
 static int add_client(int fd)
 {
     struct daemon_client * c;
     pthread_mutex_lock(&client_pool_mutex);
+
+    if (pool_closed) {
+        pthread_mutex_unlock(&client_pool_mutex);
+        return -2;
+    }
 
     for (int i = 0; i < DAEMON_NUM_CLIENTS; i++) {
         c = &client_pool[i];
@@ -198,6 +232,18 @@ found:
     return 1;
 }
 
+/*!
+ * @brief Accept a connection on the listener, or read from the client whose
+ *        connection is ready
+ *
+ * @param[in]     command_fd  the listener
+ * @param[in,out] set         the ready descriptors; a client's leaves it once
+ *                            read
+ * @param[in,out] max_fd      one past the highest descriptor to watch
+ * @returns 0 after an accept, a refused one among them, 1 while a client's
+ *          request is partly read, or -1 once its command has started or
+ *          the client has gone
+ */
 int daemon_scan_extra_fds(int command_fd, fd_set * set, int *max_fd)
 {
     struct sockaddr_un new_addr;
@@ -209,10 +255,17 @@ int daemon_scan_extra_fds(int command_fd, fd_set * set, int *max_fd)
         int new_fd = accept(command_fd, (struct sockaddr *) &new_addr, &new_len);
 
         if (new_fd >= 0) {
-            if (add_client(new_fd) < 0) {
+            ret = add_client(new_fd);
+
+            /* A pool the last client's exit closed turns the client away
+             * quietly: its hello fails, and it starts the next daemon. */
+            if (ret == -1) {
                 log_for_client(NULL, AFPFSD, LOG_WARNING,
                                "Client pool full (%d), rejecting connection",
                                DAEMON_NUM_CLIENTS);
+            }
+
+            if (ret < 0) {
                 close(new_fd);
                 return 0;
             }
@@ -328,9 +381,18 @@ int send_command(struct daemon_client *c, unsigned int len, const char *data)
     return 0;
 }
 
-int count_active_clients(void)
+/*!
+ * @brief Say whether an exit's client is the daemon's last, which closes the
+ *        pool to the connections the listener accepts after
+ *
+ * Exits run one at a time, so the last one counts itself alone.
+ *
+ * @returns 1 for the last client, or 0
+ */
+int daemon_client_last_exit(void)
 {
     int count = 0;
+    int last;
     pthread_mutex_lock(&client_pool_mutex);
 
     for (int i = 0; i < DAEMON_NUM_CLIENTS; i++) {
@@ -339,6 +401,8 @@ int count_active_clients(void)
         }
     }
 
+    last = count == 1;
+    pool_closed = last;
     pthread_mutex_unlock(&client_pool_mutex);
-    return count;
+    return last;
 }

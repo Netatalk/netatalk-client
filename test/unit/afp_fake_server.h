@@ -22,6 +22,7 @@ struct afp_fake_server {
     pthread_t thread;
     uint8_t refuse;         /*!< command refused, or 0 */
     uint8_t refuse_privs;   /*!< whether a privileges change is refused */
+    uint8_t refuse_unlock;  /*!< whether a byte-range unlock is refused */
     int32_t refusal;        /*!< their answer, kFPAccessDenied when 0 */
     uint8_t inspect;        /*!< command whose request copies listed, or 0 */
     uint8_t hold;           /*!< command held until released, or 0 */

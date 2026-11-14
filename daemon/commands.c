@@ -41,6 +41,7 @@
 #include "lib/compat.h"
 #include "lib/dsi.h"
 #include "lib/client.h"
+#include "lib/lowlevel.h"
 #include "lib/mapping.h"
 #include "lib/midlevel.h"
 #include "lib/resource.h"
@@ -60,8 +61,8 @@ struct handle_slot {
 };
 static struct handle_slot file_handle_table[MAX_OPEN_FILES];
 static pthread_mutex_t file_handle_mutex = PTHREAD_MUTEX_INITIALIZER;
-/* Serialize all AFP server operations to prevent concurrent DSI calls */
-static pthread_mutex_t server_op_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* Serialises the exits, so of two the second finds the first one gone */
+static pthread_mutex_t exit_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /*!
  * @brief The name of an afpsld command, for the log
@@ -201,6 +202,9 @@ static const char *afpsl_ipc_command_name(unsigned char command)
     case AFPSL_IPC_COMMAND_DESKTOP_SET_COMMENT:
         return "DESKTOP_SET_COMMENT";
 
+    case AFPSL_IPC_COMMAND_COPY:
+        return "COPY";
+
     default:
         return "UNKNOWN";
     }
@@ -228,10 +232,15 @@ static void finish_response(struct daemon_client *c, int send_result,
 }
 
 /*!
- * @brief Answer an afpsld hello request, which negotiates the IPC protocol
+ * @brief Answer a hello with the daemon's protocol and its features
  *
- * @param[in,out] c  the client, whose complete packet holds the request
- * @returns 0, or -1 to close the client for a request of the wrong size
+ * A client of another major version, or another magic, is answered with
+ * the error code, and its connection ends. The hello carries the
+ * deny-write mode of the client's opens, so a connection that replaces
+ * another keeps it.
+ *
+ * @param[in,out] c  the client, whose complete packet holds the hello
+ * @returns 0, or -1 for a hello of another size, which ends the connection
  */
 static int process_hello(struct daemon_client *c)
 {
@@ -253,7 +262,9 @@ static int process_hello(struct daemon_client *c)
     response.magic = AFPSL_IPC_PROTOCOL_MAGIC;
     response.major = AFPSL_IPC_PROTOCOL_MAJOR;
     response.minor = AFPSL_IPC_PROTOCOL_MINOR;
+    response.features = AFPSL_IPC_FEATURES;
     c->ipc_ready = compatible;
+    c->deny_write = (request->features & AFPSL_IPC_HELLO_DENY_WRITE) != 0;
     finish_response(c, send_command(c, sizeof(response), (char *)&response),
                     !compatible);
     /* finish_response() already closes an incompatible connection. */
@@ -341,10 +352,30 @@ static int fork_is_listed(struct afp_volume *volume,
 }
 
 /*!
+ * @brief Whether a handle's record is the table's alone, as no open-fork
+ *        list holds it
+ *
+ * @param[in] volume  the volume of the handle
+ * @param[in] fp      the record
+ * @returns 1 for a pseudo-file's and for a record without a fork that no
+ *          list holds, as a copy on the server leaves one, 0 for a listed
+ *          fork's
+ */
+static int handle_owns_record(struct afp_volume *volume,
+                              const struct afp_file_info *fp)
+{
+    return is_pseudo_file(fp)
+           || (fp->forkid == 0 && !fork_is_listed(volume, fp));
+}
+
+/*!
  * @brief Find the open record a handle names on a volume
  *
- * The handle must be the volume's, and a fork's record must still be on its
- * open-fork list, as a detach frees the records the library listed.
+ * The handle must be the volume's, and a listed fork's record must still be
+ * on its open-fork list, as a detach frees the records the library listed. The
+ * caller holds the volume's server lock, under which every close, detach
+ * and disconnect that frees a record runs, so the record stays valid for
+ * its command.
  *
  * @param[in] id      the handle
  * @param[in] volume  the volume the request names
@@ -365,7 +396,8 @@ static struct afp_file_info *get_file_handle(int id,
     fp = file_handle_table[id].fp;
 
     if (fp && (file_handle_table[id].volume != volume
-               || (!is_pseudo_file(fp) && !fork_is_listed(volume, fp)))) {
+               || (!handle_owns_record(volume, fp)
+                   && !fork_is_listed(volume, fp)))) {
         fp = NULL;
     }
 
@@ -382,7 +414,8 @@ static struct afp_file_info *get_file_handle(int id,
  * @brief Forget a volume's handles before it detaches
  *
  * The detach frees the listed records, and the table alone holds a
- * pseudo-file's; a handle left behind could name a later open's record.
+ * pseudo-file's and one a copy left without a fork; a handle left behind
+ * could name a later open's record.
  *
  * @param[in] volume  the attached volume
  */
@@ -394,7 +427,7 @@ static void release_volume_handles(struct afp_volume *volume)
         struct handle_slot *handle = &file_handle_table[i];
 
         if (handle->fp && handle->volume == volume) {
-            if (is_pseudo_file(handle->fp)) {
+            if (handle_owns_record(volume, handle->fp)) {
                 free(handle->fp);
             }
 
@@ -551,6 +584,10 @@ static unsigned char process_status(struct daemon_client * c)
     afp_lock_server_list();
 
     for (struct afp_server * s = get_server_base(); s; s = s->next) {
+        if (s->using_uam == 0) {
+            continue;
+        }
+
         /* Filter if servername is specified */
         if (req->servername[0] != '\0'
                 && strcmp(s->server_name_printable, req->servername) != 0) {
@@ -612,8 +649,13 @@ static unsigned char process_detach(struct daemon_client * c)
     struct afpsl_ipc_detach_response response;
     struct afp_volume * v = NULL;
     req = (void *) c->complete_packet;
+    memset(&response, 0, sizeof(response));
 
-    /* Validate the volumeid */
+    /* A request too short for its volume takes no server's lock. */
+    if ((size_t)(c->completed_packet_size) < sizeof(*req)) {
+        response.header.result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
 
     if ((v = afp_volume_find_by_pointer_hold(req->volumeid)) == NULL) {
         snprintf(response.detach_message, sizeof(response.detach_message),
@@ -649,19 +691,28 @@ done:
 }
 
 /*!
- * @brief Answer an afpsld exit request; the daemon exits with its last client
+ * @brief Answer an exit, and end the daemon when its client is the last
  *
- * @param[in,out] c  the client, whose connection closes
+ * The last client's exit closes the client pool and retires the listener
+ * before it answers, so a client that comes after the answer starts a daemon
+ * of its own, and one the listener accepted meanwhile is turned away.
+ *
+ * @param[in,out] c  the client
  * @returns 0
  */
 static unsigned char process_exit(struct daemon_client * c)
 {
     struct afpsl_ipc_response_header response;
-    /* Check before releasing our slot: count == 1 means we are the only client */
-    int last_client = (count_active_clients() == 1);
+    int last_client = daemon_client_last_exit();
+    memset(&response, 0, sizeof(response));
     log_for_client((void *)c, AFPFSD, LOG_INFO,
                    last_client ? "Exiting (last client)" :
                    "Exit requested but other clients active, staying up");
+
+    if (last_client) {
+        daemon_stop_listener();
+    }
+
     response.result = AFPSL_IPC_RESULT_OK;
     response.len = sizeof(response);
     finish_response(c, send_command(c, sizeof(response), (char *)&response), 1);
@@ -675,10 +726,46 @@ static unsigned char process_exit(struct daemon_client * c)
 }
 
 /*!
- * @brief Answer an afpsld changepw request by changing a user's password
+ * @brief Find a user's connected session by its server's name, held
+ *
+ * A server that a connect is still logging in, a status probe's, and
+ * another user's session on the server have no session the user's password
+ * change can use.
+ *
+ * @param[in] url  the request's server name and user
+ * @returns the server, or NULL
+ */
+static struct afp_server *find_connected_server_by_name_hold(
+    const struct afpc_url *url)
+{
+    const char *name = url->servername;
+    struct afp_server *match = NULL;
+    afp_lock_server_list();
+
+    for (struct afp_server *s = get_server_base(); s; s = s->next) {
+        if (s->connect_state == SERVER_STATE_CONNECTED && s->fd >= 0
+                && strcmp(s->username, url->username) == 0
+                && (strcmp(s->server_name_utf8, name) == 0
+                    || strcmp(s->server_name, name) == 0
+                    || strcmp(s->server_name_printable, name) == 0)) {
+            afp_server_hold(s);
+            match = s;
+            break;
+        }
+    }
+
+    afp_unlock_server_list();
+    return match;
+}
+
+/*!
+ * @brief Answer an afpsld password change on the session of a server named
+ *
+ * The change runs on a connected session, under its server's lock, beside
+ * none of the server's commands.
  *
  * @param[in,out] c  the client, whose complete packet holds the request
- * @returns 0, the response carrying the result
+ * @returns 0, the response carrying the result and the server's error
  */
 static unsigned char process_changepw(struct daemon_client * c)
 {
@@ -686,6 +773,7 @@ static unsigned char process_changepw(struct daemon_client * c)
     struct afpsl_ipc_changepw_response response;
     struct afp_server *server = NULL;
     int ret;
+    memset(&response, 0, sizeof(response));
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
                                                     afpsl_ipc_changepw_request)) {
@@ -698,7 +786,7 @@ static unsigned char process_changepw(struct daemon_client * c)
     req->url.username[AFP_MAX_USERNAME_LEN - 1] = '\0';
     req->oldpasswd[AFP_MAX_PASSWORD_LEN - 1] = '\0';
     req->newpasswd[AFP_MAX_PASSWORD_LEN - 1] = '\0';
-    server = afp_server_find_by_name_hold(req->url.servername);
+    server = find_connected_server_by_name_hold(&req->url);
 
     if (!server) {
         log_for_client((void *)c, AFPFSD, LOG_WARNING,
@@ -708,7 +796,9 @@ static unsigned char process_changepw(struct daemon_client * c)
         goto done;
     }
 
+    pthread_mutex_lock(&server->op_mutex);
     ret = ml_passwd(server, req->url.username, req->oldpasswd, req->newpasswd);
+    pthread_mutex_unlock(&server->op_mutex);
 
     if (ret == 0) {
         response.header.result = AFPSL_IPC_RESULT_OK;
@@ -738,7 +828,9 @@ done:
  *
  * The handles of the open forks of the server's volumes go first, since the
  * unmount frees the records they name; the logout then goes out without a
- * wait, and the server is removed.
+ * wait, and the server is removed. A server that no connect has handed to a
+ * client, a probe at the address of a session freed meanwhile or a session
+ * whose connect still runs, is another thread's, and is left alone.
  *
  * @param[in,out] c  the client, whose complete packet holds the request
  * @returns 0, the response carrying the result
@@ -756,6 +848,11 @@ static unsigned char process_disconnect(struct daemon_client * c)
     }
 
     server = find_server_by_pointer((struct afp_server *)req->serverid);
+
+    if (server && !__atomic_load_n(&server->daemon_session, __ATOMIC_ACQUIRE)) {
+        afp_server_release(server);
+        server = NULL;
+    }
 
     if (!server) {
         log_for_client((void *)c, AFPFSD, LOG_WARNING,
@@ -901,6 +998,11 @@ static unsigned char process_serverinfo(struct daemon_client * c)
             tmpserver = afp_server_find_by_address_hold(address);
             freeaddrinfo(address);
         }
+    }
+
+    if (tmpserver && tmpserver->connect_state == SERVER_STATE_CONNECTING) {
+        afp_server_release(tmpserver);
+        tmpserver = NULL;
     }
 
     if (tmpserver) {
@@ -1108,6 +1210,8 @@ static unsigned char process_open(struct daemon_client * c)
             result = AFPSL_IPC_RESULT_ACCESS;
         } else if (ret == -EEXIST) {
             result = AFPSL_IPC_RESULT_EXIST;
+        } else if (ret == -EBUSY) {
+            result = AFPSL_IPC_RESULT_BUSY;
         } else if (ret == -ETIMEDOUT) {
             result = AFPSL_IPC_RESULT_TIMEDOUT;
         } else {
@@ -1148,6 +1252,9 @@ done:
 /*!
  * @brief Answer an afpsld read request with data from an open file
  *
+ * A request for more than AFPSL_IPC_MAX_READ bytes is answered with the
+ * error code before its data buffer is allocated.
+ *
  * @param[in,out] c  the client, whose complete packet holds the request
  * @returns 0 once it sends the response, or AFPSL_IPC_RESULT_ERROR to close
  *          the connection when it can build none
@@ -1165,7 +1272,8 @@ static unsigned char process_read(struct daemon_client * c)
     unsigned int len = sizeof(struct afpsl_ipc_read_response);
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
-                                                    afpsl_ipc_read_request)) {
+                                                    afpsl_ipc_read_request)
+            || request->length > AFPSL_IPC_MAX_READ) {
         response = alloc_response(len, sizeof(*response));
 
         if (!response) {
@@ -1194,6 +1302,7 @@ static unsigned char process_read(struct daemon_client * c)
 
         if (!response) {
             log_for_client((void *) c, AFPFSD, LOG_ERR, "Out of memory in read");
+            afp_server_release(v->server);
             return AFPSL_IPC_RESULT_ERROR;
         }
 
@@ -1227,6 +1336,8 @@ static unsigned char process_read(struct daemon_client * c)
 
     if (ret > 0) {
         received = ret;
+    } else if (ret == -EBUSY) {
+        result = AFPSL_IPC_RESULT_BUSY;
     } else if (ret < 0) {
         result = AFPSL_IPC_RESULT_ERROR;
     }
@@ -1251,6 +1362,11 @@ done:
 /*!
  * @brief Answer an afpsld write request by writing to an open file
  *
+ * The request's data follows it on the connection and is read before
+ * anything else, so every answer leaves the connection at the next request.
+ * A request too short to name its data, or one that names more than a write
+ * carries, leaves it unread, and the connection ends with the answer.
+ *
  * @param[in,out] c  the client, whose complete packet holds the request
  * @returns 0, the response carrying the result
  */
@@ -1259,15 +1375,63 @@ static unsigned char process_write(struct daemon_client * c)
     struct afpsl_ipc_write_response response;
     struct afpsl_ipc_write_request * request = (void *) c->complete_packet;
     struct afp_volume * v = NULL;
-    int ret;
+    struct afp_file_info *fp;
+    int close_requested = request->header.close;
     int result = AFPSL_IPC_RESULT_OK;
     char *data = NULL;
     unsigned int written = 0;
+    size_t size;
+    int ret;
+    memset(&response, 0, sizeof(response));
 
     if ((size_t)(c->completed_packet_size) < sizeof(struct
                                                     afpsl_ipc_write_request)) {
         result = AFPSL_IPC_RESULT_ERROR;
+        close_requested = 1;
         goto done;
+    }
+
+    size = request->size;
+
+    if (size > AFPSL_IPC_MAX_WRITE) {
+        log_for_client((void *) c, AFPFSD, LOG_ERR,
+                       "Refusing a write of %zu bytes, the limit is %u",
+                       size, AFPSL_IPC_MAX_WRITE);
+        result = AFPSL_IPC_RESULT_ERROR;
+        close_requested = 1;
+        goto done;
+    }
+
+    data = malloc(size ? size : 1);
+
+    if (!data) {
+        log_for_client((void *) c, AFPFSD, LOG_ERR,
+                       "Out of memory allocating %zu bytes for write", size);
+        result = AFPSL_IPC_RESULT_ERROR;
+        close_requested = 1;
+        goto done;
+    }
+
+    log_for_client((void *) c, AFPFSD, LOG_DEBUG,
+                   "Writing %zu bytes at offset %llu, fileid=%u", size,
+                   request->offset, request->fileid);
+
+    for (size_t received = 0; received < size;) {
+        ssize_t count = read(c->fd, data + received, size - received);
+
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+
+        if (count <= 0) {
+            log_for_client((void *) c, AFPFSD, LOG_ERR,
+                           "Error reading write data payload");
+            result = AFPSL_IPC_RESULT_ERROR;
+            close_requested = 1;
+            goto done;
+        }
+
+        received += (size_t) count;
     }
 
     if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
@@ -1280,49 +1444,19 @@ static unsigned char process_write(struct daemon_client * c)
         goto done;
     }
 
-    data = malloc(request->size);
-
-    if (!data) {
-        log_for_client((void *) c, AFPFSD, LOG_ERR,
-                       "Out of memory allocating %u bytes for write",
-                       request->size);
-        result = AFPSL_IPC_RESULT_ERROR;
-        goto done;
-    }
-
-    /* Read the data payload from client - it follows immediately after
-     * the request header */
-    int bytes_read = 0;
-    int bytes_remaining = request->size;
-    log_for_client((void *) c, AFPFSD, LOG_DEBUG,
-                   "Writing %u bytes at offset %llu, fileid=%u", request->size,
-                   request->offset, request->fileid);
-
-    while (bytes_remaining > 0) {
-        ret = read(c->fd, data + bytes_read, bytes_remaining);
-
-        if (ret <= 0) {
-            log_for_client((void *) c, AFPFSD, LOG_ERR,
-                           "Error reading write data payload");
-            result = AFPSL_IPC_RESULT_ERROR;
-            goto done;
-        }
-
-        bytes_read += ret;
-        bytes_remaining -= ret;
-    }
-
-    struct afp_file_info *fp = get_file_handle(request->fileid, v, 0);
+    fp = get_file_handle(request->fileid, v, 0);
 
     if (!fp) {
         result = AFPSL_IPC_RESULT_ERROR;
         goto done;
     }
 
-    ret = ml_write(v, data, request->size, request->offset, 0, fp);
+    ret = ml_write(v, data, size, request->offset, 0, fp);
 
     if (ret > 0) {
         written = ret;
+    } else if (ret == -EBUSY) {
+        result = AFPSL_IPC_RESULT_BUSY;
     } else if (ret < 0) {
         result = AFPSL_IPC_RESULT_ERROR;
     }
@@ -1332,11 +1466,8 @@ done:
     response.header.result = result;
     response.written = written;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
-                    request->header.close);
-
-    if (data) {
-        free(data);
-    }
+                    close_requested);
+    free(data);
 
     if (v) {
         afp_server_release(v->server);
@@ -1638,6 +1769,8 @@ static unsigned char process_unlink(struct daemon_client * c)
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_unlink: Permission denied for %s (EACCES/EPERM)",
                            path);
+        } else if (ret == -EBUSY) {
+            result = AFPSL_IPC_RESULT_BUSY;
         } else {
             result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
@@ -1715,6 +1848,8 @@ static unsigned char process_truncate(struct daemon_client * c)
             log_for_client((void *) c, AFPFSD, LOG_ERR,
                            "process_truncate: Permission denied for %s (EACCES)",
                            path);
+        } else if (ret == -EBUSY) {
+            result = AFPSL_IPC_RESULT_BUSY;
         } else {
             result = AFPSL_IPC_RESULT_ERROR;
             log_for_client((void *) c, AFPFSD, LOG_ERR,
@@ -2101,6 +2236,138 @@ static unsigned char process_close(struct daemon_client * c)
 done:
     response.header.len = sizeof(struct afpsl_ipc_close_response);
     response.header.result = ret;
+    finish_response(c, send_command(c, response.header.len, (char *) &response),
+                    request->header.close);
+
+    if (v) {
+        afp_server_release(v->server);
+    }
+
+    return 0;
+}
+
+/*!
+ * @brief Whether two handles name one fork of one file
+ *
+ * The file's node ID tells where both records carry one, which a session
+ * reports on Netatalk at AFP 3.4 and below AFP 3.0; elsewhere the records'
+ * directory and name tell.
+ *
+ * @param[in] a  a handle
+ * @param[in] b  another
+ * @returns 1 when they do, or 0
+ */
+static int same_fork(const struct afp_file_info *a,
+                     const struct afp_file_info *b)
+{
+    if (a == b) {
+        return 1;
+    }
+
+    if (a->resource != b->resource) {
+        return 0;
+    }
+
+    if (a->cnid != 0 && b->cnid != 0) {
+        return a->cnid == b->cnid;
+    }
+
+    return a->did == b->did && strcmp(a->name, b->name) == 0;
+}
+
+/*!
+ * @brief Answer an afpsld copy request by copying between two open files
+ *
+ * The copy goes on the server when the volume's server can make it, and
+ * otherwise through the daemon: AFPSL_IPC_COPY_STEP bytes a call, and up to
+ * sixteen quanta for a new target's call that the server declines. A call
+ * copies at most SSIZE_MAX bytes, as its count says how many, and a copy
+ * within one file whose ranges overlap is refused.
+ *
+ * @param[in,out] c  the client, whose complete packet holds the request
+ * @returns 0, the response carrying the result and the bytes copied
+ */
+static unsigned char process_copy(struct daemon_client * c)
+{
+    struct afpsl_ipc_copy_response response;
+    const struct afpsl_ipc_copy_request * request = (void *) c->complete_packet;
+    struct afp_volume * v = NULL;
+    struct afp_file_info *source;
+    struct afp_file_info *target;
+    unsigned long long copied = 0;
+    int result = AFPSL_IPC_RESULT_OK;
+    size_t length;
+    ssize_t ret;
+    memset(&response, 0, sizeof(response));
+
+    if ((size_t)c->completed_packet_size != sizeof(*request)
+            || request->source_offset > INT64_MAX
+            || request->target_offset > INT64_MAX) {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    length = request->length > SSIZE_MAX ? (size_t) SSIZE_MAX
+             : (size_t) request->length;
+
+    if ((v = afp_volume_find_by_pointer_hold(request->volumeid)) == NULL) {
+        result = AFPSL_IPC_RESULT_NOTATTACHED;
+        goto done;
+    }
+
+    if (!volume_server_is_connected(v)) {
+        result = AFPSL_IPC_RESULT_NOTCONNECTED;
+        goto done;
+    }
+
+    source = get_file_handle(request->source_fileid, v, 0);
+    target = get_file_handle(request->target_fileid, v, 0);
+
+    if (!source || !target) {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    /* As copy_file_range(2) does, a copy within one file whose ranges
+     * overlap is refused, whatever part of them this call moves: the run
+     * through the client would read what it has written. */
+    if (same_fork(source, target)
+            && request->source_offset < request->target_offset + length
+            && request->target_offset < request->source_offset + length) {
+        result = AFPSL_IPC_RESULT_ERROR;
+        goto done;
+    }
+
+    /* A call that cannot copy on the server is a step the client's usual
+     * wait covers. */
+    if (!(request->flags & AFP_SL_COPY_NEW_TARGET)
+            || !afp_server_copies_files(v->server)) {
+        length = length < AFPSL_IPC_COPY_STEP ? length : AFPSL_IPC_COPY_STEP;
+    }
+
+    /* Only the caller knows that the target is new and that a copy which
+     * brings the source's metadata is wanted; the record outlives the call,
+     * so each call states it. */
+    target->created = (request->flags & AFP_SL_COPY_NEW_TARGET) != 0;
+    ret = ml_copy_range(v, source, (off_t) request->source_offset, target,
+                        (off_t) request->target_offset, length);
+
+    if (ret >= 0) {
+        copied = (unsigned long long) ret;
+    } else if (ret == -EOPNOTSUPP) {
+        result = AFPSL_IPC_RESULT_NOTSUPPORTED;
+    } else if (ret == -EACCES) {
+        result = AFPSL_IPC_RESULT_ACCESS;
+    } else if (ret == -EBUSY) {
+        result = AFPSL_IPC_RESULT_BUSY;
+    } else {
+        result = AFPSL_IPC_RESULT_ERROR;
+    }
+
+done:
+    response.header.len = sizeof(struct afpsl_ipc_copy_response);
+    response.header.result = result;
+    response.copied = copied;
     finish_response(c, send_command(c, response.header.len, (char *) &response),
                     request->header.close);
 
@@ -2712,18 +2979,23 @@ static int server_address_matches(struct afp_server *server,
 }
 
 /*!
- * @brief Whether a saved session's user and UAM fit a reconnect's
+ * @brief Whether a server's login is the one a restart asks for
+ *
+ * A server that no connect has handed to its client, a connect's status
+ * server, a probe, or a session whose first connect is still running, has
+ * no session to restart.
  *
  * @param[in] server    the server
- * @param[in] url       the reconnect's URL, with its user
- * @param[in] uam_mask  the UAMs it allows, or 0 for any
- * @returns 1 when they fit
+ * @param[in] url       the request, whose user names the login
+ * @param[in] uam_mask  the UAMs the request allows, or 0 for any
+ * @returns 1 when it is, or 0
  */
 static int server_auth_matches_reconnect(struct afp_server *server,
                                          const struct afpc_url *url,
                                          unsigned int uam_mask)
 {
-    if (strcmp(server->username, url->username) != 0) {
+    if (!server->daemon_session
+            || strcmp(server->username, url->username) != 0) {
         return 0;
     }
 
@@ -2736,13 +3008,18 @@ static int server_auth_matches_reconnect(struct afp_server *server,
 }
 
 /*!
- * @brief Find the one live session a connect without a password may resume
+ * @brief Find the one connected session a resume names, held
  *
- * @param[in]  priv      the client, for the log
- * @param[in]  url       the URL, whose user may be empty
- * @param[in]  uam_mask  the UAMs allowed, or 0 for any
- * @param[out] error     receives EEXIST for several, EPROTO for a session
- *                       without a signature, or ENOTCONN, or NULL
+ * A resume without a password reuses a live session of this daemon at the
+ * URL's address, of the request's user and UAMs where it names them. A
+ * session that its connect has not handed to its client yet is not found.
+ *
+ * @param[in]  priv      the client, for log lines
+ * @param[in]  url       the request's server and login
+ * @param[in]  uam_mask  the UAMs the request allows, or 0 for any
+ * @param[out] error     why none matched: ENOTCONN for none, EPROTO for a
+ *                       session without a valid signature, EEXIST for more
+ *                       than one
  * @returns the server, held, or NULL
  */
 static struct afp_server *find_resumable_server_hold(void *priv,
@@ -2763,7 +3040,8 @@ static struct afp_server *find_resumable_server_hold(void *priv,
     afp_lock_server_list();
 
     for (struct afp_server *s = get_server_base(); s; s = s->next) {
-        if (s->connect_state != SERVER_STATE_CONNECTED || s->fd < 0) {
+        if (s->connect_state != SERVER_STATE_CONNECTED || s->fd < 0
+                || !s->daemon_session) {
             continue;
         }
 
@@ -2945,13 +3223,20 @@ done:
 }
 
 /*!
- * @brief Log a saved session back in at the URL's resolved address
+ * @brief Restart the session of a server that is disconnected
+ *
+ * The server's lock is held while its session restarts. A server that a
+ * disconnect removed meanwhile is not restarted, one that a request
+ * restarted meanwhile is left as it is, and one that another thread, which
+ * takes no lock, is reconnecting fails with ECONNRESET. The server takes
+ * the address, or it is freed.
  *
  * @param[in]     priv     the client, for the log
- * @param[in,out] server   the session's server
- * @param[in]     url      the URL, with the password
- * @param[in]     address  the address list, which the server owns from then on
- * @returns afp_server_reconnect()'s result
+ * @param[in,out] server   the server
+ * @param[in]     url      the URL the client gave, whose password logs in
+ * @param[in]     address  the address the server is reached at
+ * @returns 0, 1 for a server a disconnect removed meanwhile, or -1 with errno
+ *          the error of the reconnect
  */
 static int reconnect_disconnected_server(void *priv,
                                          struct afp_server *server,
@@ -2962,11 +3247,34 @@ static int reconnect_disconnected_server(void *priv,
     unsigned int len = 0;
     int ret;
     memset(mesg, 0, sizeof(mesg));
-    afp_server_replace_address(server, address);
-    strlcpy(server->password, url->password, sizeof(server->password));
-    errno = 0;
-    ret = afp_server_reconnect(server, mesg, &len, sizeof(mesg));
-    explicit_bzero(server->password, sizeof(server->password));
+    pthread_mutex_lock(&server->op_mutex);
+
+    /* A disconnect that held the lock first has removed the server, and a
+     * request that sent to it first has restarted its session. */
+    if (server->connect_state == SERVER_STATE_DESTROYED) {
+        freeaddrinfo(address);
+        ret = 1;
+    } else if (server->connect_state == SERVER_STATE_CONNECTED) {
+        freeaddrinfo(address);
+        ret = 0;
+    } else if (!afp_server_reconnect_try_begin(server)) {
+        /* Another thread's reconnect reads the address list. */
+        freeaddrinfo(address);
+        errno = ECONNRESET;
+        ret = -1;
+    } else {
+        /* No reconnect reads the address list or the password while they
+         * change. */
+        afp_server_replace_address(server, address);
+        strlcpy(server->password, url->password, sizeof(server->password));
+        afp_server_reconnect_end(server);
+        errno = 0;
+        ret = afp_server_reconnect(server, mesg, &len, sizeof(mesg)) == 0
+              ? 0 : -1;
+        explicit_bzero(server->password, sizeof(server->password));
+    }
+
+    pthread_mutex_unlock(&server->op_mutex);
 
     if (ret != 0 && mesg[0] != '\0') {
         log_for_client(priv, AFPFSD, LOG_WARNING, "%s", mesg);
@@ -3045,10 +3353,11 @@ static int process_connect(struct daemon_client * c)
         log_for_client((void *) c, AFPFSD, LOG_INFO,
                        "Recovering disconnected session for server %s",
                        req->url.servername);
+        int restart = reconnect_disconnected_server(c, s, &req->url,
+                                                    reconnect_address);
+        reconnect_address = NULL;
 
-        if (reconnect_disconnected_server(c, s, &req->url,
-                                          reconnect_address) == 0) {
-            reconnect_address = NULL;
+        if (restart == 0) {
             response_result = AFPSL_IPC_RESULT_OK;
             server_copy = s;
             memcpy(loginmesg_copy, s->loginmesg, AFP_LOGINMESG_LEN);
@@ -3059,8 +3368,12 @@ static int process_connect(struct daemon_client * c)
         error = errno ? errno : ECONNRESET;
         afp_server_release(s);
         s = NULL;
-        reconnect_address = NULL;
-        goto error;
+
+        /* A disconnect removed the session while the restart waited for
+         * it: a new session takes its place. */
+        if (restart != 1) {
+            goto error;
+        }
     } else if (error == EEXIST || error == EPROTO) {
         goto error;
     }
@@ -3103,11 +3416,10 @@ static int process_connect(struct daemon_client * c)
 
     /* Immediately copy data from server before it can be freed asynchronously */
     server_copy = s;
-
-    if (s) {
-        memcpy(loginmesg_copy, s->loginmesg, AFP_LOGINMESG_LEN);
-    }
-
+    memcpy(loginmesg_copy, s->loginmesg, AFP_LOGINMESG_LEN);
+    afp_lock_server_list();
+    __atomic_store_n(&s->daemon_session, 1, __ATOMIC_RELEASE);
+    afp_unlock_server_list();
     response_result = AFPSL_IPC_RESULT_OK;
     goto done;
 error:
@@ -3156,10 +3468,14 @@ done:
 }
 
 /*!
- * @brief Answer an afpsld attach request by attaching a server's volume
+ * @brief Answer an afpsld attach by attaching a volume of a connected server
+ *
+ * A volume that is attached is answered as a fresh attach is, with its id.
+ * The attach's options join the volume's, but for its deny-write mode,
+ * which is the client's own: it decides the client's later opens.
  *
  * @param[in,out] c  the client, whose complete packet holds the request
- * @returns 0, the response carrying the result and the volume's ID
+ * @returns 0, the response carrying the result and the volume
  */
 static int process_attach(struct daemon_client * c)
 {
@@ -3219,7 +3535,8 @@ static int process_attach(struct daemon_client * c)
         goto error;
     }
 
-    volume->extra_flags |= req->volume_options;
+    c->deny_write = (req->volume_options & VOLUME_EXTRA_FLAGS_DENY_WRITE) != 0;
+    volume->extra_flags |= req->volume_options & ~VOLUME_EXTRA_FLAGS_DENY_WRITE;
     response_result = AFPSL_IPC_RESULT_OK;
     log_for_client((void *) c, AFPFSD, LOG_DEBUG,
                    "Volume '%s' attached successfully",
@@ -3573,11 +3890,101 @@ static unsigned char process_desktop_code(struct daemon_client *c)
 }
 
 /*!
- * @brief Run a client's complete request under the server operation lock
+ * @brief Find the lock that serialises a command
  *
- * A handler's failure closes the connection.
+ * A command that addresses a volume or a server runs under the lock of that
+ * server, so commands on different servers run together, and an exit under
+ * the exits' lock. The others take none here: a password change takes its
+ * server's lock itself.
  *
- * @param[in,out] other  the client
+ * @param[in]  c       the client, whose complete packet holds the command
+ * @param[out] server  the server the command addresses, held, or NULL
+ * @returns the lock to hold while the command runs, or NULL for none
+ */
+static pthread_mutex_t *command_gate(const struct daemon_client * c,
+                                     struct afp_server **server)
+{
+    const struct afpsl_ipc_volume_request *by_volume = (const void *)
+                                                       c->complete_packet;
+    const struct afpsl_ipc_server_request *by_server = (const void *)
+                                                       c->complete_packet;
+    struct afp_volume *volume;
+    *server = NULL;
+
+    if (!c->ipc_ready) {
+        return NULL;
+    }
+
+    switch (by_volume->header.command) {
+    case AFPSL_IPC_COMMAND_EXIT:
+        return &exit_mutex;
+
+    case AFPSL_IPC_COMMAND_ATTACH:
+    case AFPSL_IPC_COMMAND_GETVOLID:
+    case AFPSL_IPC_COMMAND_GETVOLS:
+    case AFPSL_IPC_COMMAND_DISCONNECT:
+        if ((size_t)c->completed_packet_size >= sizeof(*by_server)) {
+            *server = find_server_by_pointer(
+                          (struct afp_server *)by_server->serverid);
+        }
+
+        break;
+
+    case AFPSL_IPC_COMMAND_DETACH:
+    case AFPSL_IPC_COMMAND_READDIR:
+    case AFPSL_IPC_COMMAND_STAT:
+    case AFPSL_IPC_COMMAND_OPEN:
+    case AFPSL_IPC_COMMAND_READ:
+    case AFPSL_IPC_COMMAND_CLOSE:
+    case AFPSL_IPC_COMMAND_WRITE:
+    case AFPSL_IPC_COMMAND_CREAT:
+    case AFPSL_IPC_COMMAND_CHMOD:
+    case AFPSL_IPC_COMMAND_RENAME:
+    case AFPSL_IPC_COMMAND_UNLINK:
+    case AFPSL_IPC_COMMAND_TRUNCATE:
+    case AFPSL_IPC_COMMAND_MKDIR:
+    case AFPSL_IPC_COMMAND_RMDIR:
+    case AFPSL_IPC_COMMAND_STATFS:
+    case AFPSL_IPC_COMMAND_UTIME:
+    case AFPSL_IPC_COMMAND_GETXATTR:
+    case AFPSL_IPC_COMMAND_SETXATTR:
+    case AFPSL_IPC_COMMAND_LISTXATTR:
+    case AFPSL_IPC_COMMAND_REMOVEXATTR:
+    case AFPSL_IPC_COMMAND_GETFINDERINFO:
+    case AFPSL_IPC_COMMAND_SETFINDERINFO:
+    case AFPSL_IPC_COMMAND_REMOVEFINDERINFO:
+    case AFPSL_IPC_COMMAND_GETRESOURCEFORK:
+    case AFPSL_IPC_COMMAND_SETRESOURCEFORK:
+    case AFPSL_IPC_COMMAND_REMOVERESOURCEFORK:
+    case AFPSL_IPC_COMMAND_TRUNCATERESOURCEFORK:
+    case AFPSL_IPC_COMMAND_DESKTOP_GET_COMMENT:
+    case AFPSL_IPC_COMMAND_DESKTOP_SET_COMMENT:
+    case AFPSL_IPC_COMMAND_DESKTOP_GET_ICON_INFO:
+    case AFPSL_IPC_COMMAND_DESKTOP_GET_ICON:
+    case AFPSL_IPC_COMMAND_DESKTOP_GET_APPL:
+    case AFPSL_IPC_COMMAND_COPY:
+        if ((size_t)c->completed_packet_size >= sizeof(*by_volume)
+                && (volume = afp_volume_find_by_pointer_hold(
+                                 by_volume->volumeid)) != NULL) {
+            *server = volume->server;
+        }
+
+        break;
+
+    default:
+        break;
+    }
+
+    return *server ? &(*server)->op_mutex : NULL;
+}
+
+/*!
+ * @brief Run one command of a client on a worker thread
+ *
+ * The command runs under the lock command_gate() names, and one that fails
+ * ends the connection.
+ *
+ * @param[in,out] other  the client, whose complete packet holds the command
  * @returns NULL
  */
 static void *process_command_thread(void *other)
@@ -3585,6 +3992,8 @@ static void *process_command_thread(void *other)
     struct daemon_client * c = other;
     int ret = 0;
     const struct afpsl_ipc_request_header * req = (void *) c->complete_packet;
+    struct afp_server *server = NULL;
+    pthread_mutex_t *gate;
     /* Clear the outgoing log buffer from any previous command on this connection */
     pthread_mutex_lock(&c->command_string_mutex);
     c->outgoing_string[0] = '\0';
@@ -3594,7 +4003,12 @@ static void *process_command_thread(void *other)
                    "******* processing command %s (%u)",
                    afpsl_ipc_command_name((unsigned char)req->command),
                    (unsigned char)req->command);
-    pthread_mutex_lock(&server_op_mutex);
+    gate = command_gate(c, &server);
+    ll_set_thread_deny_write(c->deny_write);
+
+    if (gate) {
+        pthread_mutex_lock(gate);
+    }
 
     if (!c->ipc_ready && req->command != AFPSL_IPC_COMMAND_HELLO) {
         log_for_client((void *)c, AFPFSD, LOG_ERR,
@@ -3733,6 +4147,10 @@ static void *process_command_thread(void *other)
             ret = process_desktop_code(c);
             break;
 
+        case AFPSL_IPC_COMMAND_COPY:
+            ret = process_copy(c);
+            break;
+
         case AFPSL_IPC_COMMAND_GET_MOUNTPOINT:
             log_for_client((void *)c, AFPFSD, LOG_ERR,
                            "Command %d not supported by afpsld", req->command);
@@ -3751,7 +4169,14 @@ static void *process_command_thread(void *other)
         close_client_connection(c);
     }
 
-    pthread_mutex_unlock(&server_op_mutex);
+    if (gate) {
+        pthread_mutex_unlock(gate);
+    }
+
+    if (server) {
+        afp_server_release(server);
+    }
+
     return NULL;
 }
 

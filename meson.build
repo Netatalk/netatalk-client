@@ -146,7 +146,7 @@ elif cc.has_function(
     cflags += '-DHAVE_MEMSET_EXPLICIT'
 endif
 
-gcrypt_dep = dependency('libgcrypt', version: '>=1.2.3', required: false)
+gcrypt_dep = dependency('libgcrypt', version: '>=1.6.0', required: false)
 # Linux libfuse headers can trigger pedantic warnings (e.g. libfuse 3.17).
 # Preserve normal include precedence elsewhere: on macOS, -isystem lets
 # /usr/local/include/fuse.h (a FUSE 2 shim) shadow the FUSE 3 headers.

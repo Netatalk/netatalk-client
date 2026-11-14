@@ -1544,8 +1544,7 @@ static ssize_t copy_into_destination(struct afp_volume *volume,
 
     /* The fork opens read-write, as every writable fork does. A mode without
      * the owner's write permission would refuse that open. */
-    if (afp_openfork(volume, 0, out->did,
-                     AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE,
+    if (afp_openfork(volume, 0, out->did, ll_write_access(volume),
                      kFPNodeIDBit | kFPExtDataForkLenBit, out->afp_name,
                      fp_out) != kFPNoErr) {
         return copy_lost_fork(volume, fp_out);
@@ -2180,14 +2179,13 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
     }
 
     created = 1;
-    rc = afp_openfork(vol, 0,
-                      t.did,
-                      AFP_OPENFORK_ALLOWWRITE | AFP_OPENFORK_ALLOWREAD, 0,
-                      t.afp_name, &fp);
+    rc = afp_openfork(vol, 0, t.did, ll_write_access(vol), 0, t.afp_name,
+                      &fp);
     ret = ll_openfork_errno(rc);
 
-    /* The server may still open the fork, so the link's file stays. */
-    if (ret == ETIMEDOUT) {
+    /* The server may still open the fork, and a deny conflict means another
+     * client holds the file open, so the link's file stays. */
+    if (ret == ETIMEDOUT || ret == EBUSY) {
         created = 0;
     }
 
@@ -2239,7 +2237,8 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
 error:
 
     /* A link the steps after the create could not finish leaves no file
-     * in its name, unless its open went unanswered. */
+     * in its name, unless its open went unanswered or another client holds
+     * the file open. */
     if (ret && created) {
         afp_delete(vol, t.did, t.afp_name);
     }

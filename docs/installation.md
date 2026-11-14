@@ -71,7 +71,7 @@ Each library below adds a component, and a build without it drops that component
 | --------------------------- | ------------------------------------------------------------ | --------------------------------------- |
 | pthreads                    | all programs                                                 | the build fails                         |
 | iconv                       | character set conversion, from the C library or *libiconv*   | the build fails                         |
-| libgcrypt 1.2.3 or later    | the DHX, DHX2, Randnum, and SRP encrypted login methods      | only guest and cleartext logins         |
+| libgcrypt 1.6.0 or later    | the DHX, DHX2, Randnum, and SRP encrypted login methods      | only guest and cleartext logins         |
 | libfuse 3.0+ or 2.9+        | the FUSE client: *afpfsd*, *mount_afpfs*, `afpc fs` commands | the FUSE client is not built            |
 | readline or libedit         | the *afpcmd* command line client                             | *afpcmd* is not built                   |
 | avahi-client or DNS-SD      | Zeroconf discovery: `afpc discover`, `afpcmd --browse`       | discovery reports "not supported"       |

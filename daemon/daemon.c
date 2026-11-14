@@ -5,9 +5,15 @@
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
+ */
+
+/*!
+ * @file
+ * @brief afpsld's entry point: its options, its fork, its listener and its log
  */
 
 #include <errno.h>
@@ -148,6 +154,9 @@ int daemon_unmount_volume(struct afp_volume * volume)
     return 0;
 }
 
+/* The listener, until daemon_stop_listener() retires it */
+static int command_fd_global = -1;
+
 static int startup_listener(void)
 {
     return daemon_socket_create(commandfilename, DAEMON_NUM_CLIENTS);
@@ -156,6 +165,24 @@ static int startup_listener(void)
 void close_commands(int command_fd)
 {
     daemon_socket_close(command_fd, commandfilename);
+}
+
+/*!
+ * @brief Unlink and close the listener, once
+ *
+ * An exit retires it before it answers, so a client that comes after the
+ * answer finds no daemon and starts one, where the daemon that is ending
+ * would accept it and then drop it.
+ */
+void daemon_stop_listener(void)
+{
+    /* An exit's thread and the end of the loop can both get here. */
+    int fd = __atomic_exchange_n(&command_fd_global, -1, __ATOMIC_ACQ_REL);
+
+    if (fd >= 0) {
+        rm_fd_and_signal(fd);
+        close_commands(fd);
+    }
 }
 
 static void usage(void)
@@ -182,6 +209,15 @@ static int daemon_register_afpclient(void)
     return 0;
 }
 
+/*!
+ * @brief Start afpsld, the daemon that afpcmd and afpc sl talk to
+ *
+ * @param[in] argc  argument count
+ * @param[in] argv  the options
+ * @returns 0 once the daemon ends or has gone into the background, or -1
+ *          for -h, an unknown option or log level, or a daemon that cannot
+ *          start
+ */
 int main(int argc, char *argv[])
 {
     int option_index = 0;
@@ -268,8 +304,13 @@ int main(int argc, char *argv[])
     daemon_set_log_level(log_level);
     snprintf(commandfilename, sizeof(commandfilename), "%s-%d",
              AFPSL_IPC_SOCKET_PATH, geteuid());
+    pid_t pid = dofork ? fork() : 0;
 
-    if ((!dofork) || (fork() == 0)) {
+    if (pid < 0) {
+        goto error;
+    }
+
+    if (pid == 0) {
         if (dofork) {
             /* daemonize */
             setsid();
@@ -307,11 +348,12 @@ int main(int argc, char *argv[])
             goto error;
         }
 
+        __atomic_store_n(&command_fd_global, command_fd, __ATOMIC_RELEASE);
         log_for_client(NULL, AFPFSD, LOG_NOTICE,
                        "Starting up AFP Stateless daemon version %s",
                        NETATALK_CLIENT_VERSION);
         afp_main_loop(command_fd);
-        close_commands(command_fd);
+        daemon_stop_listener();
     }
 
     return 0;
