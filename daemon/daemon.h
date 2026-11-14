@@ -1,3 +1,8 @@
+/*!
+ * @file
+ * @brief The event loop's and afpsld's calls that the command handlers make
+ */
+
 #ifndef NETATALK_CLIENT_DAEMON_DAEMON_H
 #define NETATALK_CLIENT_DAEMON_DAEMON_H
 
@@ -7,6 +12,7 @@
 
 void rm_fd_and_signal(int fd);
 void signal_main_thread(void);
+void daemon_stop_listener(void);
 
 int get_debug_mode(void);
 

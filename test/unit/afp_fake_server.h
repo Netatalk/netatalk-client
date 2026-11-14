@@ -22,9 +22,11 @@ struct afp_fake_server {
     pthread_t thread;
     uint8_t refuse;         /*!< command refused, or 0 */
     uint8_t refuse_privs;   /*!< whether a privileges change is refused */
+    uint8_t refuse_unlock;  /*!< whether a byte-range unlock is refused */
     int32_t refusal;        /*!< their answer, kFPAccessDenied when 0 */
     uint8_t inspect;        /*!< command whose request copies listed, or 0 */
     uint8_t hold;           /*!< command held until released, or 0 */
+    uint8_t hold_skip;      /*!< its requests answered before the one held */
     int held;               /*!< whether that request has arrived */
     int released;           /*!< whether the test let its answer go */
     pthread_mutex_t hold_mutex;
@@ -35,6 +37,8 @@ struct afp_fake_server {
     uint8_t params_dir;     /*!< whether it is a directory, not a file */
     /*! the answers that are directories too, bit 0 for the first */
     uint16_t params_dirs;
+    /*! the answers whose file has empty forks, bit 0 for the first */
+    uint16_t params_empty;
     unsigned int params_answers; /*!< FPGetFileDirParms answered so far */
     uint32_t params_cnid;   /*!< its node ID, or 0 for none in the answer */
     uint32_t params_mode;   /*!< its mode, or 0 for 0644 and 0755 */
@@ -52,6 +56,7 @@ struct afp_fake_server {
     char comment[255];      /*!< the Finder comment */
     uint8_t comment_len;    /*!< its length, 0 for none */
     const char *read_data;  /*!< a link's target, which FPReadExt reads whole */
+    uint8_t read_file;      /*!< whether FPReadExt reads data_length zeros */
     const char *xattr_value; /*!< FPGetExtAttr's value, or NULL */
     int inspected;          /*!< whether listed holds a copy */
     struct afp_file_info listed;
@@ -66,6 +71,7 @@ int afp_fake_server_start(struct afp_fake_server *fake);
 void afp_fake_server_stop(struct afp_fake_server *fake);
 int afp_fake_server_wait_held(struct afp_fake_server *fake);
 void afp_fake_server_release(struct afp_fake_server *fake);
+unsigned int afp_fake_server_open_access(const struct afp_fake_server *fake);
 void afp_fake_server_dirty_stack(void);
 
 #endif

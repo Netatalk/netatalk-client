@@ -294,6 +294,8 @@ int afp_reply(unsigned short subcommand, struct afp_server * server,
 
 static struct afp_server *server_base = NULL;
 static pthread_mutex_t server_list_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* Taken around getpwuid(), whose answer two connects would share */
+static pthread_mutex_t passwd_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int auto_shutdown_on_unmount = 0;
 static int auto_disconnect_on_unmount = 1;
 
@@ -527,27 +529,36 @@ int afp_server_probe_signature(struct addrinfo *address,
 }
 
 /*!
- * @brief Give a server a new address list, freeing the old one
+ * @brief Give a server the address of its next connection
  *
- * @param[in,out] server   the server, or NULL
- * @param[in]     address  the list, which the server owns from then on
+ * The swap runs under the server list's lock, under which the status text
+ * reads the address in use, and the old address is freed after it.
+ *
+ * @param[in,out] server   the server
+ * @param[in]     address  the address, which the server then owns
  */
 void afp_server_replace_address(struct afp_server *server,
                                 struct addrinfo *address)
 {
+    struct addrinfo *old = NULL;
+
     if (!server || !address) {
         return;
     }
 
-    if (server->address != address) {
-        if (server->address) {
-            freeaddrinfo(server->address);
-        }
+    pthread_mutex_lock(&server_list_mutex);
 
+    if (server->address != address) {
+        old = server->address;
         server->address = address;
     }
 
     server->used_address = NULL;
+    pthread_mutex_unlock(&server_list_mutex);
+
+    if (old) {
+        freeaddrinfo(old);
+    }
 }
 
 /*!
@@ -867,6 +878,10 @@ void afp_free_server(struct afp_server **sp)
     }
 
     explicit_bzero(server->password, sizeof(server->password));
+    pthread_mutex_destroy(&server->requestid_mutex);
+    pthread_mutex_destroy(&server->request_queue_mutex);
+    pthread_mutex_destroy(&server->send_mutex);
+    pthread_mutex_destroy(&server->op_mutex);
     pthread_cond_destroy(&server->request_queue_cond);
     free(server);
     *sp = NULL;
@@ -933,7 +948,6 @@ int afp_server_remove(struct afp_server *s)
  */
 struct afp_server *afp_server_init(struct addrinfo * address)
 {
-    static char no_user_name[] = "";
     struct afp_server * s;
     struct passwd *pw;
 
@@ -964,23 +978,29 @@ struct afp_server *afp_server_init(struct addrinfo * address)
     pthread_mutex_init(&s->request_queue_mutex, NULL);
     pthread_cond_init(&s->request_queue_cond, NULL);
     pthread_mutex_init(&s->send_mutex, NULL);
+    pthread_mutex_init(&s->op_mutex, NULL);
     afp_server_connection_generation_init(s);
     s->refcount = 1;
     /* AFP 3.3+ replay cache - initialized to disabled */
     s->replay_cache_size = 0;
     s->supports_replay_cache = 0;
     /* A user the passwd database lacks keeps the process's IDs, and a name
-     * no server user has. */
+     * no server user has. getpwuid() answers in one buffer, which each call
+     * rewrites as it reads the database. */
+    pthread_mutex_lock(&passwd_mutex);
     pw = getpwuid(geteuid());
 
     if (pw) {
-        memcpy(&s->passwd, pw, sizeof(struct passwd));
+        s->passwd.pw_uid = pw->pw_uid;
+        s->passwd.pw_gid = pw->pw_gid;
+        snprintf(s->passwd_name, sizeof(s->passwd_name), "%s", pw->pw_name);
     } else {
-        s->passwd.pw_name = no_user_name;
         s->passwd.pw_uid = geteuid();
         s->passwd.pw_gid = getegid();
     }
 
+    pthread_mutex_unlock(&passwd_mutex);
+    s->passwd.pw_name = s->passwd_name;
     return s;
 }
 
@@ -1313,22 +1333,21 @@ error:
 }
 
 /*!
- * @brief Connect a disconnected server again, log in and reopen its volumes
+ * @brief Connect a disconnected server again, log in and reopen its volumes,
+ *        for the thread that owns its reconnect
  *
- * One thread reconnects a server at a time. The server must answer with the
- * signature it had, so a changed endpoint never receives the saved
- * credentials, and a removal or a disconnect while the reconnect runs fails
- * it.
+ * The server must answer with the signature it had, so a changed endpoint
+ * never receives the saved credentials, and a removal or a disconnect while
+ * the reconnect runs fails it. The caller releases the reconnect.
  *
  * @param[in,out] s     the server
  * @param[out]    mesg  receives the reason for a failure
  * @param[in,out] l     bytes of mesg in use
  * @param[in]     max   capacity of mesg
- * @returns 0 once connected, or 1 when another thread reconnects it or the
- *          reconnect fails
+ * @returns 0 once connected, or 1 when the reconnect fails
  */
-int afp_server_reconnect(struct afp_server * s, char *mesg,
-                         unsigned int *l, unsigned int max)
+static int reconnect_held(struct afp_server *s, char *mesg, unsigned int *l,
+                          unsigned int max)
 {
     int i;
     int ret = 0;
@@ -1337,11 +1356,6 @@ int afp_server_reconnect(struct afp_server * s, char *mesg,
     char peer_signature[AFP_SIGNATURE_LEN];
     char expected_signature_text[AFP_SIGNATURE_LEN * 2 + 1];
     char peer_signature_text[AFP_SIGNATURE_LEN * 2 + 1];
-
-    if (!afp_server_reconnect_try_begin(s)) {
-        return 1;
-    }
-
     /* Flush pending requests before reconnecting to avoid late reply confusion */
     afpc_dsi_flush_request_queue(s);
 
@@ -1418,6 +1432,10 @@ int afp_server_reconnect(struct afp_server * s, char *mesg,
         goto error;
     }
 
+    /* The connect leaves EINPROGRESS, which would pass for the login's
+     * error. */
+    errno = 0;
+
     if (afp_server_login(s, mesg, l, max)) {
         if (errno == 0) {
             errno = EACCES;
@@ -1467,12 +1485,104 @@ int afp_server_reconnect(struct afp_server * s, char *mesg,
     __atomic_store_n(&s->connect_state, SERVER_STATE_CONNECTED,
                      __ATOMIC_RELEASE);
     pthread_mutex_unlock(&server_list_mutex);
-    afp_server_reconnect_end(s);
     return 0;
 error:
     loop_disconnect(s);
-    afp_server_reconnect_end(s);
     return 1;
+}
+
+/*!
+ * @brief Connect a disconnected server again, log in and reopen its volumes
+ *
+ * One thread reconnects a server at a time, as reconnect_held() says.
+ *
+ * @param[in,out] s     the server
+ * @param[out]    mesg  receives the reason for a failure
+ * @param[in,out] l     bytes of mesg in use
+ * @param[in]     max   capacity of mesg
+ * @returns 0 once connected, or 1 when another thread reconnects it or the
+ *          reconnect fails
+ */
+int afp_server_reconnect(struct afp_server * s, char *mesg,
+                         unsigned int *l, unsigned int max)
+{
+    int ret;
+
+    if (!afp_server_reconnect_try_begin(s)) {
+        return 1;
+    }
+
+    ret = reconnect_held(s, mesg, l, max);
+    afp_server_reconnect_end(s);
+    return ret;
+}
+
+/* Run by afp_server_restart() once the password is written, or NULL. */
+static void (*restart_hook)(struct afp_server *server);
+
+/*!
+ * @brief Set the function afp_server_restart() runs once the password is
+ *        written, before the reconnect, for the unit tests
+ *
+ * @param[in] hook  the function, or NULL for none
+ */
+void afp_server_set_restart_hook(void (*hook)(struct afp_server *server))
+{
+    restart_hook = hook;
+}
+
+/*!
+ * @brief Restart a disconnected server's session at an address, with a
+ *        password
+ *
+ * The reconnect stays this thread's from the address's swap to the
+ * password's wipe, so no other thread's reconnect reads either while they
+ * change, or logs in with a password the wipe then clears.
+ *
+ * @param[in,out] s         the server
+ * @param[in]     address   the address list, which the server owns from then
+ *                          on, or which is freed
+ * @param[in]     password  the password the login sends
+ * @param[out]    mesg      receives the reason for a failure
+ * @param[in,out] l         bytes of mesg in use
+ * @param[in]     max       capacity of mesg
+ * @returns 0 once connected, or -1 with errno: EINVAL for no server,
+ *          ECONNRESET while another thread reconnects the server, or the
+ *          reconnect's error
+ */
+int afp_server_restart(struct afp_server *s, struct addrinfo *address,
+                       const char *password, char *mesg, unsigned int *l,
+                       unsigned int max)
+{
+    int ret;
+
+    if (!s) {
+        if (address) {
+            freeaddrinfo(address);
+        }
+
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (!afp_server_reconnect_try_begin(s)) {
+        freeaddrinfo(address);
+        errno = ECONNRESET;
+        return -1;
+    }
+
+    afp_server_replace_address(s, address);
+    strlcpy(s->password, password, sizeof(s->password));
+
+    if (restart_hook) {
+        restart_hook(s);
+    }
+
+    errno = 0;
+    ret = reconnect_held(s, mesg, l, max) == 0 ? 0 : -1;
+    explicit_bzero(s->password, sizeof(s->password));
+    afp_server_reconnect_end(s);
+    return ret;
 }
 
 
@@ -1497,7 +1607,7 @@ int afp_server_connect(struct afp_server *server, int full)
     struct 	timeval t1, t2;
     struct 	addrinfo *address;
 #define LOG_MSG_SIZE 64
-    static char log_msg[LOG_MSG_SIZE];
+    char log_msg[LOG_MSG_SIZE];
     char	ip_addr[INET6_ADDRSTRLEN];
     address = server->address;
     int fd = __atomic_exchange_n(&server->fd, -1, __ATOMIC_ACQ_REL);

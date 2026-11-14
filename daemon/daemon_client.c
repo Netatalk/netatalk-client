@@ -3,9 +3,15 @@
  *
  *  Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
+ */
+
+/*!
+ * @file
+ * @brief afpsld's client connections: their pool, their requests and answers
  */
 
 #include <errno.h>
@@ -17,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
@@ -115,23 +122,51 @@ int continue_client_connection(struct daemon_client * c)
     return 0;
 }
 
+/*!
+ * @brief End a client's connection and free its slot
+ *
+ * The slot is free before the connection closes, so an exit the client
+ * sends once it has seen the close does not count it.
+ *
+ * @param[in,out] c  the client
+ * @returns 0, or -1 for no client
+ */
 int close_client_connection(struct daemon_client * c)
 {
+    int fd;
+
     if ((!c) || (c->fd == 0)) {
         return -1;
     }
 
+    fd = c->fd;
     reset_client_request(c);
-    rm_fd_and_signal(c->fd);
-    close(c->fd);
+    rm_fd_and_signal(fd);
     remove_client(&c);
+    close(fd);
     return 0;
 }
 
+/* Set once the last client's exit has counted the clients: a connection the
+ * listener accepts after it is turned away */
+static int pool_closed;
+
+/*!
+ * @brief Take a connection the listener accepted into the client pool
+ *
+ * @param[in] fd  the connection
+ * @returns 0, -1 when every slot is taken, or -2 once the last client's exit
+ *          has closed the pool
+ */
 static int add_client(int fd)
 {
     struct daemon_client * c;
     pthread_mutex_lock(&client_pool_mutex);
+
+    if (pool_closed) {
+        pthread_mutex_unlock(&client_pool_mutex);
+        return -2;
+    }
 
     for (int i = 0; i < DAEMON_NUM_CLIENTS; i++) {
         c = &client_pool[i];
@@ -198,6 +233,18 @@ found:
     return 1;
 }
 
+/*!
+ * @brief Accept a connection on the listener, or read from the client whose
+ *        connection is ready
+ *
+ * @param[in]     command_fd  the listener
+ * @param[in,out] set         the ready descriptors; a client's leaves it once
+ *                            read
+ * @param[in,out] max_fd      one past the highest descriptor to watch
+ * @returns 0 after an accept, a refused one among them, 1 while a client's
+ *          request is partly read, or -1 once its command has started or
+ *          the client has gone
+ */
 int daemon_scan_extra_fds(int command_fd, fd_set * set, int *max_fd)
 {
     struct sockaddr_un new_addr;
@@ -209,14 +256,29 @@ int daemon_scan_extra_fds(int command_fd, fd_set * set, int *max_fd)
         int new_fd = accept(command_fd, (struct sockaddr *) &new_addr, &new_len);
 
         if (new_fd >= 0) {
-            if (add_client(new_fd) < 0) {
+            ret = add_client(new_fd);
+
+            /* A pool the last client's exit closed turns the client away
+             * quietly: its hello fails, and it starts the next daemon. */
+            if (ret == -1) {
                 log_for_client(NULL, AFPFSD, LOG_WARNING,
                                "Client pool full (%d), rejecting connection",
                                DAEMON_NUM_CLIENTS);
+            }
+
+            if (ret < 0) {
                 close(new_fd);
                 return 0;
             }
 
+            /* A client that stops mid-request or mid-answer fails its read or
+             * write, where it would hold its server's lock while the
+             * session's other clients wait on heartbeats. */
+            struct timeval silence = { .tv_sec = AFPSL_IPC_SILENCE_SECONDS };
+            setsockopt(new_fd, SOL_SOCKET, SO_RCVTIMEO, &silence,
+                       sizeof(silence));
+            setsockopt(new_fd, SOL_SOCKET, SO_SNDTIMEO, &silence,
+                       sizeof(silence));
             add_fd_and_signal(new_fd);
 
             if ((new_fd + 1) > *max_fd) {
@@ -298,6 +360,11 @@ int send_command(struct daemon_client *c, unsigned int len, const char *data)
     header.len = (unsigned int) response_len;
     memcpy(response, &header, sizeof(header));
     pthread_mutex_unlock(&c->command_string_mutex);
+    /* A heartbeat on its way ends before the answer starts, and none
+     * follows it. */
+    pthread_mutex_lock(&client_pool_mutex);
+    c->working = 0;
+    pthread_mutex_unlock(&client_pool_mutex);
 
     while (total < response_len) {
         ret = write(c->fd, response + total, response_len - total);
@@ -328,9 +395,104 @@ int send_command(struct daemon_client *c, unsigned int len, const char *data)
     return 0;
 }
 
-int count_active_clients(void)
+/*!
+ * @brief Count a client's command as running, so that its client gets the
+ *        heartbeats its hello asked for until the answer
+ *
+ * @param[in,out] c  the client, whose command thread has started
+ */
+void daemon_client_command_started(struct daemon_client *c)
+{
+    pthread_mutex_lock(&client_pool_mutex);
+    c->working = c->heartbeat;
+    pthread_mutex_unlock(&client_pool_mutex);
+}
+
+/*!
+ * @brief Tell each client whose command runs that it still does
+ *
+ * A send never waits. A frame the socket takes in part ends the connection,
+ * as the rest of it would garble the answer.
+ */
+static void send_heartbeats(void)
+{
+    struct {
+        struct afpsl_ipc_response_header header;
+        struct afpsl_ipc_log_footer footer;
+    } frame;
+    struct daemon_client *c;
+    ssize_t ret;
+    memset(&frame, 0, sizeof(frame));
+    frame.header.result = AFPSL_IPC_RESULT_WORKING;
+    frame.header.len = sizeof(frame);
+    frame.footer.magic = AFPSL_IPC_LOG_MAGIC;
+    pthread_mutex_lock(&client_pool_mutex);
+
+    for (int i = 0; i < DAEMON_NUM_CLIENTS; i++) {
+        c = &client_pool[i];
+
+        if (!c->used || !c->working) {
+            continue;
+        }
+
+        ret = send(c->fd, &frame, sizeof(frame), MSG_DONTWAIT);
+
+        if (ret >= 0 && (size_t) ret < sizeof(frame)) {
+            shutdown(c->fd, SHUT_RDWR);
+            c->working = 0;
+        }
+    }
+
+    pthread_mutex_unlock(&client_pool_mutex);
+}
+
+/*!
+ * @brief Send the heartbeats every AFPSL_IPC_HEARTBEAT_SECONDS
+ *
+ * @param[in] arg  unused
+ * @returns NULL once a sleep fails other than by a signal
+ */
+static void *heartbeat_thread(void *arg)
+{
+    struct timespec interval = { .tv_sec = AFPSL_IPC_HEARTBEAT_SECONDS };
+    (void) arg;
+
+    while (nanosleep(&interval, NULL) == 0 || errno == EINTR) {
+        send_heartbeats();
+    }
+
+    return NULL;
+}
+
+/*!
+ * @brief Start the thread that sends the heartbeats of running commands
+ *
+ * @returns 0, or -1 when the thread cannot start
+ */
+int daemon_client_start_heartbeats(void)
+{
+    pthread_attr_t attr;
+    pthread_t thread;
+    int ret;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    ret = pthread_create(&thread, &attr, heartbeat_thread, NULL);
+    pthread_attr_destroy(&attr);
+    return ret == 0 ? 0 : -1;
+}
+
+/*!
+ * @brief Say whether an exit's client is the daemon's last, which closes the
+ *        pool to the connections the listener accepts after
+ *
+ * Exits run one at a time, so the last one counts itself alone.
+ *
+ * @returns 1 for the last client, or 0
+ */
+int daemon_client_last_exit(void)
 {
     int count = 0;
+    int last;
     pthread_mutex_lock(&client_pool_mutex);
 
     for (int i = 0; i < DAEMON_NUM_CLIENTS; i++) {
@@ -339,6 +501,8 @@ int count_active_clients(void)
         }
     }
 
+    last = count == 1;
+    pool_closed = last;
     pthread_mutex_unlock(&client_pool_mutex);
-    return count;
+    return last;
 }

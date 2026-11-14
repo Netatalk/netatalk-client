@@ -67,6 +67,26 @@ or
 and on Time Capsule, AirPort and Mac servers also when a written resource
 fork is closed and before a read of a file written through another
 descriptor.
+.It Cm locking Ns = Ns Ar mode
+Choose whether a file opened for writing through the mount refuses a second
+open for writing.
+The mode may be
+.Cm yes
+or
+.Cm no .
+With
+.Cm yes ,
+a file is opened for writing with the AFP deny-write mode, so that a second
+open for writing, through the mount or from another session, fails with
+.Er EBUSY
+while the first is open.
+Its own open for writing fails with
+.Er EBUSY
+too while another session has the file open for writing.
+An open for reading denies nothing, and no read or write sends a byte-range
+lock.
+.Cm no
+is the default.
 .It Cm group Ns = Ns Ar groupname
 Mount the volume as
 .Ar groupname .

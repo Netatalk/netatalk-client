@@ -713,8 +713,10 @@ static int fuse_mknod(const char *path, mode_t mode _U_, dev_t dev _U_)
 /*!
  * @brief Create and open a file for open(2) with O_CREAT
  *
- * A refused open removes the file this create made, an unanswered one leaves
- * it with its mode; the record notes the create for ml_copy_range().
+ * A refused open removes the file this create made, but for an unanswered
+ * one and one that a deny conflict refuses, as the server or another client
+ * may hold the file open: it then stays with its mode. The record notes the
+ * create for ml_copy_range().
  *
  * @param[in]     path  UTF-8 path of the file
  * @param[in]     mode  its mode
@@ -749,8 +751,9 @@ static int fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi)
                   &fp);
 
     if (ret != 0) {
-        /* An open without an answer may still open the file. */
-        if (created && ret == -ETIMEDOUT) {
+        /* An open without an answer may still open the file, and one that a
+         * deny conflict refuses leaves it to the client that holds it open. */
+        if (created && (ret == -ETIMEDOUT || ret == -EBUSY)) {
             ml_set_created_mode(volume, path, mode);
         } else if (created) {
             ml_unlink(volume, path);
@@ -1933,13 +1936,26 @@ static void *afp_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 /*!
  * @brief Set up the mount at FUSE init
  *
- * @param[in] o  unused
+ * Asks for atomic O_TRUNC, as libfuse 3 does by default, so that an open
+ * with O_TRUNC truncates through its own fork. A truncation by path after
+ * the open would meet that fork's deny-write mode under locking=yes.
+ *
+ * @param[in,out] conn  the connection's capabilities
  * @returns the volume, which FUSE keeps as the mount's private data
  */
-static void *afp_init(struct fuse_conn_info * o _U_)
+static void *afp_init(struct fuse_conn_info *conn)
 {
     struct afp_volume * vol = fuse_get_context()->private_data;
     vol->priv = fuse_get_context()->fuse;
+#ifdef FUSE_CAP_ATOMIC_O_TRUNC
+
+    if (conn && (conn->capable & FUSE_CAP_ATOMIC_O_TRUNC)) {
+        conn->want |= FUSE_CAP_ATOMIC_O_TRUNC;
+    }
+
+#else
+    (void) conn;
+#endif
 
     /* Trigger the daemon that we've started */
     if (vol->priv) {

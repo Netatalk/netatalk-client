@@ -283,6 +283,9 @@ static int answer(struct afp_fake_server *fake,
                || (fake->refuse_privs && payload[0] == afpSetFileDirParms
                    && (bitmap & kFPUnixPrivsBit))) {
         result = fake->refusal ? fake->refusal : kFPAccessDenied;
+    } else if (fake->refuse_unlock && payload[0] == afpByteRangeLockExt
+               && length >= 2 && (payload[1] & ByteRangeLock_Unlock)) {
+        result = kFPRangeNotLocked;
     } else if (fake->read_only && refused_read_only(payload[0], access)) {
         result = kFPVolLocked;
     } else if (payload[0] == afpCreateFile && fake->name_taken && length >= 2
@@ -298,12 +301,19 @@ static int answer(struct afp_fake_server *fake,
                            || (fake->params_answers < 16U
                                && (fake->params_dirs
                                    >> fake->params_answers) & 1U);
+        const int is_empty = fake->params_answers < 16U
+                             && (fake->params_empty >> fake->params_answers)
+                             & 1U;
         uint32_t mode = is_dir ? 040755 : 0100644;
         uint32_t privs[4];
         const uint32_t cnid = htonl(fake->params_cnid);
         const uint16_t cnid_bit = fake->params_cnid ? kFPNodeIDBit : 0;
-        const uint32_t data_length = htonl(fake->data_length);
-        const uint32_t resource_length = htonl(fake->resource_length);
+        const uint32_t data_length = is_empty ? 0 : fake->data_length;
+        const uint32_t resource_length = is_empty ? 0 : fake->resource_length;
+        const uint32_t data_length32 = htonl(data_length);
+        const uint32_t resource_length32 = htonl(resource_length);
+        const uint64_t data_length64 = hton64((uint64_t) data_length);
+        const uint64_t resource_length64 = hton64((uint64_t) resource_length);
 
         if (fake->params_mode) {
             mode = fake->params_mode;
@@ -332,8 +342,10 @@ static int answer(struct afp_fake_server *fake,
             bitmap = ntohs(value) & (kFPModDateBit | cnid_bit
                                      | kFPUnixPrivsBit);
         } else {
-            bitmap &= kFPModDateBit | cnid_bit | kFPDataForkLenBit
-                      | kFPRsrcForkLenBit | kFPUnixPrivsBit;
+            bitmap &= kFPAttributeBit | kFPModDateBit | cnid_bit
+                      | kFPDataForkLenBit | kFPRsrcForkLenBit
+                      | kFPExtDataForkLenBit | kFPExtRsrcForkLenBit
+                      | kFPUnixPrivsBit;
         }
 
         value = htons(bitmap);
@@ -341,6 +353,12 @@ static int answer(struct afp_fake_server *fake,
         memcpy(data + (is_dir ? 2 : 0), &value, sizeof(value));
         data[4] = is_dir ? 0x80 : 0;
         body_len = 6;
+
+        /* A file of no attributes. */
+        if (bitmap & kFPAttributeBit) {
+            memset(data + body_len, 0, 2);
+            body_len += 2;
+        }
 
         if (bitmap & kFPModDateBit) {
             memcpy(data + body_len, &fake->params_date, 4);
@@ -353,13 +371,25 @@ static int answer(struct afp_fake_server *fake,
         }
 
         if (bitmap & kFPDataForkLenBit) {
-            memcpy(data + body_len, &data_length, sizeof(data_length));
-            body_len += sizeof(data_length);
+            memcpy(data + body_len, &data_length32, sizeof(data_length32));
+            body_len += sizeof(data_length32);
         }
 
         if (bitmap & kFPRsrcForkLenBit) {
-            memcpy(data + body_len, &resource_length, sizeof(resource_length));
-            body_len += sizeof(resource_length);
+            memcpy(data + body_len, &resource_length32,
+                   sizeof(resource_length32));
+            body_len += sizeof(resource_length32);
+        }
+
+        if (bitmap & kFPExtDataForkLenBit) {
+            memcpy(data + body_len, &data_length64, sizeof(data_length64));
+            body_len += sizeof(data_length64);
+        }
+
+        if (bitmap & kFPExtRsrcForkLenBit) {
+            memcpy(data + body_len, &resource_length64,
+                   sizeof(resource_length64));
+            body_len += sizeof(resource_length64);
         }
 
         if (bitmap & kFPUnixPrivsBit) {
@@ -463,6 +493,26 @@ static int answer(struct afp_fake_server *fake,
             offset = hton64(offset + count);
             memcpy(data, &offset, sizeof(offset));
             body_len = 8;
+        } else if (fake->read_file) {
+            /* A file of data_length zeros, which a read gets in any count,
+             * short with kFPEOFErr at its end. */
+            static const char zeros[65536];
+
+            if (offset > fake->data_length) {
+                offset = fake->data_length;
+            }
+
+            if (count > sizeof(zeros)) {
+                count = sizeof(zeros);
+            }
+
+            if (count > fake->data_length - offset) {
+                count = fake->data_length - offset;
+                result = kFPEOFErr;
+            }
+
+            body = zeros;
+            body_len = (uint32_t) count;
         } else {
             /* A link's target, which afpd reads whole: a read that asks
              * for some of it but less than the rest is refused, and one
@@ -560,6 +610,28 @@ void afp_fake_server_release(struct afp_fake_server *fake)
 }
 
 /*!
+ * @brief Give the access mode of the last open the fake server received
+ *
+ * @param[in] fake  the fake server, stopped
+ * @returns the access mode, or 0 when it received no open
+ */
+unsigned int afp_fake_server_open_access(const struct afp_fake_server *fake)
+{
+    unsigned int i = fake->ncommands;
+
+    while (i > 0) {
+        i--;
+
+        if (fake->commands[i] == afpOpenFork && fake->lengths[i] >= 12) {
+            return (unsigned int) fake->requests[i][10] << 8
+                   | fake->requests[i][11];
+        }
+    }
+
+    return 0;
+}
+
+/*!
  * @brief Answer the client's requests until the session ends
  *
  * Each request gets the answer fake's fields ask for, or kFPNoErr alone; the
@@ -610,7 +682,11 @@ static void *serve(void *arg)
         }
 
         if (fake->hold && payload[0] == fake->hold) {
-            hold_until_released(fake);
+            if (fake->hold_skip) {
+                fake->hold_skip--;
+            } else {
+                hold_until_released(fake);
+            }
         }
 
         rc = answer(fake, &header, payload, length);

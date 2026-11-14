@@ -8,6 +8,11 @@
  * See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief The daemons' listening socket, from its bind to its unlink
+ */
+
 #ifdef HAVE_LIBBSD
 #include <bsd/string.h>
 #endif
@@ -158,13 +163,22 @@ int daemon_socket_cleanup_stale(const char *socket_path)
     return 0;
 }
 
+/*!
+ * @brief Retire a daemon's listener
+ *
+ * The name goes first: a client that connects once the listener has closed
+ * is refused, starts a daemon of its own, and that daemon's name must stay.
+ *
+ * @param[in] fd           the listener, or -1
+ * @param[in] socket_path  its name, or NULL
+ */
 void daemon_socket_close(int fd, const char *socket_path)
 {
-    if (fd >= 0) {
-        close(fd);
-    }
-
     if (socket_path && unlink(socket_path) != 0 && errno != ENOENT) {
         perror("unlink daemon socket");
+    }
+
+    if (fd >= 0) {
+        close(fd);
     }
 }
