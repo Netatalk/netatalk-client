@@ -2441,4 +2441,82 @@ unmount_or_bail('fuse_appledouble_listing: unmount succeeds');
            sprintf('fuse_mount_time: the slowest of ten mounts took %.2f s', $slowest));
 }
 
+# -----------------------------------------------------------------------
+# fuse_locking: with locking=yes a file open for writing refuses a second
+# open for writing, through the same or another mount, with EBUSY, while an
+# open for reading is admitted and a write sends no byte-range lock.
+# Without the option the second open for writing is admitted, and afpcmd
+# refuses it only when it is told to.
+# -----------------------------------------------------------------------
+{
+    my $other = "$mnt_dir.other";
+    mkdir $other unless -d $other;
+
+    refused_mount(
+                  'fuse_locking: mount_afpfs -o refuses a locking value other than yes or no',
+                  'mount_afpfs', '-o', 'locking=maybe', $AFP_AUTH_URL
+    );
+    refused_mount(
+                  'fuse_locking: afpc fs mount refuses a locking value other than yes or no',
+                  'afpc', 'fs', 'mount', '-u', $AFP_USER, '-p', $AFP_PASS, '--locking', 'maybe', "$AFP_HOST:$AFP_VOL"
+    );
+
+    mount_or_bail('fuse_locking: a mount with locking=yes succeeds', 'mount_afpfs', '-o', 'locking=yes', $AFP_AUTH_URL,
+                  $mnt_dir);
+    mount_or_bail(
+                  'fuse_locking: a second mount with --locking yes succeeds',
+                  'afpc', 'fs', 'mount', '-u', $AFP_USER, '-p', $AFP_PASS, '--locking', 'yes', "$AFP_HOST:$AFP_VOL",
+                  $other
+    );
+    my $created = request_counts();
+    write_bytes("$mnt_dir/locking.txt", 16);
+    my $before = counts_after_release($created, 1);
+    sysopen(my $writer, "$mnt_dir/locking.txt", O_WRONLY)
+      or BAIL_OUT("Cannot open $mnt_dir/locking.txt for writing: $!");
+    ok(!sysopen(my $same, "$mnt_dir/locking.txt", O_WRONLY) && $!{EBUSY},
+       'fuse_locking: a second open for writing through the same mount fails with EBUSY');
+    ok(!sysopen(my $second, "$other/locking.txt", O_WRONLY) && $!{EBUSY},
+       'fuse_locking: a second open for writing through the other mount fails with EBUSY');
+    ok(sysopen(my $reader, "$other/locking.txt", O_RDONLY),
+       'fuse_locking: an open for reading through the other mount succeeds');
+    close $reader;
+    syswrite($writer, 'x') == 1 or BAIL_OUT("Cannot write to $mnt_dir/locking.txt: $!");
+    close $writer;
+    ok(sysopen(my $again, "$mnt_dir/locking.txt", O_WRONLY),
+       'fuse_locking: the file reopens for writing through its mount right after its close');
+    close $again;
+    is(request_delta($before, request_counts(), 'afpByteRangeLockExt'),
+       0, 'fuse_locking: the write sends no byte-range lock');
+    is(system('afpc', 'fs', 'unmount', $other), 0, 'fuse_locking: the second mount unmounts');
+    unmount_or_bail('fuse_locking: the mount unmounts');
+
+    mount_or_bail('fuse_locking: a mount without the option succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    mount_or_bail(
+                  'fuse_locking: a second mount without the option succeeds', 'afpc', 'fs', 'mount', '-u', $AFP_USER,
+                  '-p',                 $AFP_PASS,
+                  "$AFP_HOST:$AFP_VOL", $other
+    );
+    sysopen($writer, "$mnt_dir/locking.txt", O_WRONLY)
+      or BAIL_OUT("Cannot open $mnt_dir/locking.txt for writing: $!");
+    ok(sysopen(my $both, "$other/locking.txt", O_WRONLY),
+       'fuse_locking: without the option a second open for writing succeeds');
+    close $both;
+
+    require File::Temp;
+    my $local = File::Temp::tempdir(CLEANUP => 1);
+    write_bytes("$local/locking.txt", 16);
+    open(my $refused, '-|', 'afpcmd', '--locking', 'yes', "$local/locking.txt", $AFP_AUTH_URL)
+      or BAIL_OUT("Cannot run afpcmd: $!");
+    my $refusal = do { local $/; <$refused> };
+    close $refused;
+    isnt($?, 0, 'fuse_locking: afpcmd --locking yes does not write a file another session has open for writing');
+    like($refusal, qr/result=-16\b/, 'fuse_locking: afpcmd reports EBUSY');
+    is(system('afpcmd', "$local/locking.txt", $AFP_AUTH_URL), 0, 'fuse_locking: afpcmd without the option writes it');
+    close $writer;
+    unlink "$mnt_dir/locking.txt";
+    is(system('afpc', 'fs', 'unmount', $other), 0, 'fuse_locking: the second mount without the option unmounts');
+    unmount_or_bail('fuse_locking: the mount without the option unmounts');
+    rmdir $other;
+}
+
 done_testing;

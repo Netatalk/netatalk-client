@@ -191,17 +191,20 @@ void flush_dirty_forks_for_file(struct afp_volume * volume,
  *
  * @param[in] volume  volume of the file
  * @param[in] fp      the open fork
+ * @param[in] writer  1 to count only a fork of fp's kind open for writing
  * @returns 1 when another record on the volume's open-fork list names the
  *          file, 0 otherwise
  */
-int other_fork_open(struct afp_volume * volume, struct afp_file_info * fp)
+static int fork_of_file_open(struct afp_volume * volume,
+                             struct afp_file_info * fp, int writer)
 {
     int found = 0;
     pthread_mutex_lock(&volume->open_forks_mutex);
 
     for (struct afp_file_info *p = volume->open_forks;
             p; p = p->largelist_next) {
-        if (p != fp && names_file(p, fp->did, fp->basename)) {
+        if (p != fp && names_file(p, fp->did, fp->basename)
+                && (!writer || (p->writable && p->resource == fp->resource))) {
             found = 1;
             break;
         }
@@ -209,6 +212,34 @@ int other_fork_open(struct afp_volume * volume, struct afp_file_info * fp)
 
     pthread_mutex_unlock(&volume->open_forks_mutex);
     return found;
+}
+
+/*!
+ * @brief Test whether another open fork of the client names fp's file
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] fp      the open fork
+ * @returns 1 when another record on the volume's open-fork list names the
+ *          file, 0 otherwise
+ */
+int other_fork_open(struct afp_volume * volume, struct afp_file_info * fp)
+{
+    return fork_of_file_open(volume, fp, 0);
+}
+
+/*!
+ * @brief Test whether another fork of fp's file and kind is open for writing
+ *
+ * Such a fork is the one that can hold a deny-write mode.
+ *
+ * @param[in] volume  volume of the file
+ * @param[in] fp      the fork
+ * @returns 1 when another record on the volume's open-fork list is such a
+ *          fork, 0 otherwise
+ */
+int other_writer_open(struct afp_volume * volume, struct afp_file_info * fp)
+{
+    return fork_of_file_open(volume, fp, 1);
 }
 
 /*!

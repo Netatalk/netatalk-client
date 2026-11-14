@@ -43,6 +43,9 @@ int ll_openfork_errno(int rc);
 int ll_answer_errno(int rc);
 int ll_unanswered(int rc);
 
+void ll_set_thread_deny_write(int deny);
+unsigned char ll_write_access(const struct afp_volume * volume);
+
 int ll_open(struct afp_volume * volume, const char *path, int flags,
             struct afp_file_info *fp);
 

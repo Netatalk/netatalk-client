@@ -283,6 +283,9 @@ static int answer(struct afp_fake_server *fake,
                || (fake->refuse_privs && payload[0] == afpSetFileDirParms
                    && (bitmap & kFPUnixPrivsBit))) {
         result = fake->refusal ? fake->refusal : kFPAccessDenied;
+    } else if (fake->refuse_unlock && payload[0] == afpByteRangeLockExt
+               && length >= 2 && (payload[1] & ByteRangeLock_Unlock)) {
+        result = kFPRangeNotLocked;
     } else if (fake->read_only && refused_read_only(payload[0], access)) {
         result = kFPVolLocked;
     } else if (payload[0] == afpCreateFile && fake->name_taken && length >= 2

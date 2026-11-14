@@ -26,6 +26,11 @@
     59 Temple Place, Suite 330, Boston, MA 02111 USA.
 */
 
+/*!
+ * @file
+ * @brief afpcmd's commands, each run on a volume through libafpsl
+ */
+
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -167,6 +172,10 @@ static afpc_server_t server_id = NULL;
 static int connected = 0;
 static int quit_requested = 0;
 static enum afp_metadata_mode transfer_metadata_mode = AFP_METADATA_AUTO;
+static unsigned int attach_options = AFP_SL_VOLUME_NO_LOCKING;
+/* How to replace an afpsld that lacks what this afpcmd asks of it */
+static const char stale_daemon_hint[] =
+    "quit every afpcmd, then run afpc sl exit to replace afpsld";
 static int metadata_warning_emitted = 0;
 
 static int write_all_fd(int fd, const void *data, size_t size);
@@ -338,6 +347,14 @@ static void report_reconnect_identity_failure(void)
            "(ServerSignature changed or is unavailable).\n");
 }
 
+/*!
+ * @brief Reconnect the session the daemon lost, and attach its volume and
+ *        directory again
+ *
+ * @param[in] restore_volume  1 to attach the volume even when none was
+ * @param[in] restore_dir     1 to return to the working directory
+ * @returns 0, or -1 when the session or its volume is not restored
+ */
 static int recover_session(int restore_volume, int restore_dir)
 {
     char mesg[CMDLINE_ERROR_LEN];
@@ -353,7 +370,7 @@ static int recover_session(int restore_volume, int restore_dir)
     char *saved_dir = NULL;
     int had_volume;
     int was_connected;
-    unsigned int volume_options = AFP_SL_VOLUME_NO_LOCKING;
+    unsigned int volume_options = attach_options;
 
     if (!connected) {
         return -1;
@@ -768,6 +785,14 @@ static int remote_xattr_get(const char *path, const char *name,
     return 0;
 }
 
+/*!
+ * @brief Read a whole directory through the daemon, a page at a time
+ *
+ * @param[in]  path   path of the directory on the volume
+ * @param[out] files  receives the entries, which the caller frees
+ * @param[out] count  receives how many
+ * @returns 0, or a negative errno
+ */
 static int remote_readdir_all(const char *path,
                               struct afpc_file_info **files,
                               unsigned int *count)
@@ -785,7 +810,8 @@ static int remote_readdir_all(const char *path,
             return -EOVERFLOW;
         }
 
-        int ret = afp_sl_readdir(&vol_id, path, NULL, (int)total, 256,
+        /* afpsld lists the directory again for each page. */
+        int ret = afp_sl_readdir(&vol_id, path, NULL, (int)total, 1000,
                                  &page_count, &page, &eod);
 
         if (ret != 0) {
@@ -1071,9 +1097,16 @@ static unsigned int directory_entries_per_screen(void)
     return (unsigned int)ws.ws_row - 1U;
 }
 
+/*!
+ * @brief Attach a volume of the connected server by its name, and start at
+ *        its root
+ *
+ * @param[in] volume_name  the volume's name
+ * @returns 0, or -1 after printing why
+ */
 static int attach_named_volume(const char *volume_name)
 {
-    unsigned int volume_options = AFP_SL_VOLUME_NO_LOCKING;
+    unsigned int volume_options = attach_options;
     int ret;
 
     if (strlcpy(url.volumename, volume_name, sizeof(url.volumename))
@@ -1099,6 +1132,9 @@ static int attach_named_volume(const char *volume_name)
         } else if (ret == -ENODEV) {
             printf("Volume %s does not exist on this server\n",
                    url.volumename);
+        } else if (ret == -ENOTSUP) {
+            printf("afpsld cannot refuse a second writer; %s\n",
+                   stale_daemon_hint);
         } else {
             printf("Could not attach to volume %s\n", url.volumename);
         }
@@ -1712,7 +1748,8 @@ out:
 /*!
  * @brief Open a file after its create, removing one the create made on failure
  *
- * An open without an answer may still open the file, which then stays.
+ * An open without an answer may still open the file, which then stays, as
+ * does one that a deny conflict refuses: another client holds it open.
  *
  * @param[in]  path      path of the file on the volume
  * @param[in]  created   whether the caller's create made the file
@@ -1726,7 +1763,7 @@ static int open_created_file(const char *path, int created, int truncate,
     int ret = afp_sl_open(&vol_id, path, NULL, fileid,
                           O_RDWR | (truncate && !created ? O_TRUNC : 0));
 
-    if (ret != 0 && created && ret != -ETIMEDOUT) {
+    if (ret != 0 && created && ret != -ETIMEDOUT && ret != -EBUSY) {
         afp_sl_unlink(&vol_id, path, NULL);
     }
 
@@ -3608,13 +3645,9 @@ static int copy_remote_file(const char *source, const char *target,
     unsigned int source_fid = 0;
     unsigned int target_fid = 0;
     unsigned long long offset = 0;
-    unsigned int received;
-    unsigned int written;
-    unsigned int eof = 0;
+    unsigned int copy_flags = 0;
     int created;
     int ret = -1;
-#define COPY_BUFSIZE 102400
-    char buf[COPY_BUFSIZE];
     int target_stat_ret = afp_sl_stat(&vol_id, target, NULL, &target_stat);
 
     /* The open empties a target that exists. One the session may not look
@@ -3653,32 +3686,39 @@ static int copy_remote_file(const char *source, const char *target,
     ret = open_created_file(target, created, 1, &target_fid);
 
     if (ret != 0) {
-        printf("Could not open target file for writing\n");
+        printf("Could not open target file for writing: %s\n",
+               strerror(-ret));
         goto out;
     }
 
-    while (!eof) {
-        int api_ret = afp_sl_read(&vol_id, source_fid, 0, offset, COPY_BUFSIZE,
-                                  &received, &eof, buf);
+    /* The server's copy also carries the metadata that -M none leaves out. */
+    if (created && transfer_metadata_mode != AFP_METADATA_NONE) {
+        copy_flags = AFP_SL_COPY_NEW_TARGET;
+    }
+
+    while (offset < (unsigned long long) source_stat->st_size) {
+        unsigned long long copied;
+        int api_ret = afp_sl_copy(&vol_id, source_fid, offset, target_fid,
+                                  offset,
+                                  (unsigned long long) source_stat->st_size
+                                  - offset, copy_flags, &copied);
 
         if (api_ret != 0) {
-            printf("Error reading from source\n");
+            printf("Error copying to target: %s\n", strerror(-api_ret));
             ret = -1;
             goto out;
         }
 
-        if (received > 0) {
-            api_ret = afp_sl_write(&vol_id, target_fid, 0, offset, received,
-                                   &written, buf);
-
-            if (api_ret != 0 || written != received) {
-                printf("Error writing to target\n");
-                ret = -1;
-                goto out;
-            }
-
-            offset += received;
+        if (copied == 0) {
+            printf("Incomplete copy to %s: copied %llu of %lld bytes\n",
+                   remote_display(target), offset,
+                   (long long) source_stat->st_size);
+            ret = -1;
+            goto out;
         }
+
+        offset += copied;
+        copy_flags = 0;
     }
 
     int source_close = afp_sl_close(&vol_id, source_fid);
@@ -3889,6 +3929,12 @@ int com_copy(char *arg)
         goto out;
     }
 
+    /* A daemon that cannot copy fails the copy before it changes anything. */
+    if (afp_sl_copy(&vol_id, 0, 0, 0, 0, 0, 0, NULL) == -ENOTSUP) {
+        printf("afpsld cannot copy; %s\n", stale_daemon_hint);
+        goto out;
+    }
+
     if (escape_paths_alloc(&source_path, &target_path, arg)) {
         printf("expecting format: cp [-r] <source> <target>\n");
         goto out;
@@ -3985,15 +4031,19 @@ out:
     return ret;
 }
 
+/*!
+ * @brief Remove a directory and what it holds
+ *
+ * @param[in] server_path  path of the directory on the volume
+ * @returns 0, or -1 after printing why
+ */
 static int delete_directory(const char *server_path)
 {
     struct afpc_file_info *filebase = NULL;
     unsigned int numfiles = 0;
-    int eod = 0;
     int ret = 0;
 
-    if (afp_sl_readdir(&vol_id, server_path, NULL, 0, 1000, &numfiles, &filebase,
-                       &eod)) {
+    if (remote_readdir_all(server_path, &filebase, &numfiles) != 0) {
         printf("Could not read directory %s\n", server_path);
         return -1;
     }
@@ -4557,6 +4607,25 @@ int cmdline_set_metadata_mode(const char *mode)
     return afp_metadata_mode_parse(mode, &transfer_metadata_mode);
 }
 
+/*!
+ * @brief Choose whether a file open for writing refuses a second open
+ *
+ * @param[in] mode  yes or no
+ * @returns 0, or -1 for any other mode
+ */
+int cmdline_set_locking(const char *mode)
+{
+    if (strcmp(mode, "yes") == 0) {
+        attach_options = AFP_SL_VOLUME_NO_LOCKING | AFP_SL_VOLUME_DENY_WRITE;
+    } else if (strcmp(mode, "no") == 0) {
+        attach_options = AFP_SL_VOLUME_NO_LOCKING;
+    } else {
+        return -1;
+    }
+
+    return 0;
+}
+
 void cmdline_log_metadata_mode(void)
 {
     char message[CMDLINE_ERROR_LEN];
@@ -4597,6 +4666,13 @@ static void cmdline_stateless_log(void *user_data, int loglevel,
     syslog(loglevel, "%s", message);
 }
 
+/*!
+ * @brief Connect to the URL's server, and attach its volume when it names one
+ *
+ * @param[in] batch_mode  1 for a transfer, whose path may be a file and which
+ *                        asks for no volume
+ * @returns 0, or -1 after printing why
+ */
 static int cmdline_server_startup(int batch_mode)
 {
     char mesg[CMDLINE_ERROR_LEN];
@@ -4634,7 +4710,7 @@ static int cmdline_server_startup(int batch_mode)
     printf("Connected to server %s\n", url.servername);
 
     if (url.volumename[0] != '\0') {
-        unsigned int volume_options = AFP_SL_VOLUME_NO_LOCKING;
+        unsigned int volume_options = attach_options;
         ret = attach_volume_with_password_prompt(server_id, &vol_id,
                                                  volume_options);
 
@@ -4644,6 +4720,9 @@ static int cmdline_server_startup(int batch_mode)
                        url.volumename);
             } else if (ret == -ENODEV) {
                 printf("Volume %s does not exist on this server\n", url.volumename);
+            } else if (ret == -ENOTSUP) {
+                printf("afpsld cannot refuse a second writer; %s\n",
+                       stale_daemon_hint);
             } else {
                 printf("Could not attach to volume %s\n", url.volumename);
             }

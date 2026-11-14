@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <time.h>
 
 #include "afp_internal.h"
 #include "afp_protocol.h"
@@ -54,6 +55,41 @@ static unsigned int fork_length_bit(const struct afp_volume *volume,
     return resource ? kFPExtRsrcForkLenBit : kFPExtDataForkLenBit;
 }
 
+/* A range another user holds, and an open that a deny conflict refuses, is
+ * tried this many times, this far apart. */
+#define AFP_LOCK_TRIES 10
+#define AFP_LOCK_RETRY_NSEC 50000000L
+
+/* Whether the calling thread's opens for writing deny other writers. */
+static _Thread_local int thread_denies_writers;
+
+/*!
+ * @brief Lock or unlock a byte range of an open fork
+ *
+ * @param[in] volume  volume of the fork
+ * @param[in] flag    ByteRangeLock_Lock or ByteRangeLock_Unlock
+ * @param[in] forkid  the open fork
+ * @param[in] offset  start of the range
+ * @param[in] size    bytes of the range
+ * @returns the server's AFP result, or afpc_dsi_send()'s error when the
+ *          request fails
+ */
+static int byte_range(struct afp_volume * volume, unsigned char flag,
+                      unsigned short forkid, uint64_t offset, uint64_t size)
+{
+    uint64_t generated_offset;
+
+    if (volume->server->using_version->av_number < 30) {
+        uint32_t generated_offset32;
+        /* ll_write() refuses an AFP 2 range past AFP_MAX_AFP2_FILESIZE. */
+        return afp_byterangelock(volume, flag, forkid, (uint32_t) offset,
+                                 (uint32_t) size, &generated_offset32);
+    }
+
+    return afp_byterangelockext(volume, flag, forkid, offset, size,
+                                &generated_offset);
+}
+
 /*!
  * @brief Unlock a byte range of an open fork
  *
@@ -61,93 +97,66 @@ static unsigned int fork_length_bit(const struct afp_volume *volume,
  * @param[in] forkid         the open fork
  * @param[in] offset         start of the range
  * @param[in] sizetorequest  bytes of the range
- * @returns 0, or -1 when the server refuses the unlock
+ * @returns 0, or -EIO when the server does not release the range
  */
 int ll_handle_unlocking(struct afp_volume * volume, unsigned short forkid,
                         uint64_t offset, uint64_t sizetorequest)
 {
-    uint64_t generated_offset;
-    int rc;
-
     if (volume->extra_flags & VOLUME_EXTRA_FLAGS_NO_LOCKING) {
         return 0;
     }
 
-    if (volume->server->using_version->av_number < 30)
-        rc = afp_byterangelock(volume, ByteRangeLock_Unlock,
-                               forkid, offset, sizetorequest,
-                               (uint32_t *) &generated_offset);
-    else
-        rc = afp_byterangelockext(volume, ByteRangeLock_Unlock,
-                                  forkid, offset, sizetorequest, &generated_offset);
-
-    switch (rc) {
-    case kFPNoErr:
-        break;
-
-    case kFPMiscErr:
-    case kFPParamErr:
-    case kFPRangeNotLocked:
-    default:
-        return -1;
-    }
-
-    return 0;
+    return byte_range(volume, ByteRangeLock_Unlock, forkid, offset,
+                      sizetorequest) == kFPNoErr ? 0 : -EIO;
 }
 
 /*!
- * @brief Lock a byte range of an open fork
+ * @brief Lock a byte range of an open fork, trying again while another
+ *        user holds some of it
  *
  * @param[in] volume         volume of the fork
  * @param[in] forkid         the open fork
  * @param[in] offset         start of the range
  * @param[in] sizetorequest  bytes of the range
- * @returns 0 once locked or once ten tries found the range held or the
- *          server out of locks, or -1 when the server refuses the lock for
- *          another reason
+ * @returns 0, -EBUSY when the range stays held through every try, -ENOLCK
+ *          when the server has no lock left, or -EIO for another answer or
+ *          a request that fails
  */
 int ll_handle_locking(struct afp_volume * volume, unsigned short forkid,
                       uint64_t offset, uint64_t sizetorequest)
 {
-#define MAX_LOCKTRYCOUNT 10
-    int rc = 0;
-
-    int try = 0;
-
-    uint64_t generated_offset;
+    struct timespec retry = { 0, AFP_LOCK_RETRY_NSEC };
+    int result = 0;
 
     if (volume->extra_flags & VOLUME_EXTRA_FLAGS_NO_LOCKING) {
         return 0;
     }
 
-    while (try < MAX_LOCKTRYCOUNT) {
-            try++;
-
-            if (volume->server->using_version->av_number < 30)
-                rc = afp_byterangelock(volume, ByteRangeLock_Lock,
-                                       forkid, offset, sizetorequest,
-                                       (uint32_t *) &generated_offset);
-            else
-                rc = afp_byterangelockext(volume, ByteRangeLock_Lock,
-                                          forkid, offset, sizetorequest, &generated_offset);
-
-            switch (rc) {
-            case kFPNoErr:
-                goto done;
-
-            case kFPNoMoreLocks: /* Max num of locks on server */
-            case kFPLockErr:  /*Some or all of the requested range is locked
-				    by another user. */
-                sleep(1);
-                break;
-
-            default:
-                return -1;
-            }
+    for (int tries = 0; tries < AFP_LOCK_TRIES; tries++) {
+        if (tries > 0) {
+            nanosleep(&retry, NULL);
         }
 
-done:
-    return 0;
+        switch (byte_range(volume, ByteRangeLock_Lock, forkid, offset,
+                           sizetorequest)) {
+        case kFPNoErr:
+            return 0;
+
+        case kFPNoMoreLocks:
+            result = -ENOLCK;
+            break;
+
+        /* Some or all of the range is locked by another user. */
+        case kFPLockErr:
+            result = -EBUSY;
+            break;
+
+        default:
+            return -EIO;
+        }
+    }
+
+    return result;
 }
 
 
@@ -349,10 +358,45 @@ int ll_unanswered(int rc)
 }
 
 /*!
+ * @brief Make the calling thread's opens for writing deny other writers
+ *
+ * afpsld's command threads take their client's mode, as the volumes of a
+ * session are every client's.
+ *
+ * @param[in] deny  1 to deny other writers, 0 not
+ */
+void ll_set_thread_deny_write(int deny)
+{
+    thread_denies_writers = deny;
+}
+
+/*!
+ * @brief Give the access mode of a fork that is open for writing
+ *
+ * The fork opens for reading and writing, and refuses other opens for
+ * writing when the volume or the calling thread asks for it.
+ *
+ * @param[in] volume  volume of the fork
+ * @returns the access mode for afp_openfork()
+ */
+unsigned char ll_write_access(const struct afp_volume * volume)
+{
+    return AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE
+           | (((volume->extra_flags & VOLUME_EXTRA_FLAGS_DENY_WRITE)
+               || thread_denies_writers) ? AFP_OPENFORK_DENYWRITE : 0);
+}
+
+/*!
  * @brief Open the data or resource fork that fp names
  *
  * O_CREAT's soft create fails O_EXCL for a name taken; an open the server
- * refuses removes the file it made, and one finding no file forgets the name.
+ * refuses removes the file it made, but for a deny conflict, which leaves it
+ * to the client that holds it open, and one finding no file forgets the
+ * name. An open for writing takes the access mode ll_write_access() gives.
+ * On a volume that denies a second writer and holds another fork of the
+ * file's kind open for writing, whose release may still be on its way, an
+ * open for writing that a deny conflict refuses is tried again, as a lock
+ * is; otherwise the conflict is another client's, and the refusal is final.
  *
  * @param[in]     volume  volume of the file
  * @param[in]     path    unused
@@ -372,6 +416,8 @@ int ll_open(struct afp_volume * volume,
     unsigned int resource = fp->resource;
     unsigned short bitmap = 0;
     unsigned char aflags = 0;
+    struct timespec retry = { 0, AFP_LOCK_RETRY_NSEC };
+    int open_tries = 1;
     /* O_RDONLY is 0, so we need to check access mode bits properly */
     int access_mode = flags & O_ACCMODE;
 
@@ -381,9 +427,9 @@ int ll_open(struct afp_volume * volume,
         /* Always request read+write even for O_WRONLY. macOS AFP always opens
          * forks with AccessMode=0x0003 (Read|Write) when writing; Time Capsule
          * returns kFPMiscErr on FPWriteExt if the fork was opened write-only. */
-        aflags |= (AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE);
+        aflags |= ll_write_access(volume);
     } else if (access_mode == O_RDWR) {
-        aflags |= (AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE);
+        aflags |= ll_write_access(volume);
     }
 
     if ((aflags & AFP_OPENFORK_ALLOWWRITE) &&
@@ -449,21 +495,42 @@ int ll_open(struct afp_volume * volume,
                  | (afp_server_copies_files(volume->server) ? kFPNodeIDBit : 0);
     }
 
-    pthread_rwlock_rdlock(&volume->open_lock);
-    dsi_ret = afp_openfork(volume, resource ? 1 : 0, fp->did, aflags, bitmap,
-                           fp->basename, fp);
-
-    if (dsi_ret == kFPNoErr) {
-        if ((bitmap & kFPExtDataForkLenBit)
-                && dir_cache_check_open(volume, fp->did, fp->name, fp->cnid,
-                                        fp->size)) {
-            fp->stale = 1;
-        }
-
-        add_opened_fork(volume, fp);
+    /* The kernel sends a file's release after its close(2) returns, so an
+     * open for writing on a mount that denies a second writer can meet the
+     * deny-write mode of the mount's own writer of the file, listed until
+     * its close is answered. */
+    if ((aflags & AFP_OPENFORK_ALLOWWRITE)
+            && (volume->extra_flags & VOLUME_EXTRA_FLAGS_DENY_WRITE)
+            && other_writer_open(volume, fp)) {
+        open_tries = AFP_LOCK_TRIES;
     }
 
-    pthread_rwlock_unlock(&volume->open_lock);
+    for (int tries = 0; tries < open_tries; tries++) {
+        if (tries > 0) {
+            nanosleep(&retry, NULL);
+        }
+
+        pthread_rwlock_rdlock(&volume->open_lock);
+        dsi_ret = afp_openfork(volume, resource ? 1 : 0, fp->did, aflags,
+                               bitmap, fp->basename, fp);
+
+        if (dsi_ret == kFPNoErr) {
+            if ((bitmap & kFPExtDataForkLenBit)
+                    && dir_cache_check_open(volume, fp->did, fp->name,
+                                            fp->cnid, fp->size)) {
+                fp->stale = 1;
+            }
+
+            add_opened_fork(volume, fp);
+        }
+
+        pthread_rwlock_unlock(&volume->open_lock);
+
+        if (dsi_ret != kFPDenyConflict) {
+            break;
+        }
+    }
+
     ret = ll_openfork_errno(dsi_ret);
 
     /* The server may still open the fork, so its file stays. */
@@ -495,7 +562,7 @@ int ll_open(struct afp_volume * volume,
     return 0;
 error:
 
-    if (created) {
+    if (created && ret != EBUSY) {
         afp_delete(volume, fp->did, fp->basename);
         dir_cache_remove(volume, fp->did, fp->name);
     } else if (ret == ENOENT || ret == EISDIR) {
@@ -569,7 +636,6 @@ int ll_read(struct afp_volume * volume,
     int ret = 0;
     int rc;
     unsigned int quantum = volume->server->quantum;
-    int locked = 0;
     struct afp_rx_buffer buffer;
     *eof = 0;
 
@@ -607,8 +673,8 @@ int ll_read(struct afp_volume * volume,
         return -EIO;
     }
 
-    /* No AFP 2 request, a lock's included, passes the bound: a read stops
-     * there, and one past it fails in a fork that reaches further. */
+    /* No AFP 2 request passes the bound: a read stops there, and one past
+     * it fails in a fork that reaches further. */
     if (volume->server->using_version->av_number < 30) {
         if ((uint64_t) offset > AFP_MAX_AFP2_FILESIZE) {
             ret = afp2_fork_reaches(volume, fp, (uint64_t) offset);
@@ -625,13 +691,6 @@ int ll_read(struct afp_volume * volume,
             size = (size_t)(AFP_MAX_AFP2_FILESIZE - (uint64_t) offset + 1);
         }
     }
-
-    if (ll_handle_locking(volume, fp->forkid, offset, size)) {
-        ret = EBUSY;
-        goto error;
-    }
-
-    locked = 1;
 
     while (totalsize < size) {
         size_t remaining = size - totalsize;
@@ -686,19 +745,8 @@ int ll_read(struct afp_volume * volume,
     }
 
 done:
-
-    if (ll_handle_unlocking(volume, fp->forkid, offset, size)) {
-        ret = EIO;
-        goto error;
-    }
-
     return (int)totalsize;
 error:
-
-    if (locked) {
-        ll_handle_unlocking(volume, fp->forkid, offset, size);
-    }
-
     return -ret;
 }
 
@@ -928,7 +976,10 @@ error:
  * @brief Write to an open fork, a quantum per request
  *
  * The fork is dirty after each chunk sent, as a refused or unanswered one may
- * have landed; an append's chunks go to the server's end of the fork.
+ * have landed; an append's chunks go to the server's end of the fork. A write
+ * of no bytes sends nothing. Once every chunk has landed the write succeeds,
+ * also when the server refuses the unlock: a range it still holds goes with
+ * the fork's close.
  *
  * @param[in]     volume        volume of the fork
  * @param[in]     data          bytes to write
@@ -939,8 +990,10 @@ error:
  *                              the write's end, an append's to the server's end
  * @param[out]    totalwritten  bytes written, also when a chunk fails
  * @returns 0, or a negative errno, -EFBIG for an AFP 2 write that would end
- *          past AFP_MAX_AFP2_FILESIZE, -EIO for a handle without a fork or
- *          for a later chunk of an append the server cut short
+ *          past AFP_MAX_AFP2_FILESIZE, -EBUSY for a range another user keeps
+ *          locked, -ENOLCK when the server has no lock left, and -EIO for a
+ *          handle without a fork or for a later chunk of an append the server
+ *          cut short
  */
 int ll_write(struct afp_volume * volume,
              const char *data, size_t size, off_t offset, int append,
@@ -976,8 +1029,13 @@ int ll_write(struct afp_volume * volume,
         return -EFBIG;
     }
 
-    if (ll_handle_locking(volume, fp->forkid, offset, size)) {
-        err = EBUSY;
+    if (size == 0) {
+        return 0;
+    }
+
+    err = -ll_handle_locking(volume, fp->forkid, offset, size);
+
+    if (err) {
         goto error;
     }
 
@@ -1070,8 +1128,8 @@ int ll_write(struct afp_volume * volume,
     }
 
     if (ll_handle_unlocking(volume, fp->forkid, offset, size)) {
-        err = EIO;
-        goto error;
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "ll_write: the server refused the unlock");
     }
 
     /* An append ends where the server's last reply says. */

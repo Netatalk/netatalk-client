@@ -321,5 +321,37 @@ int main(int argc, char **argv)
         dir_cache_destroy(&parms_server.volumes[0]);
         free(parms_server.volumes);
     }
+    {
+        /* An open that a deny mode refuses answers with a fork number of 0
+         * and the file's parameters, which are read as a granted open's. */
+        struct {
+            struct dsi_header header;
+            uint16_t bitmap;
+            uint16_t forkid;
+            uint8_t length[8];
+        } __attribute__((__packed__)) open_reply = { 0 };
+        struct afp_file_info fork;
+        memset(&fork, 0, sizeof(fork));
+        open_reply.header.return_code.error_code =
+            (int) htonl((uint32_t) kFPDenyConflict);
+        open_reply.bitmap = htons(kFPExtDataForkLenBit);
+        open_reply.length[6] = 0x10;
+        CHECK(afp_openfork_reply(&server, (char *)&open_reply,
+                                 sizeof(open_reply), &fork) == 0);
+        CHECK(fork.forkid == 0 && fork.size == 4096);
+        memset(&fork, 0, sizeof(fork));
+        open_reply.header.return_code.error_code = 0;
+        open_reply.forkid = htons(7);
+        CHECK(afp_openfork_reply(&server, (char *)&open_reply,
+                                 sizeof(open_reply), &fork) == 0);
+        CHECK(fork.forkid == 7 && fork.size == 4096);
+        /* Any other answer leaves the record alone. */
+        memset(&fork, 0, sizeof(fork));
+        open_reply.header.return_code.error_code =
+            (int) htonl((uint32_t) kFPAccessDenied);
+        CHECK(afp_openfork_reply(&server, (char *)&open_reply,
+                                 sizeof(open_reply), &fork) == 0);
+        CHECK(fork.forkid == 0 && fork.size == 0);
+    }
     return test_tap_finish();
 }

@@ -1,3 +1,8 @@
+/*!
+ * @file
+ * @brief afpsld's IPC protocol: its commands, results, requests and answers
+ */
+
 #ifndef NETATALK_CLIENT_DAEMON_STATELESS_IPC_H
 #define NETATALK_CLIENT_DAEMON_STATELESS_IPC_H
 
@@ -10,9 +15,25 @@
 /* Desktop icons may use the AFP uint16_t maximum, so the framing limit must
  * accommodate one raw icon plus the fixed response and log trailer. */
 #define AFPSL_IPC_MAX_RESPONSE (UINT16_MAX + 1024U)
+/* The most data one write request carries after its header. */
+#define AFPSL_IPC_MAX_WRITE (8U * 1024U * 1024U)
+/* The most data one read request asks for. */
+#define AFPSL_IPC_MAX_READ (8U * 1024U * 1024U)
+/* The most a copy call that cannot copy on the server moves through the
+ * daemon, a read and a write of a Netatalk quantum. */
+#define AFPSL_IPC_COPY_STEP (1024U * 1024U)
 #define AFPSL_IPC_PROTOCOL_MAGIC UINT32_C(0x41465053)
 #define AFPSL_IPC_PROTOCOL_MAJOR 3U
 #define AFPSL_IPC_PROTOCOL_MINOR 0U
+/* Bits of the hello's features word: a daemon that honours
+ * AFP_SL_VOLUME_DENY_WRITE, and one that copies; and the features this
+ * daemon announces */
+#define AFPSL_IPC_FEATURE_DENY_WRITE 0x1U
+#define AFPSL_IPC_FEATURE_COPY 0x2U
+#define AFPSL_IPC_FEATURES \
+    (AFPSL_IPC_FEATURE_DENY_WRITE | AFPSL_IPC_FEATURE_COPY)
+/* The bit of a client's hello that asks its opens to deny other writers. */
+#define AFPSL_IPC_HELLO_DENY_WRITE 0x1U
 
 /* Unix socket shared by afpsld and libafpsl. */
 #define AFPSL_IPC_SOCKET_PATH "/tmp/afp_sl"
@@ -75,6 +96,7 @@ struct afpsl_ipc_log_footer {
 #define AFPSL_IPC_COMMAND_DESKTOP_GET_ICON 53
 #define AFPSL_IPC_COMMAND_DESKTOP_GET_APPL 54
 #define AFPSL_IPC_COMMAND_DESKTOP_SET_COMMENT 55
+#define AFPSL_IPC_COMMAND_COPY 56
 
 /* Stateless IPC result codes. */
 #define AFPSL_IPC_RESULT_OK 0
@@ -100,6 +122,7 @@ struct afpsl_ipc_log_footer {
 #define AFPSL_IPC_RESULT_ACCESS 23
 #define AFPSL_IPC_RESULT_EXIST 24
 #define AFPSL_IPC_RESULT_ENOTEMPTY 25
+#define AFPSL_IPC_RESULT_BUSY 26
 
 struct afpsl_ipc_response_header {
     char result;
@@ -110,6 +133,18 @@ struct afpsl_ipc_request_header {
     char command;
     unsigned int len;
     unsigned int close;
+};
+
+/* The leading fields of the requests that address a volume or a server,
+ * which the daemon reads to find the server a command concerns. */
+struct afpsl_ipc_volume_request {
+    struct afpsl_ipc_request_header header;
+    afpc_volume_t volumeid;
+};
+
+struct afpsl_ipc_server_request {
+    struct afpsl_ipc_request_header header;
+    afpc_server_t serverid;
 };
 
 struct afpsl_ipc_hello_request {
@@ -267,6 +302,22 @@ struct afpsl_ipc_write_request {
 struct afpsl_ipc_write_response {
     struct afpsl_ipc_response_header header;
     unsigned int written;
+};
+
+struct afpsl_ipc_copy_request {
+    struct afpsl_ipc_request_header header;
+    afpc_volume_t volumeid;
+    unsigned int source_fileid;
+    unsigned int target_fileid;
+    unsigned long long source_offset;
+    unsigned long long target_offset;
+    unsigned long long length;
+    unsigned int flags;
+};
+
+struct afpsl_ipc_copy_response {
+    struct afpsl_ipc_response_header header;
+    unsigned long long copied;
 };
 
 struct afpsl_ipc_close_request {

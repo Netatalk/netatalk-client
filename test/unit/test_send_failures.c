@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <pwd.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -53,6 +54,8 @@ static struct afp_versions afp34 = { "AFP3.4", 34 };
 
 /* Whether getpwuid() finds no user, as for an ID the database lacks. */
 static int passwd_lacks_the_user;
+/* The user's name, in the one buffer every answer of getpwuid() uses */
+static char entry_name[] = "test";
 
 /*!
  * @brief Find the user of an ID, or none while passwd_lacks_the_user is set
@@ -65,14 +68,13 @@ static int passwd_lacks_the_user;
  */
 struct passwd *getpwuid(uid_t uid)
 {
-    static char name[] = "test";
     static struct passwd entry;
 
     if (passwd_lacks_the_user) {
         return NULL;
     }
 
-    entry.pw_name = name;
+    entry.pw_name = entry_name;
     entry.pw_uid = uid;
     entry.pw_gid = getegid();
     return &entry;
@@ -96,6 +98,38 @@ static int utest_server_set_up_without_a_passwd_entry(void)
 
     afp_server_release(server);
     return 0;
+}
+
+/*!
+ * @brief A server keeps its user's name past the next getpwuid()
+ *
+ * The next call, a connect's on another thread among them, rewrites the
+ * buffer the answer's name is in. Where the C library's getpwuid() stays
+ * in place, as on macOS, the buffer is not the library's and the check
+ * passes either way.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_server_keeps_its_user_name(void)
+{
+    struct afp_server *server = afp_server_init(NULL);
+    char before[256];
+    int ret = 0;
+
+    if (server == NULL) {
+        return 1;
+    }
+
+    snprintf(before, sizeof(before), "%s", server->passwd.pw_name);
+    memcpy(entry_name, "next", sizeof(entry_name));
+
+    if (strcmp(server->passwd.pw_name, before) != 0) {
+        ret = 2;
+    }
+
+    memcpy(entry_name, "test", sizeof(entry_name));
+    afp_server_release(server);
+    return ret;
 }
 
 /*!
@@ -327,6 +361,8 @@ int main(int argc, char **argv)
     TEST_int(afp_main_quick_startup(NULL), 0, "the event loop starts");
     TEST_int(utest_server_set_up_without_a_passwd_entry(), 0,
              "a server is set up for a user without a passwd entry");
+    TEST_int(utest_server_keeps_its_user_name(), 0,
+             "a server keeps its user's name past the next getpwuid()");
     TEST_int(utest_unlink_fails_with_the_transport(), 0,
              "an unlink the transport refused returns -EIO");
     TEST_int(utest_mkdir_fails_with_the_transport(), 0,

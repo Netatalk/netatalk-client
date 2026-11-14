@@ -181,6 +181,7 @@ struct dir_cache {
 #define VOLUME_EXTRA_FLAGS_IGNORE_UNIXPRIVS 0x20
 #define VOLUME_EXTRA_FLAGS_READONLY 0x40
 #define VOLUME_EXTRA_FLAGS_FLUSH_ON_CLOSE 0x80
+#define VOLUME_EXTRA_FLAGS_DENY_WRITE 0x100
 
 #define AFP_VOLUME_UNMOUNTED 0
 #define AFP_VOLUME_MOUNTED 1
@@ -361,8 +362,16 @@ struct afp_server {
     /* And this is for the outgoing queue */
     pthread_mutex_t send_mutex;
 
+    /* Serialises the stateless daemon's commands on this server */
+    pthread_mutex_t op_mutex;
+    /* Set, under the server list's lock, once the stateless daemon's
+     * connect has handed the session to its client */
+    int daemon_session;
+
     /* This is for user mapping */
     struct passwd passwd;
+    /* The name passwd points at, the server's own */
+    char passwd_name[256];
     unsigned int server_uid, server_gid;
     int server_gid_valid;
 
@@ -467,7 +476,7 @@ unsigned int find_uam_by_name(const char *name);
 char *uam_bitmap_to_string(unsigned int bitmap);
 
 
-char *get_uam_names_list(void);
+char *get_uam_names_list(char *names, size_t size);
 
 unsigned int default_uams_mask(void);
 

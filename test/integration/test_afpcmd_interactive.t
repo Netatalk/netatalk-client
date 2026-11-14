@@ -14,7 +14,10 @@ use warnings;
 use Test::More;
 use File::Path qw(make_path remove_tree);
 use File::Temp qw(tempfile);
-use POSIX      qw(mkfifo);
+use IO::Select;
+use IO::Socket::UNIX;
+use POSIX       qw(mkfifo);
+use Time::HiRes ();
 
 my $AFP_HOST       = 'localhost';
 my $AFP_SERVER     = 'afpfs_testsrv';
@@ -889,7 +892,8 @@ sub pagination_setup_commands {
 }
 
 # -----------------------------------------------------------------------
-# test_disconnect: disconnect from server
+# test_disconnect: disconnect from server; afpsld, whose last client asked
+# it to exit, has retired its socket by the time it answers
 # -----------------------------------------------------------------------
 {
     my $out = afpcmd_pipe(
@@ -897,6 +901,365 @@ sub pagination_setup_commands {
                           'disconnect'
     );
     like($out, qr/Disconnected from $AFP_SERVER/, 'test_disconnect: disconnect from server');
+    ok(!-e "/tmp/afp_sl-$>", "test_disconnect: afpsld's socket is gone once it answers the exit");
+}
+
+# -----------------------------------------------------------------------
+# afpsld's own protocol: a request is a command byte, three bytes of
+# padding, the request's length and a close flag, then the command's fields
+# as a C struct of a 64-bit build lays them out.
+# -----------------------------------------------------------------------
+my $ipc_hello = pack('C x3 L L L S S L', 50, 24, 0, 0x41465053, 3, 0, 0);
+
+# A write request for a volume, with the size it names.
+sub ipc_write_request {
+    my ($volume, $size) = @_;
+    return pack('C x3 L L x4 Q L x4 Q L L', 27, 48, 0, $volume, 0, 0, $size, 0);
+}
+
+# A read request for a volume, with the length it asks for.
+sub ipc_read_request {
+    my ($volume, $length) = @_;
+    return pack('C x3 L L x4 Q L x4 Q L L', 23, 48, 0, $volume, 0, 0, $length, 0);
+}
+
+# Read count bytes of an answer: the bytes, '' at the end of the connection
+# or undef when afpsld sends nothing within five seconds.
+sub ipc_read {
+    my ($socket, $count) = @_;
+    my $got = '';
+
+    while (length($got) < $count) {
+        IO::Select->new($socket)->can_read(5) or return undef;
+        my $read = sysread($socket, my $chunk, $count - length($got));
+        return '' unless $read;
+        $got .= $chunk;
+    }
+
+    return $got;
+}
+
+# The result of afpsld's next answer, -1 at the end of the connection, an
+# answer it cuts short among them, or -2 when no answer comes.
+sub ipc_answer {
+    my ($socket) = @_;
+    my $header = ipc_read($socket, 8);
+    return -2 unless defined $header;
+    return -1 unless length $header;
+    my ($result, $length) = unpack('C x3 L', $header);
+    my $size = $length > 8 ? $length - 8 : 0;
+    my $rest = ipc_read($socket, $size);
+    return -2 unless defined $rest;
+    return length($rest) == $size ? $result : -1;
+}
+
+# Connect to afpsld, which afpc starts, and agree the protocol.
+sub ipc_connect {
+    my ($label) = @_;
+    my $started = `afpc sl status 2>&1`;
+    $? == 0 or BAIL_OUT("afpsld does not start: $started");
+    my $path   = "/tmp/afp_sl-$>";
+    my $socket = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $path)
+      or BAIL_OUT("Cannot connect to $path: $!");
+    syswrite($socket, $ipc_hello);
+    is(ipc_answer($socket), 0, "$label: afpsld accepts the protocol");
+    return $socket;
+}
+
+# -----------------------------------------------------------------------
+# afpsld_write_size: a write request larger than the limit is refused, and
+# the connection ends with the answer, as the data it names cannot be
+# skipped.
+# -----------------------------------------------------------------------
+{
+    local $SIG{PIPE} = 'IGNORE';
+    my $socket = ipc_connect('afpsld_write_size');
+    syswrite($socket, ipc_write_request(0xdeadbeef, 0xffffffff));
+    is(ipc_answer($socket),  1, 'afpsld_write_size: a write of 4 GiB less one byte is refused');
+    is(ipc_answer($socket), -1, 'afpsld_write_size: the connection ends with the answer');
+}
+
+# -----------------------------------------------------------------------
+# afpsld_write_data: the data of a write is read before the volume is
+# looked up, so the answer for a volume that is gone leaves the connection
+# at the next request.
+# -----------------------------------------------------------------------
+{
+    local $SIG{PIPE} = 'IGNORE';
+    my $socket = ipc_connect('afpsld_write_data');
+    syswrite($socket, ipc_write_request(0xdeadbeef, 64) . ("\0" x 64));
+    is(ipc_answer($socket), 6, 'afpsld_write_data: a write to a volume that is gone is answered not attached');
+    syswrite($socket, $ipc_hello);
+    is(ipc_answer($socket), 0, 'afpsld_write_data: the next request is read after the data');
+}
+
+# -----------------------------------------------------------------------
+# afpsld_write_short: a write request too short to name its data is
+# refused, and the connection ends with the answer, as the data it may
+# carry cannot be found.
+# -----------------------------------------------------------------------
+{
+    local $SIG{PIPE} = 'IGNORE';
+    my $socket = ipc_connect('afpsld_write_short');
+    syswrite($socket, pack('C x3 L L', 27, 20, 0) . ("\0" x 8) . $ipc_hello);
+    is(ipc_answer($socket),  1, 'afpsld_write_short: a write request of 20 bytes is refused');
+    is(ipc_answer($socket), -1, 'afpsld_write_short: the connection ends with the answer');
+}
+
+# -----------------------------------------------------------------------
+# afpsld_read_size: a read request for more than the limit is refused
+# before the volume is looked up.
+# -----------------------------------------------------------------------
+{
+    local $SIG{PIPE} = 'IGNORE';
+    my $socket = ipc_connect('afpsld_read_size');
+    syswrite($socket, ipc_read_request(0xdeadbeef, 0xffffffff));
+    is(ipc_answer($socket), 1, 'afpsld_read_size: a read of 4 GiB less one byte is refused');
+    syswrite($socket, $ipc_hello);
+    is(ipc_answer($socket), 0, 'afpsld_read_size: the next request is read');
+}
+
+# The process ids of the AFP server's processes, one for each session.
+sub afpd_pids {
+    my @pids = `pgrep -x afpd`;
+    chomp @pids;
+    return @pids;
+}
+
+# Start an afpcmd session, whose input and output the test holds.
+sub session_start {
+    pipe(my $out_r, my $out_w) or BAIL_OUT("pipe: $!");
+    pipe(my $in_r,  my $in_w)  or BAIL_OUT("pipe: $!");
+    my $pid = fork() // BAIL_OUT("fork: $!");
+
+    if ($pid == 0) {
+        close $out_r;
+        close $in_w;
+        open(STDIN,  '<&', $in_r)  or die "dup stdin: $!";
+        open(STDOUT, '>&', $out_w) or die "dup stdout: $!";
+        open(STDERR, '>&', $out_w) or die "dup stderr: $!";
+        close $in_r;
+        close $out_w;
+        exec('afpcmd', $AFP_URL) or die "exec: $!";
+    }
+
+    close $out_w;
+    close $in_r;
+    $in_w->autoflush(1);
+    return {pid => $pid, in => $in_w, out => $out_r, seen => ''};
+}
+
+# Read the session's output until it matches the pattern, for up to the
+# seconds given; whether it did.
+sub session_wait {
+    my ($session, $pattern, $seconds) = @_;
+    my $end = Time::HiRes::time() + $seconds;
+
+    while ($session->{seen} !~ $pattern && Time::HiRes::time() < $end) {
+        IO::Select->new($session->{out})->can_read(0.2) or next;
+        sysread($session->{out}, my $chunk, 4096)       or last;
+        $session->{seen} .= $chunk;
+    }
+
+    return $session->{seen} =~ $pattern ? 1 : 0;
+}
+
+# End the session with its quit command, or kill it after the seconds given.
+sub session_end {
+    my ($session, $seconds) = @_;
+    local $SIG{PIPE} = 'IGNORE';
+    syswrite($session->{in}, "quit\n");
+    close $session->{in};
+    my $end = Time::HiRes::time() + $seconds;
+
+    while (Time::HiRes::time() < $end) {
+        waitpid($session->{pid}, POSIX::WNOHANG()) == $session->{pid} and return;
+        Time::HiRes::sleep(0.1);
+    }
+
+    kill 'KILL', $session->{pid};
+    waitpid($session->{pid}, 0);
+}
+
+# -----------------------------------------------------------------------
+# afpsld_servers: a command held up on one server does not hold up another
+# session. The first session's afpd stops, its listing waits for it, and a
+# second session, which is a second server to the daemon, runs meanwhile.
+# -----------------------------------------------------------------------
+
+# The afpd processes the test has stopped, which run again however it ends.
+my @stopped_afpd;
+END { kill 'CONT', @stopped_afpd if @stopped_afpd; }
+
+SKIP: {
+    my %before = map { $_ => 1 } afpd_pids();
+    my $first  = session_start();
+    session_wait($first, qr/Connected to server/, 20)
+      or BAIL_OUT('afpsld_servers: the first session does not connect');
+    my @mine = grep { !$before{$_} } afpd_pids();
+
+    if (@mine != 1) {
+        session_end($first, 20);
+        skip('afpsld_servers: the first session\'s afpd is not the only new one', 4);
+    }
+
+    # afpd's session runs with root's real ID, which only root may signal.
+    if (kill('STOP', $mine[0]) != 1) {
+        my $error = $!;
+        session_end($first, 20);
+        skip("afpsld_servers: cannot stop afpd $mine[0]: $error", 4);
+    }
+
+    push @stopped_afpd, $mine[0];
+    syswrite($first->{in}, "ls\npwd\n");
+    Time::HiRes::sleep(0.5);
+    my $name   = "afpsld_servers_$$";
+    my $start  = Time::HiRes::time();
+    my $second = session_start();
+    syswrite($second->{in}, "touch $name\nls\npwd\n");
+    my $served = session_wait($second, qr{^-[^\n]* \Q$name\E\n.*?Now in directory /}ms, 12)
+      && $second->{seen} !~ /Could not/;
+    my $took = Time::HiRes::time() - $start;
+    my $held = !session_wait($first, qr{Now in directory /}, 0.3);
+    kill 'CONT', $mine[0];
+    @stopped_afpd = ();
+    ok($served, 'afpsld_servers: the second session lists its directory');
+    cmp_ok($took, '<', 3, sprintf('afpsld_servers: it did so in %.1f s, while the first server waited', $took));
+    ok($held, 'afpsld_servers: the first session\'s listing was still waiting for its server');
+    ok(session_wait($first, qr{Now in directory /}, 20),
+       'afpsld_servers: the first session finishes once its server runs');
+    session_end($second, 10);
+    session_end($first,  20);
+    afpcmd_pipe($AFP_URL, "rm $name", 'quit');
+}
+
+# The request counts of a status text, by command name.
+sub request_counts {
+    my ($text) = @_;
+    my %counts = $text =~ /^\s+(afp\w+): (\d+)$/mg;
+    BAIL_OUT('afpcmd status listed no request counts') unless %counts;
+    return \%counts;
+}
+
+# Stop the daemon, which keeps every session it served, so that the next
+# command starts a daemon whose status counts that command alone.
+sub fresh_daemon {
+    my $stopped = `afpc sl exit 2>&1`;
+    $? == 0 or BAIL_OUT("afpsld does not stop: $stopped");
+
+    for (1 .. 50) {
+        my @running = grep {
+            my (undef, $state, $uid) = split;
+            $state !~ /^Z/ && $uid == $>
+        } `ps -C afpsld -o pid=,stat=,euid= 2>/dev/null`;
+        @running or return;
+        Time::HiRes::sleep(0.1);
+    }
+
+    BAIL_OUT('afpsld stays up: a client is still registered');
+}
+
+# Write a file of the given size.
+sub write_file {
+    my ($path, $bytes) = @_;
+    open(my $fh, '>:raw', $path) or BAIL_OUT("Cannot create $path: $!");
+    print {$fh} substr(pack('N*', 0 .. ($bytes >> 2)), 0, $bytes);
+    close $fh;
+}
+
+# -----------------------------------------------------------------------
+# afpsld_copy: a new copy of a file the server can copy is one FPCopyFile
+# and moves no data through the client; a copy over an existing file goes
+# through the daemon a quantum at a time.
+# -----------------------------------------------------------------------
+{
+    require File::Compare;
+    my $dir    = File::Temp::tempdir(CLEANUP => 1);
+    my $name   = "afpsld_copy_$$.bin";
+    my $size   = 4 << 20;
+    my $source = "$dir/$name";
+    write_file($source, $size);
+    my $log = `afpcmd '$source' '$AFP_URL' 2>&1`;
+    is($?, 0, 'afpsld_copy: the file uploads') or diag($log);
+
+    fresh_daemon();
+    my $out    = afpcmd_pipe($AFP_URL, "cp $name $name.new", 'status', 'quit');
+    my $counts = request_counts($out);
+    like($out, qr/Copied $size bytes/, 'afpsld_copy: cp reports the copy');
+    is($counts->{afpCopyFile}, 1, 'afpsld_copy: a new copy is one FPCopyFile');
+    is($counts->{afpReadExt}  // 0, 0, 'afpsld_copy: the copy reads nothing through the client');
+    is($counts->{afpWriteExt} // 0, 0, 'afpsld_copy: the copy writes nothing through the client');
+    my $copy = File::Temp::tempdir(CLEANUP => 1);
+    $log = `afpcmd '$AFP_URL/$name.new' '$copy' 2>&1`;
+    is($?,                                                 0, "afpsld_copy: the server's copy downloads") or diag($log);
+    is(File::Compare::compare($source, "$copy/$name.new"), 0, "afpsld_copy: the server's copy matches its source");
+
+    fresh_daemon();
+    $out    = afpcmd_pipe($AFP_URL, "cp $name $name.new", 'status', 'quit');
+    $counts = request_counts($out);
+    my ($quantum) = $out =~ /^\s+quantum: (\d+)$/m;
+    my $quanta = int(($size + $quantum - 1) / $quantum);
+    is($counts->{afpCopyFile} // 0, 0,       'afpsld_copy: a copy over a file sends no FPCopyFile');
+    is($counts->{afpReadExt},       $quanta, 'afpsld_copy: the copy over a file reads a quantum at a time');
+    is($counts->{afpWriteExt},      $quanta, 'afpsld_copy: the copy over a file writes a quantum at a time');
+
+    $log = `afpcmd '$AFP_URL/$name.new' '$dir' 2>&1`;
+    is($?,                                                0, 'afpsld_copy: the copy downloads') or diag($log);
+    is(File::Compare::compare($source, "$dir/$name.new"), 0, 'afpsld_copy: the copy matches its source');
+    afpcmd_pipe($AFP_URL, "rm $name", "rm $name.new", 'quit');
+}
+
+# -----------------------------------------------------------------------
+# afpsld_session_lock: a command on a session waits for the one the
+# session runs, whichever client sends it. The session's afpd stops with
+# its listing waiting, and a probe resumes the session, alone on a fresh
+# daemon, to list its volumes, which afpsld answers from memory under the
+# session's lock.
+# -----------------------------------------------------------------------
+SKIP: {
+    my $probe = '/test/afpsl_probe';
+    -x $probe or skip('afpsld_session_lock: no afpsl_probe in the image', 3);
+    fresh_daemon();
+    my %before  = map { $_ => 1 } afpd_pids();
+    my $session = session_start();
+    session_wait($session, qr/Connected to server/, 20)
+      or BAIL_OUT('afpsld_session_lock: the session does not connect');
+    my @mine = grep { !$before{$_} } afpd_pids();
+
+    if (@mine != 1 || kill('STOP', $mine[0]) != 1) {
+        session_end($session, 20);
+        skip('afpsld_session_lock: the session\'s afpd cannot be stopped alone', 3);
+    }
+
+    push @stopped_afpd, $mine[0];
+    syswrite($session->{in}, "ls\npwd\n");
+    Time::HiRes::sleep(0.5);
+    open(my $probe_out, '-|', $probe, $AFP_URL) or BAIL_OUT("Cannot run $probe: $!");
+    my $early = IO::Select->new($probe_out)->can_read(3);
+    kill 'CONT', $mine[0];
+    @stopped_afpd = ();
+    my $answer = join('', <$probe_out>);
+    close $probe_out;
+    ok(!$early, 'afpsld_session_lock: the probe\'s volume list waits while the session\'s listing does');
+    like($answer, qr/^getvols 0 in /m, 'afpsld_session_lock: the volume list answers once the listing has')
+      or diag($answer);
+    ok(session_wait($session, qr{Now in directory /}, 20),
+       'afpsld_session_lock: the listing finishes once its server runs');
+    session_end($session, 20);
+}
+
+# -----------------------------------------------------------------------
+# afpcmd_remove_tree: rm -r removes a directory of more than 1000 entries.
+# -----------------------------------------------------------------------
+{
+    local $ENV{AFPCMD_TEST_TIMEOUT} = $ENV{AFPCMD_TEST_TIMEOUT} // 60;
+    my $dir  = "afpsld_tree_$$";
+    my $made = afpcmd_pipe($AFP_URL, "mkdir $dir", (map { sprintf('touch %s/entry%04d', $dir, $_) } 1 .. 1001), 'quit');
+    unlike($made, qr/Could not/, 'afpcmd_remove_tree: the directory and its 1001 entries are made');
+    my $out = afpcmd_pipe($AFP_URL, "rm -r $dir", 'quit');
+    like($out, qr/Deleted directory: \Q$dir\E/, 'afpcmd_remove_tree: rm -r of a directory of 1001 entries succeeds');
+    unlike(afpcmd_pipe($AFP_URL, 'ls', 'quit'), qr/\Q$dir\E/, 'afpcmd_remove_tree: the directory is gone');
+    afpcmd_pipe($AFP_URL, "rm -r $dir", 'quit');
 }
 
 done_testing;

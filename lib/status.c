@@ -33,6 +33,8 @@
  */
 int afp_status_header(char *text, int *len)
 {
+    /* Room for the names of the client's seven UAMs and their separators */
+    char uams[8 * (AFP_UAM_LENGTH + 2)];
     int pos;
 
     if (*len <= 0) {
@@ -43,7 +45,7 @@ int afp_status_header(char *text, int *len)
     pos = snprintf(text, *len, "Netatalk Client Version: %s\n"
                                "Client UAMs: %s\n",
                    NETATALK_CLIENT_VERSION,
-                   get_uam_names_list());
+                   get_uam_names_list(uams, sizeof(uams)));
 
     if ((pos < 0) || (pos >= *len)) {
         *len = 0;
@@ -150,9 +152,10 @@ int afp_status_server(struct afp_server * s, char *text, int *len)
         goto out;
     }
 
-    /* A server with no address in use or no version, one whose first DSI
-     * session has not opened among them, is listed by its name and state. */
-    if (s->used_address == NULL || s->using_version == NULL) {
+    /* A server with no address in use or no version, or one whose session is
+     * opening as its login fills it in, is listed by its name and state. */
+    if (s->used_address == NULL || s->using_version == NULL
+            || s->connect_state == SERVER_STATE_CONNECTING) {
         const char *state = "(disconnected)";
 
         if (s->connect_state == SERVER_STATE_CONNECTING) {

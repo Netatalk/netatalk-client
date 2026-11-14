@@ -1,3 +1,8 @@
+/*!
+ * @file
+ * @brief afpsld's record of a client connection, and the pool's calls
+ */
+
 #ifndef NETATALK_CLIENT_DAEMON_DAEMON_CLIENT_H
 #define NETATALK_CLIENT_DAEMON_DAEMON_CLIENT_H
 
@@ -17,6 +22,7 @@ struct daemon_client {
     char *complete_packet;
     int completed_packet_size;
     int ipc_ready;
+    int deny_write; /*!< deny-write mode of its opens, from hello or attach */
     pthread_mutex_t command_string_mutex;
 
     char outgoing_string[AFPSL_IPC_LOG_BUFFER_SIZE];
@@ -36,7 +42,7 @@ int send_command(struct daemon_client *c, unsigned int len, const char *data);
 int continue_client_connection(struct daemon_client * c);
 int close_client_connection(struct daemon_client * c);
 int remove_client(struct daemon_client **toremove);
-int count_active_clients(void);
+int daemon_client_last_exit(void);
 void remove_all_clients(void);
 int daemon_scan_extra_fds(int command_fd, fd_set *set, int *max_fd);
 

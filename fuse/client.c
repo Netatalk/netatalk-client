@@ -406,6 +406,8 @@ static void usage(void)
         "                                      common, loginids\n"
         "         -O, --options <flags>      : FUSE mount options; see the fuse man page\n"
         "         -F, --flush-on-close       : flush a written file at its last close\n"
+        "             --locking <yes|no>     : refuse a second open for\n"
+        "                                      writing (default no)\n"
         "\n"
         "    unmount <mountpoint> : unmount the specified mountpoint\n"
         "    status [mountpoint]  : get status of the AFP daemon;\n"
@@ -661,6 +663,27 @@ static int do_unmount(int argc, char **argv)
 }
 
 /*!
+ * @brief Read the value of the locking option
+ *
+ * @param[in]  value    yes or no
+ * @param[out] enabled  1 for yes, 0 for no
+ * @returns 0, or -1 after saying so for any other value
+ */
+static int parse_locking(const char *value, int *enabled)
+{
+    if (strcmp(value, "yes") == 0) {
+        *enabled = 1;
+    } else if (strcmp(value, "no") == 0) {
+        *enabled = 0;
+    } else {
+        printf("Unknown locking mode %s, use yes or no\n", value);
+        return -1;
+    }
+
+    return 0;
+}
+
+/*!
  * @brief Build the mount request of afpc fs mount from its command line
  *
  * Prompts for a password given as "-", or left empty with a user name.
@@ -678,10 +701,12 @@ static int do_mount(int argc, char **argv)
     int optnum = 0;
     int port_override = 0;
     int flush_on_close = 0;
+    int locking = 0;
+    int spec_end = 0;
     unsigned int uam_mask = default_uams_mask();
     const char *service_name = NULL;
     const char *volume_name = NULL;
-    enum { OPT_VOLUME = 256 };
+    enum { OPT_VOLUME = 256, OPT_LOCKING };
     struct option long_options[] = {
         {"afpversion", 1, 0, 'f'},
         {"volpass", 1, 0, 'P'},
@@ -693,6 +718,7 @@ static int do_mount(int argc, char **argv)
         {"options", 1, 0, 'O'},
         {"service", 1, 0, 's'},
         {"volume", 1, 0, OPT_VOLUME},
+        {"locking", 1, 0, OPT_LOCKING},
         {"flush-on-close", 0, 0, 'F'},
         {0, 0, 0, 0},
     };
@@ -720,6 +746,13 @@ static int do_mount(int argc, char **argv)
         switch (c) {
         case OPT_VOLUME:
             volume_name = optarg;
+            break;
+
+        case OPT_LOCKING:
+            if (parse_locking(optarg, &locking) < 0) {
+                return -1;
+            }
+
             break;
 
         case 'F':
@@ -857,11 +890,15 @@ static int do_mount(int argc, char **argv)
             return -1;
         }
 
-        if (sscanf(argv[optnum++], "%[^':']:%[^':']",
-                   request.url.servername, request.url.volumename) != 2) {
+        /* Each width leaves its field the terminator. */
+        if (sscanf(argv[optnum], "%254[^:]:%254[^:]%n",
+                   request.url.servername, request.url.volumename,
+                   &spec_end) != 2 || argv[optnum][spec_end] != '\0') {
             printf("Incorrect server:volume specification\n");
             return -1;
         }
+
+        optnum++;
     }
 
     if (uam_mask == 0) {
@@ -874,6 +911,10 @@ static int do_mount(int argc, char **argv)
 
     if (flush_on_close) {
         request.volume_options |= VOLUME_EXTRA_FLAGS_FLUSH_ON_CLOSE;
+    }
+
+    if (locking) {
+        request.volume_options |= VOLUME_EXTRA_FLAGS_DENY_WRITE;
     }
 
     if (!list_volumes_only
@@ -1000,6 +1041,7 @@ static int handle_mount_afpfs(int argc, char *argv[])
     int have_volpass = 0;
     int readonly = 0;
     int flush_on_close = 0;
+    int locking = 0;
     int ret = -1;
     char *temp_url = NULL;
 
@@ -1085,6 +1127,10 @@ static int handle_mount_afpfs(int argc, char *argv[])
                 readonly = 1;
             } else if (strcmp(command, "flush_on_close") == 0) {
                 flush_on_close = 1;
+            } else if (strncmp(command, "locking=", 8) == 0) {
+                if (parse_locking(command + 8, &locking) < 0) {
+                    goto cleanup;
+                }
             } else if (strncmp(command, "attr_timeout=", 13) == 0
                        || strncmp(command, "entry_timeout=", 14) == 0
                        || strncmp(command, "negative_timeout=", 17) == 0) {
@@ -1132,6 +1178,10 @@ static int handle_mount_afpfs(int argc, char *argv[])
 
     if (flush_on_close) {
         req->volume_options |= VOLUME_EXTRA_FLAGS_FLUSH_ON_CLOSE;
+    }
+
+    if (locking) {
+        req->volume_options |= VOLUME_EXTRA_FLAGS_DENY_WRITE;
     }
 
     req->uam_mask = uam_mask;

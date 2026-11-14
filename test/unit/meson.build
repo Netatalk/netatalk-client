@@ -1,3 +1,23 @@
+fork_locking_test = executable(
+    'test_fork_locking',
+    sources: files(
+        'afp_fake_server.c',
+        'test_fork_locking.c',
+    ),
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'AFP fork locking',
+    fork_locking_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
 public_headers_test = executable(
     'test_public_headers',
     sources: ['test_public_headers.c'],

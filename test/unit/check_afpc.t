@@ -102,6 +102,16 @@ if ($build eq 'fuse') {
                 $afpc,                'fs', 'status-extra');
     afpc_expect('mount_url_dispatch', 2, "use 'afpc discover'",
                 $url, 'discover');
+    afpc_expect(
+                'mount_locking_value', 2, 'Unknown locking mode maybe',
+                $afpc, 'fs', 'mount', '--locking', 'maybe',
+                'localhost:volume', "$directory/mountpoint"
+    );
+    afpc_expect(
+                'mount_long_volume', 2, 'Incorrect server:volume specification',
+                $afpc, 'fs', 'mount', 'localhost:' . ('v' x 300),
+                "$directory/mountpoint"
+    );
 } else {
     afpc_expect('mount_without_fuse', 2,
                 'unavailable because FUSE support was not built', $afpc, 'mount');

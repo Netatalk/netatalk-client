@@ -1,3 +1,19 @@
+/*
+ * test_ipc_namespaces.c: the commands, results and request layouts of the
+ * two IPC protocols, checked by the compiler
+ *
+ * Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ * Copyright (C) 2026 Andy Lemin (andylemin)
+ *
+ * This program can be distributed under the terms of the GNU GPL.
+ * See the file COPYING.
+ */
+
+/*!
+ * @file
+ * @brief Compile-time checks of the IPC protocols' commands and layouts
+ */
+
 #include <stddef.h>
 
 #include "fuse/fuse_ipc.h"
@@ -124,6 +140,7 @@ ASSERT_VALUE(AFPSL_IPC_COMMAND_SETRESOURCEFORK, 47);
 ASSERT_VALUE(AFPSL_IPC_COMMAND_REMOVERESOURCEFORK, 48);
 ASSERT_VALUE(AFPSL_IPC_COMMAND_TRUNCATERESOURCEFORK, 49);
 ASSERT_VALUE(AFPSL_IPC_COMMAND_HELLO, 50);
+ASSERT_VALUE(AFPSL_IPC_COMMAND_COPY, 56);
 
 ASSERT_VALUE(AFPSL_IPC_RESULT_OK, 0);
 ASSERT_VALUE(AFPSL_IPC_RESULT_ERROR, 1);
@@ -148,6 +165,47 @@ ASSERT_VALUE(AFPSL_IPC_RESULT_NOTSUPPORTED, 22);
 ASSERT_VALUE(AFPSL_IPC_RESULT_ACCESS, 23);
 ASSERT_VALUE(AFPSL_IPC_RESULT_EXIST, 24);
 ASSERT_VALUE(AFPSL_IPC_RESULT_ENOTEMPTY, 25);
+ASSERT_VALUE(AFPSL_IPC_RESULT_BUSY, 26);
+ASSERT_VALUE(AFPSL_IPC_FEATURE_DENY_WRITE, 0x1);
+ASSERT_VALUE(AFPSL_IPC_FEATURE_COPY, 0x2);
+
+/* The daemon finds the server of a command in the leading field of its
+ * request, whichever request it is. */
+#define ASSERT_VOLUME_FIRST(type) \
+    _Static_assert(offsetof(struct type, volumeid) \
+                   == offsetof(struct afpsl_ipc_volume_request, volumeid), \
+                   #type " has no volumeid where the daemon reads it")
+#define ASSERT_SERVER_FIRST(type) \
+    _Static_assert(offsetof(struct type, serverid) \
+                   == offsetof(struct afpsl_ipc_server_request, serverid), \
+                   #type " has no serverid where the daemon reads it")
+
+ASSERT_VOLUME_FIRST(afpsl_ipc_detach_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_readdir_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_stat_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_open_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_read_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_write_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_close_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_creat_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_chmod_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_rename_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_unlink_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_truncate_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_mkdir_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_rmdir_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_statfs_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_utime_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_metadata_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_desktop_path_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_desktop_set_comment_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_desktop_code_request);
+ASSERT_VOLUME_FIRST(afpsl_ipc_copy_request);
+
+ASSERT_SERVER_FIRST(afpsl_ipc_attach_request);
+ASSERT_SERVER_FIRST(afpsl_ipc_disconnect_request);
+ASSERT_SERVER_FIRST(afpsl_ipc_getvolid_request);
+ASSERT_SERVER_FIRST(afpsl_ipc_getvols_request);
 
 int main(void)
 {

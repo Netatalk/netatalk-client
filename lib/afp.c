@@ -294,6 +294,8 @@ int afp_reply(unsigned short subcommand, struct afp_server * server,
 
 static struct afp_server *server_base = NULL;
 static pthread_mutex_t server_list_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* Taken around getpwuid(), whose answer two connects would share */
+static pthread_mutex_t passwd_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int auto_shutdown_on_unmount = 0;
 static int auto_disconnect_on_unmount = 1;
 
@@ -527,27 +529,36 @@ int afp_server_probe_signature(struct addrinfo *address,
 }
 
 /*!
- * @brief Give a server a new address list, freeing the old one
+ * @brief Give a server the address of its next connection
  *
- * @param[in,out] server   the server, or NULL
- * @param[in]     address  the list, which the server owns from then on
+ * The swap runs under the server list's lock, under which the status text
+ * reads the address in use, and the old address is freed after it.
+ *
+ * @param[in,out] server   the server
+ * @param[in]     address  the address, which the server then owns
  */
 void afp_server_replace_address(struct afp_server *server,
                                 struct addrinfo *address)
 {
+    struct addrinfo *old = NULL;
+
     if (!server || !address) {
         return;
     }
 
-    if (server->address != address) {
-        if (server->address) {
-            freeaddrinfo(server->address);
-        }
+    pthread_mutex_lock(&server_list_mutex);
 
+    if (server->address != address) {
+        old = server->address;
         server->address = address;
     }
 
     server->used_address = NULL;
+    pthread_mutex_unlock(&server_list_mutex);
+
+    if (old) {
+        freeaddrinfo(old);
+    }
 }
 
 /*!
@@ -867,6 +878,10 @@ void afp_free_server(struct afp_server **sp)
     }
 
     explicit_bzero(server->password, sizeof(server->password));
+    pthread_mutex_destroy(&server->requestid_mutex);
+    pthread_mutex_destroy(&server->request_queue_mutex);
+    pthread_mutex_destroy(&server->send_mutex);
+    pthread_mutex_destroy(&server->op_mutex);
     pthread_cond_destroy(&server->request_queue_cond);
     free(server);
     *sp = NULL;
@@ -933,7 +948,6 @@ int afp_server_remove(struct afp_server *s)
  */
 struct afp_server *afp_server_init(struct addrinfo * address)
 {
-    static char no_user_name[] = "";
     struct afp_server * s;
     struct passwd *pw;
 
@@ -964,23 +978,29 @@ struct afp_server *afp_server_init(struct addrinfo * address)
     pthread_mutex_init(&s->request_queue_mutex, NULL);
     pthread_cond_init(&s->request_queue_cond, NULL);
     pthread_mutex_init(&s->send_mutex, NULL);
+    pthread_mutex_init(&s->op_mutex, NULL);
     afp_server_connection_generation_init(s);
     s->refcount = 1;
     /* AFP 3.3+ replay cache - initialized to disabled */
     s->replay_cache_size = 0;
     s->supports_replay_cache = 0;
     /* A user the passwd database lacks keeps the process's IDs, and a name
-     * no server user has. */
+     * no server user has. getpwuid() answers in one buffer, which each call
+     * rewrites as it reads the database. */
+    pthread_mutex_lock(&passwd_mutex);
     pw = getpwuid(geteuid());
 
     if (pw) {
-        memcpy(&s->passwd, pw, sizeof(struct passwd));
+        s->passwd.pw_uid = pw->pw_uid;
+        s->passwd.pw_gid = pw->pw_gid;
+        snprintf(s->passwd_name, sizeof(s->passwd_name), "%s", pw->pw_name);
     } else {
-        s->passwd.pw_name = no_user_name;
         s->passwd.pw_uid = geteuid();
         s->passwd.pw_gid = getegid();
     }
 
+    pthread_mutex_unlock(&passwd_mutex);
+    s->passwd.pw_name = s->passwd_name;
     return s;
 }
 
@@ -1497,7 +1517,7 @@ int afp_server_connect(struct afp_server *server, int full)
     struct 	timeval t1, t2;
     struct 	addrinfo *address;
 #define LOG_MSG_SIZE 64
-    static char log_msg[LOG_MSG_SIZE];
+    char log_msg[LOG_MSG_SIZE];
     char	ip_addr[INET6_ADDRSTRLEN];
     address = server->address;
     int fd = __atomic_exchange_n(&server->fd, -1, __ATOMIC_ACQ_REL);
