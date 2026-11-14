@@ -80,6 +80,10 @@ ssize_t ml_copy_range(struct afp_volume * volume,
                       struct afp_file_info *fp_in, off_t off_in,
                       struct afp_file_info *fp_out, off_t off_out,
                       size_t len);
+ssize_t ml_copy_range_within(struct afp_volume *volume,
+                             struct afp_file_info *fp_in, off_t off_in,
+                             struct afp_file_info *fp_out, off_t off_out,
+                             size_t len, size_t client_max);
 
 int ml_readlink(struct afp_volume * vol, const char *path,
                 char *buf, size_t size);

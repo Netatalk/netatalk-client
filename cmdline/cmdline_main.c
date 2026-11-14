@@ -1,29 +1,35 @@
 /*
-    Copyright (C) 1987-2002 Free Software Foundation, Inc.
-    Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
-    Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ * Copyright (C) 1987-2002 Free Software Foundation, Inc.
+ * Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
+ * Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ * Copyright (C) 2026 Andy Lemin (andylemin)
+ *
+ * This is based on readline's fileman.c example, which is very useful.
+ * The original fileman.c carries the following notice:
+ *
+ * This file is part of the GNU Readline Library, a library for
+ * reading lines of text with interactive input and history editing.
+ *
+ * The GNU Readline Library is free software; you can redistribute it
+ * and/or modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2, or
+ * (at your option) any later version.
+ *
+ * The GNU Readline Library is distributed in the hope that it will be
+ * useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+ * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * The GNU General Public License is often shipped with GNU software, and
+ * is generally kept in a file called COPYING or LICENSE.  If you do not
+ * have a copy of the license, write to the Free Software Foundation,
+ * 59 Temple Place, Suite 330, Boston, MA 02111 USA.
+ */
 
-    This is based on readline's fileman.c example, which is very useful.
-    The original fileman.c carries the following notice:
-
-    This file is part of the GNU Readline Library, a library for
-    reading lines of text with interactive input and history editing.
-
-    The GNU Readline Library is free software; you can redistribute it
-    and/or modify it under the terms of the GNU General Public License
-    as published by the Free Software Foundation; either version 2, or
-    (at your option) any later version.
-
-    The GNU Readline Library is distributed in the hope that it will be
-    useful, but WITHOUT ANY WARRANTY; without even the implied warranty
-    of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    The GNU General Public License is often shipped with GNU software, and
-    is generally kept in a file called COPYING or LICENSE.  If you do not
-    have a copy of the license, write to the Free Software Foundation,
-    59 Temple Place, Suite 330, Boston, MA 02111 USA.
-*/
+/*!
+ * @file
+ * @brief afpcmd's entry point, its options and its interactive command loop
+ */
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -475,6 +481,9 @@ void earlyexit_handler(int signum)
     ending();
 }
 
+/*!
+ * @brief Print afpcmd's usage text
+ */
 static void usage(void)
 {
     printf(
@@ -486,6 +495,8 @@ static void usage(void)
         "\t-h:          show this help message and exit\n"
         "\t-b, --browse: browse and select an advertised AFP service\n"
         "\t-M mode:     preserve metadata using auto, netatalk, xattr, macos, or none\n"
+        "\t--locking yes|no:\n"
+        "\t             refuse a second open for writing (default no)\n"
         "\t-r:          recursively transfer directories in batch mode\n"
         "\t-f, --afpversion version:\n"
         "\t             set the AFP version, e.g. 3.1\n"
@@ -503,6 +514,13 @@ static void usage(void)
 }
 
 
+/*!
+ * @brief Run afpcmd: read the options, then transfer files or take commands
+ *
+ * @param[in] argc  argument count
+ * @param[in] argv  the arguments
+ * @returns the exit status
+ */
 int main(int argc, char *argv[])
 {
     int option_index = 0;
@@ -515,6 +533,8 @@ int main(int argc, char *argv[])
     int log_level = LOG_NOTICE;
     int requested_version = 0;
     const char *metadata_mode = "auto";
+    const char *locking_mode = "no";
+    enum { OPT_LOCKING = 256 };
     struct option long_options[] = {
         {"browse", 0, 0, 'b'},
         {"help", 0, 0, 'h'},
@@ -523,6 +543,7 @@ int main(int argc, char *argv[])
         {"afpversion", 1, 0, 'f'},
         {"verbose", 0, 0, 'V'},
         {"loglevel", 1, 0, 'v'},
+        {"locking", 1, 0, OPT_LOCKING},
         {NULL, 0, NULL, 0},
     };
     char *url = NULL;
@@ -551,6 +572,10 @@ int main(int argc, char *argv[])
 
         case 'M':
             metadata_mode = optarg;
+            break;
+
+        case OPT_LOCKING:
+            locking_mode = optarg;
             break;
 
         case 'r':
@@ -604,6 +629,12 @@ int main(int argc, char *argv[])
     }
 
     cmdline_log_metadata_mode();
+
+    if (cmdline_set_locking(locking_mode) != 0) {
+        printf("Unknown locking mode %s, use yes or no\n", locking_mode);
+        usage();
+        return 1;
+    }
 
     if (browse && optind < argc) {
         printf("--browse cannot be combined with an AFP URL or batch arguments.\n");

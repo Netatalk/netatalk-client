@@ -7,6 +7,11 @@
     See the file COPYING.
 */
 
+/*!
+ * @file
+ * @brief Unit tests of a server's status text
+ */
+
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -160,6 +165,36 @@ static int utest_connecting_server_names_its_state(void)
 }
 
 /*!
+ * @brief A server whose session is opening again reads as connecting
+ *
+ * A connecting server is named by its name and state alone, as a first
+ * connect's login writes the message and the rest while it connects; the
+ * message of an earlier session is left out with them.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_reopening_server_names_its_state(void)
+{
+    struct afp_server reopening;
+    struct addrinfo ai;
+    struct sockaddr_in sin;
+    char text[1024];
+    int len = sizeof(text);
+    server_connected(&reopening, &ai, &sin);
+    reopening.connect_state = SERVER_STATE_CONNECTING;
+
+    if (afp_status_server(&reopening, text, &len) <= 0) {
+        return 1;
+    }
+
+    if (strstr(text, "(connecting)") == NULL) {
+        return 2;
+    }
+
+    return strstr(text, "Welcome") == NULL ? 0 : 3;
+}
+
+/*!
  * @brief A server whose status read failed reads as disconnected
  *
  * It has an address and no version.
@@ -248,6 +283,8 @@ int main(int argc, char **argv)
              "the connection line names the address's port");
     TEST_int(utest_connecting_server_names_its_state(), 0,
              "a server on its first connect reads as connecting");
+    TEST_int(utest_reopening_server_names_its_state(), 0,
+             "a server whose session is opening again reads as connecting");
     TEST_int(utest_failed_server_reads_disconnected(), 0,
              "a server whose status read failed reads as disconnected");
     TEST_int(utest_server_without_address_reads_active(), 0,

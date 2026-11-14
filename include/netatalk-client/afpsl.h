@@ -1,3 +1,8 @@
+/*!
+ * @file
+ * @brief libafpsl's public API, whose calls afpsld runs
+ */
+
 #ifndef NETATALK_CLIENT_AFPSL_H
 #define NETATALK_CLIENT_AFPSL_H
 
@@ -73,8 +78,19 @@ enum afp_sl_attach_status {
 };
 
 enum afp_sl_volume_option {
-    /* Disable AFP byte-range locking for the attached volume. */
+    /* Each write locks its byte range first, unless an attach of the volume
+     * by any client of its session has set this; a read never does. */
     AFP_SL_VOLUME_NO_LOCKING = 0x10,
+    /* Open files for writing with the AFP deny-write mode, so a second open
+     * for writing fails with -EBUSY while the first is open. A client's last
+     * attach sets or clears it for that client's opens alone. */
+    AFP_SL_VOLUME_DENY_WRITE = 0x100,
+};
+
+enum afp_sl_copy_flag {
+    /* The target is a file this session created and has not written, which
+     * a copy on the server replaces with the source's copy. */
+    AFP_SL_COPY_NEW_TARGET = 0x1,
 };
 
 enum afp_sl_password_change_status {
@@ -145,7 +161,8 @@ int afp_sl_getvolid(afpc_server_t serverid, struct afpc_url * url,
                     afpc_volume_t *volid);
 /* volume_options is zero or a bitwise combination of afp_sl_volume_option.
  * status is optional. On return it distinguishes a volume-password challenge
- * from other -EACCES failures. */
+ * from other -EACCES failures. A daemon that does not honour
+ * AFP_SL_VOLUME_DENY_WRITE fails the attach with -ENOTSUP. */
 int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
                   unsigned int volume_options, afpc_volume_t *volumeid,
                   enum afp_sl_attach_status *status);
@@ -165,11 +182,15 @@ int afp_sl_stat(afpc_volume_t *volid, const char *path,
 int afp_sl_open(afpc_volume_t *volid, const char *path,
                 struct afpc_url * url, unsigned int *fileid,
                 unsigned int mode);
+/* A read asks for at most 8 MiB; for a larger length, received is the count
+ * that came. */
 int afp_sl_read(afpc_volume_t *volid, unsigned int fileid,
                 unsigned int resource,
                 unsigned long long start,
                 unsigned int length, unsigned int *received,
                 unsigned int *eof, char *data);
+/* A write carries at most 8 MiB; for a larger size, written is the count
+ * that went. */
 int afp_sl_write(afpc_volume_t *volid, unsigned int fileid,
                  unsigned int resource,
                  unsigned long long offset, unsigned int size,
@@ -194,6 +215,17 @@ int afp_sl_rmdir(afpc_volume_t *volid, const char *path,
 int afp_sl_statfs(afpc_volume_t *volid, const char *path,
                   struct afpc_url * url, struct statvfs * stat);
 int afp_sl_close(afpc_volume_t *volid, unsigned int fileid);
+/* Copy up to length bytes between two open files of the volume, as
+ * copy_file_range(2) does: copied is the count that went, which is less
+ * than length at the end of the source or when the copy goes in pieces, and
+ * is optional. flags is zero or afp_sl_copy_flag. A length of 0 sends
+ * nothing, so it asks whether the daemon copies. Returns -ENOTSUP for a
+ * daemon that does not copy, and -EIO for a copy within one file whose
+ * ranges overlap, which copy_file_range(2) refuses with -EINVAL. */
+int afp_sl_copy(afpc_volume_t *volid, unsigned int source_fileid,
+                unsigned long long source_offset, unsigned int target_fileid,
+                unsigned long long target_offset, unsigned long long length,
+                unsigned int flags, unsigned long long *copied);
 int afp_sl_serverinfo(struct afpc_url * url, struct afpc_server_info * basic);
 /* status is optional. On failure it provides password-policy detail that is
  * more specific than the returned errno. */

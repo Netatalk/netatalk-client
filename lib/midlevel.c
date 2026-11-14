@@ -18,6 +18,7 @@
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
@@ -500,7 +501,73 @@ int ml_list_directory(struct afp_volume *volume, const char *path,
 }
 
 /*!
+ * @brief Open a file's data fork for reading and truncate the file
+ *
+ * A fork opened for reading cannot take a new length, so the open goes
+ * first, as the kernel's does before it truncates, and the truncation then
+ * goes through a fork opened for writing beside it, which the first fork,
+ * denying nothing, admits. A file the open made is empty and needs none. The
+ * truncation goes only to the file the open found, as the node IDs in the two
+ * opens' answers confirm; a server's open answers with one only where
+ * afp_server_copies_files() holds, as ll_open() asks for it there. A local
+ * exchange of the file between the opens clears the listed reader's ID, and
+ * after the second open both forks hold one file whatever follows. Another
+ * session's exchange in between leaves the IDs with the names and is not
+ * seen.
+ *
+ * @param[in]     volume  volume of the file
+ * @param[in]     path    UTF-8 path of the file
+ * @param[in]     flags   open(2) flags, O_TRUNC among them
+ * @param[in,out] fp      the resolved record, which the open fills
+ * @returns 0, or a negative errno: the opens' or the truncation's, -EACCES
+ *          for a truncation no node ID can confirm, as the fork for reading
+ *          refuses it, or -ESTALE when another file took the path in between
+ */
+static int open_reading_truncated(struct afp_volume *volume, const char *path,
+                                  int flags, struct afp_file_info *fp)
+{
+    struct afp_file_info *writer;
+    unsigned int cnid;
+    int close_ret;
+    int same;
+    int ret;
+    ret = ll_open(volume, path, flags & ~O_TRUNC, fp);
+
+    if (ret != 0 || fp->created) {
+        return ret;
+    }
+
+    pthread_mutex_lock(&volume->open_forks_mutex);
+    cnid = fp->cnid;
+    pthread_mutex_unlock(&volume->open_forks_mutex);
+    ret = cnid && afp_server_copies_files(volume->server)
+          ? ml_open(volume, path, O_WRONLY, &writer) : -EACCES;
+
+    if (ret == 0) {
+        pthread_mutex_lock(&volume->open_forks_mutex);
+        same = fp->cnid == cnid && writer->cnid == cnid;
+        pthread_mutex_unlock(&volume->open_forks_mutex);
+        ret = same ? ml_ftruncate(volume, writer, 0) : -ESTALE;
+        close_ret = ml_close(volume, writer);
+        free(writer);
+
+        if (ret == 0) {
+            ret = close_ret;
+        }
+    }
+
+    if (ret < 0) {
+        ml_close(volume, fp);
+    }
+
+    return ret;
+}
+
+/*!
  * @brief Open a file's data fork, or an AppleDouble pseudo-file, at path
+ *
+ * An open of a fork for reading with O_TRUNC truncates the file through a
+ * second fork, as open_reading_truncated() says.
  *
  * @param[in]  volume  volume of the file
  * @param[in]  path    UTF-8 path of the file
@@ -508,7 +575,8 @@ int ml_list_directory(struct afp_volume *volume, const char *path,
  * @param[out] newfp   receives the open record of an open that succeeds,
  *                     which the caller frees after ml_close()
  * @returns 0, or a negative errno: -EROFS for a write open of a read-only
- *          volume, the lookup's errno, or the open's
+ *          volume, the lookup's errno, or the open's, which for an open for
+ *          reading with O_TRUNC is open_reading_truncated()'s
  */
 int ml_open(struct afp_volume * volume, const char *path, int flags,
             struct afp_file_info **newfp)
@@ -533,7 +601,9 @@ int ml_open(struct afp_volume * volume, const char *path, int flags,
     }
 
     if (ret == 0) {
-        ret = ll_open(volume, path, flags, fp);
+        ret = (flags & O_TRUNC) && (flags & O_ACCMODE) == O_RDONLY
+              ? open_reading_truncated(volume, path, flags, fp)
+              : ll_open(volume, path, flags, fp);
     }
 
     if (ret < 0) {
@@ -1542,10 +1612,10 @@ static ssize_t copy_into_destination(struct afp_volume *volume,
     /* A reply without the node ID leaves 0, never the deleted file's. */
     fp_out->cnid = 0;
 
-    /* The fork opens read-write, as every writable fork does. A mode without
-     * the owner's write permission would refuse that open. */
-    if (afp_openfork(volume, 0, out->did,
-                     AFP_OPENFORK_ALLOWREAD | AFP_OPENFORK_ALLOWWRITE,
+    /* The fork opens as the handle's did, read-write and with its deny
+     * mode. A mode without the owner's write permission would refuse that
+     * open. */
+    if (afp_openfork(volume, 0, out->did, fp_out->fork_access,
                      kFPNodeIDBit | kFPExtDataForkLenBit, out->afp_name,
                      fp_out) != kFPNoErr) {
         return copy_lost_fork(volume, fp_out);
@@ -1718,8 +1788,7 @@ static ssize_t copy_range_through_client(struct afp_volume *volume,
 /*!
  * @brief Copy up to len bytes from one open fork to another
  *
- * A qualifying whole data fork copies on the server with FPCopyFile, the rest
- * through the client; an O_SYNC or O_DSYNC destination ends with a flush.
+ * As ml_copy_range_within() does, with no limit of the caller's.
  *
  * @param[in]     volume   volume of both forks
  * @param[in]     fp_in    the source's open fork
@@ -1727,13 +1796,38 @@ static ssize_t copy_range_through_client(struct afp_volume *volume,
  * @param[in,out] fp_out   the destination's open fork, opened for writing
  * @param[in]     off_out  offset in the destination
  * @param[in]     len      the cap on bytes to copy
- * @returns the bytes copied, 0 at the source's end, -EOPNOTSUPP for a
- *          pseudo-file other than a resource fork, or another negative errno
+ * @returns ml_copy_range_within()'s result
  */
 ssize_t ml_copy_range(struct afp_volume * volume,
                       struct afp_file_info *fp_in, off_t off_in,
                       struct afp_file_info *fp_out, off_t off_out,
                       size_t len)
+{
+    return ml_copy_range_within(volume, fp_in, off_in, fp_out, off_out, len,
+                                SIZE_MAX);
+}
+
+/*!
+ * @brief Copy up to len bytes from one open fork to another, moving at most
+ *        client_max of them through the client
+ *
+ * A qualifying whole data fork copies on the server with FPCopyFile, the rest
+ * through the client; an O_SYNC or O_DSYNC destination ends with a flush.
+ *
+ * @param[in]     volume      volume of both forks
+ * @param[in]     fp_in       the source's open fork
+ * @param[in]     off_in      offset in the source
+ * @param[in,out] fp_out      the destination's open fork, opened for writing
+ * @param[in]     off_out     offset in the destination
+ * @param[in]     len         the cap on bytes to copy
+ * @param[in]     client_max  the most bytes a copy through the client moves
+ * @returns the bytes copied, 0 at the source's end, -EOPNOTSUPP for a
+ *          pseudo-file other than a resource fork, or another negative errno
+ */
+ssize_t ml_copy_range_within(struct afp_volume *volume,
+                             struct afp_file_info *fp_in, off_t off_in,
+                             struct afp_file_info *fp_out, off_t off_out,
+                             size_t len, size_t client_max)
 {
     ssize_t copied;
 
@@ -1757,7 +1851,7 @@ ssize_t ml_copy_range(struct afp_volume * volume,
 
     if (copied == 0) {
         copied = copy_range_through_client(volume, fp_in, off_in, fp_out,
-                                           off_out, len);
+                                           off_out, min(len, client_max));
     }
 
     /* A copy into an O_SYNC or O_DSYNC file ends with a flush, as the
@@ -2180,14 +2274,13 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
     }
 
     created = 1;
-    rc = afp_openfork(vol, 0,
-                      t.did,
-                      AFP_OPENFORK_ALLOWWRITE | AFP_OPENFORK_ALLOWREAD, 0,
-                      t.afp_name, &fp);
+    rc = afp_openfork(vol, 0, t.did, ll_write_access(vol), 0, t.afp_name,
+                      &fp);
     ret = ll_openfork_errno(rc);
 
-    /* The server may still open the fork, so the link's file stays. */
-    if (ret == ETIMEDOUT) {
+    /* The server may still open the fork, and a deny conflict means another
+     * client holds the file open, so the link's file stays. */
+    if (ret == ETIMEDOUT || ret == EBUSY) {
         created = 0;
     }
 
@@ -2239,7 +2332,8 @@ int ml_symlink(struct afp_volume *vol, const char *path1, const char *path2)
 error:
 
     /* A link the steps after the create could not finish leaves no file
-     * in its name, unless its open went unanswered. */
+     * in its name, unless its open went unanswered or another client holds
+     * the file open. */
     if (ret && created) {
         afp_delete(vol, t.did, t.afp_name);
     }

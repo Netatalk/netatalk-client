@@ -9,6 +9,11 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief The event loop: the servers' and clients' descriptors and signals
+ */
+
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -40,9 +45,18 @@ static pthread_cond_t loop_started_condition = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t loop_started_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 
+/*!
+ * @brief Ask the loop to end, unless its ending has gone further
+ *
+ * The ending thread raises the state to 2 once it has run, so a later
+ * request leaves it there: lowered to 1, the loop would wait on a thread
+ * that has ended.
+ */
 void trigger_exit(void)
 {
-    exit_program = 1;
+    unsigned char idle = 0;
+    __atomic_compare_exchange_n(&exit_program, &idle, 1, 0, __ATOMIC_ACQ_REL,
+                                __ATOMIC_ACQUIRE);
 }
 
 /*!
@@ -67,16 +81,27 @@ void termination_handler(int signum)
 
 #define max(a,b) (((a)>(b)) ? (a) : (b))
 
+/* The loop's descriptors and one past the highest, which every thread that
+ * ends a command or a connection changes */
 static fd_set rds;
 static int max_fd = 0;
+static pthread_mutex_t rds_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/*!
+ * @brief Put a descriptor in the loop's set
+ *
+ * @param[in] fd  the descriptor
+ */
 static void add_fd(int fd)
 {
+    pthread_mutex_lock(&rds_mutex);
     FD_SET(fd, &rds);
 
     if ((fd + 1) > max_fd) {
         max_fd = fd + 1;
     }
+
+    pthread_mutex_unlock(&rds_mutex);
 }
 
 /*!
@@ -89,20 +114,33 @@ static void add_fd(int fd)
  */
 static void rm_fd(int fd)
 {
+    pthread_mutex_lock(&rds_mutex);
     FD_CLR(fd, &rds);
 
     while (max_fd > 0 && !FD_ISSET(max_fd - 1, &rds)) {
         max_fd--;
     }
+
+    pthread_mutex_unlock(&rds_mutex);
 }
 
+/*!
+ * @brief Take the descriptors that are closed out of the loop's set
+ *
+ * @returns how many it took out
+ */
 static int rm_invalid_fds(void)
 {
     int removed = 0;
-    int old_max_fd = max_fd;
+    int old_max_fd;
+    fd_set set;
+    pthread_mutex_lock(&rds_mutex);
+    set = rds;
+    old_max_fd = max_fd;
+    pthread_mutex_unlock(&rds_mutex);
 
     for (int fd = 0; fd < old_max_fd; fd++) {
-        if (!FD_ISSET(fd, &rds)) {
+        if (!FD_ISSET(fd, &set)) {
             continue;
         }
 
@@ -166,8 +204,15 @@ void *just_end_it_now(void *ignore _U_)
 /*This is a hack to handle a problem where the first pthread_kill doesnt' work*/
 static unsigned char firsttime = 0;
 
+/*!
+ * @brief Start the thread that ends the program, once
+ */
 static void start_ending_thread(void)
 {
+    if (ending_thread_valid) {
+        return;
+    }
+
     if (pthread_create(&ending_thread, NULL, just_end_it_now, NULL) == 0) {
         ending_thread_valid = 1;
     }
@@ -414,13 +459,18 @@ int afp_main_loop(int command_fd)
 {
     fd_set ords, oeds;
     struct timespec tv;
+    /* A wait that keeps failing is tried again after this */
+    const struct timespec error_pause = { 0, 10000000L };
     int ret;
+    int nfds;
     int fderrors = 0;
     sigset_t sigmask, orig_sigmask;
     struct sigaction wake;
     main_thread = pthread_self();
     main_thread_valid = 1;
+    pthread_mutex_lock(&rds_mutex);
     FD_ZERO(&rds);
+    pthread_mutex_unlock(&rds_mutex);
 
     if (command_fd >= 0) {
         add_fd(command_fd);
@@ -469,8 +519,11 @@ int afp_main_loop(int command_fd)
                 }
         }
 #endif
+        pthread_mutex_lock(&rds_mutex);
         ords = rds;
-        oeds = rds;
+        nfds = max_fd;
+        pthread_mutex_unlock(&rds_mutex);
+        oeds = ords;
 
         if (loop_started) {
             tv.tv_sec = 30;
@@ -504,9 +557,13 @@ int afp_main_loop(int command_fd)
             break;
         }
 
+        /* The ending thread wakes the loop once it is done; until then the
+         * loop serves no descriptor. */
         if (exit_program == 1) {
             start_ending_thread();
-            continue;
+            FD_ZERO(&ords);
+            FD_ZERO(&oeds);
+            nfds = 0;
         }
 
 #ifdef DEBUG_AFP_LOOP
@@ -516,7 +573,7 @@ int afp_main_loop(int command_fd)
 #endif
         /* pselect atomically unblocks signals (using orig_sigmask) only while waiting.
          * Do NOT unblock signals before pselect - that creates a race window! */
-        ret = pselect(max_fd, &ords, NULL, &oeds, &tv, &orig_sigmask);
+        ret = pselect(nfds, &ords, NULL, &oeds, &tv, &orig_sigmask);
 #ifdef DEBUG_AFP_LOOP
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "afp_main_loop -- pselect returned ret=%d, errno=%d", ret, errno);
@@ -573,16 +630,7 @@ int afp_main_loop(int command_fd)
                                "afp_main_loop -- select error (errno=%d: %s, ret=%d, max_fd=%d)",
                                errno, strerror(errno), ret, max_fd);
 #endif
-
-                if (libafpclient->scan_extra_fds) {
-#ifdef DEBUG_AFP_LOOP
-                    log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                                   "afp_main_loop -- Scanning extra fds after select error");
-#endif
-                    ret = libafpclient->scan_extra_fds(
-                              command_fd, &ords, &max_fd);
-                }
-
+                nanosleep(&error_pause, NULL);
                 continue;
             }
 
@@ -668,7 +716,7 @@ int afp_main_loop(int command_fd)
                                "afp_main_loop -- calling scan_extra_fds");
 #endif
                 int scan_result = libafpclient->scan_extra_fds(
-                                      command_fd, &ords, &max_fd);
+                                      command_fd, &ords, &nfds);
 #ifdef DEBUG_AFP_LOOP
                 log_for_client(NULL, AFPFSD, LOG_DEBUG,
                                "afp_main_loop -- scan_extra_fds returned %d (new_max_fd=%d)",

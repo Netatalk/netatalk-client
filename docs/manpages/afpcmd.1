@@ -10,12 +10,14 @@
 .Op Fl f Ar version
 .Op Fl v Ar loglevel
 .Op Fl M Ar mode
+.Op Fl -locking Ar mode
 .Fl b
 .Nm
 .Op Fl V
 .Op Fl f Ar version
 .Op Fl v Ar loglevel
 .Op Fl M Ar mode
+.Op Fl -locking Ar mode
 .Ar afp_url
 .Nm
 .Op Fl r
@@ -23,6 +25,7 @@
 .Op Fl f Ar version
 .Op Fl v Ar loglevel
 .Op Fl M Ar mode
+.Op Fl -locking Ar mode
 .Ar afp_url
 .Ar local_path
 .Nm
@@ -31,6 +34,7 @@
 .Op Fl f Ar version
 .Op Fl v Ar loglevel
 .Op Fl M Ar mode
+.Op Fl -locking Ar mode
 .Ar local_path
 .Ar afp_url
 .Nm
@@ -130,6 +134,25 @@ uses macOS-compatible
 AppleDouble files for FinderInfo and ResourceFork.
 .Cm none
 transfers only the data fork.
+.It Fl -locking Ar mode
+Chooses whether a file opened for writing refuses a second open for writing.
+The mode may be
+.Cm yes
+or
+.Cm no .
+With
+.Cm yes ,
+a file is opened for writing with the AFP deny-write mode, so that a second
+open for writing, from another session, fails with
+.Er EBUSY
+while the first is open.
+Its own open for writing fails with
+.Er EBUSY
+too while another session has the file open for writing.
+An open for reading denies nothing, and no read or write sends a byte-range
+lock.
+.Cm no
+is the default.
 .It Ar afp_url
 Uses the standard AFP URL format.
 .El

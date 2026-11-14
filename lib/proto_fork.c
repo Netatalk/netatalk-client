@@ -168,7 +168,8 @@ int afp_syncfork(struct afp_volume * volume, unsigned short forkid, int wait)
  * @brief Parse an FPOpenFork reply into the open fork's record
  *
  * Takes the fork number and the requested node ID and data fork length from
- * a successful reply.
+ * a successful reply, and from one that a deny mode refuses, which afpd
+ * answers with fork 0 and the file's parameters.
  *
  * @param[in]     server  server of the session
  * @param[in]     buf     the reply, DSI header first
@@ -189,6 +190,8 @@ int afp_openfork_reply(struct afp_server *server,
     } __attribute__((__packed__)) reply;
     /* Copy the buffer into our properly structured reply */
     memcpy(&reply, buf, sizeof(reply));
+    reply.header.return_code.error_code =
+        (int) ntohl((uint32_t) reply.header.return_code.error_code);
 
     if ((reply.header.return_code.error_code == kFPNoErr) ||
             (reply.header.return_code.error_code == kFPDenyConflict)) {
@@ -223,8 +226,8 @@ int afp_openfork_reply(struct afp_server *server,
  * @param[in]     volume      volume of the file
  * @param[in]     forktype    1 for the resource fork, 0 for the data fork
  * @param[in]     dirid       directory of the file
- * @param[in]     accessmode  AFP_OPENFORK_ALLOWREAD and AFP_OPENFORK_ALLOWWRITE
- *                            bits
+ * @param[in]     accessmode  AFP_OPENFORK_ALLOWREAD, AFP_OPENFORK_ALLOWWRITE
+ *                            and AFP_OPENFORK_DENYWRITE bits
  * @param[in]     bitmap      file parameters to read into fp, the node ID or
  *                            the data fork length
  * @param[in]     filename    AFP name of the file in dirid

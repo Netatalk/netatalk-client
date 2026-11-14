@@ -765,6 +765,12 @@ static int utest_frame_over_the_quantum_ends_session(void)
     return ret;
 }
 
+/* The waits for a connection go in slices: OpenBSD 8.0 can leave a sleeping
+ * accept() or connect() unwoken by a connection that completed, which each
+ * poll() looks for afresh. */
+#define SOCKET_SLICE_MS 50
+#define SOCKET_WAIT_MS 5000
+
 /* A listening socket on the loopback address, at a port the system picks,
  * for a server the test connects as afp_server_connect() does. */
 struct listener {
@@ -801,7 +807,8 @@ static int listener_open(struct listener *l)
         return -1;
     }
 
-    if (bind(l->fd, (struct sockaddr *) &l->addr, sizeof(l->addr)) != 0
+    if (fcntl(l->fd, F_SETFL, O_NONBLOCK) != 0
+            || bind(l->fd, (struct sockaddr *) &l->addr, sizeof(l->addr)) != 0
             || getsockname(l->fd, (struct sockaddr *) &l->addr, &len) != 0
             || listen(l->fd, 1) != 0) {
         listener_close(l);
@@ -815,6 +822,74 @@ static int listener_open(struct listener *l)
     l->ai.ai_addr = (struct sockaddr *) &l->addr;
     l->ai.ai_addrlen = sizeof(l->addr);
     return 0;
+}
+
+/*!
+ * @brief Accept a connection on a listener, within SOCKET_WAIT_MS
+ *
+ * @param[in] fd  the listener, non-blocking
+ * @returns the connection's descriptor, in blocking mode, or -1
+ */
+static int accept_within(int fd)
+{
+    for (int waited = 0; waited < SOCKET_WAIT_MS; waited += SOCKET_SLICE_MS) {
+        struct pollfd pfd = { fd, POLLIN, 0 };
+        int peer = accept(fd, NULL, NULL);
+
+        if (peer >= 0) {
+            /* The BSDs give the connection the listener's O_NONBLOCK. */
+            fcntl(peer, F_SETFL, fcntl(peer, F_GETFL, 0) & ~O_NONBLOCK);
+            return peer;
+        }
+
+        /* A connection its client ended before the accept is gone. */
+        if (errno != EAGAIN && errno != EINTR && errno != ECONNABORTED
+                && errno != EPROTO) {
+            return -1;
+        }
+
+        poll(&pfd, 1, SOCKET_SLICE_MS);
+    }
+
+    errno = ETIMEDOUT;
+    return -1;
+}
+
+/*!
+ * @brief Connect a socket to a listener's address, within SOCKET_WAIT_MS
+ *
+ * @param[in] fd    the socket, in blocking mode again on return
+ * @param[in] addr  the address
+ * @returns 0, or -1
+ */
+static int connect_within(int fd, const struct sockaddr_in *addr)
+{
+    int flags = fcntl(fd, F_GETFL, 0);
+    int error = 0;
+    socklen_t len = sizeof(error);
+    int ret = -1;
+
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        return -1;
+    }
+
+    if (connect(fd, (const struct sockaddr *) addr, sizeof(*addr)) == 0) {
+        ret = 0;
+    } else if (errno == EINPROGRESS) {
+        for (int waited = 0; waited < SOCKET_WAIT_MS;
+                waited += SOCKET_SLICE_MS) {
+            struct pollfd pfd = { fd, POLLOUT, 0 };
+
+            if (poll(&pfd, 1, SOCKET_SLICE_MS) == 1) {
+                ret = getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len) == 0
+                      && error == 0 ? 0 : -1;
+                break;
+            }
+        }
+    }
+
+    fcntl(fd, F_SETFL, flags);
+    return ret;
 }
 
 /*! A run of the receiver on its own thread, and its result. */
@@ -990,7 +1065,7 @@ static int utest_drop_across_a_reconnect_keeps_the_next_stream(void)
         /* A receive still in the old read ends at the peer's close. */
         shutdown(s.peer, SHUT_WR);
 
-        if (conn.result == 0 && (next_peer = accept(l.fd, NULL, NULL)) >= 0) {
+        if (conn.result == 0 && (next_peer = accept_within(l.fd)) >= 0) {
             close(next_peer);
             next_peer = -1;
         }
@@ -1002,7 +1077,7 @@ static int utest_drop_across_a_reconnect_keeps_the_next_stream(void)
         ret = 8;
     } else if (ret == 0 && conn.result != 0) {
         ret = 9;
-    } else if (ret == 0 && (next_peer = accept(l.fd, NULL, NULL)) < 0) {
+    } else if (ret == 0 && (next_peer = accept_within(l.fd)) < 0) {
         ret = 10;
     }
 
@@ -1209,7 +1284,7 @@ static int listed_session_open(struct session *s, struct listener *l)
         return -1;
     }
 
-    s->peer = accept(l->fd, NULL, NULL);
+    s->peer = accept_within(l->fd);
 
     if (s->peer < 0) {
         listener_close(l);
@@ -1331,7 +1406,7 @@ static int utest_connect_waits_for_the_frame_in_flight(void)
 
     if (ret == 0 && conn.result != 0) {
         ret = 6;
-    } else if (ret == 0 && (next_peer = accept(l.fd, NULL, NULL)) < 0) {
+    } else if (ret == 0 && (next_peer = accept_within(l.fd)) < 0) {
         ret = 7;
     }
 
@@ -1428,9 +1503,8 @@ static int utest_disconnect_shuts_the_write_side(void)
     s.server->fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (s.server->fd < 0
-            || connect(s.server->fd, (struct sockaddr *) &l.addr,
-                       sizeof(l.addr)) != 0
-            || (s.peer = accept(l.fd, NULL, NULL)) < 0) {
+            || connect_within(s.server->fd, &l.addr) != 0
+            || (s.peer = accept_within(l.fd)) < 0) {
         ret = 3;
     } else {
         close(s.peer);
@@ -1850,7 +1924,7 @@ static int utest_second_reply_is_dropped(void)
  */
 static void *accept_and_close(void *listener)
 {
-    int fd = accept(*(int *) listener, NULL, NULL);
+    int fd = accept_within(*(int *) listener);
 
     if (fd >= 0) {
         close(fd);
@@ -2341,13 +2415,12 @@ static int small_tcp_pair(struct listener *l, int *client, int *peer)
     if (setsockopt(*client, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size)) != 0
             || setsockopt(l->fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size))
             != 0
-            || connect(*client, (struct sockaddr *) &l->addr, sizeof(l->addr))
-            != 0) {
+            || connect_within(*client, &l->addr) != 0) {
         close(*client);
         return -1;
     }
 
-    *peer = accept(l->fd, NULL, NULL);
+    *peer = accept_within(l->fd);
 
     if (*peer < 0) {
         close(*client);
@@ -2477,6 +2550,92 @@ static int utest_tickle_waits_for_no_room(void)
     return ret;
 }
 
+/*! What a restart's hook found: whether it ran, whether a rival's reconnect
+ *  could start, and whether the password was there for that rival. */
+static int restart_hook_ran;
+static int restart_rival_started;
+static int restart_password_seen;
+
+/*!
+ * @brief Start a rival reconnect inside a restart, as the attention thread
+ *        may
+ *
+ * @param[in,out] server  the server the restart reconnects
+ */
+static void start_rival_reconnect(struct afp_server *server)
+{
+    restart_hook_ran = 1;
+    restart_password_seen = server->password[0] != '\0';
+    restart_rival_started = afp_server_reconnect_try_begin(server);
+
+    if (restart_rival_started) {
+        afp_server_reconnect_end(server);
+    }
+}
+
+/*!
+ * @brief A restart keeps its reconnect from the password's write to its wipe
+ *
+ * The hook runs once the password is written, where a rival's reconnect
+ * would log in with it. The restart's reconnect then fails, as the server
+ * has no signature.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_restart_keeps_its_reconnect(void)
+{
+    struct addrinfo hints;
+    struct addrinfo *address = NULL;
+    struct session s;
+    char mesg[MAX_ERROR_LEN];
+    unsigned int len = 0;
+    int ret = 0;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    if (getaddrinfo("127.0.0.1", "548", &hints, &address) != 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    s.server->connect_state = SERVER_STATE_DISCONNECTED;
+    restart_hook_ran = 0;
+    restart_rival_started = 0;
+    restart_password_seen = 0;
+    memset(mesg, 0, sizeof(mesg));
+    afp_server_set_restart_hook(start_rival_reconnect);
+
+    if (afp_server_restart(s.server, address, "secret", mesg, &len,
+                           sizeof(mesg)) != -1) {
+        ret = 3;
+    }
+
+    afp_server_set_restart_hook(NULL);
+
+    if (ret == 0 && !restart_hook_ran) {
+        ret = 4;
+    } else if (ret == 0 && restart_rival_started) {
+        ret = 5;
+    } else if (ret == 0 && !restart_password_seen) {
+        ret = 6;
+    } else if (ret == 0 && s.server->password[0] != '\0') {
+        ret = 7;
+    } else if (ret == 0 && !afp_server_reconnect_try_begin(s.server)) {
+        ret = 8;
+    } else if (ret == 0) {
+        afp_server_reconnect_end(s.server);
+    }
+
+    session_close(&s);
+    return ret;
+}
+
 /*!
  * @brief Run the DSI receive path checks as TAP
  *
@@ -2560,6 +2719,9 @@ int main(int argc, char **argv)
              "a failed request stays its sender's until the receiver is done");
     TEST_int(utest_tickle_waits_for_no_writer(), 0,
              "a tickle skips a frame on its way instead of waiting");
+    TEST_int(utest_restart_keeps_its_reconnect(), 0,
+             "a restart keeps its reconnect from the password's write to its "
+             "wipe");
     TEST_int(utest_tickle_waits_for_no_room(), 0,
              "a tickle skips a full socket instead of waiting");
     return test_tap_finish();

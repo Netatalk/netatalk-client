@@ -72,6 +72,7 @@ COPY /test/integration/test_afpcmd_batch.t /test/test_afpcmd_batch.t
 COPY /test/integration/test_afpcmd_interactive.t /test/test_afpcmd_interactive.t
 COPY /test/integration/test_afpgetstatus.t /test/test_afpgetstatus.t
 COPY /test/integration/test_fuse.t /test/test_fuse.t
+COPY --from=build /netatalk-client-code/build/test/integration/afpsl_probe /test/afpsl_probe
 
 WORKDIR /test
 CMD ["/test/entrypoint.sh"]

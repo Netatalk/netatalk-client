@@ -1,7 +1,12 @@
+/*!
+ * @file
+ * @brief The UAM bits, the libgcrypt version they need, and their names
+ */
+
 #ifndef __UAM_DEFS_H_
 #define __UAM_DEFS_H_
 
-#define UAM_NEED_LIBGCRYPT_VERSION "1.4.0"
+#define UAM_NEED_LIBGCRYPT_VERSION "1.6.0"
 
 #define UAM_NOUSERAUTHENT 0x1
 #define UAM_CLEARTXTPASSWRD 0x2

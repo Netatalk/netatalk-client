@@ -17,6 +17,7 @@ void remove_opened_fork(struct afp_volume * volume, struct afp_file_info * fp);
 void flush_dirty_forks_for_file(struct afp_volume * volume,
                                 struct afp_file_info * fp);
 int other_fork_open(struct afp_volume * volume, struct afp_file_info * fp);
+int other_writer_open(struct afp_volume * volume, struct afp_file_info * fp);
 void remove_fork_list(struct afp_volume * volume);
 void afp_open_lock_init(pthread_rwlock_t *lock);
 void fork_now_named(struct afp_file_info *fp, const struct ml_target *t);

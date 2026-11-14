@@ -1,3 +1,19 @@
+/*
+ * test_stateless_log.c: libafpsl's framing of the daemon's answers and its
+ * heartbeats, and its log lines
+ *
+ * Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ * Copyright (C) 2026 Andy Lemin (andylemin)
+ *
+ * This program can be distributed under the terms of the GNU GPL.
+ * See the file COPYING.
+ */
+
+/*!
+ * @file
+ * @brief Unit tests of libafpsl's framing, heartbeats and log lines
+ */
+
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -149,6 +165,124 @@ static int check_interrupted_framed_read(void)
     return 0;
 }
 
+/*!
+ * @brief Check that the frames saying a command runs are skipped
+ *
+ * Two of them and the answer come in one write, as a read may find them.
+ *
+ * @returns 0 once the checks have run
+ */
+static int check_skipped_heartbeats(void)
+{
+    struct {
+        struct afpsl_ipc_response_header header;
+        struct afpsl_ipc_log_footer footer;
+    } frame;
+    char expected[64];
+    char frames[2 * sizeof(frame) + sizeof(expected)];
+    char response[64];
+    size_t expected_len;
+    size_t frames_len;
+    size_t response_len = 0;
+    int sockets[2];
+    memset(&frame, 0, sizeof(frame));
+    frame.header.result = AFPSL_IPC_RESULT_WORKING;
+    frame.header.len = sizeof(frame);
+    frame.footer.magic = AFPSL_IPC_LOG_MAGIC;
+    expected_len = make_response(expected, sizeof(expected));
+    CHECK(expected_len > 0);
+    memcpy(frames, &frame, sizeof(frame));
+    memcpy(frames + sizeof(frame), &frame, sizeof(frame));
+    memcpy(frames + 2 * sizeof(frame), expected, expected_len);
+    frames_len = 2 * sizeof(frame) + expected_len;
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    CHECK(write(sockets[1], frames, frames_len) == (ssize_t) frames_len);
+    CHECK(afp_sl_read_framed_response(sockets[0], response, sizeof(response),
+                                      &response_len) == 0);
+    CHECK(response_len == expected_len);
+    CHECK(memcmp(response, expected, expected_len) == 0);
+    close(sockets[0]);
+    close(sockets[1]);
+    return 0;
+}
+
+/*!
+ * @brief Check the start of an answer read in parts
+ *
+ * A frame saying the command runs comes first and is skipped, and a signal
+ * while the read waits does not end it.
+ *
+ * @returns 0 once the checks have run
+ */
+static int check_answer_start(void)
+{
+    struct sigaction action = { 0 };
+    struct sigaction old_action;
+    struct itimerval timer = { 0 };
+    struct timespec delay = { .tv_nsec = 200000000 };
+    struct {
+        struct afpsl_ipc_response_header header;
+        struct afpsl_ipc_log_footer footer;
+    } frame;
+    char expected[16];
+    char answer[sizeof(expected)];
+    pid_t child;
+    int sockets[2];
+    int status;
+    memset(&frame, 0, sizeof(frame));
+    frame.header.result = AFPSL_IPC_RESULT_WORKING;
+    frame.header.len = sizeof(frame);
+    frame.footer.magic = AFPSL_IPC_LOG_MAGIC;
+    memset(expected, 0x5a, sizeof(expected));
+    memset(expected, 0, sizeof(struct afpsl_ipc_response_header));
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    child = fork();
+
+    if (child < 0) {
+        CHECK(child >= 0);
+    }
+
+    if (child == 0) {
+        close(sockets[0]);
+        nanosleep(&delay, NULL);
+
+        if (write(sockets[1], &frame, sizeof(frame)) != (ssize_t) sizeof(frame)
+                || write(sockets[1], expected, sizeof(expected))
+                != (ssize_t) sizeof(expected)) {
+            _exit(1);
+        }
+
+        close(sockets[1]);
+        _exit(0);
+    }
+
+    CHECK(child > 0);
+    close(sockets[1]);
+    alarm_received = 0;
+    action.sa_handler = handle_alarm;
+    sigemptyset(&action.sa_mask);
+    CHECK(sigaction(SIGALRM, &action, &old_action) == 0);
+    timer.it_value.tv_usec = 50000;
+    CHECK(setitimer(ITIMER_REAL, &timer, NULL) == 0);
+    CHECK(afp_sl_read_answer_start(sockets[0], answer, sizeof(answer)) == 0);
+    timer.it_value.tv_usec = 0;
+    CHECK(setitimer(ITIMER_REAL, &timer, NULL) == 0);
+    CHECK(sigaction(SIGALRM, &old_action, NULL) == 0);
+    CHECK(alarm_received == 1);
+    CHECK(memcmp(answer, expected, sizeof(expected)) == 0);
+    close(sockets[0]);
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    return 0;
+}
+
+/*!
+ * @brief Run libafpsl's framing, heartbeat and log checks as TAP
+ *
+ * @param[in] argc  argument count
+ * @param[in] argv  arguments for the TAP harness
+ * @returns the harness's exit status
+ */
 int main(int argc, char **argv)
 {
     const char payload[] = "DATA";
@@ -197,5 +331,7 @@ int main(int argc, char **argv)
           == -1);
     CHECK(check_framed_read_errors() == 0);
     CHECK(check_interrupted_framed_read() == 0);
+    CHECK(check_skipped_heartbeats() == 0);
+    CHECK(check_answer_start() == 0);
     return test_tap_finish();
 }

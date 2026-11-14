@@ -3,9 +3,15 @@
  *
  *  Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
+ */
+
+/*!
+ * @file
+ * @brief libafpsl, the client library whose calls afpsld runs
  */
 
 #include <errno.h>
@@ -52,9 +58,15 @@ struct stateless_connection {
     int fd;
     unsigned int len;
     char data[AFPSL_IPC_MAX_RESPONSE + AFPSL_IPC_LOG_BUFFER_SIZE + 200];
+    /* The AFPSL_IPC_FEATURE_ bits the daemon's hello announced; data keeps
+     * its offset, as answers are read in place as structures */
+    uint32_t features;
 };
 
 static struct stateless_connection connection = { .fd = -1 };
+/* Whether the process's last attach asked for the deny-write mode, which
+ * the hello of each connection carries, so a new one keeps it. */
+static int deny_write_requested;
 
 static void close_connection(void)
 {
@@ -380,7 +392,14 @@ static int start_afpsld(void)
     return 0;
 }
 
-int daemon_connect(unsigned int daemon_uid)
+/*!
+ * @brief Connect to the user's afpsld, starting it when none listens, and
+ *        agree the protocol, unless a connection is open
+ *
+ * @param[in] daemon_uid  the user whose daemon to reach
+ * @returns 0, ipc_handshake()'s error, or -1 after logging why
+ */
+static int connect_daemon_once(unsigned int daemon_uid)
 {
     int sock;
     struct sockaddr_un servaddr;
@@ -445,16 +464,59 @@ int daemon_connect(unsigned int daemon_uid)
     return -1;
 done:
     connection.fd = sock;
+    ret = ipc_handshake();
 
-    if (ipc_handshake() < 0) {
+    if (ret < 0) {
         close_connection();
-        return -1;
+        return ret;
     }
 
     return 0;
 }
 
-/* Read one complete length-prefixed response from afpsld. */
+/*!
+ * @brief Reach the user's afpsld and agree the protocol, unless connected
+ *
+ * A daemon whose last client's exit has closed its pool closes a
+ * connection it accepts after; the second try finds or starts its
+ * successor. One that closes the second too has no room for a client, or
+ * predates the hello.
+ *
+ * @param[in] daemon_uid  the user whose daemon to reach
+ * @returns 0, or a negative errno after logging why: ipc_handshake()'s
+ *          error, or -ECONNREFUSED when no daemon can be reached
+ */
+int daemon_connect(unsigned int daemon_uid)
+{
+    int ret = connect_daemon_once(daemon_uid);
+
+    if (ret == -ECONNRESET) {
+        ret = connect_daemon_once(daemon_uid);
+
+        if (ret == -ECONNRESET) {
+            stateless_log_message(LOG_ERR,
+                                  "afpsld closed the connection: it is full,"
+                                  " or its IPC protocol is incompatible");
+        }
+    }
+
+    return ret == -1 ? -ECONNREFUSED : ret;
+}
+
+/*!
+ * @brief Read one complete length-prefixed response from afpsld
+ *
+ * The frames that say the command still runs are skipped. Each read has its
+ * own wait, so a command may run as long as those frames come.
+ *
+ * @param[in]  fd            the connection to the daemon
+ * @param[out] data          receives the response
+ * @param[in]  capacity      bytes of data
+ * @param[out] response_len  the response's length
+ * @returns 0, or -1 when the daemon sends nothing for
+ *          AFPSL_IPC_SILENCE_SECONDS, which sets errno to ETIMEDOUT, or when
+ *          the answer does not fit, is malformed, or the connection fails
+ */
 int afp_sl_read_framed_response(int fd, char *data, size_t capacity,
                                 size_t *response_len)
 {
@@ -483,7 +545,7 @@ int afp_sl_read_framed_response(int fd, char *data, size_t capacity,
     FD_SET(fd, &rds);
 
     while (1) {
-        tv.tv_sec = 30;
+        tv.tv_sec = AFPSL_IPC_SILENCE_SECONDS;
         tv.tv_usec = 0;
         ords = rds;
         ret = select(fd + 1, &ords, NULL, NULL, &tv);
@@ -491,6 +553,7 @@ int afp_sl_read_framed_response(int fd, char *data, size_t capacity,
         if (ret == 0) {
             stateless_log_message(LOG_ERR,
                                   "No response from afpsld, timed out");
+            errno = ETIMEDOUT;
             return -1;
         }
 
@@ -506,13 +569,11 @@ int afp_sl_read_framed_response(int fd, char *data, size_t capacity,
         }
 
         if (FD_ISSET(fd, &ords)) {
-            if (received >= capacity) {
-                stateless_log_message(LOG_ERR,
-                                      "Response from afpsld exceeds buffer");
-                return -1;
-            }
-
-            packetlen = read(fd, data + received, capacity - received);
+            /* A read stops at its frame's end, where the answer may follow
+             * a frame that says the command still runs. */
+            packetlen = read(fd, data + received,
+                             (expected_len ? expected_len : sizeof(header))
+                             - received);
 
             if (packetlen < 0) {
                 if (errno == EINTR) {
@@ -534,7 +595,7 @@ int afp_sl_read_framed_response(int fd, char *data, size_t capacity,
 
             received += (size_t) packetlen;
 
-            if (received >= sizeof(header) && expected_len == 0) {
+            if (received == sizeof(header) && expected_len == 0) {
                 memcpy(&header, data, sizeof(header));
                 expected_len = header.len;
 
@@ -544,23 +605,25 @@ int afp_sl_read_framed_response(int fd, char *data, size_t capacity,
                         LOG_ERR, "Invalid response length from afpsld");
                     return -1;
                 }
+
+                if (expected_len > capacity) {
+                    stateless_log_message(LOG_ERR,
+                                          "Oversized response from afpsld");
+                    return -1;
+                }
             }
 
-            if (expected_len > capacity) {
-                stateless_log_message(LOG_ERR,
-                                      "Oversized response from afpsld");
-                return -1;
-            }
+            if (expected_len > 0 && received == expected_len) {
+                if (header.result != AFPSL_IPC_RESULT_WORKING
+                        || received != sizeof(header)
+                        + sizeof(struct afpsl_ipc_log_footer)) {
+                    *response_len = received;
+                    return 0;
+                }
 
-            if (received == expected_len) {
-                *response_len = received;
-                return 0;
-            }
-
-            if (expected_len > 0 && received > expected_len) {
-                stateless_log_message(LOG_ERR,
-                                      "Overlong response from afpsld");
-                return -1;
+                memset(data, 0, received);
+                received = 0;
+                expected_len = 0;
             }
         }
     }
@@ -597,6 +660,18 @@ error:
     return -1;
 }
 
+/*!
+ * @brief Agree the protocol with the daemon on a new connection
+ *
+ * A daemon of another protocol answers -EPROTONOSUPPORT, apart from the
+ * -EPROTO with which a session refuses a server's changed identity.
+ *
+ * @returns 0, -ETIMEDOUT when no answer comes within the wait, -ECONNRESET
+ *          when the connection fails before a whole answer,
+ *          -EPROTONOSUPPORT when the daemon answers in another protocol, or
+ *          -ENOTSUP for a process that asked for the deny-write mode from a
+ *          daemon without it
+ */
 static int ipc_handshake(void)
 {
     struct afpsl_ipc_hello_request request;
@@ -607,12 +682,23 @@ static int ipc_handshake(void)
     request.magic = AFPSL_IPC_PROTOCOL_MAGIC;
     request.major = AFPSL_IPC_PROTOCOL_MAJOR;
     request.minor = AFPSL_IPC_PROTOCOL_MINOR;
+    request.features = AFPSL_IPC_HELLO_HEARTBEAT
+                       | (deny_write_requested ? AFPSL_IPC_HELLO_DENY_WRITE : 0);
 
     if (send_command(sizeof(request), (char *)&request,
-                     AFPSL_IPC_COMMAND_HELLO) < 0 || read_answer() < 0
-            || connection.len < sizeof(*response)) {
+                     AFPSL_IPC_COMMAND_HELLO) < 0) {
+        return -ECONNRESET;
+    }
+
+    errno = 0;
+
+    if (read_answer() < 0) {
+        return errno == ETIMEDOUT ? -ETIMEDOUT : -ECONNRESET;
+    }
+
+    if (connection.len < sizeof(*response)) {
         stateless_log_message(LOG_ERR, "afpsld IPC protocol is incompatible");
-        return -EPROTO;
+        return -EPROTONOSUPPORT;
     }
 
     response = (const void *)connection.data;
@@ -621,7 +707,18 @@ static int ipc_handshake(void)
             || response->magic != AFPSL_IPC_PROTOCOL_MAGIC
             || response->major != AFPSL_IPC_PROTOCOL_MAJOR) {
         stateless_log_message(LOG_ERR, "afpsld IPC protocol major version mismatch");
-        return -EPROTO;
+        return -EPROTONOSUPPORT;
+    }
+
+    connection.features = response->features;
+
+    /* A connection that replaces another keeps the deny-write mode, which
+     * an attach to a daemon without it refuses too. */
+    if (deny_write_requested
+            && !(connection.features & AFPSL_IPC_FEATURE_DENY_WRITE)) {
+        stateless_log_message(LOG_ERR,
+                              "afpsld cannot deny a second writer");
+        return -ENOTSUP;
     }
 
     return 0;
@@ -661,9 +758,13 @@ static int read_bytes_with_timeout(int fd, char *buf, size_t len)
     while (total < len) {
         FD_ZERO(&rds);
         FD_SET(fd, &rds);
-        tv.tv_sec = 30;
+        tv.tv_sec = AFPSL_IPC_SILENCE_SECONDS;
         tv.tv_usec = 0;
         ret = select(fd + 1, &rds, NULL, NULL, &tv);
+
+        if (ret < 0 && errno == EINTR) {
+            continue;
+        }
 
         if (ret <= 0) {
             return -1;
@@ -683,6 +784,43 @@ static int read_bytes_with_timeout(int fd, char *buf, size_t len)
     }
 
     return 0;
+}
+
+/*!
+ * @brief Read the first len bytes of the daemon's answer to a command
+ *
+ * The frames that say the command still runs come before the answer, and
+ * are skipped.
+ *
+ * @param[in]  fd   the connection to the daemon
+ * @param[out] buf  receives the bytes, a response header's worth at least
+ * @param[in]  len  bytes to read
+ * @returns 0, or -1 when a read fails or waits AFPSL_IPC_SILENCE_SECONDS
+ */
+int afp_sl_read_answer_start(int fd, char *buf, size_t len)
+{
+    struct afpsl_ipc_response_header header;
+    struct afpsl_ipc_log_footer footer;
+
+    while (1) {
+        if (read_bytes_with_timeout(fd, (char *) &header, sizeof(header)) < 0) {
+            return -1;
+        }
+
+        if (header.result != AFPSL_IPC_RESULT_WORKING) {
+            break;
+        }
+
+        if (header.len != sizeof(header) + sizeof(footer)
+                || read_bytes_with_timeout(fd, (char *) &footer,
+                                           sizeof(footer)) < 0) {
+            return -1;
+        }
+    }
+
+    memcpy(buf, &header, sizeof(header));
+    return read_bytes_with_timeout(fd, buf + sizeof(header),
+                                   len - sizeof(header));
 }
 
 static int send_command(unsigned int len, const char *data, unsigned int num)
@@ -995,6 +1133,22 @@ int afp_sl_open(afpc_volume_t *volid, const char *path, struct afpc_url *url,
 }
 
 
+/*!
+ * @brief Read from an open file through the daemon
+ *
+ * A length past the daemon's limit reads that much, and received says how
+ * much.
+ *
+ * @param[in]  volid     the volume of the file
+ * @param[in]  fileid    the handle that afp_sl_open() gave
+ * @param[in]  resource  unused
+ * @param[in]  start     byte offset to read from
+ * @param[in]  length    bytes to read
+ * @param[out] received  the bytes read
+ * @param[out] eof       1 when the read reached the end of the file
+ * @param[out] data      receives the bytes, length of them at most
+ * @returns 0, or a negative errno
+ */
 int afp_sl_read(afpc_volume_t *volid, unsigned int fileid,
                 unsigned int resource,
                 unsigned long long start,
@@ -1006,6 +1160,12 @@ int afp_sl_read(afpc_volume_t *volid, unsigned int fileid,
     char *tail = NULL;
     size_t payload_size = 0;
     int ret;
+
+    /* A larger read goes in pieces: received says how far it got. */
+    if (length > AFPSL_IPC_MAX_READ) {
+        length = AFPSL_IPC_MAX_READ;
+    }
+
     ret = ensure_daemon_connection();
 
     if (ret) {
@@ -1027,8 +1187,8 @@ int afp_sl_read(afpc_volume_t *volid, unsigned int fileid,
     }
 
     /* Read just the response header first */
-    ret = read_bytes_with_timeout(connection.fd, (char *)&response,
-                                  sizeof(response));
+    ret = afp_sl_read_answer_start(connection.fd, (char *)&response,
+                                   sizeof(response));
 
     if (ret < 0) {
         stateless_log_message(LOG_ERR,
@@ -1065,6 +1225,20 @@ int afp_sl_read(afpc_volume_t *volid, unsigned int fileid,
     return 0;
 }
 
+/*!
+ * @brief Write to an open file through the daemon
+ *
+ * A size past the daemon's limit writes that much, and written says how much.
+ *
+ * @param[in]  volid     the volume of the file
+ * @param[in]  fileid    the handle that afp_sl_open() gave
+ * @param[in]  resource  unused
+ * @param[in]  offset    byte offset to write at
+ * @param[in]  size      length of data
+ * @param[out] written   the bytes written
+ * @param[in]  data      the bytes to write
+ * @returns 0, or a negative errno
+ */
 int afp_sl_write(afpc_volume_t *volid, unsigned int fileid,
                  unsigned int resource,
                  unsigned long long offset, unsigned int size,
@@ -1075,6 +1249,12 @@ int afp_sl_write(afpc_volume_t *volid, unsigned int fileid,
     char *tail = NULL;
     size_t payload_size = 0;
     int ret;
+
+    /* A larger write goes in pieces: written says how far it got. */
+    if (size > AFPSL_IPC_MAX_WRITE) {
+        size = AFPSL_IPC_MAX_WRITE;
+    }
+
     ret = ensure_daemon_connection();
 
     if (ret) {
@@ -1107,8 +1287,8 @@ int afp_sl_write(afpc_volume_t *volid, unsigned int fileid,
     }
 
     /* Read response */
-    ret = read_bytes_with_timeout(connection.fd, (char *)&response,
-                                  sizeof(response));
+    ret = afp_sl_read_answer_start(connection.fd, (char *)&response,
+                                   sizeof(response));
 
     if (ret < 0) {
         stateless_log_message(LOG_ERR, "Error reading write response");
@@ -1217,8 +1397,8 @@ static int metadata_call(unsigned int command, afpc_volume_t *volid,
         return -ECONNRESET;
     }
 
-    ret = read_bytes_with_timeout(connection.fd, (char *)&response,
-                                  sizeof(response));
+    ret = afp_sl_read_answer_start(connection.fd, (char *)&response,
+                                   sizeof(response));
 
     if (ret < 0) {
         close_connection();
@@ -1376,8 +1556,8 @@ static int desktop_read_data(struct afpsl_ipc_desktop_data_response *response,
     char *tail = NULL;
     size_t content_len;
     int ret;
-    ret = read_bytes_with_timeout(connection.fd, (char *)response,
-                                  sizeof(*response));
+    ret = afp_sl_read_answer_start(connection.fd, (char *)response,
+                                   sizeof(*response));
 
     if (ret < 0 || response->header.len < sizeof(*response)
             + sizeof(struct afpsl_ipc_log_footer)
@@ -1675,6 +1855,12 @@ enum afp_sl_recovery_action afp_sl_recovery_for_error(int result)
     return AFP_SL_RECOVERY_NONE;
 }
 
+/*!
+ * @brief Give the errno of an answer's result
+ *
+ * @param[in] result  an AFPSL_IPC_RESULT_ code
+ * @returns 0, also for an answer that counts as success, or a negative errno
+ */
 static int server_result_to_errno(int result)
 {
     switch (result) {
@@ -1710,6 +1896,9 @@ static int server_result_to_errno(int result)
 
     case AFPSL_IPC_RESULT_ENOTEMPTY:
         return -ENOTEMPTY;
+
+    case AFPSL_IPC_RESULT_BUSY:
+        return -EBUSY;
 
     case AFPSL_IPC_RESULT_TIMEDOUT:
         return -ETIMEDOUT;
@@ -2278,6 +2467,73 @@ int afp_sl_close(afpc_volume_t *volid, unsigned int fileid)
     return server_result_to_errno(response.header.result);
 }
 
+/*!
+ * @brief Copy between two open files of a volume through the daemon
+ *
+ * A length of 0 sends nothing, so it asks whether the daemon copies.
+ *
+ * @param[in]  volid          the volume of the files
+ * @param[in]  source_fileid  the handle of the source
+ * @param[in]  source_offset  byte offset to copy from
+ * @param[in]  target_fileid  the handle of the target
+ * @param[in]  target_offset  byte offset to copy to
+ * @param[in]  length         bytes to copy
+ * @param[in]  flags          zero or afp_sl_copy_flag
+ * @param[out] copied         the bytes copied, or NULL
+ * @returns 0, or a negative errno, -ENOTSUP for a daemon that does not copy
+ */
+int afp_sl_copy(afpc_volume_t *volid, unsigned int source_fileid,
+                unsigned long long source_offset, unsigned int target_fileid,
+                unsigned long long target_offset, unsigned long long length,
+                unsigned int flags, unsigned long long *copied)
+{
+    struct afpsl_ipc_copy_request request;
+    struct afpsl_ipc_copy_response response;
+    int ret = ensure_daemon_connection();
+
+    if (ret) {
+        return ret;
+    }
+
+    if (!(connection.features & AFPSL_IPC_FEATURE_COPY)) {
+        return -ENOTSUP;
+    }
+
+    if (copied) {
+        *copied = 0;
+    }
+
+    if (length == 0) {
+        return 0;
+    }
+
+    memset(&request, 0, sizeof(request));
+    request.header.close = 0;
+    request.header.len = sizeof(request);
+    request.header.command = AFPSL_IPC_COMMAND_COPY;
+    memcpy(&request.volumeid, volid, sizeof(afpc_volume_t));
+    request.source_fileid = source_fileid;
+    request.target_fileid = target_fileid;
+    request.source_offset = source_offset;
+    request.target_offset = target_offset;
+    request.length = length;
+    request.flags = flags;
+    ret = send_to_daemon((char *)&request, sizeof(request), (char *)&response,
+                         sizeof(response));
+
+    if (ret != 0) {
+        return ret;
+    }
+
+    ret = server_result_to_errno(response.header.result);
+
+    if (copied && ret == 0) {
+        *copied = response.copied;
+    }
+
+    return ret;
+}
+
 int afp_sl_readdir(afpc_volume_t *volid, const char *path,
                    struct afpc_url * url,
                    int start, int count, unsigned int *numfiles,
@@ -2620,6 +2876,17 @@ int afp_sl_resume(struct afpc_url *url, unsigned int uam_mask,
                                      loginmesg);
 }
 
+/*!
+ * @brief Attach a volume of a connected server through the daemon
+ *
+ * @param[in]  serverid        the server the volume belongs to
+ * @param[in]  url             names the volume and its password
+ * @param[in]  volume_options  zero or afp_sl_volume_option flags
+ * @param[out] volumeid        the attached volume, or NULL
+ * @param[out] status          whether a volume password is needed, or NULL
+ * @returns 0, or a negative errno, -ENOTSUP for AFP_SL_VOLUME_DENY_WRITE
+ *          asked of a daemon that does not honour it
+ */
 int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
                   unsigned int volume_options, afpc_volume_t *volumeid,
                   enum afp_sl_attach_status *status)
@@ -2627,6 +2894,7 @@ int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
     struct afpsl_ipc_attach_request req;
     struct afpsl_ipc_attach_response * response;
     int ret;
+    int deny_write = (volume_options & AFP_SL_VOLUME_DENY_WRITE) != 0;
 
     if (status) {
         *status = AFP_SL_ATTACH_STATUS_NONE;
@@ -2640,6 +2908,10 @@ int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
 
     if (ret) {
         return ret;
+    }
+
+    if (deny_write && !(connection.features & AFPSL_IPC_FEATURE_DENY_WRITE)) {
+        return -ENOTSUP;
     }
 
     response = (void *) connection.data;
@@ -2667,6 +2939,8 @@ int afp_sl_attach(afpc_server_t serverid, struct afpc_url * url,
     /* Treat "already attached" as success since we have a valid volumeid */
     if (ret == AFPSL_IPC_RESULT_OK
             || ret == AFPSL_IPC_RESULT_ALREADY_ATTACHED) {
+        deny_write_requested = deny_write;
+
         if (volumeid) {
             memcpy(volumeid, &response->volumeid, sizeof(afpc_volume_t));
         }
@@ -2856,10 +3130,21 @@ int afp_sl_serverinfo(struct afpc_url * url, struct afpc_server_info * basic)
     return ret;
 }
 
+/*!
+ * @brief Disconnect a session and end the connection to the daemon
+ *
+ * The call returns once the daemon has closed the connection, so an exit
+ * sent next, which takes no lock of the disconnect's, counts this
+ * connection gone.
+ *
+ * @param[in,out] id  the session, set to NULL once it is disconnected
+ * @returns 0, or a negative errno
+ */
 int afp_sl_disconnect(afpc_server_t *id)
 {
     struct afpsl_ipc_disconnect_request req;
     struct afpsl_ipc_disconnect_response response = { 0 };
+    char end;
     int ret;
 
     if (!id || !*id) {
@@ -2879,6 +3164,7 @@ int afp_sl_disconnect(afpc_server_t *id)
         return ret;
     }
 
+    (void) read_bytes_with_timeout(connection.fd, &end, 1);
     close_connection();
     ret = server_result_to_errno(response.header.result);
 
