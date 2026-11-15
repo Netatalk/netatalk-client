@@ -4,9 +4,10 @@
 # helper and perf move only when the pin moves. test/perf/Dockerfile puts the
 # client of each PR on top.
 #
-# BASE_IMAGE is the netatalk testsuite image built with BUILDTYPE=release at
-# the commit .github/workflows/perf.yml pins; the caller passes it with
-# --build-arg, as the workflow and test/perf/README.md do.
+# BASE_IMAGE is the netatalk testsuite image at the commit
+# .github/workflows/perf.yml pins, built with BUILDTYPE=release and
+# SQLITE_FROM_SOURCE=true; the caller passes it with --build-arg, as the
+# workflow and test/perf/README.md do.
 
 ARG BASE_IMAGE
 

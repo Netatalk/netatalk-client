@@ -24,7 +24,7 @@ env:
   # history and publish tooling is this repository's. A bump moves every
   # absolute figure; the dashboard's 30-PR rolling average absorbs the
   # step within weeks.
-  NETATALK_REF: e031a2484595edcea81cbf82b77ad318b2568ced
+  NETATALK_REF: 8cc6852d9687d0f81f6be8fcef63580a8cabd45a
   # Server and client configuration shared by the benchmark jobs. The values
   # reach the container through an env file and the chart labels through
   # --meta, so the plot header always shows the real configuration. They
@@ -102,12 +102,14 @@ jobs:
       - name: Build and push the server base image
         if: ${{ steps.base.outputs.present == '0' }}
         run: |
-          # The netatalk testsuite image (release build) at NETATALK_REF, then
-          # the packages every run needs on top, so the server, Samba, libfuse
-          # and perf move only when the pin moves.
+          # The netatalk testsuite image at NETATALK_REF, built as netatalk's
+          # perf image is (release, the newest SQLite release from source),
+          # then the packages every run needs on top, so the server, SQLite,
+          # Samba, libfuse and perf move only when the pin moves.
           docker build \
             --file netatalk/distrib/docker/testsuite_alp.Dockerfile \
             --build-arg BUILDTYPE=release \
+            --build-arg SQLITE_FROM_SOURCE=true \
             --tag netatalk-testsuite-perf netatalk
           docker build \
             --file test/perf/base.Dockerfile \
