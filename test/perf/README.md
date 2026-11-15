@@ -127,7 +127,8 @@ NETATALK_REF=$(sed -n 's/^  NETATALK_REF: //p' .github/workflows/perf.yml)
 mkdir -p /tmp/netatalk-perf-base
 git -C /path/to/netatalk archive "$NETATALK_REF" | tar -x -C /tmp/netatalk-perf-base
 docker build -f /tmp/netatalk-perf-base/distrib/docker/testsuite_alp.Dockerfile \
-    --build-arg BUILDTYPE=release -t netatalk-testsuite-perf /tmp/netatalk-perf-base
+    --build-arg BUILDTYPE=release --build-arg SQLITE_FROM_SOURCE=true \
+    -t netatalk-testsuite-perf /tmp/netatalk-perf-base
 docker build -f test/perf/base.Dockerfile --build-arg BASE_IMAGE=netatalk-testsuite-perf \
     -t netatalk-client-perf-base .
 docker build -f test/perf/Dockerfile --build-arg BASE_IMAGE=netatalk-client-perf-base \
@@ -187,7 +188,8 @@ vfs_lantest -c -n 20 -P /mnt/smb > lantest-smb.csv
 
 Change `NETATALK_REF` in `.github/workflows/perf.yml` to the new netatalk
 commit, any commit on `main`; the next run builds and pushes the base image
-for it, with the server at that commit and the Alpine packages of that day.
+for it, with the server at that commit, the newest SQLite release and the
+Alpine packages of that day.
 Every other PR reuses the base, so the server side of both protocols stays
 identical across PRs and the PR that moves the pin is the one whose
 dashboard shows the server's effect. The base image tag carries the pin and
