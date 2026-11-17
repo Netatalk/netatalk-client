@@ -44,6 +44,9 @@ communicates with
 and is present only when FUSE support was built. It provides structured
 mounting and FUSE mount lifecycle commands. The mount options are the same as
 the former AFP client mount command.
+On Linux,
+.Cm unmount
+also releases a mount whose daemon ended.
 .Pp
 Unqualified controller commands such as
 .Dq afpc status
@@ -176,6 +179,53 @@ An open for reading denies nothing, and no read or write sends a byte-range
 lock.
 .Cm no
 is the default.
+.It Fl -foreground
+Run the mount's
+.Xr afpfsd 1
+as a child of
+.Nm ,
+without the manager, and return when the mount ends.
+The daemon logs to the standard output of
+.Nm .
+.Pp
+With libfuse 3 outside macOS, the first
+.Dv SIGINT ,
+.Dv SIGQUIT ,
+.Dv SIGTERM ,
+or
+.Dv SIGHUP
+to
+.Nm
+unmounts the mount, which ends the daemon.
+Elsewhere the daemon cannot unmount its mount, and the mount waits for
+.Xr umount 8 .
+A second signal ends the daemon at once, except
+.Dv SIGHUP ,
+which a hangup sends twice.
+A signal ignored when
+.Nm
+starts, as under
+.Xr nohup 1 ,
+stays ignored.
+.Nm afpc fs exit
+ends such a mount too, as it ends every mount of the user, and
+.Nm
+then returns 0.
+Where the daemon cannot unmount its mount, the exit ends only the daemon.
+.Pp
+Only with this option may the
+.Ar mountpoint
+be
+.Pa /dev/fd/ Ns Ar N ,
+a descriptor of
+.Pa /dev/fuse
+that the process starting
+.Nm
+opened and mounted.
+The daemon serves it without mounting, so the client runs where it may not
+mount, as in a container without privileges.
+The starting process unmounts it once the daemon ends.
+This needs libfuse 3.3 or later on Linux.
 .El
 .Pp
 For a direct mount, specify both

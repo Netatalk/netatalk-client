@@ -972,7 +972,7 @@ done:
  * @brief Answer an afpsld serverinfo request with a server's details
  *
  * A server this daemon has a session with answers from it; another is asked
- * over a connection made for the request and removed after it.
+ * for its status over a connection of its own, and no session opens.
  *
  * @param[in,out] c  the client, whose complete packet holds the request
  * @returns 0 once it sends the response, or AFPSL_IPC_RESULT_ERROR to close
@@ -1020,29 +1020,25 @@ static unsigned char process_serverinfo(struct daemon_client * c)
         afp_server_fill_basic(tmpserver, &response.server_basic);
     } else {
         struct addrinfo *address;
+        struct afp_server_status status;
+        struct afp_server probe;
+        int rc;
 
         if ((address = afp_get_address(NULL, req->url.servername,
                                        req->url.port)) == NULL) {
             goto error;
         }
 
-        if ((tmpserver = afp_server_init(address)) == NULL) {
+        rc = afp_server_probe(address, &status, NULL);
+        freeaddrinfo(address);
+
+        if (rc != 0) {
             goto error;
         }
 
-        if (afp_server_connect(tmpserver, 1) < 0) {
-            /* A failed status read leaves the server listed; one that never
-             * connected is not listed, and the release below frees it. */
-            if (afp_server_remove(tmpserver) == 0) {
-                tmpserver = NULL;
-            }
-
-            goto error;
-        }
-
-        afp_server_fill_basic(tmpserver, &response.server_basic);
-        afp_server_remove(tmpserver);
-        tmpserver = NULL;  /* Already freed by remove, don't release again */
+        memset(&probe, 0, sizeof(probe));
+        afp_server_adopt_status(&probe, &status);
+        afp_server_fill_basic(&probe, &response.server_basic);
     }
 
     response.header.result = AFPSL_IPC_RESULT_OK;
@@ -2259,9 +2255,9 @@ done:
 /*!
  * @brief Whether two handles name one fork of one file
  *
- * The file's node ID tells where both records carry one, which a session
- * reports on Netatalk at AFP 3.4 and below AFP 3.0; elsewhere the records'
- * directory and name tell.
+ * The file's node ID tells where both records carry one. A session reports
+ * it below AFP 3.0, and for a data fork on a server that announces
+ * FPCopyFile. Elsewhere the records' directory and name tell.
  *
  * @param[in] a  a handle
  * @param[in] b  another
@@ -3103,16 +3099,16 @@ static struct afp_server *find_resumable_server_hold(void *priv,
 }
 
 /*!
- * @brief Find the disconnected session a connect reaches, by server signature
+ * @brief Find the one disconnected server a reconnect reaches, by signature
  *
- * @param[in]  priv              the client, for the log
- * @param[in]  url               the URL
- * @param[in]  uam_mask          the UAMs allowed, or 0 for any
- * @param[out] resolved_address  receives the URL's addresses on a match, or
- *                               NULL
- * @param[out] error             receives EEXIST for several, EPROTO for a
- *                               server whose signature is missing or
- *                               another's, or ENOTCONN, or NULL
+ * @param[in]  priv              the client, for log lines
+ * @param[in]  url               the request's server and login
+ * @param[in]  uam_mask          the UAMs the request allows, or 0 for any
+ * @param[out] resolved_address  receives the URL's addresses on a match,
+ *                               or NULL
+ * @param[out] error             receives why none matched, or NULL: EEXIST
+ *                               for several, EPROTO for a missing or
+ *                               differing signature, else ENOTCONN
  * @returns the server, held, or NULL
  */
 static struct afp_server *find_disconnected_server_hold(void *priv,
@@ -3123,10 +3119,11 @@ static struct afp_server *find_disconnected_server_hold(void *priv,
 {
     struct afp_server *match = NULL;
     struct addrinfo *address = NULL;
-    char signature[AFP_SIGNATURE_LEN];
+    struct afp_server_status status;
     int matches = 0;
     int possible = 0;
     int identity_mismatch = 0;
+    int rc;
 
     if (error) {
         *error = ENOTCONN;
@@ -3161,8 +3158,14 @@ static struct afp_server *find_disconnected_server_hold(void *priv,
         goto done;
     }
 
-    if (afp_server_probe_signature(address, signature) != 0) {
-        if (error && errno == EPROTO) {
+    rc = afp_server_probe(address, &status, NULL);
+
+    if (rc == 0 && !afp_signature_is_valid(status.signature)) {
+        rc = -EPROTO;
+    }
+
+    if (rc != 0) {
+        if (error && rc == -EPROTO) {
             *error = EPROTO;
         }
 
@@ -3181,7 +3184,8 @@ static struct afp_server *find_disconnected_server_hold(void *priv,
         }
 
         if (!afp_server_has_valid_signature(s)
-                || memcmp(s->signature, signature, sizeof(signature)) != 0) {
+                || memcmp(s->signature, status.signature,
+                          sizeof(status.signature)) != 0) {
             /* This only associates a reconnect request with a saved session
              * after the signature probe. AFP's advertised name is not a URL
              * authority, so it cannot be used here. */

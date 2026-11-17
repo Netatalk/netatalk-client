@@ -64,7 +64,6 @@ elif host_os == 'sunos'
 elif host_os in ['dragonfly', 'freebsd', 'openbsd']
     libsearch_dirs += '/usr/local/lib'
     include_dirs += ['/usr/local/include']
-    cflags += '-DLIBICONV_PLUG'
 elif host_os == 'netbsd'
     libsearch_dirs += '/usr/pkg/lib'
     include_dirs += ['/usr/pkg/include']
@@ -73,30 +72,7 @@ endif
 readline_dep = cc.find_library('readline', dirs: libsearch_dirs, required: false)
 editline_dep = dependency('libedit', required: false)
 pthread_dep = dependency('threads')
-libiconv_dep = cc.find_library('iconv', dirs: libsearch_dirs, required: false)
 libbsd_dep = cc.find_library('bsd', dirs: libsearch_dirs, required: false)
-
-iconv_check_deps = []
-if libiconv_dep.found()
-    iconv_check_deps += libiconv_dep
-endif
-
-# POSIX specifies char ** for iconv()'s input buffer, while Solaris and some
-# other historical implementations declare it as const char **.
-if cc.compiles(
-    '''
-    #include <stdlib.h>
-    #include <iconv.h>
-    extern size_t iconv(iconv_t cd, const char **inbuf, size_t *inbytesleft,
-                        char **outbuf, size_t *outbytesleft);
-    ''',
-    args: cflags,
-    dependencies: iconv_check_deps,
-    include_directories: include_directories(include_dirs),
-    name: 'iconv with const inbuf',
-)
-    cflags += '-DICONV_CONST=const'
-endif
 
 root_dependencies = [pthread_dep]
 cmdline_dependencies = []

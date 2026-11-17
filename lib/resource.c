@@ -400,8 +400,8 @@ int appledouble_unlink(struct afp_volume * volume, const char *path)
  * @brief Close an AppleDouble pseudo-file
  *
  * Flushes a written resource fork first, on a flush_on_close mount or with
- * FPFlushFork on an Apple server. The fork then closes and leaves the
- * volume's open-fork list.
+ * FPFlushFork on an Apple server. The record then leaves the volume's
+ * open-fork list, its fork closed if it has one.
  *
  * @param[in]     volume  volume of the file
  * @param[in,out] fp      the open pseudo-file
@@ -415,15 +415,23 @@ int appledouble_close(struct afp_volume * volume, struct afp_file_info * fp)
 
     switch (fp->resource) {
     case AFP_META_RESOURCE:
+
+        /* Fork 0: a new session or an open that named fork 0 left no fork;
+         * the open leaves its record listed. */
+        if (__atomic_load_n(&fp->forkid, __ATOMIC_ACQUIRE) == 0) {
+            remove_opened_fork(volume, fp);
+            return 0;
+        }
+
         ret = ml_close_flush(volume, fp);
 
         if (ret == 0 && fp->dirty && afp_server_is_apple(volume->server)
-                && afp_flushfork(volume, fp->forkid,
+                && afp_flushfork(volume, fork_number(volume, fp),
                                  DSI_DEFAULT_TIMEOUT) != kFPNoErr) {
             ret = -EIO;
         }
 
-        rc = afp_closefork(volume, fp->forkid);
+        rc = close_fork(volume, fp);
         remove_opened_fork(volume, fp);
 
         /* Netatalk dates a written resource fork at its close. */

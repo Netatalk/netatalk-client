@@ -95,35 +95,36 @@ static int byte_range(struct afp_volume * volume, unsigned char flag,
  * @brief Unlock a byte range of an open fork
  *
  * @param[in] volume         volume of the fork
- * @param[in] forkid         the open fork
+ * @param[in] fp             the open fork's record
  * @param[in] offset         start of the range
  * @param[in] sizetorequest  bytes of the range
  * @returns 0, or -EIO when the server does not release the range
  */
-int ll_handle_unlocking(struct afp_volume * volume, unsigned short forkid,
+int ll_handle_unlocking(struct afp_volume * volume,
+                        const struct afp_file_info *fp,
                         uint64_t offset, uint64_t sizetorequest)
 {
     if (volume->extra_flags & VOLUME_EXTRA_FLAGS_NO_LOCKING) {
         return 0;
     }
 
-    return byte_range(volume, ByteRangeLock_Unlock, forkid, offset,
-                      sizetorequest) == kFPNoErr ? 0 : -EIO;
+    return byte_range(volume, ByteRangeLock_Unlock, fork_number(volume, fp),
+                      offset, sizetorequest) == kFPNoErr ? 0 : -EIO;
 }
 
 /*!
- * @brief Lock a byte range of an open fork, trying again while another
- *        user holds some of it
+ * @brief Lock a fork's byte range, retrying while another user holds any of it
  *
  * @param[in] volume         volume of the fork
- * @param[in] forkid         the open fork
+ * @param[in] fp             the open fork's record
  * @param[in] offset         start of the range
  * @param[in] sizetorequest  bytes of the range
  * @returns 0, -EBUSY when the range stays held through every try, -ENOLCK
  *          when the server has no lock left, or -EIO for another answer or
  *          a request that fails
  */
-int ll_handle_locking(struct afp_volume * volume, unsigned short forkid,
+int ll_handle_locking(struct afp_volume * volume,
+                      const struct afp_file_info *fp,
                       uint64_t offset, uint64_t sizetorequest)
 {
     struct timespec retry = { 0, AFP_LOCK_RETRY_NSEC };
@@ -138,8 +139,8 @@ int ll_handle_locking(struct afp_volume * volume, unsigned short forkid,
             nanosleep(&retry, NULL);
         }
 
-        switch (byte_range(volume, ByteRangeLock_Lock, forkid, offset,
-                           sizetorequest)) {
+        switch (byte_range(volume, ByteRangeLock_Lock, fork_number(volume, fp),
+                           offset, sizetorequest)) {
         case kFPNoErr:
             return 0;
 
@@ -204,7 +205,8 @@ int ll_setfork_size(struct afp_volume * volume, struct afp_file_info *fp,
     }
 
     bitmap = fork_length_bit(volume, resource);
-    ret = afp_setforkparms(volume, fp->forkid, (unsigned short) bitmap, size);
+    ret = afp_setforkparms(volume, fork_number(volume, fp),
+                           (unsigned short) bitmap, size);
     /* Forget whatever the answer, as afpd may refuse after cutting the fork. */
     ll_fork_changed(volume, fp);
 
@@ -493,8 +495,11 @@ int ll_open(struct afp_volume * volume,
     /* The open reports the node ID a server copy checks the name against,
      * and the data fork's length, which bounds a flush's wait. */
     if (!resource && afp_server_reports_fork_length(volume->server)) {
-        bitmap = kFPExtDataForkLenBit
-                 | (afp_server_copies_files(volume->server) ? kFPNodeIDBit : 0);
+        bitmap = kFPExtDataForkLenBit;
+    }
+
+    if (!resource && afp_server_copies_files(volume->server)) {
+        bitmap |= kFPNodeIDBit;
     }
 
     /* The kernel sends a file's release after its close(2) returns, so an
@@ -523,7 +528,10 @@ int ll_open(struct afp_volume * volume,
                 fp->stale = 1;
             }
 
-            add_opened_fork(volume, fp);
+            /* The fork's session has ended since the open. */
+            if (add_opened_fork(volume, fp) != 0) {
+                dsi_ret = kFPMiscErr;
+            }
         }
 
         pthread_rwlock_unlock(&volume->open_lock);
@@ -551,7 +559,7 @@ int ll_open(struct afp_volume * volume,
         if (ret != 0) {
             /* The caller frees the record: the fork closes and the record
              * leaves the list first. */
-            afp_closefork(volume, fp->forkid);
+            close_fork(volume, fp);
             remove_opened_fork(volume, fp);
             goto error;
         }
@@ -648,7 +656,7 @@ int ll_read(struct afp_volume * volume,
 
     /* Fork 0: a server-side copy keeps the handle's fork closed, or leaves
      * the handle without one. */
-    if (fp->forkid == 0) {
+    if (__atomic_load_n(&fp->forkid, __ATOMIC_RELAXED) == 0) {
         return -EIO;
     }
 
@@ -705,10 +713,11 @@ int ll_read(struct afp_volume * volume,
         buffer.errorcode = 0;
 
         if (volume->server->using_version->av_number < 30) {
-            rc = afp_read(volume, fp->forkid, (uint32_t)read_offset,
-                          (uint32_t)chunksize, &buffer);
+            rc = afp_read(volume, fork_number(volume, fp),
+                          (uint32_t)read_offset, (uint32_t)chunksize,
+                          &buffer);
         } else {
-            rc = afp_readext(volume, fp->forkid, read_offset,
+            rc = afp_readext(volume, fork_number(volume, fp), read_offset,
                              (uint64_t)chunksize, &buffer);
         }
 
@@ -1016,7 +1025,7 @@ int ll_write(struct afp_volume * volume,
 
     /* Fork 0: a server-side copy keeps the handle's fork closed, or leaves
      * the handle without one. */
-    if (fp->forkid == 0) {
+    if (__atomic_load_n(&fp->forkid, __ATOMIC_RELAXED) == 0) {
         return -EIO;
     }
 
@@ -1036,7 +1045,7 @@ int ll_write(struct afp_volume * volume,
         return 0;
     }
 
-    err = -ll_handle_locking(volume, fp->forkid, offset, size);
+    err = -ll_handle_locking(volume, fp, offset, size);
 
     if (err) {
         goto error;
@@ -1067,14 +1076,14 @@ int ll_write(struct afp_volume * volume,
 
         if (volume->server->using_version->av_number < 30) {
             uint32_t written32 = 0;
-            ret = afp_write(volume, fp->forkid,
+            ret = afp_write(volume, fork_number(volume, fp),
                             append ? AFP_WRITE_FROM_END : 0,
                             (uint32_t) write_offset,
                             (uint32_t) sizetowrite,
                             (char *) data + o, &written32);
             reply_offset = written32;
         } else {
-            ret = afp_writeext(volume, fp->forkid,
+            ret = afp_writeext(volume, fork_number(volume, fp),
                                append ? AFP_WRITE_FROM_END : 0,
                                write_offset, sizetowrite,
                                (char *) data + o, &reply_offset);
@@ -1130,7 +1139,7 @@ int ll_write(struct afp_volume * volume,
         fp->dirty = 1;
     }
 
-    if (ll_handle_unlocking(volume, fp->forkid, offset, size)) {
+    if (ll_handle_unlocking(volume, fp, offset, size)) {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
                        "ll_write: the server refused the unlock");
     }
@@ -1149,7 +1158,7 @@ error:
     /* A refused or unanswered chunk may have landed; a refused lock sent
      * none. */
     if (locked) {
-        ll_handle_unlocking(volume, fp->forkid, offset, size);
+        ll_handle_unlocking(volume, fp, offset, size);
         fp->dirty = 1;
         ll_fork_changed(volume, fp);
     }

@@ -18,6 +18,47 @@ test(
     verbose: true,
 )
 
+connect_test = executable(
+    'test_connect',
+    sources: files(
+        'afp_fake_server.c',
+        'test_connect.c',
+    ),
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'server connect and status',
+    connect_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+reconnect_test = executable(
+    'test_reconnect',
+    sources: files(
+        'afp_fake_server.c',
+        'test_reconnect.c',
+    ),
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'reconnect into the session',
+    reconnect_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    timeout: 90,
+    verbose: true,
+)
+
 copy_range_test = executable(
     'test_copy_range',
     sources: files(

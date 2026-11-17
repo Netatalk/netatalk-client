@@ -10,10 +10,10 @@ Protocol features
   * server-authoritative UUID/name mapping via FPMapID and FPMapName
 * Connection continuity and recovery
   * recovery state machine, shutdown policy, and status reporting
-  * server identity, session-token, and Reconnect UAM recovery
+  * Reconnect UAM recovery
   * safe reopening of active forks after a new AFP session
   * persistent lock recovery, if the client adds persistent lock support
-  * fault-injection tests for transport loss and server shutdown
+  * fault-injection tests for server shutdown
 
 Authentication
 --------------
@@ -31,8 +31,6 @@ Performance
 -----------
 
 * asynchronous unlocking
-* queue writes to be one quantum
-* optimize locking
 * don't go back through the select loop to read what comes after the DSI
 packet
 * make a preallocated pool of dsi requests

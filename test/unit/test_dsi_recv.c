@@ -7,6 +7,11 @@
     See the file COPYING.
 */
 
+/*!
+ * @file
+ * @brief Unit tests of a session's DSI receive path and its connect
+ */
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -810,7 +815,7 @@ static int listener_open(struct listener *l)
     if (fcntl(l->fd, F_SETFL, O_NONBLOCK) != 0
             || bind(l->fd, (struct sockaddr *) &l->addr, sizeof(l->addr)) != 0
             || getsockname(l->fd, (struct sockaddr *) &l->addr, &len) != 0
-            || listen(l->fd, 1) != 0) {
+            || listen(l->fd, 4) != 0) {
         listener_close(l);
         return -1;
     }
@@ -1155,6 +1160,23 @@ static int utest_server_valid_until_removed(void)
 }
 
 /*!
+ * @brief Wait for the end of a session's connection at the test's end
+ *
+ * A shutdown does not end an AF_UNIX connection everywhere; the close the
+ * loop makes between two passes does.
+ *
+ * @param[in] peer  the test's end
+ * @returns 1 once it reads the end, 0 otherwise
+ */
+static int peer_ended(int peer)
+{
+    struct pollfd pfd = { peer, POLLIN, 0 };
+    char byte;
+    return poll(&pfd, 1, 2000) == 1
+           && recv(peer, &byte, 1, MSG_DONTWAIT) == 0;
+}
+
+/*!
  * @brief A disconnect ends a server already marked disconnected
  *
  * The request waiting on a server marked disconnected while its descriptor is
@@ -1166,7 +1188,6 @@ static int utest_disconnect_ends_a_disconnected_server(void)
 {
     struct session s;
     struct dsi_request waiting;
-    char byte;
     int ret = 0;
 
     if (session_open(&s, 4096) != 0) {
@@ -1181,7 +1202,7 @@ static int utest_disconnect_ends_a_disconnected_server(void)
         ret = 2;
     } else if (s.server->fd != -1) {
         ret = 3;
-    } else if (recv(s.peer, &byte, 1, MSG_DONTWAIT) != 0) {
+    } else if (!peer_ended(s.peer)) {
         ret = 4;
     }
 
@@ -1352,6 +1373,21 @@ static int is_socket_pair_end(int fd)
 }
 
 /*!
+ * @brief Wait up to 2 s for the loop to close a descriptor a disconnect took
+ *
+ * @param[in] fd  the descriptor
+ * @returns 1 once it is closed, 0 while it stays open
+ */
+static int descriptor_closed(int fd)
+{
+    for (int i = 0; i < 200 && fcntl(fd, F_GETFD) != -1; i++) {
+        sleep_ms(10);
+    }
+
+    return fcntl(fd, F_GETFD) == -1;
+}
+
+/*!
  * @brief A connect closes the old descriptor only after the frame in flight
  *
  * A sender holds send_mutex while it writes a frame. A connect that takes
@@ -1423,10 +1459,10 @@ static int utest_connect_waits_for_the_frame_in_flight(void)
 }
 
 /*!
- * @brief A disconnect closes the descriptor only after the frame in flight
+ * @brief A disconnect lets the descriptor close only after the frame in flight
  *
  * A sender holds send_mutex while it writes a frame. A disconnect that takes
- * the descriptor meanwhile waits for the frame before it closes the
+ * the descriptor meanwhile waits for the frame before the loop closes the
  * descriptor, so no frame's tail reaches a descriptor number reused since.
  *
  * @returns 0, or the number of the step that failed
@@ -1462,7 +1498,7 @@ static int utest_disconnect_waits_for_the_frame_in_flight(void)
     pthread_mutex_unlock(&s.server->send_mutex);
     pthread_join(thread, NULL);
 
-    if (ret == 0 && fcntl(old_fd, F_GETFD) != -1) {
+    if (ret == 0 && !descriptor_closed(old_fd)) {
         ret = 5;
     }
 
@@ -1691,6 +1727,67 @@ static const struct dsi_request *wait_for_deadline(struct afp_server *server)
     }
 
     return NULL;
+}
+
+/*!
+ * @brief A request queued before a reconnect replaced its connection fails
+ *        unsent
+ *
+ * The receiver would drop its reply, which comes on the next connection, and
+ * the sender would wait out its time.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_request_of_a_replaced_connection_fails_unsent(void)
+{
+    struct session s;
+    struct sender sender;
+    pthread_t thread;
+    char byte;
+    int queued = 0;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    sender.server = s.server;
+    sender.wait = 1;
+    sender.result = 1;
+    /* Another sender's frame is being written. */
+    pthread_mutex_lock(&s.server->send_mutex);
+
+    if (pthread_create(&thread, NULL, send_and_wait, &sender) != 0) {
+        pthread_mutex_unlock(&s.server->send_mutex);
+        session_close(&s);
+        return 2;
+    }
+
+    for (int i = 0; i < 200 && !queued; i++) {
+        pthread_mutex_lock(&s.server->request_queue_mutex);
+        queued = s.server->command_requests != NULL;
+        pthread_mutex_unlock(&s.server->request_queue_mutex);
+
+        if (!queued) {
+            sleep_ms(10);
+        }
+    }
+
+    /* A reconnect has made the next connection meanwhile. */
+    afp_server_next_connection_generation(s.server);
+    pthread_mutex_unlock(&s.server->send_mutex);
+    pthread_join(thread, NULL);
+
+    if (!queued) {
+        ret = 3;
+    } else if (sender.result != -EIO) {
+        ret = 4;
+    } else if (recv(s.peer, &byte, 1, MSG_DONTWAIT) != -1) {
+        ret = 5;
+    }
+
+    session_close(&s);
+    return ret;
 }
 
 /*!
@@ -1972,8 +2069,7 @@ static int cut_off_open(struct listener *l, pthread_t *acceptor,
 /*!
  * @brief A connect whose status read is cut off returns -EIO
  *
- * The connect fails with the read's errno, negative, which errno holds too,
- * and leaves the server listed.
+ * The connect fails with the read's errno before it lists the server.
  *
  * @returns 0, or the number of the step that failed
  */
@@ -1982,6 +2078,7 @@ static int utest_cut_off_status_read_fails_the_connect(void)
     struct listener l;
     struct afp_server *server;
     pthread_t acceptor;
+    int ret = 0;
 
     if (cut_off_open(&l, &acceptor, &server) != 0) {
         return 1;
@@ -1995,18 +2092,22 @@ static int utest_cut_off_status_read_fails_the_connect(void)
         return 3;
     }
 
+    if (find_server_by_pointer(server) != NULL) {
+        ret = 4;
+    }
+
     /* The address is the test's, not the server's to free. */
     server->address = NULL;
-    afp_server_remove(server);
+    afp_server_release(server);
     listener_close(&l);
-    return 0;
+    return ret;
 }
 
 /*!
  * @brief A connect of a removed server is refused and lists nothing
  *
- * The removal comes first; the connect finds the server destroyed under the
- * list lock, and the server stays removed.
+ * A connect without the status lists the server, and a reference holds it
+ * across its removal; the next connect leaves it removed.
  *
  * @returns 0, or the number of the step that failed
  */
@@ -2015,6 +2116,7 @@ static int utest_connect_of_a_removed_server_is_refused(void)
     struct listener l;
     struct afp_server *server;
     pthread_t acceptor;
+    int peer;
     int ret = 0;
 
     if (cut_off_open(&l, &acceptor, &server) != 0) {
@@ -2029,21 +2131,33 @@ static int utest_connect_of_a_removed_server_is_refused(void)
         return 3;
     }
 
+    if (afp_server_connect(server, 0) != 0) {
+        return 4;
+    }
+
+    peer = accept_within(l.fd);
     afp_server_hold(server);
 
-    if (afp_server_remove(server) != 0) {
-        ret = 4;
-    } else if (afp_server_connect(server, 0) != -ENOENT) {
+    if (peer < 0) {
         ret = 5;
-    } else if (server_still_valid(server) != 0) {
+    } else if (afp_server_remove(server) != 0) {
         ret = 6;
-    } else if (find_server_by_pointer(server) != NULL) {
+    } else if (afp_server_connect(server, 0) != -ENOENT) {
         ret = 7;
+    } else if (server_still_valid(server) != 0) {
+        ret = 8;
+    } else if (find_server_by_pointer(server) != NULL) {
+        ret = 9;
     }
 
     server->address = NULL;
     afp_server_release(server);
     listener_close(&l);
+
+    if (peer >= 0) {
+        close(peer);
+    }
+
     return ret;
 }
 
@@ -2101,7 +2215,8 @@ static int utest_disconnect_keeps_an_answered_result(void)
     queue_request(s.server, &waiting, 9, afpGetVolParms, NULL, NULL);
     answered.done_waiting = 1;
     answered.return_code = 42;
-    afpc_dsi_fail_request_queue(s.server, -EIO);
+    afpc_dsi_fail_request_queue(s.server, -EIO,
+                                afp_server_connection_generation(s.server));
 
     if (answered.return_code != 42) {
         ret = 2;
@@ -2126,6 +2241,76 @@ static int utest_disconnect_keeps_an_answered_result(void)
     }
 
 out:
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A disconnect of a replaced connection spares the next one's request
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_disconnect_leaves_the_next_connection_waiting(void)
+{
+    struct session s;
+    struct dsi_request next;
+    unsigned int ended;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    ended = afp_server_connection_generation(s.server);
+    afp_server_next_connection_generation(s.server);
+    queue_request(s.server, &next, 8, afpGetVolParms, NULL, NULL);
+    afpc_dsi_fail_request_queue(s.server, -EIO, ended);
+
+    if (next.done_waiting != 0) {
+        ret = 2;
+    }
+
+    afpc_dsi_flush_request_queue(s.server);
+
+    if (ret == 0 && (next.return_code != -EIO || next.done_waiting != 1)) {
+        ret = 3;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A busy refusal of a session's open leaves the quantum alone
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_busy_open_keeps_the_quantum(void)
+{
+    struct session s;
+    struct dsi_request pending;
+    struct dsi_header header;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    queue_request(s.server, &pending, 9, DSI_DSIOpenSession, NULL, NULL);
+    memset(&header, 0, sizeof(header));
+    header.flags = DSI_REPLY;
+    header.command = DSI_DSIOpenSession;
+    header.requestid = htons(9);
+    header.return_code.error_code = (int) htonl(DSIERR_SERVBUSY);
+
+    if (write(s.peer, &header, sizeof(header)) != (ssize_t) sizeof(header)) {
+        ret = 2;
+    } else if (receive_all(s.server) != 0) {
+        ret = 3;
+    } else if (s.server->quantum != 65536) {
+        ret = 4;
+    }
+
     session_close(&s);
     return ret;
 }
@@ -2276,7 +2461,8 @@ static int utest_failed_request_waits_for_its_receiver(void)
     }
 
     wait_for_receiver(&call);
-    afpc_dsi_fail_request_queue(s.server, -EIO);
+    afpc_dsi_fail_request_queue(s.server, -EIO,
+                                afp_server_connection_generation(s.server));
     sleep_ms(200);
 
     if (__atomic_load_n(&reader.result, __ATOMIC_ACQUIRE) != 1) {
@@ -2292,7 +2478,8 @@ static int utest_failed_request_waits_for_its_receiver(void)
 out:
 
     if (ret == 3) {
-        afpc_dsi_fail_request_queue(s.server, -EIO);
+        afpc_dsi_fail_request_queue(s.server, -EIO,
+                                    afp_server_connection_generation(s.server));
     }
 
     pthread_join(sender, NULL);
@@ -2713,6 +2900,10 @@ int main(int argc, char **argv)
              "a request without a wait never reconnects a disconnected server");
     TEST_int(utest_disconnect_keeps_an_answered_result(), 0,
              "a disconnect keeps an answered request's result");
+    TEST_int(utest_disconnect_leaves_the_next_connection_waiting(), 0,
+             "a disconnect of a replaced connection spares the next one's");
+    TEST_int(utest_busy_open_keeps_the_quantum(), 0,
+             "a busy refusal of a session's open leaves the quantum");
     TEST_int(utest_answer_as_the_wait_expires_is_the_result(), 0,
              "an answer landing as the wait expires is the result");
     TEST_int(utest_failed_request_waits_for_its_receiver(), 0,
@@ -2724,5 +2915,8 @@ int main(int argc, char **argv)
              "wipe");
     TEST_int(utest_tickle_waits_for_no_room(), 0,
              "a tickle skips a full socket instead of waiting");
+    TEST_int(utest_request_of_a_replaced_connection_fails_unsent(), 0,
+             "a request queued before a reconnect replaced its connection "
+             "fails unsent");
     return test_tap_finish();
 }

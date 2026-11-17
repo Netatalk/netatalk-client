@@ -133,10 +133,8 @@ int afp_getsrvrparms(struct afp_server *server)
 /*!
  * @brief Parse an FPGetSrvrParms reply into the server's time and volumes
  *
- * Builds the volume list, each volume's locks initialized, and hands it to
- * the server under the list lock, which walkers of every server's volumes
- * hold. An AFP 2 server's local time sets the offset that corrects later
- * dates.
+ * The volumes change under the list lock, which walkers of every server's
+ * volumes hold; a list with a volume attached or mounted is in use and stays.
  *
  * @param[in,out] server  server of the session, which receives the volumes
  * @param[in]     msg     the reply, DSI header first
@@ -152,9 +150,11 @@ int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
         uint32_t time __attribute__((__packed__));
         uint8_t numvolumes;
     }  __attribute__((__packed__)) *afp_getsrvparm_reply = (void *) msg;
-    char *p;
+    const char *p;
     const char *msg_end;
     struct afp_volume * newvolumes;
+    struct afp_volume * oldvolumes;
+    unsigned char oldcount;
     size_t header_size = sizeof(struct dsi_header) + sizeof(uint32_t) + sizeof(
                              uint8_t);
 
@@ -174,6 +174,10 @@ int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
         server->connect_time -= server->time_offset;
     }
 
+    if (something_is_attached(server) || something_is_mounted(server)) {
+        return 0;
+    }
+
     newvolumes = calloc(afp_getsrvparm_reply->numvolumes,
                         sizeof(struct afp_volume));
 
@@ -185,8 +189,9 @@ int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
     msg_end = msg + size;
 
     for (int i = 0; i < afp_getsrvparm_reply->numvolumes; i++) {
-        if (p >= msg_end) {
-            free(newvolumes);
+        /* A volume is its flags, its name's length and its name. */
+        if (msg_end - p < 2 || msg_end - p - 2 < (unsigned char) p[1]) {
+            afp_free_volumes(newvolumes, (unsigned int) i);
             return -1;
         }
 
@@ -221,9 +226,12 @@ int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
     }
 
     afp_lock_server_list();
+    oldvolumes = server->volumes;
+    oldcount = server->num_volumes;
     server->num_volumes = afp_getsrvparm_reply->numvolumes;
     server->volumes = newvolumes;
     afp_unlock_server_list();
+    afp_free_volumes(oldvolumes, oldcount);
     return 0;
 }
 

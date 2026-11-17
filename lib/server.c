@@ -28,15 +28,14 @@
 #include "utils.h"
 
 /*!
- * @brief Open the DSI session, log in, and read the server's parameters
+ * @brief Open the DSI session, log in, take its token, read server parameters
  *
  * The password is wiped as soon as the login returns, whether or not it
  * succeeded.
  *
  * @param[in]     priv               the caller's context for log messages
- * @param[in,out] server             server with a connected socket
- * @param[in]     versions           the AFP versions the server offers
- * @param[in]     uams               the UAMs the server offers
+ * @param[in,out] server             server with a connected socket and its
+ *                                   status's versions and UAMs
  * @param[in]     username           the user to log in as
  * @param[in]     password           the user's password
  * @param[in]     requested_version  the highest AFP version to use, 0 for
@@ -46,12 +45,7 @@
  */
 struct afp_server *afp_server_complete_connection(
     void *priv,
-    struct afp_server * server,
-#if 0
-    struct addrinfo * address,
-#endif
-    unsigned char *versions,
-    unsigned int uams, char *username, char *password,
+    struct afp_server * server, char *username, char *password,
     unsigned int requested_version, unsigned int uam_mask)
 {
     char loginmsg[AFP_LOGINMESG_LEN];
@@ -63,9 +57,8 @@ struct afp_server *afp_server_complete_connection(
     server->requested_version = requested_version;
     strlcpy(server->username, username, sizeof(server->username));
     strlcpy(server->password, password, sizeof(server->password));
-    add_fd_and_signal(server->fd);
 
-    if (afpc_dsi_opensession(server) != 0) {
+    if (afp_server_open_session(server) != 0) {
         log_for_client(priv, AFPFSD, LOG_ERR,
                        "Could not open DSI session");
         errno = ECONNRESET;
@@ -78,7 +71,8 @@ struct afp_server *afp_server_complete_connection(
 
     /* Figure out what version we're using */
     if (((server->using_version =
-                pick_version(versions, requested_version)) == NULL)) {
+                pick_version(server->versions,
+                             (unsigned char) requested_version)) == NULL)) {
         log_for_client(priv, AFPFSD, LOG_ERR,
                        "Server cannot handle AFP version %d",
                        requested_version);
@@ -86,7 +80,7 @@ struct afp_server *afp_server_complete_connection(
         goto error;
     }
 
-    using_uam = pick_uam(uams, uam_mask);
+    using_uam = pick_uam(server->supported_uams, uam_mask);
 
     if (using_uam == -1) {
         log_for_client(priv, AFPFSD, LOG_ERR,
@@ -106,10 +100,13 @@ struct afp_server *afp_server_complete_connection(
     }
 
     explicit_bzero(server->password, sizeof(server->password));
+    afp_server_take_token(server);
 
     if (afp_getsrvrparms(server)) {
         log_for_client(priv, AFPFSD, LOG_ERR,
                        "Could not get server parameters");
+        /* afpd keeps a closed connection's session for its disconnect time. */
+        afp_logout(server, DSI_DONT_WAIT);
         errno = EPROTO;
         goto error;
     }

@@ -70,7 +70,6 @@ Each library below adds a component, and a build without it drops that component
 | Library                     | Needed for                                                   | Without it                              |
 | --------------------------- | ------------------------------------------------------------ | --------------------------------------- |
 | pthreads                    | all programs                                                 | the build fails                         |
-| iconv                       | character set conversion, from the C library or *libiconv*   | the build fails                         |
 | libgcrypt 1.6.0 or later    | the DHX, DHX2, Randnum, and SRP encrypted login methods      | only guest and cleartext logins         |
 | libfuse 3.0+ or 2.9+        | the FUSE client: *afpfsd*, *mount_afpfs*, `afpc fs` commands | the FUSE client is not built            |
 | readline or libedit         | the *afpcmd* command line client                             | *afpcmd* is not built                   |
@@ -114,7 +113,7 @@ Install *fuse-devel* in place of *fuse3-devel* for FUSE 2.
 
 #### FreeBSD
 
-    pkg install avahi fusefs-libs3 libedit libgcrypt libiconv meson perl5 pkgconf
+    pkg install avahi fusefs-libs3 libedit libgcrypt meson perl5 pkgconf
 
 Install *fusefs-libs* in place of *fusefs-libs3* for FUSE 2.
 Configure with `-Dpkg_config_path=/usr/local/libdata/pkgconfig`, the pkg-config directory of the ports tree.
@@ -143,7 +142,7 @@ shows *AFP FUSE client: NO*.
 
 #### macOS with MacPorts
 
-    sudo port install libedit libgcrypt libiconv macfuse +fs_link meson ninja pkgconfig
+    sudo port install libedit libgcrypt macfuse +fs_link meson ninja pkgconfig
 
 The `+fs_link` variant creates the `/Library/Filesystems` link that macFUSE needs to mount. The macFUSE notes
 under macOS with Homebrew apply here as well. MacPorts installs under `/opt/local`, which

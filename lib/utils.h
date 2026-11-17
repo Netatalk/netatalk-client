@@ -1,3 +1,8 @@
+/*!
+ * @file
+ * @brief String, path and log level helpers of the protocol layer
+ */
+
 #ifndef __UTILS_H_
 #define __UTILS_H_
 
@@ -30,7 +35,8 @@ unsigned char unixpath_to_afppath(
     char *buf);
 unsigned char sizeof_path_header(const struct afp_volume *volume);
 
-unsigned char copy_from_pascal(char *dest, char *pascal, unsigned int max_len);
+unsigned char copy_from_pascal(char *dest, const char *pascal,
+                               unsigned int max_len);
 unsigned short copy_from_pascal_two(char *dest, char *pascal,
                                     unsigned int max_len);
 

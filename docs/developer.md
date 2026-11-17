@@ -256,7 +256,7 @@ Compared to a single shared daemon with per-mount multi threading or multiplexin
     │ mount_afpfs afp://server/vol2 /mnt/vol2                     │
     │ mount_afpfs afp://server/vol3 /mnt/vol3                     │
     └─────────────────────────────────────────────────────────────┘
-                ↓ All requests go through manager
+                ↓ Each mount asks the manager for its daemon
     ┌─────────────────────────────────────────────────────────────┐
     │ afpfsd --manager (PID: 1000) [socket: afpfsd-501]           │
     │   ├── Tracks child PIDs: [2001, 2002, 2003]                 │
@@ -289,10 +289,10 @@ Compared to a single shared daemon with per-mount multi threading or multiplexin
 1. Client connects to manager socket `afpfsd-501` (NULL mountpoint)
 2. Sends `AFP_SERVER_COMMAND_EXIT`
 3. Manager daemon:
-   - Sends SIGTERM to all tracked child PIDs
-   - Waits 1 second for graceful shutdown
-   - Sends SIGKILL to any remaining children
-   - Waits for all children with `waitpid()`
+   - Sends the exit command to every daemon socket of its user
+   - Waits up to 10 seconds for the daemons to unmount and end
+   - Sends SIGTERM to a recorded daemon that still runs, and SIGKILL a second later
+   - Waits for its children with `waitpid()`, and releases a mount that a daemon left
    - Exits manager daemon
 
 Result: All mounts unmounted cleanly, no orphaned processes
@@ -333,12 +333,17 @@ All socket files are created in `/tmp/`:
   - Hash is computed via djb2 algorithm on mountpoint absolute path
   - Ensures unique socket per mountpoint
 
-### Management Commands (status, unmount, exit)
+### Command Routing
 
-Use NULL mountpoint in `daemon_connect()`, which causes:
+afpc routes each command by its mount point:
 
-- `get_daemon_filename(NULL)` → returns manager socket name (e.g., `afpfsd-501`)
-- Commands connect to manager daemon
+- A status, suspend, resume, or unmount that names a mount point goes to that mount point's daemon
+- When no daemon listens there, the command goes to the manager, where an unmount releases a mount whose daemon
+  ended
+- `exit`, and a status without a mount point, go to the manager's socket, `/tmp/afp_server-<uid>`
+  (`get_daemon_filename(NULL)`)
+- `afpc fs mount --foreground` runs the mount's daemon as afpc's child
+- The manager's status does not list a foreground daemon, but `exit` ends it
 
 ----
 

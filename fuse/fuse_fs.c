@@ -1423,12 +1423,15 @@ static int fuse_utime(const char *path, struct utimbuf *timebuf)
 static void afp_destroy(void *ignore _U_)
 {
     struct afp_volume *volume = fuse_get_context()->private_data;
+    unsigned char mounted;
 
     if (!volume || !volume->server) {
         return;
     }
 
-    if (volume->mounted == AFP_VOLUME_UNMOUNTED) {
+    mounted = __atomic_load_n(&volume->mounted, __ATOMIC_ACQUIRE);
+
+    if (mounted == AFP_VOLUME_UNMOUNTED) {
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "Volume %s already unmounted", volume->volume_name_printable);
         return;
@@ -1438,7 +1441,7 @@ static void afp_destroy(void *ignore _U_)
      * fuse_unmount() (during the FUSE shutdown sequence). In this case, we
      * must NOT call afp_unmount_volume() again as it would create a nested
      * unmount. */
-    if (volume->mounted == AFP_VOLUME_UNMOUNTING) {
+    if (mounted == AFP_VOLUME_UNMOUNTING) {
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "Volume %s is already unmounting - skipping destroy callback",
                        volume->volume_name_printable);
@@ -1862,6 +1865,19 @@ static int fuse_getattr(const char *path, struct stat *stbuf)
 #endif
 
 
+/*!
+ * @brief Tell the mount command waiting on a volume that its mount runs
+ *
+ * @param[in,out] vol  the volume
+ */
+static void mount_started(struct afp_volume *vol)
+{
+    pthread_mutex_lock(&vol->startup_mutex);
+    vol->starting = 0;
+    pthread_cond_signal(&vol->startup_condition_cond);
+    pthread_mutex_unlock(&vol->startup_mutex);
+}
+
 #if FUSE_NEW_API
 /*!
  * @brief Set up the mount at FUSE init
@@ -1928,7 +1944,7 @@ static void *afp_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 
     /* Trigger the daemon that we've started */
     vol->mounted = 1;
-    pthread_cond_signal(&vol->startup_condition_cond);
+    mount_started(vol);
     return (void *) vol;
 }
 
@@ -1962,7 +1978,7 @@ static void *afp_init(struct fuse_conn_info *conn)
         vol->mounted = 1;
     }
 
-    pthread_cond_signal(&vol->startup_condition_cond);
+    mount_started(vol);
     return (void *) vol;
 }
 
