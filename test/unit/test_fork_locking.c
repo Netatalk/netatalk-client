@@ -395,14 +395,13 @@ int main(int argc, char **argv)
     }
     {
         /* An open for reading with O_TRUNC truncates through a second fork
-         * where both opens' answers name the file. Where an answer names
-         * none, or the opens report none, as on a server that is not
-         * Netatalk on AFP 3.4 and on AFP 2, whose ID comes from a lookup by
-         * name, it fails with EACCES and truncates nothing. A file the open
-         * creates needs no truncation. */
+         * where both opens' answers name the file, on AFP 2 too. Where an
+         * answer names none, or the opens report none, as on a server whose
+         * flags do not announce FPCopyFile, it fails with EACCES and
+         * truncates nothing. A file the open creates needs no truncation. */
         static struct afp_versions afp22 = { "AFP2.2", 22 };
         static const struct {
-            int netatalk;
+            int copies;
             int afp2;
             uint32_t cnid;
             int open_flags;
@@ -414,7 +413,7 @@ int main(int argc, char **argv)
             { 1, 0, 7, O_RDONLY | O_TRUNC, 0, 2, 1, 0 },
             { 1, 0, 0, O_RDONLY | O_TRUNC, -EACCES, 1, 0, 0 },
             { 0, 0, 7, O_RDONLY | O_TRUNC, -EACCES, 1, 0, 0 },
-            { 1, 1, 7, O_RDONLY | O_TRUNC, -EACCES, 1, 0, 0 },
+            { 1, 1, 7, O_RDONLY | O_TRUNC, 0, 2, 1, 0 },
             { 0, 0, 0, O_RDONLY | O_CREAT | O_TRUNC, 0, 1, 0, 1 },
         };
 
@@ -425,9 +424,10 @@ int main(int argc, char **argv)
             fake.params_cnid = truncations[i].cnid;
             fake.file_params = (uint8_t) truncations[i].afp2;
             CHECK(afp_fake_server_start(&fake) == 0);
+            fake.server->server_type = AFPC_SERVER_TYPE_NETATALK;
 
-            if (truncations[i].netatalk) {
-                fake.server->server_type = AFPC_SERVER_TYPE_NETATALK;
+            if (truncations[i].copies) {
+                fake.server->flags = kSupportsCopyfile;
             }
 
             if (truncations[i].afp2) {
@@ -462,6 +462,7 @@ int main(int argc, char **argv)
         fake.hold_skip = 1;
         CHECK(afp_fake_server_start(&fake) == 0);
         fake.server->server_type = AFPC_SERVER_TYPE_NETATALK;
+        fake.server->flags = kSupportsCopyfile;
         opening.ret = 1;
 
         if (pthread_create(&opener, NULL, open_truncating, &opening) == 0) {
@@ -490,6 +491,7 @@ int main(int argc, char **argv)
         fake.hold_skip = 1;
         CHECK(afp_fake_server_start(&fake) == 0);
         fake.server->server_type = AFPC_SERVER_TYPE_NETATALK;
+        fake.server->flags = kSupportsCopyfile;
         CHECK(ml_resolve(&fake.volume, "/file", &file) == 0);
         CHECK(ml_resolve(&fake.volume, "/other", &other) == 0);
         opening.ret = 1;

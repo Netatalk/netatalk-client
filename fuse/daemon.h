@@ -1,3 +1,8 @@
+/*!
+ * @file
+ * @brief afpfsd's loop, listener and mounts, as its commands use them
+ */
+
 #ifndef __DAEMON_H_
 #define __DAEMON_H_
 
@@ -11,7 +16,11 @@ int process_client_fds(fd_set * set, int max_fd, int **onfd);
 int fuse_unmount_volume(struct afp_volume * volume);
 void fuse_forced_ending_hook(void);
 void fuse_stop_listener(void);
+int release_dead_mount(const char *path);
 
 #define STATUS_LEN 1024
+
+/* The wait for a client's command, which afpc writes as it connects */
+#define COMMAND_WAIT_S 2
 
 #endif

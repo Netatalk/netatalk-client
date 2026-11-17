@@ -36,7 +36,7 @@ podman run --rm netatalk-client-test
 
 ### Include FUSE tests
 
-The image includes libfuse 3 and `fusermount3`. To include `test_fuse.t`:
+The image includes libfuse 3 and `fusermount3`. To include `test_fuse.t` and `test_fuse_fd.t`:
 
 ```sh
 docker run --rm --device /dev/fuse --cap-add SYS_ADMIN \
@@ -54,6 +54,11 @@ helper temporarily acquires the mount capability. This does not require
 `--privileged`, but is not a fully unprivileged container: the helper still
 needs `SYS_ADMIN`. Do not add `no-new-privileges` to this mode, since it
 prevents that helper from acquiring its privilege.
+
+After `test_fuse.t` passes, the entrypoint opens `/dev/fuse` as descriptor 9
+and mounts it as root with mount(2) for `test_usr`. It then runs
+`test_fuse_fd.t` as `test_usr` with an empty capability bounding set. There,
+`afpc fs mount --foreground` serves the mount as `/dev/fd/9`.
 
 Docker's default seccomp profile is sufficient on the tested Docker Desktop
 runtime. Other hosts may need a local AppArmor or SELinux policy that allows
@@ -132,7 +137,10 @@ The `afpsld` session daemon is killed between the two test runs to ensure a clea
 
 ### Running the FUSE test
 
-`test_fuse.t` requires a real kernel FUSE mount. On a configured host:
+`test_fuse_fd.t` needs descriptor 9 open on a `/dev/fuse` that its parent
+mounted at the directory that `AFP_TEST_FUSE_FD_DIR` names. `entrypoint.sh`
+provides both, and the test skips without them. `test_fuse.t` requires a real
+kernel FUSE mount. On a configured host:
 
 ```sh
 cd test/integration

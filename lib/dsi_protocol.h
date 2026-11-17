@@ -1,4 +1,9 @@
 
+/*!
+ * @file
+ * @brief DSI's commands, flags, options and results, and its frame header
+ */
+
 #ifndef __DSI_PROTOCOL_H_
 #define __DSI_PROTOCOL_H_
 
@@ -17,6 +22,9 @@
 
 /* DSI Option types for DSIOpenSession */
 #define kServerReplayCacheSize 0x02
+
+/* The result of a DSIOpenSession over the server's connection cap */
+#define DSIERR_SERVBUSY 0xfbd1U
 
 struct dsi_header {
     uint8_t flags;

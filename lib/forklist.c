@@ -26,6 +26,7 @@
 
 struct dirty_fork_record {
     unsigned short forkid;
+    unsigned int session;
     unsigned int resource;
 };
 
@@ -46,12 +47,23 @@ static int names_file(const struct afp_file_info *p, unsigned int did,
 /*!
  * @brief Put an open fork on the volume's list, counting it if writable
  *
+ * A reconnect into a new session between the open and this call missed the
+ * record in forget_open_forks(), so it is left here without its fork.
+ *
  * @param[in,out] volume  volume of the fork
  * @param[in,out] fp      the fork's record
+ * @returns 0, or -1 for a fork of a session that has ended
  */
-void add_opened_fork(struct afp_volume * volume, struct afp_file_info * fp)
+int add_opened_fork(struct afp_volume * volume, struct afp_file_info * fp)
 {
     pthread_mutex_lock(&volume->open_forks_mutex);
+
+    if (fp->session != afp_server_session_generation(volume->server)) {
+        fp->forkid = 0;
+        pthread_mutex_unlock(&volume->open_forks_mutex);
+        return -1;
+    }
+
     fp->largelist_next = volume->open_forks;
     volume->open_forks = fp;
 
@@ -60,6 +72,7 @@ void add_opened_fork(struct afp_volume * volume, struct afp_file_info * fp)
     }
 
     pthread_mutex_unlock(&volume->open_forks_mutex);
+    return 0;
 }
 
 /*!
@@ -149,6 +162,7 @@ void flush_dirty_forks_for_file(struct afp_volume * volume,
         }
 
         records[count].forkid = p->forkid;
+        records[count].session = p->session;
         records[count].resource = p->resource;
         count++;
         p->dirty = 0;
@@ -157,7 +171,11 @@ void flush_dirty_forks_for_file(struct afp_volume * volume,
     pthread_mutex_unlock(&volume->open_forks_mutex);
 
     for (size_t i = 0; i < count; i++) {
-        int rc = afp_flushfork(volume, records[i].forkid, DSI_DEFAULT_TIMEOUT);
+        int rc = afp_flushfork(volume,
+                               afpc_dsi_fork(volume->server,
+                                             records[i].session,
+                                             records[i].forkid),
+                               DSI_DEFAULT_TIMEOUT);
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "flush_dirty_forks_for_file: flushed dirty fork %u with rc=%d",
                        records[i].forkid, rc);
@@ -168,11 +186,12 @@ void flush_dirty_forks_for_file(struct afp_volume * volume,
                            records[i].forkid, rc);
             pthread_mutex_lock(&volume->open_forks_mutex);
 
-            /* The fork's number finds it, as a rename may have given it
-             * another name since. */
+            /* The fork's number and session find it, as a rename may have
+             * given it another name since. */
             for (struct afp_file_info *p = volume->open_forks;
                     p; p = p->largelist_next) {
                 if (p->forkid == records[i].forkid &&
+                        p->session == records[i].session &&
                         p->resource == records[i].resource) {
                     p->dirty = 1;
                     break;
@@ -240,6 +259,154 @@ int other_fork_open(struct afp_volume * volume, struct afp_file_info * fp)
 int other_writer_open(struct afp_volume * volume, struct afp_file_info * fp)
 {
     return fork_of_file_open(volume, fp, 1);
+}
+
+/*!
+ * @brief Forget the volume's forks as a reconnect starts a new session
+ *
+ * The new session may give their numbers to other files. A record left
+ * without its fork fails reads and writes with EIO; its owner still frees it.
+ *
+ * @param[in,out] volume  the volume
+ */
+void forget_open_forks(struct afp_volume * volume)
+{
+    struct afp_file_info *next;
+    pthread_mutex_lock(&volume->open_forks_mutex);
+
+    for (struct afp_file_info *p = volume->open_forks; p; p = next) {
+        next = p->largelist_next;
+        p->largelist_next = NULL;
+        /* Request threads read the number without the list's lock, and a
+         * close that finds none frees the record: the store comes last. */
+        __atomic_store_n(&p->forkid, 0, __ATOMIC_RELEASE);
+    }
+
+    volume->open_forks = NULL;
+    __atomic_store_n(&volume->writable_forks, 0, __ATOMIC_RELAXED);
+    pthread_mutex_unlock(&volume->open_forks_mutex);
+}
+
+/*!
+ * @brief Forget the closes kept for a session a reconnect has replaced
+ *
+ * @param[in,out] server  the server
+ */
+void forget_unclosed_forks(struct afp_server *server)
+{
+    pthread_mutex_lock(&server->unclosed_forks_mutex);
+    free(server->unclosed_forks);
+    server->unclosed_forks = NULL;
+    server->num_unclosed_forks = 0;
+    pthread_mutex_unlock(&server->unclosed_forks_mutex);
+}
+
+/*!
+ * @brief An open fork's number, tying the thread's next request to its session
+ *
+ * @param[in] volume  volume of the fork
+ * @param[in] fp      the fork's record
+ * @returns the fork's number
+ */
+unsigned short fork_number(const struct afp_volume *volume,
+                           const struct afp_file_info *fp)
+{
+    return afpc_dsi_fork(volume->server, fp->session,
+                         __atomic_load_n(&fp->forkid, __ATOMIC_RELAXED));
+}
+
+/*!
+ * @brief Keep a fork whose close never left, unless its session has ended
+ *
+ * @param[in,out] server   server of the fork's session
+ * @param[in]     forkid   the fork's number
+ * @param[in]     session  the session generation that gave it
+ */
+static void keep_unclosed_fork(struct afp_server *server,
+                               unsigned short forkid, unsigned int session)
+{
+    struct afp_unclosed_fork *forks;
+    pthread_mutex_lock(&server->unclosed_forks_mutex);
+
+    if (session == afp_server_session_generation(server)) {
+        forks = realloc(server->unclosed_forks,
+                        (server->num_unclosed_forks + 1) * sizeof(*forks));
+
+        if (forks) {
+            forks[server->num_unclosed_forks].forkid = forkid;
+            forks[server->num_unclosed_forks].session = session;
+            server->unclosed_forks = forks;
+            server->num_unclosed_forks++;
+        }
+    }
+
+    pthread_mutex_unlock(&server->unclosed_forks_mutex);
+}
+
+/*!
+ * @brief Close the forks whose close never left, each in its session
+ *
+ * A close that again does not leave keeps its fork and the ones after it,
+ * as the session is still away.
+ *
+ * @param[in,out] server  the server
+ */
+void close_unclosed_forks(struct afp_server *server)
+{
+    struct afp_unclosed_fork *forks;
+    unsigned int count;
+    int away = 0;
+    pthread_mutex_lock(&server->unclosed_forks_mutex);
+    forks = server->unclosed_forks;
+    count = server->num_unclosed_forks;
+    server->unclosed_forks = NULL;
+    server->num_unclosed_forks = 0;
+    pthread_mutex_unlock(&server->unclosed_forks_mutex);
+
+    for (unsigned int i = 0; i < count; i++) {
+        if (!away) {
+            int rc = afp_closefork(server,
+                                   afpc_dsi_fork(server, forks[i].session,
+                                                 forks[i].forkid));
+            away = rc != kFPNoErr && afpc_dsi_fork_unsent();
+        }
+
+        if (away) {
+            keep_unclosed_fork(server, forks[i].forkid, forks[i].session);
+        }
+    }
+
+    free(forks);
+}
+
+/*!
+ * @brief Close an open fork, keeping it for later if the close never leaves
+ *
+ * An unsent close leaves the fork open in a session a reconnect may continue;
+ * an unanswered one may have closed it and freed its number, so is not kept.
+ *
+ * @param[in,out] volume  volume of the fork
+ * @param[in]     fp      the fork's record
+ * @returns afp_closefork()'s result
+ */
+int close_fork(struct afp_volume *volume, const struct afp_file_info *fp)
+{
+    struct afp_server *server = volume->server;
+    unsigned short forkid = __atomic_load_n(&fp->forkid, __ATOMIC_RELAXED);
+    int rc = afp_closefork(server, afpc_dsi_fork(server, fp->session, forkid));
+
+    if (rc != kFPNoErr && afpc_dsi_fork_unsent()) {
+        keep_unclosed_fork(server, forkid, fp->session);
+
+        /* A reconnect that ended meanwhile missed this fork. */
+        if (!afp_server_reconnect_is_in_progress(server)
+                && __atomic_load_n(&server->connect_state, __ATOMIC_ACQUIRE)
+                == SERVER_STATE_CONNECTED) {
+            close_unclosed_forks(server);
+        }
+    }
+
+    return rc;
 }
 
 /*!
@@ -365,34 +532,26 @@ void exchange_opened_forks(struct afp_volume *volume,
 /*!
  * @brief Close and free every fork still open on the volume, at unmount
  *
- * A flush_on_close mount flushes each written fork first, outside the
- * list's lock, as the flush reads the fork's names under it.
+ * Taking the list whole first frees every record even if a close reconnects;
+ * an unsent close keeps its fork, as the session may outlive the volume.
  *
  * @param[in,out] volume  volume to unmount
  */
 void remove_fork_list(struct afp_volume * volume)
 {
-    struct afp_file_info *p;
+    struct afp_file_info *p, *next;
+    pthread_mutex_lock(&volume->open_forks_mutex);
+    p = volume->open_forks;
+    volume->open_forks = NULL;
+    __atomic_store_n(&volume->writable_forks, 0, __ATOMIC_RELAXED);
+    pthread_mutex_unlock(&volume->open_forks_mutex);
+    close_unclosed_forks(volume->server);
 
-    for (;;) {
-        pthread_mutex_lock(&volume->open_forks_mutex);
-        p = volume->open_forks;
-
-        if (p) {
-            volume->open_forks = p->largelist_next;
-        } else {
-            __atomic_store_n(&volume->writable_forks, 0, __ATOMIC_RELAXED);
-        }
-
-        pthread_mutex_unlock(&volume->open_forks_mutex);
-
-        if (p == NULL) {
-            break;
-        }
-
+    for (; p; p = next) {
+        next = p->largelist_next;
         /* At unmount, the kernel drops the releases it has not sent. */
         ml_close_flush(volume, p);
-        afp_closefork(volume, p->forkid);
+        close_fork(volume, p);
         free(p);
     }
 }

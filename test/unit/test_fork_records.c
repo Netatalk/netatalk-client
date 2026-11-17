@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "afp_fake_server.h"
@@ -466,6 +467,45 @@ static int utest_whole_link_stays(void)
 }
 
 /*!
+ * @brief A data fork's open on an Apple server that copies takes the node ID
+ *
+ * A server copy checks the name against that node ID.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_apple_copy_open_takes_the_node_id(void)
+{
+    struct afp_fake_server fake;
+    struct afp_file_info *fp = NULL;
+    unsigned int cnid = 0;
+    int rc;
+    memset(&fake, 0, sizeof(fake));
+    fake.params_cnid = 77;
+
+    if (afp_fake_server_start(&fake) != 0) {
+        return 1;
+    }
+
+    fake.server->server_type = AFPC_SERVER_TYPE_TIMECAPSULE;
+    fake.server->flags = kSupportsCopyfile;
+    rc = ml_open(&fake.volume, "/file", O_RDONLY, &fp);
+
+    if (rc == 0) {
+        cnid = fp->cnid;
+        ml_close(&fake.volume, fp);
+        free(fp);
+    }
+
+    afp_fake_server_stop(&fake);
+
+    if (rc != 0) {
+        return 2;
+    }
+
+    return cnid == 77 ? 0 : 3;
+}
+
+/*!
  * @brief Run the open-fork record and link checks as TAP
  *
  * @param[in] argc  argument count
@@ -507,5 +547,7 @@ int main(int argc, char **argv)
              "a link whose Finder information is refused is deleted");
     TEST_int(utest_whole_link_stays(), 0,
              "a link the server makes whole stays");
+    TEST_int(utest_apple_copy_open_takes_the_node_id(), 0,
+             "an open on an Apple server that copies takes the node ID");
     return test_tap_finish();
 }

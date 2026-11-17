@@ -31,16 +31,23 @@ struct dsi_request {
 };
 
 int afpc_dsi_receive(struct afp_server *server, void *data, int size);
-int afpc_dsi_getstatus(struct afp_server *server);
+int afpc_dsi_parse_status(const char *buf, size_t len,
+                          struct afp_server_status *status);
+int afpc_dsi_getstatus(int fd, struct afp_server_status *status);
 int afpc_dsi_sendtickle(struct afp_server *server);
 void afpc_dsi_end_sends(struct afp_server *server, int fd);
 void afpc_dsi_flush_request_queue(struct afp_server *server);
-void afpc_dsi_fail_request_queue(struct afp_server *server, int error);
+void afpc_dsi_fail_request_queue(struct afp_server *server, int error,
+                                 unsigned int generation);
 
 int afpc_dsi_opensession(struct afp_server *server);
 
 int afpc_dsi_send(struct afp_server *server, char *msg, int size, int wait,
                   unsigned char subcommand, void *other);
+int afpc_dsi_unanswered(int rc);
+unsigned short afpc_dsi_fork(const struct afp_server *server,
+                             unsigned int session, unsigned short forkid);
+int afpc_dsi_fork_unsent(void);
 int afpc_dsi_transfer_wait(const struct afp_server *server, uint64_t bytes,
                            unsigned int bytes_per_second);
 void afpc_dsi_set_deadline(struct afp_server *server,
@@ -64,7 +71,5 @@ void afpc_dsi_incoming_closesession(struct afp_server *server);
 #define DSI_TIMECAPSULE_DEFAULT_TIMEOUT 30
 /* The most a reply's wait grows with its bytes, far inside a 32-bit time_t */
 #define DSI_MAX_TRANSFER_WAIT (7 * 24 * 3600)
-
-#define GETSTATUS_BUF_SIZE 1024
 
 #endif
