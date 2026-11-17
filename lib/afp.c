@@ -26,6 +26,7 @@
 #include <netinet/tcp.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,8 +60,6 @@ struct afp_versions      afp_versions[] = {
 
 static int afp_blank_reply(struct afp_server *server, char *buf,
                            unsigned int size, void *ignored);
-static int connect_with_timeout(int fd, const struct sockaddr *addr,
-                                socklen_t addrlen, int timeout);
 
 /*!
  * @brief Write a server signature as hexadecimal text
@@ -181,73 +180,68 @@ static int afp_blank_reply(
 }
 
 /*!
- * @brief connect(2) a socket, waiting at most timeout seconds
+ * @brief Start a TCP connection to an address
  *
- * @param[in] fd       the socket
- * @param[in] addr     the address
- * @param[in] addrlen  its length
- * @param[in] timeout  seconds to wait
- * @returns 0, or -1 with errno set, ETIMEDOUT when the wait lapses
+ * The connect goes on in the background; await_connection() waits for it.
+ *
+ * @param[in] address  the address
+ * @returns the socket, or -1 with errno set
  */
-static int connect_with_timeout(int fd, const struct sockaddr *addr,
-                                socklen_t addrlen, int timeout)
+static int open_connection(const struct addrinfo *address)
 {
+    int fd = socket(address->ai_family, address->ai_socktype,
+                    address->ai_protocol);
     int flags;
-    int ret;
-    int error = 0;
-    socklen_t error_len = sizeof(error);
-    fd_set writefds;
-    struct timeval tv;
+    int error;
+
+    if (fd < 0) {
+        return -1;
+    }
+
     flags = fcntl(fd, F_GETFL, 0);
 
-    if (flags < 0) {
-        return connect(fd, addr, addrlen);
-    }
-
-    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        return connect(fd, addr, addrlen);
-    }
-
-    ret = connect(fd, addr, addrlen);
-
-    if (ret == 0) {
-        if (fcntl(fd, F_SETFL, flags) < 0) {
-            return -1;
-        }
-
-        return 0;
-    }
-
-    if (errno != EINPROGRESS) {
-        int saved_errno = errno;
-        fcntl(fd, F_SETFL, flags);
-        errno = saved_errno;
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0
+            || (connect(fd, address->ai_addr, address->ai_addrlen) < 0
+                && errno != EINPROGRESS)) {
+        error = errno;
+        close(fd);
+        errno = error;
         return -1;
     }
+
+    return fd;
+}
+
+/*!
+ * @brief Wait for a connection open_connection() started
+ *
+ * Leaves the socket blocking, with Nagle's algorithm off, as the session's
+ * reads and writes expect.
+ *
+ * @param[in] fd       the socket
+ * @param[in] timeout  seconds to wait
+ * @returns 0, or -1 with errno set, ETIMEDOUT when the wait ends first
+ */
+static int await_connection(int fd, int timeout)
+{
+    struct pollfd pfd = { fd, POLLOUT, 0 };
+    int nodelay = 1;
+    int error = 0;
+    socklen_t error_len = sizeof(error);
+    int flags;
+    int ret;
 
     do {
-        FD_ZERO(&writefds);
-        FD_SET(fd, &writefds);
-        tv.tv_sec = timeout;
-        tv.tv_usec = 0;
-        ret = select(fd + 1, NULL, &writefds, NULL, &tv);
+        ret = poll(&pfd, 1, timeout * 1000);
     } while (ret < 0 && errno == EINTR);
 
-    if (ret <= 0) {
-        int saved_errno = (ret == 0) ? ETIMEDOUT : errno;
-        fcntl(fd, F_SETFL, flags);
-        errno = saved_errno;
+    if (ret == 0) {
+        errno = ETIMEDOUT;
         return -1;
     }
 
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_len) < 0) {
-        int saved_errno = errno;
-        fcntl(fd, F_SETFL, flags);
-        errno = saved_errno;
-        return -1;
-    }
-
-    if (fcntl(fd, F_SETFL, flags) < 0) {
+    if (ret < 0
+            || getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_len) < 0) {
         return -1;
     }
 
@@ -256,7 +250,60 @@ static int connect_with_timeout(int fd, const struct sockaddr *addr,
         return -1;
     }
 
+    flags = fcntl(fd, F_GETFL, 0);
+
+    if (flags < 0 || fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
+        return -1;
+    }
+
+    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay,
+                   sizeof(nodelay)) < 0) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Could not set TCP_NODELAY on fd=%d: %s",
+                       fd, strerror(errno));
+    }
+
     return 0;
+}
+
+/*!
+ * @brief Test whether the server has answered, or closed, an unused connection
+ *
+ * @param[in] fd  the connection
+ * @returns 1 when it has
+ */
+static int answered_unasked(int fd)
+{
+    struct pollfd pfd = { fd, POLLIN, 0 };
+    return poll(&pfd, 1, 0) > 0;
+}
+
+/*!
+ * @brief Write an address as text for the log
+ *
+ * @param[in]  address  the address
+ * @param[out] text     receives the text
+ */
+static void address_text(const struct addrinfo *address,
+                         char text[INET6_ADDRSTRLEN])
+{
+    switch (address->ai_family) {
+    case AF_INET6:
+        inet_ntop(AF_INET6,
+                  &((struct sockaddr_in6 *) address->ai_addr)->sin6_addr,
+                  text, INET6_ADDRSTRLEN);
+        break;
+
+    case AF_INET:
+        inet_ntop(AF_INET,
+                  &((struct sockaddr_in *) address->ai_addr)->sin_addr,
+                  text, INET6_ADDRSTRLEN);
+        break;
+
+    default:
+        snprintf(text, INET6_ADDRSTRLEN, "unknown address family");
+        break;
+    }
 }
 
 /*!
@@ -463,69 +510,100 @@ struct afp_server *find_server_by_address(struct addrinfo *address)
 }
 
 /*!
- * @brief Whether a server has given a signature that is not all zero
+ * @brief Test whether a signature names a server: 16 bytes, not all zero
  *
- * @param[in] server  the server, or NULL
- * @returns 1 when it has
+ * @param[in] signature  the signature of a status reply
+ * @returns 1 when it does, 0 otherwise
  */
-int afp_server_has_valid_signature(const struct afp_server *server)
+int afp_signature_is_valid(const char signature[AFP_SIGNATURE_LEN])
 {
     static const char zero_signature[AFP_SIGNATURE_LEN] = {0};
-    return server != NULL && memcmp(server->signature, zero_signature,
-                                    sizeof(zero_signature)) != 0;
+    return memcmp(signature, zero_signature, sizeof(zero_signature)) != 0;
 }
 
 /*!
- * @brief Read a server's signature over a short status connection
+ * @brief Test whether a server's status carried a signature that names it
  *
- * @param[in]  address    the server's address list, which the caller keeps
- * @param[out] signature  receives AFP_SIGNATURE_LEN bytes
- * @returns 0, or -1 with errno set
+ * @param[in] server  the server, or NULL
+ * @returns 1 when it did, 0 otherwise
  */
-int afp_server_probe_signature(struct addrinfo *address,
-                               char signature[AFP_SIGNATURE_LEN])
+int afp_server_has_valid_signature(const struct afp_server *server)
 {
-    struct afp_server *probe;
-    int ret;
+    return server != NULL && afp_signature_is_valid(server->signature);
+}
 
-    if (!address || !signature) {
-        errno = EINVAL;
-        return -1;
-    }
+/*!
+ * @brief Read a server's status over a connection of its own
+ *
+ * Runs wholly on the calling thread, outside the loop.
+ *
+ * @param[in]  address   the addresses to try, in order
+ * @param[out] status    what the server reports
+ * @param[out] answered  receives the address that answered, or NULL
+ * @returns 0, or a negative errno: the connect's when no address connects,
+ *          the exchange's when the connected server does not answer
+ */
+int afp_server_probe(struct addrinfo *address,
+                     struct afp_server_status *status,
+                     const struct addrinfo **answered)
+{
+    int error = EINVAL;
 
-    probe = afp_server_init(address);
+    for (; address; address = address->ai_next) {
+        char text[INET6_ADDRSTRLEN];
+        int fd;
+        int rc;
+        address_text(address, text);
+        log_for_client(NULL, AFPFSD, LOG_NOTICE,
+                       "Attempting connection to %s ...", text);
+        fd = open_connection(address);
 
-    if (!probe) {
-        errno = ENOMEM;
-        return -1;
-    }
-
-    ret = afp_server_connect(probe, 1);
-
-    if (ret == 0 && afp_server_has_valid_signature(probe)) {
-        memcpy(signature, probe->signature, AFP_SIGNATURE_LEN);
-        /* The caller retains address ownership; loop_disconnect() does not
-         * need it while removing this short-lived status connection. */
-        probe->address = NULL;
-
-        if (afp_server_remove(probe) != 0) {
-            afp_free_server(&probe);
+        if (fd < 0) {
+            error = errno;
+            continue;
         }
 
-        return 0;
+        if (await_connection(fd, DSI_DEFAULT_TIMEOUT) < 0) {
+            error = errno;
+            close(fd);
+            continue;
+        }
+
+        if (answered) {
+            *answered = address;
+        }
+
+        rc = afpc_dsi_getstatus(fd, status);
+        close(fd);
+        return rc;
     }
 
-    if (ret == 0) {
-        errno = EPROTO;
-    } else if (errno == 0) {
-        errno = ECONNRESET;
-    }
+    return error ? -error : -EIO;
+}
 
-    if (afp_server_remove(probe) != 0) {
-        afp_free_server(&probe);
-    }
-
-    return -1;
+/*!
+ * @brief Take a status reply's fields into the server and identify it
+ *
+ * @param[in,out] server  the server
+ * @param[in]     status  what the server reported
+ */
+void afp_server_adopt_status(struct afp_server *server,
+                             const struct afp_server_status *status)
+{
+    memcpy(server->server_name, status->server_name,
+           sizeof(server->server_name));
+    memcpy(server->server_name_utf8, status->server_name_utf8,
+           sizeof(server->server_name_utf8));
+    memcpy(server->server_name_printable, status->server_name_printable,
+           sizeof(server->server_name_printable));
+    memcpy(server->machine_type, status->machine_type,
+           sizeof(server->machine_type));
+    memcpy(server->signature, status->signature, sizeof(server->signature));
+    memcpy(server->icon, status->icon, sizeof(server->icon));
+    memcpy(server->versions, status->versions, sizeof(server->versions));
+    server->supported_uams = status->supported_uams;
+    server->flags = status->flags;
+    afp_server_identify(server);
 }
 
 /*!
@@ -759,7 +837,10 @@ int afp_detach_volume(struct afp_volume * volume)
     remove_fork_list(volume);
     dir_cache_purge(volume);
 
-    if (volume->dtrefnum) {
+    /* A close on a dropped connection would reconnect to send it. */
+    if (volume->dtrefnum
+            && __atomic_load_n(&server->connect_state, __ATOMIC_ACQUIRE)
+            == SERVER_STATE_CONNECTED) {
         afp_closedt(server, volume->dtrefnum);
     }
 
@@ -806,30 +887,51 @@ int afp_unmount_all_volumes(struct afp_server * server)
  */
 int afp_unmount_volume(struct afp_volume * volume)
 {
+    unsigned char mounted = AFP_VOLUME_MOUNTED;
+
     if (volume == NULL) {
         return -1;
     }
 
-    if (volume->mounted != AFP_VOLUME_MOUNTED) {
+    /* Commands run on threads of their own: one unmount alone goes on. */
+    if (!__atomic_compare_exchange_n(&volume->mounted, &mounted,
+                                     AFP_VOLUME_UNMOUNTING, 0,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
         return -1;
     }
-
-    volume->mounted = AFP_VOLUME_UNMOUNTING;
 
     if (libafpclient->unmount_volume && libafpclient->unmount_volume(volume) != 0) {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
                        "FUSE unmount not supported - volume remains mounted on %s",
                        volume->mountpoint);
-        volume->mounted = AFP_VOLUME_MOUNTED;
+        __atomic_store_n(&volume->mounted, AFP_VOLUME_MOUNTED,
+                         __ATOMIC_RELEASE);
         return -1;
     }
 
-    volume->mounted = AFP_VOLUME_UNMOUNTED;
+    __atomic_store_n(&volume->mounted, AFP_VOLUME_UNMOUNTED, __ATOMIC_RELEASE);
     /* Detaching the last volume can free its server and volume storage. */
     afp_detach_volume(volume);
     return 0;
 }
 
+
+/*!
+ * @brief Free a volume list, each volume's cache and locks first
+ *
+ * @param[in,out] volumes  the list, or NULL
+ * @param[in]     count    its length
+ */
+void afp_free_volumes(struct afp_volume *volumes, unsigned int count)
+{
+    for (unsigned int i = 0; volumes && i < count; i++) {
+        dir_cache_destroy(&volumes[i]);
+        pthread_rwlock_destroy(&volumes[i].open_lock);
+        pthread_mutex_destroy(&volumes[i].open_forks_mutex);
+    }
+
+    free(volumes);
+}
 
 /*!
  * @brief Free a server, the requests still queued on it, and its buffers
@@ -841,7 +943,6 @@ int afp_unmount_volume(struct afp_volume * volume)
 void afp_free_server(struct afp_server **sp)
 {
     struct dsi_request * p, *next;
-    struct afp_volume * volumes;
     struct afp_server * server;
 
     if (sp == NULL) {
@@ -863,21 +964,14 @@ void afp_free_server(struct afp_server **sp)
         p = next;
     }
 
-    volumes = server->volumes;
-
     if (server->incoming_buffer) {
         free(server->incoming_buffer);
     }
 
-    if (volumes) {
-        for (int i = 0; i < server->num_volumes; i++) {
-            dir_cache_destroy(&volumes[i]);
-        }
-
-        free(volumes);
-    }
-
+    afp_free_volumes(server->volumes, server->num_volumes);
+    free(server->unclosed_forks);
     explicit_bzero(server->password, sizeof(server->password));
+    pthread_mutex_destroy(&server->unclosed_forks_mutex);
     pthread_mutex_destroy(&server->requestid_mutex);
     pthread_mutex_destroy(&server->request_queue_mutex);
     pthread_mutex_destroy(&server->send_mutex);
@@ -974,6 +1068,7 @@ struct afp_server *afp_server_init(struct addrinfo * address)
     afp_server_set_suspended(s, 0);
     s->address = address;
     /* Initialize mutexes */
+    pthread_mutex_init(&s->unclosed_forks_mutex, NULL);
     pthread_mutex_init(&s->requestid_mutex, NULL);
     pthread_mutex_init(&s->request_queue_mutex, NULL);
     pthread_cond_init(&s->request_queue_cond, NULL);
@@ -1036,70 +1131,71 @@ void afp_server_fill_basic(const struct afp_server *server,
     basic->server_type = server->server_type;
 }
 
+#define AFP_CLIENT_ID_LEN 16
+
+static pthread_once_t client_identity_once = PTHREAD_ONCE_INIT;
+static struct afp_token client_id;
+static uint32_t client_id_time;
+
 /*!
- * @brief Fill a session token with the client's fixed ID
+ * @brief Make the client's ID for session tokens, once per process
  *
- * @param[out] token  the token
+ * afpd ends a session of the same ID and another time as one a restarted
+ * client left, so neither changes while the process runs.
  */
-static void setup_default_outgoing_token(struct afp_token * token)
+static void make_client_identity(void)
 {
-    char foo[] = {(char)0x54, (char)0xc0, (char)0x75, (char)0xb0, (char)0x15, (char)0xe6, (char)0x1c, (char)0x13,
-                  (char)0x86, (char)0x75, (char)0xd2, (char)0xc2, (char)0xfd, (char)0x03, (char)0x4e, (char)0x3b
-                 };
-    token->length = 16;
-    memcpy(token->data, foo, 16);
+    pid_t pid = getpid();
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    client_id_time = (uint32_t) time(NULL);
+    client_id.length = AFP_CLIENT_ID_LEN;
+    memcpy(client_id.data, &pid, sizeof(pid));
+    memcpy(client_id.data + sizeof(pid), &client_id_time,
+           sizeof(client_id_time));
+
+    if (fd >= 0) {
+        char random[AFP_CLIENT_ID_LEN];
+
+        if (read(fd, random, sizeof(random)) == (ssize_t) sizeof(random)) {
+            memcpy(client_id.data, random, sizeof(random));
+        }
+
+        close(fd);
+    }
 }
 
 /*!
- * @brief Reclaim a server's session token after a reconnect
+ * @brief Ask the server for the token a reconnect continues the session with
  *
- * @param[in,out] server  the server
- * @returns afp_getsessiontoken()'s result
+ * A server that refuses the request, or does not continue sessions, holds no
+ * token, so a reconnect starts a new session.
+ *
+ * @param[in,out] server  server with a session logged in
  */
-static int resume_token(struct afp_server * server)
+void afp_server_take_token(struct afp_server *server)
 {
-    struct afp_token outgoing_token;
-    time_t now;
-    int ret;
-    /* Get the time */
-    time(&now);
-    /* Setup the outgoing token */
-    setup_default_outgoing_token(&outgoing_token);
-    ret = afp_getsessiontoken(server, kReconnWithTimeAndID,
-                              (unsigned int) now,
-                              &outgoing_token, &server->token);
-    return ret;
+    server->token.length = 0;
+
+    if (!afp_server_continues_sessions(server)) {
+        return;
+    }
+
+    pthread_once(&client_identity_once, make_client_identity);
+    /* The reply fills the token: a request whose own reconnect started a
+     * new session leaves the token that session took. */
+    afp_getsessiontoken(server, kLoginWithTimeAndID, client_id_time,
+                        &client_id, &server->token);
 }
 
 /*!
- * @brief Get a session token after a login
+ * @brief Log in with the server's UAM, user name and password
  *
- * @param[in,out] server  the server
- * @returns afp_getsessiontoken()'s result
- */
-static int setup_token(struct afp_server * server)
-{
-    time_t now;
-    int ret;
-    struct afp_token outgoing_token;
-    /* Get the time */
-    time(&now);
-    /* Setup the outgoing token */
-    setup_default_outgoing_token(&outgoing_token);
-    ret = afp_getsessiontoken(server, kLoginWithTimeAndID,
-                              (unsigned int) now,
-                              &outgoing_token, &server->token);
-    return ret;
-}
-
-/*!
- * @brief Log in to a server and set up, or resume, its session token
- *
- * @param[in,out] server  the server
- * @param[out]    mesg    receives the reason for a failure
- * @param[in,out] l       the bytes mesg holds
+ * @param[in,out] server  server with a DSI session open
+ * @param[out]    mesg    receives why a login fails
+ * @param[in,out] l       bytes of mesg in use
  * @param[in]     max     capacity of mesg
- * @returns 0, or 1 with the reason in mesg
+ * @returns 0, also for kFPMiscErr and kFPCallNotSupported, which it takes
+ *          for a session already logged in, or 1 when the login fails
  */
 int afp_server_login(struct afp_server *server,
                      char *mesg, unsigned int *l, unsigned int max)
@@ -1165,25 +1261,6 @@ int afp_server_login(struct afp_server *server,
         goto error;
     }
 
-    if (server->flags & kSupportsReconnect) {
-        /* Get the session */
-        if (server->need_resume) {
-            if (resume_token(server) != 0) {
-                *l += snprintf(mesg, max - *l,
-                               "Could not resume session token\n");
-                goto error;
-            }
-
-            server->need_resume = 0;
-        } else {
-            if (setup_token(server) != 0) {
-                *l += snprintf(mesg, max - *l,
-                               "Could not set up session token\n");
-                goto error;
-            }
-        }
-    }
-
     return 0;
 error:
     return 1;
@@ -1243,9 +1320,9 @@ out:
  * @param[out]    mesg    receives the reason for a failure
  * @param[in,out] l       bytes of mesg in use
  * @param[in]     max     capacity of mesg
- * @returns 0 once mounted and attached, or 1
+ * @returns 0 once open, or 1
  */
-int afp_connect_volume(struct afp_volume * volume, struct afp_server * server,
+static int open_volume(struct afp_volume * volume, struct afp_server * server,
                        char *mesg, unsigned int *l, unsigned int max)
 {
     unsigned short bitmap =
@@ -1325,11 +1402,44 @@ int afp_connect_volume(struct afp_volume * volume, struct afp_server * server,
         /* This is very odd, but AFP 2.x doesn't give timestamps for directories */
     }
 
-    volume->mounted = AFP_VOLUME_MOUNTED;
-    volume->attached = AFP_VOLUME_ATTACHED;
     return 0;
 error:
     return 1;
+}
+
+/*!
+ * @brief Open a volume, and mark it mounted and attached
+ *
+ * @param[in,out] volume  the volume
+ * @param[in]     server  the volume's server
+ * @param[out]    mesg    receives the reason for a failure
+ * @param[in,out] l       bytes of mesg in use
+ * @param[in]     max     capacity of mesg
+ * @returns 0 once mounted and attached, or 1
+ */
+int afp_connect_volume(struct afp_volume * volume, struct afp_server * server,
+                       char *mesg, unsigned int *l, unsigned int max)
+{
+    if (open_volume(volume, server, mesg, l, max)) {
+        return 1;
+    }
+
+    volume->mounted = AFP_VOLUME_MOUNTED;
+    volume->attached = AFP_VOLUME_ATTACHED;
+    return 0;
+}
+
+static _Thread_local const struct afp_server *reconnecting;
+
+/*!
+ * @brief Test whether this thread runs the server's reconnect
+ *
+ * @param[in] server  the server
+ * @returns 1 when it does
+ */
+int afp_server_reconnects_here(const struct afp_server *server)
+{
+    return reconnecting == server;
 }
 
 /*!
@@ -1338,24 +1448,28 @@ error:
  *
  * The server must answer with the signature it had, so a changed endpoint
  * never receives the saved credentials, and a removal or a disconnect while
- * the reconnect runs fails it. The caller releases the reconnect.
+ * the reconnect runs fails it. The reconnect sends alone, and forks survive
+ * if the session continues. The caller releases the reconnect.
  *
  * @param[in,out] s     the server
  * @param[out]    mesg  receives the reason for a failure
  * @param[in,out] l     bytes of mesg in use
  * @param[in]     max   capacity of mesg
- * @returns 0 once connected, or 1 when the reconnect fails
+ * @returns 0 once connected, or 1 with errno set when the reconnect fails
  */
 static int reconnect_held(struct afp_server *s, char *mesg, unsigned int *l,
                           unsigned int max)
 {
     int i;
     int ret = 0;
+    int rc;
     struct afp_volume * v;
+    struct afp_server_status status;
+    const struct addrinfo *answered = NULL;
     char expected_signature[AFP_SIGNATURE_LEN];
-    char peer_signature[AFP_SIGNATURE_LEN];
     char expected_signature_text[AFP_SIGNATURE_LEN * 2 + 1];
     char peer_signature_text[AFP_SIGNATURE_LEN * 2 + 1];
+    reconnecting = s;
     /* Flush pending requests before reconnecting to avoid late reply confusion */
     afpc_dsi_flush_request_queue(s);
 
@@ -1378,30 +1492,29 @@ static int reconnect_held(struct afp_server *s, char *mesg, unsigned int *l,
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "Verifying AFP ServerSignature before reconnecting to %s (expected %s)",
                    s->server_name_printable, expected_signature_text);
+    rc = afp_server_probe(s->address, &status, &answered);
 
-    /* DSIGetStatus is a one-shot connection on common AFP servers.  Probe it
-     * on a temporary socket, then open a separate socket for the AFP session. */
-    if (afp_server_probe_signature(s->address, peer_signature) != 0) {
+    if (rc == 0 && !afp_signature_is_valid(status.signature)) {
+        rc = -EPROTO;
+    }
+
+    if (rc != 0) {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
                        "Could not read AFP ServerSignature while reconnecting to %s: %s",
-                       s->server_name_printable, strerror(errno));
+                       s->server_name_printable, strerror(-rc));
         *l += snprintf(mesg + *l, max - *l,
                        "Could not verify server signature for %s\n",
                        s->server_name_printable);
-
-        if (errno == 0) {
-            errno = ECONNRESET;
-        }
-
+        errno = -rc;
         goto error;
     }
 
-    format_server_signature(peer_signature, peer_signature_text);
+    format_server_signature(status.signature, peer_signature_text);
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "AFP ServerSignature for %s is %s",
                    s->server_name_printable, peer_signature_text);
 
-    if (memcmp(peer_signature, expected_signature,
+    if (memcmp(status.signature, expected_signature,
                sizeof(expected_signature)) != 0) {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
                        "Refusing to reconnect to %s: AFP ServerSignature mismatch (expected %s, got %s)",
@@ -1425,7 +1538,17 @@ static int reconnect_held(struct afp_server *s, char *mesg, unsigned int *l,
         goto error;
     }
 
-    if (afpc_dsi_opensession(s) != 0) {
+    /* The password goes only to the address whose status gave the signature:
+     * another address of the name may be another server. */
+    if (s->used_address != answered) {
+        *l += snprintf(mesg + *l, max - *l,
+                       "Refusing to resume %s at another address\n",
+                       s->server_name_printable);
+        errno = EPROTO;
+        goto error;
+    }
+
+    if (afp_server_open_session(s) != 0) {
         *l += snprintf(mesg, max - *l, "Error opening DSI session to %s\n",
                        s->server_name_printable);
         errno = ECONNRESET;
@@ -1444,22 +1567,88 @@ static int reconnect_held(struct afp_server *s, char *mesg, unsigned int *l,
         goto error;
     }
 
-    for (i = 0; i < s->num_volumes; i++) {
-        v = &s->volumes[i];
-        /* Desktop references belong to the old AFP session. */
-        v->dtrefnum = 0;
+    int answer = kFPMiscErr;
 
-        if ((v->attached == AFP_VOLUME_ATTACHED || strlen(v->mountpoint))
-                && afp_connect_volume(v, v->server, mesg, l, max)) {
+    if (__atomic_exchange_n(&s->token_ended, 0, __ATOMIC_ACQ_REL)) {
+        s->token.length = 0;
+    }
+
+    if (s->token.length > 0) {
+        answer = afp_disconnectoldsession(s, 0, &s->token);
+
+        /* A lost reply leaves the hand-over open, so the token is kept. As
+         * afpd 4.5+ queues hand-overs, an expired wait counts as refused. */
+        if (afpc_dsi_unanswered(answer) && answer != ETIMEDOUT) {
             *l += snprintf(mesg, max - *l,
-                           "Could not mount %s\n",
-                           v->volume_name_printable);
+                           "Connection to %s ended while resuming\n",
+                           s->server_name_printable);
+            errno = ECONNRESET;
+            goto error;
+        }
+    }
 
-            if (errno == 0) {
-                errno = EIO;
+    if (answer == kFPNoErr) {
+        log_for_client(NULL, AFPFSD, LOG_NOTICE,
+                       "Continued the session on %s",
+                       s->server_name_printable);
+    } else {
+        /* The process that refused the token ends with its connection, so the
+         * new session logs in on another, whose token a reconnect can use. */
+        if (s->token.length > 0) {
+            /* afpd's master hands the connection of an expired wait to the
+             * old session, which reads this logout once it takes it over. */
+            if (answer == ETIMEDOUT) {
+                afp_logout(s, DSI_DONT_WAIT);
             }
 
-            ret = 1;
+            s->token.length = 0;
+
+            if (afp_server_connect(s, 0) || s->used_address != answered
+                    || afp_server_open_session(s) != 0) {
+                *l += snprintf(mesg, max - *l,
+                               "Error resuming connection to %s\n",
+                               s->server_name_printable);
+                errno = ECONNRESET;
+                goto error;
+            }
+
+            if (afp_server_login(s, mesg, l, max)) {
+                /* errno may still hold this connect's EINPROGRESS. */
+                errno = EACCES;
+                goto error;
+            }
+        }
+
+        log_for_client(NULL, AFPFSD, LOG_NOTICE,
+                       "New session on %s; open files fail until reopened",
+                       s->server_name_printable);
+        afp_server_next_session_generation(s);
+        forget_unclosed_forks(s);
+
+        for (i = 0; i < s->num_volumes; i++) {
+            v = &s->volumes[i];
+            forget_open_forks(v);
+            /* Desktop references belong to the old AFP session. */
+            v->dtrefnum = 0;
+
+            /* A volume an unmount is detaching stays closed, and the
+             * reopen leaves the mount state an unmount may hold. */
+            if (v->attached == AFP_VOLUME_ATTACHED
+                    && open_volume(v, v->server, mesg, l, max)) {
+                *l += snprintf(mesg, max - *l,
+                               "Could not mount %s\n",
+                               v->volume_name_printable);
+                ret = 1;
+            }
+        }
+
+        /* Unless every volume opened, no token is taken and the next reconnect
+         * starts anew; afpd keeps a dropped session, so the logout ends it. */
+        if (ret == 0) {
+            afp_server_take_token(s);
+        } else {
+            afp_logout(s, DSI_DONT_WAIT);
+            errno = EIO;
         }
     }
 
@@ -1485,23 +1674,27 @@ static int reconnect_held(struct afp_server *s, char *mesg, unsigned int *l,
     __atomic_store_n(&s->connect_state, SERVER_STATE_CONNECTED,
                      __ATOMIC_RELEASE);
     pthread_mutex_unlock(&server_list_mutex);
+    reconnecting = NULL;
     return 0;
 error:
     loop_disconnect(s);
+    reconnecting = NULL;
     return 1;
 }
 
 /*!
  * @brief Connect a disconnected server again, log in and reopen its volumes
  *
- * One thread reconnects a server at a time, as reconnect_held() says.
+ * One thread reconnects a server at a time, as reconnect_held() says. The
+ * closes kept from before go out once it ends, as no other request is sent
+ * while it runs.
  *
  * @param[in,out] s     the server
  * @param[out]    mesg  receives the reason for a failure
  * @param[in,out] l     bytes of mesg in use
  * @param[in]     max   capacity of mesg
- * @returns 0 once connected, or 1 when another thread reconnects it or the
- *          reconnect fails
+ * @returns 0 once connected, or 1 when another thread reconnects it, and 1
+ *          with errno set when the reconnect fails
  */
 int afp_server_reconnect(struct afp_server * s, char *mesg,
                          unsigned int *l, unsigned int max)
@@ -1514,6 +1707,11 @@ int afp_server_reconnect(struct afp_server * s, char *mesg,
 
     ret = reconnect_held(s, mesg, l, max);
     afp_server_reconnect_end(s);
+
+    if (ret == 0) {
+        close_unclosed_forks(s);
+    }
+
     return ret;
 }
 
@@ -1582,34 +1780,33 @@ int afp_server_restart(struct afp_server *s, struct addrinfo *address,
     ret = reconnect_held(s, mesg, l, max) == 0 ? 0 : -1;
     explicit_bzero(s->password, sizeof(s->password));
     afp_server_reconnect_end(s);
+
+    if (ret == 0) {
+        close_unclosed_forks(s);
+    }
+
     return ret;
 }
 
 
 /*!
- * @brief Connect a server's socket to the first of its addresses that answers
+ * @brief Connect a server's session socket to the first address that answers
  *
- * Each connection starts a new generation, so replies of an older one are
- * dropped, and the old descriptor leaves the loop's set and is closed once
- * the frame a sender is writing on it has ended. With full, the status
- * exchange's time also sets tx_delay.
+ * Replies of older connections are dropped, and the old descriptor is closed
+ * once the frame being written on it ends.
  *
  * @param[in,out] server  server to connect
- * @param[in]     full    1 to read the server's status and identify the
- *                        server, 0 not
- * @returns 0, or a negative errno, which errno holds too: when no address
- *          connects, -ENOENT for a server removed meanwhile, or when the
- *          status read fails, -ETIMEDOUT when it timed out
+ * @param[in]     full    1 to read the server's status first, 0 not
+ * @returns 0, or a negative errno, which errno holds too: the connect's when
+ *          no address connects, -ENOENT for a server removed meanwhile, or
+ *          the status read's, -ETIMEDOUT when it timed out
  */
 int afp_server_connect(struct afp_server *server, int full)
 {
-    int 	error = 0;
-    struct 	timeval t1, t2;
-    struct 	addrinfo *address;
-#define LOG_MSG_SIZE 64
-    char log_msg[LOG_MSG_SIZE];
-    char	ip_addr[INET6_ADDRSTRLEN];
-    address = server->address;
+    struct addrinfo *address;
+    struct afp_server_status status;
+    struct timeval t1, t2;
+    int error = EINVAL;
     int fd = __atomic_exchange_n(&server->fd, -1, __ATOMIC_ACQ_REL);
     /* The next generation starts before the old descriptor is shut down,
      * so a receiver the shutdown wakes finds its connection replaced. */
@@ -1626,68 +1823,88 @@ int afp_server_connect(struct afp_server *server, int full)
     log_for_client(NULL, AFPFSD, LOG_INFO,
                    "Connection generation now %u", connection_generation);
 
-    while (address) {
-        switch (address->ai_family) {
-        case AF_INET6:
-            inet_ntop(AF_INET6, &(((struct sockaddr_in6 *)address->ai_addr)->sin6_addr),
-                      ip_addr, INET6_ADDRSTRLEN);
-            break;
+    for (address = server->address; address; address = address->ai_next) {
+        char text[INET6_ADDRSTRLEN];
+        int session;
+        int rc;
+        address_text(address, text);
+        log_for_client(NULL, AFPFSD, LOG_NOTICE,
+                       "Attempting connection to %s ...", text);
+        fd = open_connection(address);
 
-        case AF_INET:
-            inet_ntop(AF_INET, &(((struct sockaddr_in *)address->ai_addr)->sin_addr),
-                      ip_addr, INET6_ADDRSTRLEN);
-            break;
-
-        default:
-            snprintf(ip_addr, 23, "unknown address family");
-            break;
+        if (fd < 0) {
+            error = errno;
+            continue;
         }
 
-        int written = snprintf(log_msg, LOG_MSG_SIZE, "Attempting connection to %s ...",
-                               ip_addr);
-
-        if (written >= LOG_MSG_SIZE) {
-            log_msg[LOG_MSG_SIZE - 1] = '\0';
-        }
-
-        (log_for_client)(NULL, AFPFSD, LOG_NOTICE, log_msg);
-        fd = socket(address->ai_family,
-                    address->ai_socktype, address->ai_protocol);
-
-        if (fd >= 0) {
-            if (connect_with_timeout(fd, address->ai_addr,
-                                     address->ai_addrlen, DSI_DEFAULT_TIMEOUT) == 0) {
-                /* Disable Nagle */
-                int nodelay = 1;
-
-                if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
-                               &nodelay, sizeof(nodelay)) < 0) {
-                    log_for_client(NULL, AFPFSD, LOG_WARNING,
-                                   "Could not set TCP_NODELAY on fd=%d: %s",
-                                   fd, strerror(errno));
-                }
-
-                break;
-            }
-
+        if (await_connection(fd, DSI_DEFAULT_TIMEOUT) < 0) {
+            error = errno;
             close(fd);
             fd = -1;
+            continue;
         }
 
-        address	= address->ai_next;
+        if (!full) {
+            break;
+        }
+
+        /* The session's connection is made while the status is read. */
+        session = open_connection(address);
+        gettimeofday(&t1, NULL);
+        rc = afpc_dsi_getstatus(fd, &status);
+        gettimeofday(&t2, NULL);
+        close(fd);
+
+        if (rc == 0 && (session < 0
+                        || await_connection(session,
+                                            DSI_DEFAULT_TIMEOUT) < 0)) {
+            rc = -errno;
+        }
+
+        /* afpd counts a status's process against its cap until the status
+         * closes, and answers unasked a connection the cap refuses. */
+        if (rc == 0 && answered_unasked(session)) {
+            close(session);
+            session = open_connection(address);
+
+            if (session < 0
+                    || await_connection(session, DSI_DEFAULT_TIMEOUT) < 0) {
+                rc = -errno;
+            }
+        }
+
+        if (rc != 0) {
+            if (session >= 0) {
+                close(session);
+            }
+
+            errno = -rc;
+            return rc;
+        }
+
+        fd = session;
+        afp_server_adopt_status(server, &status);
+
+        if ((t2.tv_sec - t1.tv_sec) > 0) {
+            server->tx_delay = (t2.tv_sec - t1.tv_sec) * 1000;
+        } else {
+            server->tx_delay = (t2.tv_usec - t1.tv_usec) / 1000;
+        }
+
+        break;
     }
 
     if (fd < 0) {
-        error = errno;
-        goto error;
+        errno = error;
+        return -error;
     }
 
-    server->exit_flag		= 0;
+    server->exit_flag = 0;
 
     /* AFP 3.3+: Only reset request ID if replay cache is not supported.
      * With replay cache, request IDs persist across reconnections. */
     if (!server->supports_replay_cache) {
-        server->lastrequestid	= 0;
+        server->lastrequestid = 0;
     }
 
     /* A server removed while this connect ran stays removed: its state,
@@ -1705,7 +1922,7 @@ int afp_server_connect(struct afp_server *server, int full)
     __atomic_store_n(&server->fd, fd, __ATOMIC_RELEASE);
     __atomic_store_n(&server->connect_state, SERVER_STATE_CONNECTING,
                      __ATOMIC_RELEASE);
-    server->used_address	= address;
+    server->used_address = address;
     int found = 0;
 
     for (struct afp_server *s = server_base; s; s = s->next) {
@@ -1722,33 +1939,48 @@ int afp_server_connect(struct afp_server *server, int full)
 
     add_fd_and_signal(fd);
     pthread_mutex_unlock(&server_list_mutex);
-
-    if (!full) {
-        return 0;
-    }
-
-    /* This reads the status and times the exchange into tx_delay. */
-    gettimeofday(&t1, NULL);
-
-    if ((error = afpc_dsi_getstatus(server)) != 0) {
-        /* The status read answers ETIMEDOUT or a negative errno; errno
-         * holds it too, for the callers that read errno. */
-        errno = error > 0 ? error : -error;
-        return -errno;
-    }
-
-    gettimeofday(&t2, NULL);
-    afp_server_identify(server);
-
-    if ((t2.tv_sec - t1.tv_sec) > 0) {
-        server->tx_delay = (t2.tv_sec - t1.tv_sec) * 1000;
-    } else {
-        server->tx_delay = (t2.tv_usec - t1.tv_usec) / 1000;
-    }
-
     return 0;
-error:
-    return -error;
+}
+
+/*!
+ * @brief Open a DSI session, once more on a fresh connection when refused
+ *
+ * A session refused while a status's process still counts against afpd's cap
+ * opens once that process ends; another address may be another server. The
+ * fresh connection reads the address list, which only a reconnect's owner
+ * replaces, so it owns the server's reconnect too.
+ *
+ * @param[in,out] server  the server, connected
+ * @returns afpc_dsi_opensession()'s result, or -EPROTO for a fresh connection
+ *          at another address
+ */
+int afp_server_open_session(struct afp_server *server)
+{
+    const struct addrinfo *address = server->used_address;
+    int owner = afp_server_reconnects_here(server);
+    int rc = afpc_dsi_opensession(server);
+
+    if (rc == 0 || rc == ETIMEDOUT
+            || (!owner && !afp_server_reconnect_try_begin(server))) {
+        return rc;
+    }
+
+    reconnecting = server;
+
+    if (afp_server_connect(server, 0) == 0) {
+        rc = -EPROTO;
+
+        if (server->used_address == address) {
+            rc = afpc_dsi_opensession(server);
+        }
+    }
+
+    if (!owner) {
+        reconnecting = NULL;
+        afp_server_reconnect_end(server);
+    }
+
+    return rc;
 }
 
 /*!
@@ -1817,23 +2049,29 @@ int pick_uam(unsigned int uam2, unsigned int uam1)
 /*!
  * @brief Write a server's volume names, comma-separated
  *
+ * The names stop where the buffer ends, the last of them cut short there.
+ *
  * @param[in]  server  the server
- * @param[out] names   receives the names
- * @param[in]  max     capacity of names
- * @returns the length snprintf() counted
+ * @param[out] names   receives the names and a NUL
+ * @param[in]  max     capacity of names, 1 or more
+ * @returns the bytes the names take in names
  */
 int afp_list_volnames(struct afp_server * server, char *names, int max)
 {
     int len = 0;
-    int i;
+    names[0] = '\0';
 
-    for (i = 0; i < server->num_volumes; i++) {
-        if (i < server->num_volumes - 1)
-            len += snprintf(names + len, max - len, "%s, ",
-                            server->volumes[i].volume_name_printable);
-        else
-            len += snprintf(names + len, max - len, "%s",
-                            server->volumes[i].volume_name_printable);
+    for (int i = 0; i < server->num_volumes && len < max - 1; i++) {
+        int n = snprintf(names + len, (size_t)(max - len), "%s%s",
+                         i > 0 ? ", " : "",
+                         server->volumes[i].volume_name_printable);
+
+        if (n < 0) {
+            break;
+        }
+
+        /* snprintf() counts the bytes of the whole name. */
+        len += n < max - len ? n : max - len - 1;
     }
 
     return len;

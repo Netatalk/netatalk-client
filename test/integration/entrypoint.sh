@@ -104,4 +104,17 @@ if [ "${AFP_TEST_FUSE:-0}" = 1 ]; then
     setpriv --bounding-set=-all,+sys_admin \
         --reuid="$TEST_USR" --regid="$TEST_USR" --clear-groups \
         prove -v /test/test_fuse.t
+    # A container's parent opens /dev/fuse and mounts it for a client that
+    # may not mount, which serves the mount as /dev/fd/N.
+    fd_mnt=$(mktemp -d /tmp/afp-fuse-fd.XXXXXX)
+    exec 9<> /dev/fuse
+    # libmount's fsopen(2) API fails the step after a mount for another user.
+    LIBMOUNT_FORCE_MOUNT2=always mount -i -t fuse \
+        -o "fd=9,rootmode=40000,user_id=$(id -u "$TEST_USR"),group_id=$(id -g "$TEST_USR")" \
+        afpfs "$fd_mnt"
+    AFP_TEST_FUSE_FD_DIR="$fd_mnt" setpriv --bounding-set=-all \
+        --reuid="$TEST_USR" --regid="$TEST_USR" --clear-groups \
+        prove -v /test/test_fuse_fd.t
+    exec 9>&-
+    umount -l "$fd_mnt"
 fi

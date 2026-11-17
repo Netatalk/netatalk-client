@@ -90,13 +90,14 @@ tests; pass `-D` for buffered I/O there.
 `copy_file_range(2)` stands in for a server-side copy. An SMB3 server runs it
 as a server-side copy and an NFS 4.2 server as a `COPY`; a FUSE filesystem
 runs it in its own `copy_file_range` operation when it has one; without an
-offload the kernel reads and writes the data itself. On 64-bit Linux the
-Netatalk FUSE client copies a whole file of 512 KiB and up, before Netatalk
-4.5 at most 1 GiB with its resource fork, into a file the copy created on a
-Netatalk server on
-AFP 3.4 with `FPCopyFile`, and any other range of a data or resource fork
-through the client in quantum-sized reads and writes; elsewhere the kernel
-copies.
+offload the kernel reads and writes the data itself.
+
+On 64-bit Linux, the Netatalk FUSE client makes such a copy with `FPCopyFile`
+where the server announces that command. The copy must be of a whole file of
+512 KiB and up, into a file that the copy created. Before Netatalk 4.5, the
+file's two forks together must hold at most 1 GiB. Any other range of a data
+or resource fork goes through the client in quantum-sized reads and writes.
+On other systems the kernel copies.
 
 Locks and directory listings go where the filesystem sends them. The kernel
 CIFS client sends byte-range locks to the server; a FUSE filesystem without a

@@ -25,10 +25,12 @@ int ll_read(struct afp_volume * volume,
             char *buf, size_t size, off_t offset,
             struct afp_file_info *fp, int *eof);
 
-int ll_handle_unlocking(struct afp_volume * volume, unsigned short forkid,
+int ll_handle_unlocking(struct afp_volume * volume,
+                        const struct afp_file_info *fp,
                         uint64_t offset, uint64_t sizetorequest);
 
-int ll_handle_locking(struct afp_volume * volume, unsigned short forkid,
+int ll_handle_locking(struct afp_volume * volume,
+                      const struct afp_file_info *fp,
                       uint64_t offset, uint64_t sizetorequest);
 
 int ll_write(struct afp_volume * volume,
@@ -41,7 +43,6 @@ int ll_createfile(struct afp_volume * volume, unsigned int did,
 int ll_openfork_errno(int rc);
 
 int ll_answer_errno(int rc);
-int ll_unanswered(int rc);
 
 void ll_set_thread_deny_write(int deny);
 unsigned char ll_write_access(const struct afp_volume * volume);

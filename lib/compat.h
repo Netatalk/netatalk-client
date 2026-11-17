@@ -1,8 +1,14 @@
+/*!
+ * @file
+ * @brief What a platform's libc or compiler may lack, and its stand-ins
+ */
+
 #ifndef _COMPAT_H_
 #define _COMPAT_H_
 
 #include <stddef.h>
 #include <strings.h>
+#include <sys/socket.h>
 
 #ifdef HAVE_LIBBSD
 #include <bsd/string.h>
@@ -29,6 +35,11 @@ extern void explicit_bzero(void *s, size_t n);
 #elif defined(HAVE_MEMSET_EXPLICIT) && !defined(HAVE_EXPLICIT_BZERO)
 #include <string.h>
 #define explicit_bzero(s, n) memset_explicit((s), 0, (n))
+#endif
+
+/* POSIX.1-2008 has it; a system without it keeps SIGPIPE's default. */
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
 #endif
 
 #endif
