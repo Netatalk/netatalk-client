@@ -3,9 +3,15 @@
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
+ */
+
+/*!
+ * @file
+ * @brief FPListExtAttrs, FPGetExtAttr, FPSetExtAttr and FPRemoveExtAttr
  */
 
 #include <string.h>
@@ -265,12 +271,35 @@ int afp_getextattr(struct afp_volume * volume, unsigned int dirid,
     return ret;
 }
 
+/*!
+ * @brief Set an extended attribute's value with FPSetExtAttr
+ *
+ * The reply's wait grows with the value, at AFP_DATA_BYTES_PER_SECOND.
+ *
+ * @param[in] volume         the object's volume, or NULL
+ * @param[in] dirid          the directory the path starts from
+ * @param[in] bitmap         kXAttrNoFollow, kXAttrCreate and kXAttrReplace,
+ *                           or 0
+ * @param[in] offset         where the value goes in the attribute, 0
+ * @param[in] pathname       the object's path
+ * @param[in] namelen        bytes of name
+ * @param[in] name           the attribute's name
+ * @param[in] attribdatalen  bytes of the value
+ * @param[in] attribdata     the value, or NULL with a length of 0
+ * @returns the server's AFP result, -1 without a volume, for a NULL value
+ *          with a length or when the request cannot be built, or
+ *          afpc_dsi_send_data()'s error when it fails
+ */
 int afp_setextattr(struct afp_volume * volume, unsigned int dirid,
                    unsigned short bitmap, uint64_t offset, const char *pathname,
                    unsigned short namelen, const char *name,
                    unsigned int attribdatalen, const char *attribdata)
 {
     int ret = -1;
+
+    if (attribdata == NULL && attribdatalen > 0) {
+        return -1;
+    }
 
     if (volume) {
         struct {
@@ -286,8 +315,12 @@ int afp_setextattr(struct afp_volume * volume, unsigned int dirid,
         unsigned int pathlen = sizeof_path_header(volume) + strlen(pathname);
         unsigned int path_offset = sizeof(*request_packet);
         unsigned int padding = (path_offset + pathlen) & 1;
-        unsigned int len = sizeof(*request_packet) + pathlen + padding + 2 + namelen +
-                           4 + attribdatalen;
+        /* The packet ends at the value's size; the value goes as data. */
+        unsigned int len = sizeof(*request_packet) + pathlen + padding
+                           + 2 + namelen + 4;
+        uint32_t value_size = htonl(attribdatalen);
+        int wait = afpc_dsi_transfer_wait(server, attribdatalen,
+                                          AFP_DATA_BYTES_PER_SECOND);
         char *p, *p2;
         char *msg = malloc(len);
 
@@ -324,17 +357,11 @@ int afp_setextattr(struct afp_volume * volume, unsigned int dirid,
         *((uint16_t *)p2) = htons(namelen);
         memcpy(p2 + 2, name, namelen);
         p2 += 2 + namelen;
-        /* EA data size (4 bytes) */
-        *((uint32_t *)p2) = htonl(attribdatalen);
-        p2 += 4;
-
-        /* EA data payload */
-        if (attribdatalen > 0 && attribdata) {
-            memcpy(p2, attribdata, attribdatalen);
-        }
-
-        ret = afpc_dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
-                            afpSetExtAttr, NULL);
+        /* EA data size (4 bytes), at whatever offset the name leaves */
+        memcpy(p2, &value_size, sizeof(value_size));
+        ret = afpc_dsi_send_data(server, (char *) request_packet, len,
+                                 attribdata, attribdatalen, wait,
+                                 afpSetExtAttr, NULL);
         free(msg);
     }
 

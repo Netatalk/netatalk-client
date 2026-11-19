@@ -68,16 +68,35 @@ static void daemon_set_log_level(int loglevel)
     daemon_log_min_rank = loglevel_to_rank(loglevel);
 }
 
+/*!
+ * @brief Test whether afpsld keeps a message at a level
+ *
+ * A client's message goes to the client at every level, which its own
+ * front end filters.
+ *
+ * @param[in] priv      the client the message is for, or NULL
+ * @param[in] loglevel  the message's level
+ * @returns 1 for a client's message, and for a level at or above the
+ *          daemon's, 0 otherwise
+ */
+static int daemon_log_enabled(void *priv, int loglevel)
+{
+    return priv != NULL || loglevel_to_rank(loglevel) >= daemon_log_min_rank;
+}
+
+/*!
+ * @brief Add a message to its client's reply, or write it to afpsld's log
+ *
+ * @param[in] priv      the client the message is for, or NULL
+ * @param[in] logtype   the message's type, unused
+ * @param[in] loglevel  the message's level
+ * @param[in] message   the message
+ */
 static void daemon_log_for_client(void *priv,
                                   enum logtypes logtype _U_,
                                   int loglevel, const char *message)
 {
     struct daemon_client * c = priv;
-    int type_rank = loglevel_to_rank(loglevel);
-
-    if (!c && type_rank < daemon_log_min_rank) {
-        return; /* Filter out less-verbose messages */
-    }
 
     if (c) {
         struct afpsl_ipc_log_record record;
@@ -200,7 +219,8 @@ static struct libafpclient client = {
     .unmount_volume = daemon_unmount_volume,
     .log_for_client = daemon_log_for_client,
     .forced_ending_hook = daemon_forced_ending_hook,
-    .scan_extra_fds = daemon_scan_extra_fds
+    .scan_extra_fds = daemon_scan_extra_fds,
+    .log_enabled = daemon_log_enabled
 };
 
 static int daemon_register_afpclient(void)

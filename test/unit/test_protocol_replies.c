@@ -45,7 +45,8 @@ struct listxattr_reply {
  */
 int main(int argc, char **argv)
 {
-    unsigned char reply[sizeof(struct dsi_header) + 16];
+    /* As aligned as the DSI header the checks write through. */
+    _Alignas(uint32_t) unsigned char reply[sizeof(struct dsi_header) + 16];
     struct dsi_header *header = (struct dsi_header *)reply;
     uint32_t wire32;
     static const unsigned char wire64[] = {
@@ -461,6 +462,84 @@ int main(int argc, char **argv)
         CHECK(memcmp(names + 8, untouched, sizeof(untouched)) == 0);
         CHECK(afp_list_volnames(&names_server, names, sizeof(names)) == 18);
         CHECK(strcmp(names, "alpha, beta, gamma") == 0);
+    }
+    {
+        /* A UTF-8 message, then an empty one into the same buffer, which
+         * keeps nothing of the first. */
+        struct {
+            struct dsi_header header __attribute__((__packed__));
+            uint16_t messagetype;
+            uint16_t messagebitmap;
+            uint16_t length;
+            char text[5];
+        } __attribute__((__packed__)) message_reply;
+        char mesg[AFP_LOGINMESG_LEN];
+        memset(&message_reply, 0, sizeof(message_reply));
+        message_reply.messagebitmap = htons(AFP_GETSRVRMSG_UTF8);
+        message_reply.length = htons(5);
+        memcpy(message_reply.text, "hello", 5);
+        CHECK(afp_getsrvrmsg_reply(NULL, (char *)&message_reply,
+                                   sizeof(message_reply), mesg) == 0);
+        CHECK(strcmp(mesg, "hello") == 0);
+        message_reply.length = 0;
+        CHECK(afp_getsrvrmsg_reply(NULL, (char *)&message_reply,
+                                   sizeof(message_reply), mesg) == 0);
+        CHECK(mesg[0] == '\0');
+    }
+    {
+        /* An FPGetVolParms reply with every parameter: its dates lie two bytes
+         * off a 4-byte boundary, where a trapping build stops at a load. */
+        static const unsigned char parameters[] = {
+            0x0f, 0xff,                     /* the bitmap */
+            0, 1, 0, 2,                     /* attributes, signature */
+            0, 0, 0, 16, 0, 0, 0, 32,       /* created, modified */
+            0, 0, 0, 48, 0, 7,              /* backed up, the volume ID */
+            0, 0, 0x10, 0, 0, 0, 0x20, 0,   /* bytes free and in all */
+            0, 0,                           /* the name's offset */
+            0, 0, 0, 0, 0, 3, 0, 0,         /* bytes free, 64-bit */
+            0, 0, 0, 0, 0, 4, 0, 0,         /* bytes in all, 64-bit */
+            0, 0, 0x10, 0,                  /* the block size */
+        };
+        static uint32_t storage[20];
+        char *volume_reply = (char *) storage;
+        unsigned int volume_size = (unsigned int)(sizeof(struct dsi_header)
+                                                  + sizeof(parameters));
+        struct afp_volume volume;
+        memcpy(volume_reply + sizeof(struct dsi_header), parameters,
+               sizeof(parameters));
+        memset(&volume, 0, sizeof(volume));
+        CHECK(afp_getvolparms_reply(NULL, volume_reply, volume_size,
+                                    &volume) == 0);
+        CHECK(volume.attributes == 1 && volume.signature == 2
+              && volume.volid == 7);
+        CHECK(volume.creation_date == afp_date_to_unix(NULL, htonl(16))
+              && volume.modification_date == afp_date_to_unix(NULL, htonl(32))
+              && volume.backup_date == afp_date_to_unix(NULL, htonl(48)));
+        CHECK(volume.stat.f_bfree == 0x30000 && volume.stat.f_blocks == 0x40000
+              && volume.stat.f_bsize == 4096);
+        /* A reply a byte short of its block size is refused. */
+        CHECK(afp_getvolparms_reply(NULL, volume_reply, volume_size - 1,
+                                    &volume) != 0);
+    }
+    {
+        /* AFP 2's statfs asks for the 32-bit sizes alone, which then lie
+         * two bytes off a 4-byte boundary. */
+        static const unsigned char parameters[] = {
+            0x00, 0xc0,                     /* the bitmap */
+            0, 0x10, 0, 0, 0, 0x20, 0, 0,   /* bytes free and in all */
+        };
+        static uint32_t storage[8];
+        char *volume_reply = (char *) storage;
+        struct afp_volume volume;
+        memcpy(volume_reply + sizeof(struct dsi_header), parameters,
+               sizeof(parameters));
+        memset(&volume, 0, sizeof(volume));
+        CHECK(afp_getvolparms_reply(NULL, volume_reply,
+                                    (unsigned int)(sizeof(struct dsi_header)
+                                                   + sizeof(parameters)),
+                                    &volume) == 0);
+        CHECK(volume.stat.f_bfree == 0x100000
+              && volume.stat.f_blocks == 0x200000);
     }
     return test_tap_finish();
 }

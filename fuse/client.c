@@ -97,26 +97,25 @@ static void clear_outgoing_mount_url_path(void)
     afpc_path_clear(&request->url.path);
 }
 
-/* Log handler that filters by log level */
-static void client_log_for_client(void *priv _U_,
-                                  enum logtypes logtype _U_,
-                                  int loglevel, const char *message)
+/*!
+ * @brief Test whether afpc prints a message at a level
+ *
+ * @param[in] priv      unused
+ * @param[in] loglevel  the message's level
+ * @returns 1 for a level at or above afpc's, 0 otherwise
+ */
+static int client_log_enabled(void *priv _U_, int loglevel)
 {
-    int type_rank = loglevel_to_rank(loglevel);
-
-    if (type_rank < client_log_min_rank) {
-        return; /* Filter out less-verbose messages */
-    }
-
-    printf("%s\n", message);
+    return loglevel_to_rank(loglevel) >= client_log_min_rank;
 }
 
 static struct libafpclient client = {
     .unmount_volume = NULL,
-    .log_for_client = client_log_for_client,
+    .log_for_client = stdout_log_for_client,
     .forced_ending_hook = NULL,
     .scan_extra_fds = NULL,
     .loop_started = NULL,
+    .log_enabled = client_log_enabled,
 };
 
 /* Forward declaration for get_daemon_filename */
