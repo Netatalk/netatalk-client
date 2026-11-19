@@ -439,7 +439,6 @@ jobs:
           sudo /opt/local/bin/port -N install \
             libedit \
             libgcrypt \
-            libiconv \
             macfuse \
             meson \
             ninja \
@@ -486,7 +485,6 @@ jobs:
               fusefs-libs \
               libedit \
               libgcrypt \
-              libiconv \
               meson \
               perl5 \
               pkgconf
@@ -526,7 +524,6 @@ jobs:
               fusefs-libs3 \
               libedit \
               libgcrypt \
-              libiconv \
               meson \
               perl5 \
               pkgconf

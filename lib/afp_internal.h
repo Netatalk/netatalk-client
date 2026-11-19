@@ -34,7 +34,6 @@ struct afp_token {
 };
 
 #define SERVER_MAX_VERSIONS 10
-#define SERVER_MAX_UAMS 10
 
 struct afp_rx_buffer {
     unsigned int size;
@@ -109,6 +108,8 @@ struct afp_file_info {
     unsigned int cnid;
     unsigned int resource;
     unsigned short forkid;
+    /*! The generation of the session that gave forkid */
+    unsigned int session;
     unsigned char sync;
     unsigned char writable;
     /*! The AFP access mode its fork opened with, deny modes included */
@@ -122,6 +123,12 @@ struct afp_file_info {
     char name[AFPC_MAX_NAME_BYTES];
     /*! The file's name in the volume's wire form */
     char basename[AFPC_MAX_NAME_BYTES];
+};
+
+/* A fork whose close never left, and the session it is in */
+struct afp_unclosed_fork {
+    unsigned short forkid;
+    unsigned int session;
 };
 
 struct dir_cache_entry;
@@ -227,6 +234,8 @@ struct afp_volume {
 
     /* Used to trigger startup */
     pthread_cond_t  startup_condition_cond;
+    pthread_mutex_t startup_mutex; /*!< guards starting, with the condition */
+    int starting; /*!< 1 until the mount runs or its thread ends */
 
     void *priv;   /* This is a private structure for fuse/cmdline, etc */
     pthread_t thread; /* This is the per-volume thread */
@@ -316,7 +325,7 @@ struct afp_server {
 
     /* Session */
     struct afp_token token;
-    char need_resume;
+    char token_ended; /*!< the server ended the session the token names */
     char reconnect_in_progress;
     char suspended;
 
@@ -342,6 +351,12 @@ struct afp_server {
     unsigned short expectedrequestid;
     struct dsi_request *command_requests;
     unsigned int connection_generation;  /* Incremented on each reconnect */
+    /* Incremented when a reconnect starts a new AFP session */
+    unsigned int session_generation;
+    /* Forks whose close never left, to close in the session they are in */
+    struct afp_unclosed_fork *unclosed_forks;
+    unsigned int num_unclosed_forks;
+    pthread_mutex_t unclosed_forks_mutex;
 
     /* AFP 3.3+ Replay cache support */
     unsigned int replay_cache_size;  /* Server's replay cache size */
@@ -441,6 +456,20 @@ static inline void afp_server_connection_generation_init(
                      __ATOMIC_RELEASE);
 }
 
+/*! @brief The number of new AFP sessions the server's reconnects started */
+static inline unsigned int afp_server_session_generation(
+    const struct afp_server *server)
+{
+    return __atomic_load_n(&server->session_generation, __ATOMIC_ACQUIRE);
+}
+
+/*! @brief Count a new AFP session a reconnect starts */
+static inline void afp_server_next_session_generation(
+    struct afp_server *server)
+{
+    __atomic_add_fetch(&server->session_generation, 1, __ATOMIC_ACQ_REL);
+}
+
 struct afp_comment {
     unsigned int maxsize;
     unsigned int size;
@@ -493,6 +522,7 @@ int afp_server_is_apple(const struct afp_server *s);
 int afp_server_reports_fork_length(const struct afp_server *s);
 int afp_server_copies_files(const struct afp_server *s);
 int afp_server_drops_long_commands(const struct afp_server *s);
+int afp_server_continues_sessions(const struct afp_server *s);
 int afp_server_gives_directory_ids_to_files(const struct afp_server *s);
 int afp_server_keeps_unset_ids(const struct afp_server *s);
 int afp_server_keeps_directory_modes(const struct afp_server *s);
@@ -505,6 +535,19 @@ struct afp_volume *find_volume_by_name(struct afp_server * server,
 struct afp_connection_request {
     unsigned int uam_mask;
     struct afpc_url url;
+};
+
+/* What FPGetSrvrInfo reports about a server */
+struct afp_server_status {
+    char server_name[AFP_SERVER_NAME_LEN];
+    char server_name_utf8[AFP_SERVER_NAME_UTF8_LEN];
+    char server_name_printable[AFP_SERVER_NAME_UTF8_LEN];
+    char machine_type[AFP_MACHINETYPE_LEN + 1];
+    char signature[AFP_SIGNATURE_LEN];
+    char icon[AFP_SERVER_ICON_LEN];
+    unsigned char versions[SERVER_MAX_VERSIONS];
+    unsigned int supported_uams;
+    unsigned short flags;
 };
 
 int afp_list_volnames(struct afp_server * server, char *names, int max);
@@ -538,6 +581,7 @@ int pick_uam(unsigned int u1, unsigned int u2);
 
 int afp_server_login(struct afp_server *server,
                      char *mesg, unsigned int *l, unsigned int max);
+void afp_server_take_token(struct afp_server *server);
 
 
 int afp_dologin(struct afp_server *server,
@@ -560,20 +604,23 @@ int afp_main_quick_startup(pthread_t *thread);
 int afp_server_destroy(struct afp_server *s);
 int afp_server_reconnect(struct afp_server * s, char *mesg,
                          unsigned int *l, unsigned int max);
+int afp_server_reconnects_here(const struct afp_server *server);
 int afp_server_restart(struct afp_server *s, struct addrinfo *address,
                        const char *password, char *mesg, unsigned int *l,
                        unsigned int max);
 void afp_server_set_restart_hook(void (*hook)(struct afp_server *server));
 int afp_server_connect(struct afp_server *server, int full);
+int afp_server_probe(struct addrinfo *address,
+                     struct afp_server_status *status,
+                     const struct addrinfo **answered);
+void afp_server_adopt_status(struct afp_server *server,
+                             const struct afp_server_status *status);
+int afp_server_open_session(struct afp_server *server);
 /* A server identity is usable for session reuse only when FPGetSrvrInfo
  * supplies a nonzero 16-byte signature.  Some deployed servers omit
  * kSrvrSig despite supplying a configured signature. */
+int afp_signature_is_valid(const char signature[AFP_SIGNATURE_LEN]);
 int afp_server_has_valid_signature(const struct afp_server *server);
-
-/* Query a peer's FPGetSrvrInfo identity without logging in.  The caller
- * retains ownership of address. */
-int afp_server_probe_signature(struct addrinfo *address,
-                               char signature[AFP_SIGNATURE_LEN]);
 
 /* Replace the address list used for future connections.  address ownership
  * transfers to server. */
@@ -582,15 +629,14 @@ void afp_server_replace_address(struct afp_server *server,
 
 struct afp_server *afp_server_complete_connection(
     void *priv,
-    struct afp_server * server,
-    unsigned char *versions,
-    unsigned int uams, char *username, char *password,
+    struct afp_server * server, char *username, char *password,
     unsigned int requested_version, unsigned int uam_mask);
 
 int afp_connect_volume(struct afp_volume * volume, struct afp_server * server,
                        char *mesg, unsigned int *l, unsigned int max);
 int something_is_mounted(struct afp_server * server);
 int something_is_attached(struct afp_server * server);
+void afp_free_volumes(struct afp_volume *volumes, unsigned int count);
 
 int add_cache_entry(struct afp_file_info * file);
 struct afp_file_info *get_cache_by_name(char *name);
@@ -669,6 +715,8 @@ int afp_logincont(struct afp_server *server, unsigned short id,
 int afp_getsessiontoken(struct afp_server * server, int type,
                         unsigned int timestamp, struct afp_token *outgoing_token,
                         struct afp_token * incoming_token);
+int afp_disconnectoldsession(struct afp_server * server, int type,
+                             struct afp_token * token);
 
 int afp_getsrvrparms(struct afp_server *server);
 
@@ -764,7 +812,7 @@ int afp_flushfork(struct afp_volume * volume, unsigned short forkid,
 int afp_syncfork(struct afp_volume * volume, unsigned short forkid,
                  int wait);
 
-int afp_closefork(struct afp_volume * volume, unsigned short forkid);
+int afp_closefork(struct afp_server *server, unsigned short forkid);
 int afp_setfiledirparms(struct afp_volume * volume,
                         unsigned int dirid, const char *pathname, unsigned short bitmap,
                         const struct afp_dirent *e);

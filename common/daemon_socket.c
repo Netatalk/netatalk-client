@@ -3,6 +3,7 @@
  *
  * Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  * Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ * Copyright (C) 2026 Andy Lemin (andylemin)
  *
  * This program can be distributed under the terms of the GNU GPL.
  * See the file COPYING.
@@ -55,6 +56,16 @@ static int socket_address(struct sockaddr_un *address, const char *socket_path,
     return 0;
 }
 
+/*!
+ * @brief Listen on a daemon's socket, taking over a stale one at its path
+ *
+ * The listener closes on exec, so no process the daemon starts, such as a
+ * mount's daemon, keeps it answering once the daemon has gone.
+ *
+ * @param[in] socket_path  the socket's path
+ * @param[in] backlog      the listener's backlog
+ * @returns the listening socket, or -1
+ */
 int daemon_socket_create(const char *socket_path, int backlog)
 {
     struct sockaddr_un address;
@@ -70,6 +81,12 @@ int daemon_socket_create(const char *socket_path, int backlog)
 
     if (command_fd < 0) {
         perror("socket");
+        return -1;
+    }
+
+    if (fcntl(command_fd, F_SETFD, FD_CLOEXEC) != 0) {
+        perror("fcntl");
+        close(command_fd);
         return -1;
     }
 

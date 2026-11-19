@@ -9,6 +9,11 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief String, path and log level helpers of the protocol layer
+ */
+
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -111,7 +116,17 @@ unsigned char unixpath_to_afppath(
     return 0;
 }
 
-unsigned char copy_from_pascal(char *dest, char *pascal, unsigned int max_len)
+/*!
+ * @brief Copy a Pascal string into a C string
+ *
+ * @param[out] dest     receives the string, cut to max_len - 1 bytes, and a
+ *                      NUL
+ * @param[in]  pascal   the Pascal string, its length byte first
+ * @param[in]  max_len  capacity of dest
+ * @returns the length byte, or 0 for no string or no capacity
+ */
+unsigned char copy_from_pascal(char *dest, const char *pascal,
+                               unsigned int max_len)
 {
     unsigned char len;
     unsigned char copy_len;
@@ -120,7 +135,7 @@ unsigned char copy_from_pascal(char *dest, char *pascal, unsigned int max_len)
         return 0;
     }
 
-    len = *pascal;
+    len = (unsigned char) pascal[0];
     copy_len = len;
 
     /* Reserve one byte for null terminator */

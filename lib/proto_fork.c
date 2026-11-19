@@ -90,14 +90,14 @@ int afp_setforkparms(struct afp_volume * volume,
 /*!
  * @brief Send a fork command whose only parameter is the fork
  *
- * @param[in] volume   volume of the fork
+ * @param[in] server   server of the fork's session
  * @param[in] command  FPCloseFork, FPFlushFork, or FPSyncFork
  * @param[in] forkid   the open fork
  * @param[in] wait     seconds to wait for the reply, as afpc_dsi_send() takes
  * @returns the server's AFP result, or afpc_dsi_send()'s error when the
  *          request fails
  */
-static int afp_fork_command(struct afp_volume * volume, unsigned char command,
+static int afp_fork_command(struct afp_server *server, unsigned char command,
                             unsigned short forkid, int wait)
 {
     struct {
@@ -107,27 +107,26 @@ static int afp_fork_command(struct afp_volume * volume, unsigned char command,
         uint16_t forkid;
     }  __attribute__((__packed__)) request_packet;
     struct dsi_header hdr;
-    afpc_dsi_setup_header(volume->server, &hdr, DSI_DSICommand);
+    afpc_dsi_setup_header(server, &hdr, DSI_DSICommand);
     memcpy(&request_packet.dsi_header, &hdr, sizeof(struct dsi_header));
     request_packet.command = command;
     request_packet.pad = 0;
     request_packet.forkid = htons(forkid);
-    return afpc_dsi_send(volume->server, (char *) &request_packet,
+    return afpc_dsi_send(server, (char *) &request_packet,
                          sizeof(request_packet), wait, command, NULL);
 }
 
 /*!
  * @brief Close an open fork with FPCloseFork
  *
- * @param[in] volume  volume of the fork
+ * @param[in] server  server of the fork's session
  * @param[in] forkid  the open fork
  * @returns the server's AFP result, or afpc_dsi_send()'s error when the
  *          request fails
  */
-int afp_closefork(struct afp_volume * volume,
-                  unsigned short forkid)
+int afp_closefork(struct afp_server *server, unsigned short forkid)
 {
-    return afp_fork_command(volume, afpCloseFork, forkid, DSI_DEFAULT_TIMEOUT);
+    return afp_fork_command(server, afpCloseFork, forkid, DSI_DEFAULT_TIMEOUT);
 }
 
 
@@ -145,7 +144,7 @@ int afp_closefork(struct afp_volume * volume,
 int afp_flushfork(struct afp_volume * volume,
                   unsigned short forkid, int wait)
 {
-    return afp_fork_command(volume, afpFlushFork, forkid, wait);
+    return afp_fork_command(volume->server, afpFlushFork, forkid, wait);
 }
 
 /*!
@@ -161,15 +160,14 @@ int afp_flushfork(struct afp_volume * volume,
  */
 int afp_syncfork(struct afp_volume * volume, unsigned short forkid, int wait)
 {
-    return afp_fork_command(volume, afpSyncFork, forkid, wait);
+    return afp_fork_command(volume->server, afpSyncFork, forkid, wait);
 }
 
 /*!
  * @brief Parse an FPOpenFork reply into the open fork's record
  *
- * Takes the fork number and the requested node ID and data fork length from
- * a successful reply, and from one that a deny mode refuses, which afpd
- * answers with fork 0 and the file's parameters.
+ * afpd's deny-mode refusal carries fork 0 and the file's parameters. A new
+ * session is counted before its first reply, after the old one's last.
  *
  * @param[in]     server  server of the session
  * @param[in]     buf     the reply, DSI header first
@@ -202,6 +200,7 @@ int afp_openfork_reply(struct afp_server *server,
         }
 
         fp->forkid = ntohs(reply.forkid);
+        fp->session = afp_server_session_generation(server);
         bitmap = ntohs(reply.bitmap);
 
         if (bitmap && parse_reply_block(server, buf + sizeof(reply),

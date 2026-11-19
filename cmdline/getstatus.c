@@ -1,11 +1,18 @@
 /*
  *  Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief afpgetstatus, which prints the status an AFP server reports
+ */
+
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -130,8 +137,18 @@ void draw_icon(int offset, char icon[])
     printf("\n");
 }
 
+/*!
+ * @brief Print a server's status, and the volumes a guest sees there
+ *
+ * @param[in] address_string  the server's name or address
+ * @param[in] port            the server's port
+ * @returns 0, or -1 when the server cannot be reached or the guest login
+ *          fails
+ */
 static int getstatus(char *address_string, unsigned int port)
 {
+    struct afp_server_status status;
+    const struct addrinfo *answered = NULL;
     struct afp_server *server;
     struct addrinfo hints;
     struct addrinfo *res;
@@ -160,15 +177,22 @@ static int getstatus(char *address_string, unsigned int port)
                address_string, port);
     }
 
-    server = afp_server_init(res);
-    ret = afp_server_connect(server, 1);
-
-    if (ret < 0) {
-        perror("Connecting to server");
+    if ((server = afp_server_init(res)) == NULL) {
         freeaddrinfo(res);
         return -1;
     }
 
+    ret = afp_server_probe(res, &status, &answered);
+
+    if (ret < 0) {
+        errno = -ret;
+        perror("Connecting to server");
+        afp_server_release(server);
+        freeaddrinfo(res);
+        return -1;
+    }
+
+    afp_server_adopt_status(server, &status);
     char **flags = parse_afp_flags(server->flags, &count);
     printf("Server name: %s\n", server->server_name_printable);
     printf("Server type: %s\n", server->machine_type);
@@ -244,29 +268,33 @@ static int getstatus(char *address_string, unsigned int port)
         draw_icon(0, server->icon);
     }
 
-    /* Guest authentication and volume listing */
+    /* Guest authentication and volume listing; the server joins the server
+     * list once its session connects. */
     if (!(server->supported_uams & UAM_NOUSERAUTHENT)) {
         printf("Shared volumes:\n\t(guest access not supported)\n");
+        afp_server_release(server);
         freeaddrinfo(res);
-        afp_server_remove(server);
         return 0;
     }
 
-    unsigned char versions[SERVER_MAX_VERSIONS];
-    unsigned int uams = server->supported_uams;
-    memcpy(versions, server->versions, SERVER_MAX_VERSIONS);
-    loop_disconnect(server);
-
     if (afp_server_connect(server, 0) != 0) {
-        fprintf(stderr, "Reconnect failed\n");
+        perror("Connecting to server");
+        afp_server_release(server);
         freeaddrinfo(res);
-        afp_server_remove(server);
         return -1;
     }
 
-    if (afp_server_complete_connection(
-                NULL, server, versions, uams,
-                "", "", 0, UAM_NOUSERAUTHENT) == NULL) {
+    /* Another address of the name may be another server. */
+    if (server->used_address != answered) {
+        fprintf(stderr,
+                "Connecting to server: another address answered the status\n");
+        afp_server_remove(server);
+        freeaddrinfo(res);
+        return -1;
+    }
+
+    if (afp_server_complete_connection(NULL, server, "", "", 0,
+                                       UAM_NOUSERAUTHENT) == NULL) {
         /* afp_server_complete_connection calls afp_server_remove on failure */
         freeaddrinfo(res);
         return -1;
@@ -295,14 +323,20 @@ static void usage(void)
            "\t-h             Show this help\n", NETATALK_CLIENT_VERSION);
 }
 
-void afp_wait_for_started_loop(void);
-
 static void bail_out(int signum)
 {
     (void)signum;
     _exit(1);
 }
 
+/*!
+ * @brief Print the status of the server a URL or a name gives
+ *
+ * @param[in] argc  argument count
+ * @param[in] argv  the options and the server
+ * @returns 0, or -1 when the arguments cannot be used or the server cannot
+ *          be read
+ */
 int main(int argc, char *argv[])
 {
     int option_index = 0;
@@ -418,8 +452,10 @@ int main(int argc, char *argv[])
     free(url_buf);
     servername = url.servername;
     port = url.port;
-    afp_main_quick_startup(NULL);
-    afp_wait_for_started_loop();
+
+    if (afp_main_quick_startup(NULL) != 0) {
+        return -1;
+    }
 
     if (init_uams() < 0) {
         return -1;

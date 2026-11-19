@@ -8,6 +8,11 @@
     See the file COPYING.
 */
 
+/*!
+ * @file
+ * @brief Unit tests of the identification of servers and its predicates
+ */
+
 #include <stdio.h>
 #include <string.h>
 
@@ -80,16 +85,35 @@ int main(int argc, char **argv)
     CHECK(afp_server_is_apple(&server));
     CHECK(!afp_server_copies_files(&server));
     CHECK(!afp_server_reports_fork_length(&server));
+    /* The server's flags alone say whether it copies files, whatever its
+     * type or AFP version. */
+    server.flags = kSupportsCopyfile;
+    CHECK(afp_server_copies_files(&server));
     server.server_type = AFPC_SERVER_TYPE_NETATALK;
     CHECK(!afp_server_is_apple(&server));
     CHECK(afp_server_copies_files(&server));
     CHECK(afp_server_reports_fork_length(&server));
     server.using_version = &afp33;
+    CHECK(afp_server_copies_files(&server));
+    server.flags = 0;
     CHECK(!afp_server_copies_files(&server));
     server.using_version = &afp30;
     CHECK(afp_server_reports_fork_length(&server));
     server.using_version = &afp22;
     CHECK(!afp_server_reports_fork_length(&server));
+    /* A server that announces reconnects continues sessions, whatever its
+     * type or AFP version, and Netatalk on AFP 3 does without announcing
+     * them. */
+    CHECK(!afp_server_continues_sessions(&server));
+    server.flags = kSupportsReconnect;
+    CHECK(afp_server_continues_sessions(&server));
+    server.server_type = AFPC_SERVER_TYPE_MACINTOSH;
+    CHECK(afp_server_continues_sessions(&server));
+    server.flags = 0;
+    CHECK(!afp_server_continues_sessions(&server));
+    server.server_type = AFPC_SERVER_TYPE_NETATALK;
+    server.using_version = &afp30;
+    CHECK(afp_server_continues_sessions(&server));
     server.server_type = AFPC_SERVER_TYPE_UNKNOWN;
     CHECK(!afp_server_is_apple(&server));
     CHECK(server_version_parse("4.7.0dev", &version) == 0
