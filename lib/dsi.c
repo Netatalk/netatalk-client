@@ -18,10 +18,12 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,11 +42,18 @@
 
 /* Define DEBUG_DSI explicitly to get reams of DSI debugging information. */
 
-static int afpc_dsi_remove_from_request_queue(struct afp_server *server,
-                                              struct dsi_request *toremove);
-static int afpc_dsi_write_frame(struct afp_server *server, const char *msg,
-                                int size, unsigned char subcommand,
-                                int tied, unsigned int session);
+/*! @brief A frame's bytes: the head, then data from the caller's buffer */
+struct dsi_frame {
+    char *head;        /*!< the DSI header and the command's parameters */
+    size_t head_len;   /*!< bytes of head */
+    const char *data;  /*!< the data, or NULL */
+    size_t data_len;   /*!< bytes of data */
+};
+
+static int afpc_dsi_write_frame(struct afp_server *server,
+                                const struct dsi_frame *frame,
+                                unsigned char subcommand, int tied,
+                                unsigned int session);
 int convert_utf8dec_to_utf8pre(const char *src, int src_len,
                                char *dest, int dest_len);
 int convert_utf8pre_to_utf8dec(const char *src, int src_len,
@@ -122,9 +131,12 @@ static void afpc_dsi_tickle_unless_busy(struct afp_server *server)
     pfd.events = POLLOUT;
 
     if (pfd.fd >= 0 && poll(&pfd, 1, 0) == 1 && (pfd.revents & POLLOUT)) {
+        struct dsi_frame frame = {
+            .head = (char *) &header,
+            .head_len = sizeof(header),
+        };
         afpc_dsi_setup_header(server, &header, DSI_DSITickle);
-        (void) afpc_dsi_write_frame(server, (const char *) &header,
-                                    sizeof(header), DSI_DSITickle, 0, 0);
+        (void) afpc_dsi_write_frame(server, &frame, DSI_DSITickle, 0, 0);
     }
 
     pthread_mutex_unlock(&server->send_mutex);
@@ -169,19 +181,18 @@ int afpc_dsi_opensession(struct afp_server *server)
 }
 
 /*!
- * @brief Take a sender's request off the queue and free it
+ * @brief Take a sender's request off the queue, once no receiver holds it
  *
- * Waits while the receiver holds the request. A request a flush took off the
- * queue is freed too.
+ * The request lives on the sender's stack; a flush may have taken it off
+ * already. Every answer and failure is given under the queue's lock, so
+ * once the call returns the sender reads the result without one.
  *
  * @param[in,out] server    server whose queue held the request
- * @param[in,out] toremove  the request, freed unless the call returns -1
- * @returns 0, or -1 for a request neither queued nor flushed
+ * @param[in,out] toremove  the sender's request
  */
-static int afpc_dsi_remove_from_request_queue(struct afp_server *server,
-                                              struct dsi_request *toremove)
+static void afpc_dsi_remove_from_request_queue(struct afp_server *server,
+                                               struct dsi_request *toremove)
 {
-    struct dsi_request *p, *prev = NULL;
 #ifdef DEBUG_DSI
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
                    "*** Removing %d, %s", toremove->requestid,
@@ -195,48 +206,18 @@ static int afpc_dsi_remove_from_request_queue(struct afp_server *server,
                           &server->request_queue_mutex);
     }
 
-    for (p = server->command_requests; p; p = p->next) {
-        if (p == toremove) {
-            if (prev == NULL) {
-                server->command_requests = p->next;
-            } else {
-                prev->next = p->next;
-            }
-
+    for (struct dsi_request **link = &server->command_requests; *link;
+            link = &(*link)->next) {
+        if (*link == toremove) {
+            *link = toremove->next;
             server->stats.requests_pending--;
-            /* Wake any waiter before destroying the request state. */
-            pthread_mutex_lock(&p->waiting_mutex);
-            p->done_waiting = 1;
-            pthread_cond_signal(&p->waiting_cond);
-            pthread_mutex_unlock(&p->waiting_mutex);
-            pthread_cond_destroy(&p->waiting_cond);
-            pthread_mutex_destroy(&p->waiting_mutex);
-            free(p);
-            pthread_mutex_unlock(&server->request_queue_mutex);
-            return 0;
+            break;
         }
-
-        prev = p;
     }
 
     pthread_mutex_unlock(&server->request_queue_mutex);
-#ifdef DEBUG_DSI
-    log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "*** Never removed anything for %d, %s", toremove->requestid,
-                   afp_get_command_name(toremove->subcommand));
-#endif
-
-    if (toremove->ignore_replies) {
-        pthread_cond_destroy(&toremove->waiting_cond);
-        pthread_mutex_destroy(&toremove->waiting_mutex);
-        free(toremove);
-        return 0;
-    }
-
-    log_for_client(NULL, AFPFSD, LOG_WARNING,
-                   "Got an unknown reply for requestid %i",
-                   ntohs(toremove->requestid));
-    return -1;
+    pthread_cond_destroy(&toremove->waiting_cond);
+    pthread_mutex_destroy(&toremove->waiting_mutex);
 }
 
 /*!
@@ -244,7 +225,7 @@ static int afpc_dsi_remove_from_request_queue(struct afp_server *server,
  *
  * A reply the old connection still delivers then matches no request. A request
  * already answered keeps its result; each other one wakes with -EIO, and its
- * sender frees it.
+ * sender's call returns with it.
  *
  * @param[in,out] server  server whose queue to empty
  */
@@ -260,7 +241,6 @@ void afpc_dsi_flush_request_queue(struct afp_server *server)
     while (p) {
         next = p->next;
         p->next = NULL;
-        p->ignore_replies = 1;
         server->stats.requests_pending--;
         pthread_mutex_lock(&p->waiting_mutex);
 
@@ -448,30 +428,45 @@ static int may_write(const struct afp_server *server, int tied,
  * loaded at the start stays open until the frame ends.
  *
  * @param[in,out] server      server with a connected socket
- * @param[in]     msg         the frame, header included
- * @param[in]     size        bytes of the frame
+ * @param[in]     frame       the frame's head, at any address, and data
  * @param[in]     subcommand  the AFP command the frame carries, counted for
  *                            DSICommand and DSIWrite frames
  * @param[in]     tied        1 for a frame tied to a fork
  * @param[in]     session     that fork's session generation
  * @returns 0, or -EIO when may_write() refuses the frame or the write fails
  */
-static int afpc_dsi_write_frame(struct afp_server *server, const char *msg,
-                                int size, unsigned char subcommand,
-                                int tied, unsigned int session)
+static int afpc_dsi_write_frame(struct afp_server *server,
+                                const struct dsi_frame *frame,
+                                unsigned char subcommand, int tied,
+                                unsigned int session)
 {
-    const struct dsi_header *header = (const struct dsi_header *) msg;
+    /* The head may be unaligned, so its command is read as a byte. */
+    unsigned char command =
+        (unsigned char) frame->head[offsetof(struct dsi_header, command)];
     int fd = __atomic_load_n(&server->fd, __ATOMIC_ACQUIRE);
-    size_t total_written = 0;
+    /* iov_base has no const, but the send only reads the data. */
+    void *data = (void *) frame->data; /* NOSONAR */
+    struct iovec iov[2] = {
+        { .iov_base = frame->head, .iov_len = frame->head_len },
+        { .iov_base = data, .iov_len = frame->data_len },
+    };
+    struct msghdr msg = {
+        .msg_iov = iov,
+        .msg_iovlen = frame->data_len > 0 ? 2 : 1,
+    };
     ssize_t ret;
 
     if (!may_write(server, tied, session)) {
         return -EIO;
     }
 
-    while (total_written < (size_t)size) {
-        ret = send(fd, msg + total_written, size - total_written,
-                   MSG_NOSIGNAL);
+    while (msg.msg_iovlen > 0) {
+        /* A part on its own goes by send(): FreeBSD's sendmsg() allocates
+         * in the kernel for the iovec it copies in. */
+        ret = msg.msg_iovlen == 1
+              ? send(fd, msg.msg_iov->iov_base, msg.msg_iov->iov_len,
+                     MSG_NOSIGNAL)
+              : sendmsg(fd, &msg, MSG_NOSIGNAL);
 
         if (ret < 0) {
             if (errno == EINTR) {
@@ -487,14 +482,24 @@ static int afpc_dsi_write_frame(struct afp_server *server, const char *msg,
             return -EIO;
         }
 
-        total_written += ret;
+        while (msg.msg_iovlen > 0
+                && (size_t) ret >= msg.msg_iov->iov_len) {
+            ret -= (ssize_t) msg.msg_iov->iov_len;
+            msg.msg_iov++;
+            msg.msg_iovlen--;
+        }
+
+        if (msg.msg_iovlen > 0) {
+            msg.msg_iov->iov_base = (char *) msg.msg_iov->iov_base + ret;
+            msg.msg_iov->iov_len -= (size_t) ret;
+        }
     }
 
-    server->stats.tx_bytes += size;
+    server->stats.tx_bytes += frame->head_len + frame->data_len;
 
     /* DSICommand frames carry AFP requests, and DSIWrite frames carry
      * writes. Status, session, and tickle exchanges are DSI's own. */
-    if (header->command == DSI_DSICommand || header->command == DSI_DSIWrite) {
+    if (command == DSI_DSICommand || command == DSI_DSIWrite) {
         server->stats.commands[subcommand]++;
     }
 
@@ -523,15 +528,17 @@ void afpc_dsi_end_sends(struct afp_server *server, int fd)
 }
 
 /*!
- * @brief Send a DSI request and wait for its reply
+ * @brief Send a request's head and data, and wait for its reply
  *
  * A request fails while another thread reconnects, as the new connection
  * takes nothing before its session; an expired one's late reply is dropped.
+ * A written request's answer or failure that lands before it leaves the
+ * queue is the result, even once the wait has expired.
  *
  * @param[in]     server         server to send to
- * @param[in,out] msg            request frame, DSI header first, whose
- *                               length field the call sets
- * @param[in]     size           bytes of msg
+ * @param[in,out] frame          the request's head, DSI header first and at
+ *                               any address, whose length field the call
+ *                               sets, and its data
  * @param[in]     wait           seconds to wait for the reply,
  *                               DSI_DEFAULT_TIMEOUT for the server's
  *                               default, 0 for no wait, -1 for no limit
@@ -543,21 +550,25 @@ void afpc_dsi_end_sends(struct afp_server *server, int fd)
  * @param[in,out] stream_buffer  buffer that receives a read's data, or NULL
  *                               for other
  * @returns the reply's result, 0 without a wait, ETIMEDOUT once it expires,
- *          -EINVAL for a server removed or never set up, -ENOMEM, or -EIO
- *          for an unusable session, another thread's reconnect, a
- *          reconnect into a new session but for a logout, a failed write,
- *          or a request without a wait to a disconnected session
+ *          -EINVAL for a server removed or never set up or a frame too long
+ *          for the DSI length field, or -EIO for an unusable session,
+ *          another thread's reconnect, a reconnect into a new session but
+ *          for a logout, a failed write, or a request without a wait to a
+ *          disconnected session
  */
-int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
-                             int wait, unsigned char subcommand, void *other,
-                             afpc_dsi_reply_handler reply_handler,
-                             struct afp_rx_buffer *stream_buffer)
+static int send_frame(struct afp_server *server,
+                      const struct dsi_frame *frame, int wait,
+                      unsigned char subcommand, void *other,
+                      afpc_dsi_reply_handler reply_handler,
+                      struct afp_rx_buffer *stream_buffer)
 {
-    struct dsi_header  *header = (struct dsi_header *) msg;
-    struct dsi_request * new_request, *p;
+    struct dsi_header header;
+    struct dsi_request request;
+    struct dsi_request **link;
     int tied = server != NULL && tied_server == server;
     unsigned int tie_session = tied_session;
     int failed;
+    int sent;
     int rc = 0;
     tied_server = NULL;
 
@@ -565,7 +576,16 @@ int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
         fork_unsent = 1;
     }
 
-    header->length = htonl(size - sizeof(struct dsi_header));
+    if (frame->data_len > UINT32_MAX - (frame->head_len - sizeof(header))) {
+        return -EINVAL;
+    }
+
+    /* A packed packet lies at any address, so its header is copied out,
+     * and back in once changed. */
+    memcpy(&header, frame->head, sizeof(header));
+    header.length = htonl((uint32_t)(frame->head_len - sizeof(header)
+                                     + frame->data_len));
+    memcpy(frame->head, &header, sizeof(header));
 
     if (!server || !server_still_valid(server)) {
         return -EINVAL;
@@ -584,8 +604,7 @@ int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
         }
 
         pthread_mutex_lock(&server->send_mutex);
-        rc = afpc_dsi_write_frame(server, msg, size, subcommand, tied,
-                                  tie_session);
+        rc = afpc_dsi_write_frame(server, frame, subcommand, tied, tie_session);
         pthread_mutex_unlock(&server->send_mutex);
 
         if (tied) {
@@ -642,157 +661,150 @@ int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
 
         /* A connect restarts the request IDs of a server without a replay
          * cache, so the one this request took before may come again. */
-        header->requestid = take_request_id(server);
+        header.requestid = take_request_id(server);
+        memcpy(frame->head, &header, sizeof(header));
     }
 
     if (server->fd < 0) {
         return -EIO;
     }
 
-    /* Add request to the queue */
-    if ((new_request = malloc(sizeof(struct dsi_request))) == NULL) {
-        log_for_client(NULL, AFPFSD, LOG_ERR,
-                       "Could not allocate for new request");
-        return -ENOMEM;
-    }
-
-    memset(new_request, 0, sizeof(struct dsi_request));
-    new_request->requestid = ntohs(header->requestid);
-    new_request->subcommand = subcommand;
-    new_request->other = other;
-    new_request->wait = wait;
-    new_request->next = NULL;
-    new_request->done_waiting = 0;
-    new_request->connection_generation = afp_server_connection_generation(server);
-    new_request->reply_handler = reply_handler;
-    new_request->stream_buffer = stream_buffer;
+    memset(&request, 0, sizeof(request));
+    request.requestid = ntohs(header.requestid);
+    request.subcommand = subcommand;
+    request.other = other;
+    request.wait = wait;
+    request.connection_generation = afp_server_connection_generation(server);
+    request.reply_handler = reply_handler;
+    request.stream_buffer = stream_buffer;
     /* Initialize before queueing so dsi_recv can signal this request safely. */
-    pthread_cond_init(&new_request->waiting_cond, NULL);
-    pthread_mutex_init(&new_request->waiting_mutex, NULL);
+    pthread_cond_init(&request.waiting_cond, NULL);
+    pthread_mutex_init(&request.waiting_mutex, NULL);
     pthread_mutex_lock(&server->request_queue_mutex);
 
-    if (server->command_requests == NULL) {
-        server->command_requests = new_request;
-    } else {
-        for (p = server->command_requests; p->next; p = p->next);
+    for (link = &server->command_requests; *link; link = &(*link)->next);
 
-        p->next = new_request;
-    }
-
+    *link = &request;
     server->stats.requests_pending++;
     pthread_mutex_unlock(&server->request_queue_mutex);
     pthread_mutex_lock(&server->send_mutex);
     /* Not sent: a request failed while it waited for the lock, or one queued
      * on a connection since replaced, whose reply the receiver would drop. */
-    pthread_mutex_lock(&new_request->waiting_mutex);
-    failed = new_request->done_waiting
-             || new_request->connection_generation
+    pthread_mutex_lock(&request.waiting_mutex);
+    failed = request.done_waiting
+             || request.connection_generation
              != afp_server_connection_generation(server);
-    pthread_mutex_unlock(&new_request->waiting_mutex);
+    pthread_mutex_unlock(&request.waiting_mutex);
 #ifdef DEBUG_DSI
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "*** Sending %d, %s",
-                   ntohs(header->requestid),
-                   afp_get_command_name(new_request->subcommand));
+                   ntohs(header.requestid),
+                   afp_get_command_name(request.subcommand));
 #endif
-    rc = failed ? -EIO : afpc_dsi_write_frame(server, msg, size, subcommand,
+    rc = failed ? -EIO : afpc_dsi_write_frame(server, frame, subcommand,
                                               tied, tie_session);
+    sent = rc == 0;
 
     if (tied) {
         fork_unsent = rc != 0;
     }
 
     if (rc == 0 && wait > 0) {
-        afpc_dsi_set_deadline(server, new_request);
+        afpc_dsi_set_deadline(server, &request);
     }
 
     pthread_mutex_unlock(&server->send_mutex);
-
-    if (rc < 0) {
-        new_request->return_code = rc;
-        goto out;
-    }
-
 #ifdef DEBUG_DSI
     log_for_client(NULL, AFPFSD, LOG_DEBUG, "=== Waiting for response for %d %s",
-                   new_request->requestid,
-                   afp_get_command_name(new_request->subcommand));
+                   request.requestid,
+                   afp_get_command_name(request.subcommand));
 #endif
+    pthread_mutex_lock(&request.waiting_mutex);
 
-    if (wait < 0) {
-        /* Wait forever */
-#ifdef DEBUG_DSI
-        log_for_client(NULL, AFPFSD, LOG_DEBUG, "=== Waiting forever for %d, %s",
-                       new_request->requestid,
-                       afp_get_command_name(new_request->subcommand));
-#endif
-        pthread_mutex_lock(&new_request->waiting_mutex);
+    /* A frame not written has nothing to wait for. */
+    while (rc == 0 && request.done_waiting == 0) {
+        rc = wait < 0
+             ? pthread_cond_wait(&request.waiting_cond, &request.waiting_mutex)
+             : pthread_cond_timedwait(&request.waiting_cond,
+                                      &request.waiting_mutex,
+                                      &request.deadline);
+    }
 
-        while (new_request->done_waiting == 0) {
-            rc = pthread_cond_wait(
-                     &new_request->waiting_cond,
-                     &new_request->waiting_mutex);
+    pthread_mutex_unlock(&request.waiting_mutex);
+    afpc_dsi_remove_from_request_queue(server, &request);
 
-            if (rc != 0) {
-                break;
-            }
-        }
-
-        pthread_mutex_unlock(&new_request->waiting_mutex);
-    } else {
-#ifdef DEBUG_DSI
-        log_for_client(NULL, AFPFSD, LOG_DEBUG, "=== Waiting for %d %s, for %ds",
-                       new_request->requestid,
-                       afp_get_command_name(new_request->subcommand),
-                       wait);
-#endif
-        pthread_mutex_lock(&new_request->waiting_mutex);
-
-        while (new_request->done_waiting == 0) {
-            rc = pthread_cond_timedwait(
-                     &new_request->waiting_cond,
-                     &new_request->waiting_mutex, &new_request->deadline);
-
-            if (rc != 0) {
-                break;
-            }
-        }
-
-        /* An answer that landed as the wait expired is an answer. */
-        if (new_request->done_waiting) {
-            rc = 0;
-        }
-
-        pthread_mutex_unlock(&new_request->waiting_mutex);
-
-        if (rc == ETIMEDOUT) {
-            log_for_client(NULL, AFPFSD, LOG_WARNING,
-                           "Timed out waiting %d second(s) for request %d, %s",
-                           wait, new_request->requestid,
-                           afp_get_command_name(new_request->subcommand));
-#ifdef DEBUG_DSI
-            log_for_client(NULL, AFPFSD, LOG_DEBUG, "=== Timedout for %d",
-                           new_request->requestid);
-#endif
-            goto out;
-        }
+    /* A request not sent has no answer of its own. */
+    if (sent && request.done_waiting) {
+        rc = request.return_code;
+    } else if (rc == ETIMEDOUT) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "Timed out waiting %d second(s) for request %d, %s",
+                       wait, request.requestid,
+                       afp_get_command_name(request.subcommand));
     }
 
 #ifdef DEBUG_DSI
     log_for_client(NULL, AFPFSD, LOG_DEBUG,
-                   "=== Done waiting for %d %s, waiting for %ds,"
-                   " return %d, DSI return %d",
-                   new_request->requestid,
-                   afp_get_command_name(new_request->subcommand),
-                   wait, rc, new_request->return_code);
+                   "=== Done waiting for %d %s, waiting for %ds, return %d",
+                   request.requestid,
+                   afp_get_command_name(request.subcommand), wait, rc);
 #endif
-
-    if (rc == 0) {
-        rc = new_request->return_code;
-    }
-
-out:
-    afpc_dsi_remove_from_request_queue(server, new_request);
     return rc;
+}
+
+/*!
+ * @brief Send a DSI request and wait for its reply
+ *
+ * @param[in]     server         server to send to
+ * @param[in,out] msg            request frame, DSI header first, whose
+ *                               length field the call sets
+ * @param[in]     size           bytes of msg
+ * @param[in]     wait           seconds to wait for the reply, as
+ *                               send_frame() takes it
+ * @param[in]     subcommand     AFP command, or the DSI command of DSI's own
+ *                               exchanges
+ * @param[in,out] other          destination of the reply's contents
+ * @param[in]     reply_handler  parser of the reply, or NULL for the
+ *                               command's own
+ * @param[in,out] stream_buffer  buffer that receives a read's data, or NULL
+ *                               for other
+ * @returns what send_frame() returns
+ */
+int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
+                             int wait, unsigned char subcommand, void *other,
+                             afpc_dsi_reply_handler reply_handler,
+                             struct afp_rx_buffer *stream_buffer)
+{
+    const struct dsi_frame frame = { .head = msg, .head_len = (size_t) size };
+    return send_frame(server, &frame, wait, subcommand, other, reply_handler,
+                      stream_buffer);
+}
+
+/*!
+ * @brief Send a DSI request and its data, and wait for its reply
+ *
+ * @param[in]     server      server to send to
+ * @param[in,out] msg         the header and parameters, whose length field
+ *                            the call sets to count the data too
+ * @param[in]     size        bytes of msg
+ * @param[in]     data        the data, sent as they are
+ * @param[in]     data_len    bytes of data
+ * @param[in]     wait        seconds to wait for the reply, as send_frame()
+ *                            takes it
+ * @param[in]     subcommand  the AFP command
+ * @param[in,out] other       destination of the reply's contents
+ * @returns what send_frame() returns
+ */
+int afpc_dsi_send_data(struct afp_server *server, char *msg, int size,
+                       const char *data, size_t data_len, int wait,
+                       unsigned char subcommand, void *other)
+{
+    const struct dsi_frame frame = {
+        .head = msg,
+        .head_len = (size_t) size,
+        .data = data,
+        .data_len = data_len,
+    };
+    return send_frame(server, &frame, wait, subcommand, other, NULL, NULL);
 }
 
 /*!
@@ -1283,7 +1295,7 @@ void *afpc_dsi_incoming_attention(void *other)
 /*!
  * @brief Find the queued request a reply answers, and hold it
  *
- * Its sender cannot free it until afpc_dsi_release_request() lets it go.
+ * Its sender's call waits until afpc_dsi_release_request() lets it go.
  *
  * @param[in,out] server      server whose queue to search
  * @param[in]     request_id  the reply's request ID
@@ -1296,8 +1308,7 @@ struct dsi_request *afpc_dsi_find_request(struct afp_server *server,
     pthread_mutex_lock(&server->request_queue_mutex);
 
     for (p = server->command_requests; p; p = p->next) {
-        if (!p->ignore_replies && !p->done_waiting
-                && request_id == p->requestid) {
+        if (!p->done_waiting && request_id == p->requestid) {
             p->receiving = 1;
             pthread_mutex_unlock(&server->request_queue_mutex);
             return p;

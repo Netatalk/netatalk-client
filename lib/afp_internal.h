@@ -693,7 +693,7 @@ int afp_getappl(struct afp_volume *volume, unsigned int filecreator,
 /* Things you want to do to a server */
 
 int afp_getsrvrmsg(struct afp_server *server, unsigned short messagetype,
-                   unsigned char utf8, unsigned char block, char *mesg);
+                   unsigned char utf8, int wait, char *mesg);
 
 int afp_login(struct afp_server *server, const char *uaname,
               char *userauthinfo, unsigned int userauthinfo_len,
@@ -720,7 +720,7 @@ int afp_disconnectoldsession(struct afp_server * server, int type,
 
 int afp_getsrvrparms(struct afp_server *server);
 
-int afp_logout(struct afp_server *server, unsigned char wait);
+int afp_logout(struct afp_server *server, int wait);
 
 int afp_mapname(struct afp_server * server, unsigned char subfunction,
                 char *name, unsigned int *id);

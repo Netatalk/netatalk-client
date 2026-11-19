@@ -4,9 +4,15 @@
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2007 Derrik Pates <dpates@dsdk12.net>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
+ */
+
+/*!
+ * @file
+ * @brief FPLogin, FPLoginExt, FPLoginCont, FPLogout and FPChangePassword
  */
 
 #include <stdlib.h>
@@ -18,7 +24,15 @@
 #include "dsi_protocol.h"
 #include "utils.h"
 
-int afp_logout(struct afp_server *server, unsigned char wait)
+/*!
+ * @brief Log out with FPLogout
+ *
+ * @param[in] server  the server
+ * @param[in] wait    the reply's wait, as afpc_dsi_send() takes it
+ * @returns the server's AFP result, or afpc_dsi_send()'s error when the
+ *          request fails
+ */
+int afp_logout(struct afp_server *server, int wait)
 {
     struct {
         struct dsi_header dsi_header __attribute__((__packed__));
@@ -128,6 +142,19 @@ int afp_changepassword_reply(struct afp_server *server _U_,
     return 0;
 }
 
+/*!
+ * @brief Log in with FPLogin
+ *
+ * @param[in]     server            the server
+ * @param[in]     ua_name           the UAM's name
+ * @param[in]     userauthinfo      the UAM's authentication info, or NULL
+ *                                  for none
+ * @param[in]     userauthinfo_len  bytes of userauthinfo, 0 for none
+ * @param[in,out] rx                receives the reply's authentication
+ *                                  info, or NULL
+ * @returns the server's AFP result, -1 when the request cannot be built, or
+ *          afpc_dsi_send()'s error when it fails
+ */
 int afp_login(struct afp_server *server, const char *ua_name,
               char *userauthinfo, unsigned int userauthinfo_len,
               struct afp_rx_buffer *rx)
@@ -160,7 +187,12 @@ int afp_login(struct afp_server *server, const char *ua_name,
     request->command = afpLogin;
     p += copy_to_pascal(p, server->using_version->av_name) +1;
     p += copy_to_pascal(p, ua_name) +1;
-    memcpy(p, userauthinfo, userauthinfo_len);
+
+    /* The guest UAM has no info, and memcpy() takes no NULL source. */
+    if (userauthinfo_len > 0) {
+        memcpy(p, userauthinfo, userauthinfo_len);
+    }
+
     ret = afpc_dsi_send(server, msg, len, DSI_LOGIN_TIMEOUT,
                         afpLogin, (void *)rx);
     free(msg);
@@ -168,6 +200,19 @@ int afp_login(struct afp_server *server, const char *ua_name,
 }
 
 
+/*!
+ * @brief Log in with FPLoginExt, the AFP 3 login, naming the user in UTF-8
+ *
+ * @param[in]     server            the server
+ * @param[in]     ua_name           the UAM's name
+ * @param[in]     username          the user's name
+ * @param[in]     userauthinfo      the UAM's authentication info
+ * @param[in]     userauthinfo_len  bytes of userauthinfo
+ * @param[in,out] rx                receives the reply's authentication
+ *                                  info, or NULL
+ * @returns the server's AFP result, -1 when the request cannot be built, or
+ *          afpc_dsi_send()'s error when it fails
+ */
 int afp_loginext(struct afp_server *server, const char *ua_name,
                  const char *username,
                  char *userauthinfo, unsigned int userauthinfo_len,
@@ -175,6 +220,7 @@ int afp_loginext(struct afp_server *server, const char *ua_name,
 {
     char *msg;
     char *p;
+    uint16_t name_len;
     int ret;
     struct {
         struct dsi_header header __attribute__((__packed__));
@@ -222,15 +268,18 @@ int afp_loginext(struct afp_server *server, const char *ua_name,
     request->flags = 0;
     p += copy_to_pascal(p, server->using_version->av_name) + 1;
     p += copy_to_pascal(p, ua_name) + 1;
-    /* Username: Type-3 UTF-8 encoding */
+    /* Username: Type-3 UTF-8 encoding. The names before leave each length
+     * at any offset, so it is copied in. */
     *p++ = 3; /* type = UTF-8 */
-    *(uint16_t *)p = htons((uint16_t)user_len);
+    name_len = htons((uint16_t)user_len);
+    memcpy(p, &name_len, sizeof(name_len));
     p += 2;
     memcpy(p, username, user_len);
     p += user_len;
     /* Pathname: Type-3, empty */
     *p++ = 3;
-    *(uint16_t *)p = 0;
+    name_len = 0;
+    memcpy(p, &name_len, sizeof(name_len));
     p += 2;
 
     /* Pad to even boundary if needed */

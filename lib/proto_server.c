@@ -253,8 +253,7 @@ int afp_getsrvrmsg_reply(struct afp_server *server _U_,
         uint16_t messagetype;
         uint16_t messagebitmap;
     }  __attribute__((__packed__)) * afp_getsrvrmsg_reply = (void *) buf;
-    static char mesg[AFP_LOGINMESG_LEN];
-    char *mesg_ptr = other;
+    char *mesg = other;
     char *src;
 
     if (size < sizeof(struct afp_getsrvrmsg_reply_packet)) {
@@ -263,16 +262,16 @@ int afp_getsrvrmsg_reply(struct afp_server *server _U_,
         return -1;
     }
 
+    if (mesg == NULL) {
+        return 0;
+    }
+
     src = buf + (sizeof(struct afp_getsrvrmsg_reply_packet));
 
     if (ntohs(afp_getsrvrmsg_reply->messagebitmap) & AFP_GETSRVRMSG_UTF8) {
-        copy_from_pascal_two(mesg, src, sizeof(mesg));
+        copy_from_pascal_two(mesg, src, AFP_LOGINMESG_LEN);
     } else {
-        copy_from_pascal(mesg, src, sizeof(mesg));
-    }
-
-    if (mesg_ptr != NULL) {
-        memcpy(mesg_ptr, mesg, AFP_LOGINMESG_LEN);
+        copy_from_pascal(mesg, src, AFP_LOGINMESG_LEN);
     }
 
     return 0;
@@ -284,13 +283,14 @@ int afp_getsrvrmsg_reply(struct afp_server *server _U_,
  * @param[in]  server       the server
  * @param[in]  messagetype  AFPMESG_LOGIN or AFPMESG_SERVER
  * @param[in]  utf8         1 to ask for the message in UTF-8
- * @param[in]  block        seconds to wait for the reply
+ * @param[in]  wait         seconds to wait for the reply, as afpc_dsi_send()
+ *                          takes it
  * @param[out] mesg         receives AFP_LOGINMESG_LEN bytes, or NULL
  * @returns the server's AFP result, or afpc_dsi_send()'s error when the
  *          request fails
  */
 int afp_getsrvrmsg(struct afp_server *server, unsigned short messagetype,
-                   unsigned char utf8, unsigned char block, char *mesg)
+                   unsigned char utf8, int wait, char *mesg)
 {
     int rc;
     struct afp_getsrvrmsg_request_packet {
@@ -310,7 +310,8 @@ int afp_getsrvrmsg(struct afp_server *server, unsigned short messagetype,
         htons(AFP_GETSRVRMSG_GETMSG | (utf8 ? AFP_GETSRVRMSG_UTF8 : 0));
     /* Get the message, and yes, we support UTF8 */
     rc = afpc_dsi_send(server, (char *) &afp_getsrvrmsg_request,
-                       sizeof(afp_getsrvrmsg_request), block, afpGetSrvrMsg, (void *) mesg);
+                       sizeof(afp_getsrvrmsg_request), wait, afpGetSrvrMsg,
+                       (void *) mesg);
     return rc;
 }
 

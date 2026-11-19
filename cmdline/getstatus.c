@@ -39,23 +39,25 @@
 static bool show_icon = false;
 static int log_min_rank;
 
-static void getstatus_log_for_client(void *priv _U_,
-                                     enum logtypes logtype _U_,
-                                     int loglevel, const char *message)
+/*!
+ * @brief Test whether afpgetstatus prints a message at a level
+ *
+ * @param[in] priv      unused
+ * @param[in] loglevel  the message's level
+ * @returns 1 for a level at or above the one asked for, 0 otherwise
+ */
+static int getstatus_log_enabled(void *priv _U_, int loglevel)
 {
-    if (loglevel_to_rank(loglevel) < log_min_rank) {
-        return;
-    }
-
-    printf("%s\n", message);
+    return loglevel_to_rank(loglevel) >= log_min_rank;
 }
 
 static struct libafpclient getstatus_client = {
     .unmount_volume = NULL,
-    .log_for_client = getstatus_log_for_client,
+    .log_for_client = stdout_log_for_client,
     .forced_ending_hook = NULL,
     .scan_extra_fds = NULL,
     .loop_started = NULL,
+    .log_enabled = getstatus_log_enabled,
 };
 
 const char *flag_descriptions[FLAG_COUNT] = {

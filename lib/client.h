@@ -1,4 +1,9 @@
 
+/*!
+ * @file
+ * @brief A front end's callbacks for the library, and the log calls
+ */
+
 #ifndef __CLIENT_H_
 #define __CLIENT_H_
 
@@ -25,6 +30,8 @@ struct libafpclient {
     void (*forced_ending_hook)(void);
     int (*scan_extra_fds)(int command_fd, fd_set *set, int *max_fd);
     void (*loop_started)(void);
+    /*! whether log_for_client() keeps a message; NULL for every message */
+    int (*log_enabled)(void *priv, int loglevel);
 };
 
 extern struct libafpclient *libafpclient;
@@ -49,28 +56,9 @@ void log_for_client(void *priv,
                     const char *message);
 
 /* Internal convenience for literal printf-style formats. */
-static inline void log_for_clientf(void *priv,
-                                   enum logtypes logtype, int loglevel,
-                                   const char *format, ...)
+void log_for_clientf(void *priv, enum logtypes logtype, int loglevel,
+                     const char *format, ...)
 __attribute__((format(printf, 4, 5)));
-
-static inline void log_for_clientf(void *priv,
-                                   enum logtypes logtype, int loglevel,
-                                   const char *format, ...)
-{
-    va_list ap;
-    char message[MAX_ERROR_LEN];
-
-    if (format == NULL) {
-        log_for_client(priv, logtype, loglevel, "(null)");
-        return;
-    }
-
-    va_start(ap, format);
-    vsnprintf(message, sizeof(message), format, ap);
-    va_end(ap);
-    log_for_client(priv, logtype, loglevel, message);
-}
 
 #ifndef AFPCLIENT_NO_LOG_MACRO
 #define log_for_client(...) log_for_clientf(__VA_ARGS__)
