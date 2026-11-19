@@ -375,6 +375,8 @@ struct afp_server {
     size_t stream_read;
     /* The connection generation whose stream the receive state follows. */
     unsigned int rx_generation;
+    /* The receive low-water mark afpc_dsi_recv() last set on the socket. */
+    int rx_lowat;
 
     /* And this is for the outgoing queue */
     pthread_mutex_t send_mutex;
