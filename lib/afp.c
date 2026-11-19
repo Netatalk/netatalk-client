@@ -563,7 +563,7 @@ int afp_server_probe(struct addrinfo *address,
             continue;
         }
 
-        if (await_connection(fd, DSI_DEFAULT_TIMEOUT) < 0) {
+        if (await_connection(fd, DSI_SERVER_DEFAULT_TIMEOUT) < 0) {
             error = errno;
             close(fd);
             continue;
@@ -934,15 +934,16 @@ void afp_free_volumes(struct afp_volume *volumes, unsigned int count)
 }
 
 /*!
- * @brief Free a server, the requests still queued on it, and its buffers
+ * @brief Free a server and its buffers
  *
- * The saved password is cleared before its memory is freed.
+ * A request lives on its sender's stack, and every sender is done before
+ * the last hold goes, so none is queued. The saved password is cleared
+ * before its memory is freed.
  *
  * @param[in,out] sp  the server, set to NULL
  */
 void afp_free_server(struct afp_server **sp)
 {
-    struct dsi_request * p, *next;
     struct afp_server * server;
 
     if (sp == NULL) {
@@ -953,15 +954,6 @@ void afp_free_server(struct afp_server **sp)
 
     if (!server) {
         return;
-    }
-
-    for (p = server->command_requests; p;) {
-        log_for_client(NULL, AFPFSD, LOG_NOTICE,
-                       "FSLeft in queue: %p, id: %d command: %d",
-                       (void *)p, p->requestid, p->subcommand);
-        next = p->next;
-        free(p);
-        p = next;
     }
 
     if (server->incoming_buffer) {
@@ -1051,7 +1043,7 @@ struct afp_server *afp_server_init(struct addrinfo * address)
 
     memset((void *) s, 0, sizeof(*s));
     s->exit_flag = 0;
-    s->dsi_default_timeout = DSI_DEFAULT_TIMEOUT;
+    s->dsi_default_timeout = DSI_SERVER_DEFAULT_TIMEOUT;
     s->next = NULL;
     s->bufsize = 128 * 1024;
     s->incoming_buffer = malloc(s->bufsize);
@@ -1837,7 +1829,7 @@ int afp_server_connect(struct afp_server *server, int full)
             continue;
         }
 
-        if (await_connection(fd, DSI_DEFAULT_TIMEOUT) < 0) {
+        if (await_connection(fd, DSI_SERVER_DEFAULT_TIMEOUT) < 0) {
             error = errno;
             close(fd);
             fd = -1;
@@ -1857,7 +1849,7 @@ int afp_server_connect(struct afp_server *server, int full)
 
         if (rc == 0 && (session < 0
                         || await_connection(session,
-                                            DSI_DEFAULT_TIMEOUT) < 0)) {
+                                            DSI_SERVER_DEFAULT_TIMEOUT) < 0)) {
             rc = -errno;
         }
 
@@ -1868,7 +1860,8 @@ int afp_server_connect(struct afp_server *server, int full)
             session = open_connection(address);
 
             if (session < 0
-                    || await_connection(session, DSI_DEFAULT_TIMEOUT) < 0) {
+                    || await_connection(session,
+                                        DSI_SERVER_DEFAULT_TIMEOUT) < 0) {
                 rc = -errno;
             }
         }

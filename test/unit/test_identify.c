@@ -19,6 +19,7 @@
 #include "lib/afp_internal.h"
 #include "lib/client.h"
 #include "lib/compat.h"
+#include "lib/dsi.h"
 #include "tap.h"
 
 static void stderr_log_for_client(
@@ -163,6 +164,9 @@ int main(int argc, char **argv)
     CHECK(afp_server_gives_directory_ids_to_files(&server));
     CHECK(afp_server_keeps_unset_ids(&server));
     CHECK(afp_server_keeps_directory_modes(&server));
+    CHECK(server.dsi_default_timeout == 5);
+    identify(&server, "TimeCapsule");
+    CHECK(server.dsi_default_timeout == DSI_TIMECAPSULE_DEFAULT_TIMEOUT);
     libafpclient_register(NULL);
     return test_tap_finish();
 }

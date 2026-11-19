@@ -201,16 +201,31 @@ static int fuse_scan_extra_fds(int command_fd, fd_set *set, int *max_fd _U_)
     return 1;
 }
 
+/*!
+ * @brief Test whether the daemon logs a message at a level
+ *
+ * @param[in] priv      unused
+ * @param[in] loglevel  the message's level
+ * @returns 1 for a level at or above the daemon's, 0 otherwise
+ */
+static int fuse_log_enabled(void *priv _U_, int loglevel)
+{
+    return loglevel_to_rank(loglevel) >= fuse_log_min_rank;
+}
+
+/*!
+ * @brief Add a message to its client's reply, or write it to the daemon's log
+ *
+ * @param[in] priv      the client the message is for, or NULL
+ * @param[in] logtype   the message's type, unused
+ * @param[in] loglevel  the message's level
+ * @param[in] message   the message
+ */
 static void fuse_log_for_client(void *priv,
                                 enum logtypes logtype _U_,
                                 int loglevel, const char *message)
 {
     struct afpfsd_client * c = priv;
-    int type_rank = loglevel_to_rank(loglevel);
-
-    if (type_rank < fuse_log_min_rank) {
-        return; /* Filter out less-verbose messages */
-    }
 
     if (c) {
         fuse_client_append_line(c, message);
@@ -1200,7 +1215,8 @@ static struct libafpclient client = {
     .unmount_volume = fuse_unmount_volume,
     .log_for_client = fuse_log_for_client,
     .forced_ending_hook = fuse_forced_ending_hook,
-    .scan_extra_fds = fuse_scan_extra_fds
+    .scan_extra_fds = fuse_scan_extra_fds,
+    .log_enabled = fuse_log_enabled
 };
 
 int fuse_register_afpclient(void)

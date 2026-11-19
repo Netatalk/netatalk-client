@@ -3,6 +3,7 @@
 # Netatalk Client FUSE client tests
 # Based on the original test/Makefile by Simon Vetter
 # Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+# Copyright (C) 2026 Andy Lemin (andylemin)
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -17,6 +18,7 @@ use Config;
 use Cwd qw(getcwd);
 use File::Spec;
 use File::Path   qw(make_path remove_tree);
+use File::Temp   qw(tempdir);
 use Errno        ();
 use Fcntl        qw(O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_SYNC O_DSYNC);
 use Getopt::Long qw(GetOptions);
@@ -2466,6 +2468,24 @@ mount_or_bail(
     utime 1577934245, 1577934245, $dir or BAIL_OUT("Cannot date $dir: $!");
     is((stat $dir)[9], 1577934245, 'fuse_afp2_dates: a folder shows the date it was given');
     rmdir $dir;
+}
+
+# -----------------------------------------------------------------------
+# fuse_afp2_write: on an AFP 2.2 session a file's data go out by FPWrite
+# and read back as written.
+# -----------------------------------------------------------------------
+{
+    my $file   = "$mnt_dir/afp2_write.bin";
+    my $local  = tempdir(CLEANUP => 1) . '/afp2_write';
+    my $before = request_counts();
+    write_bytes($file, 3 << 20);
+    my $after = request_counts();
+    write_bytes($local, 3 << 20);
+    ok(request_delta($before, $after, 'afpWrite') > 0,
+       'fuse_afp2_write: an AFP 2.2 mount writes by FPWrite');
+    is(system('cmp', '-s', $file, $local), 0,
+       'fuse_afp2_write: 3 MiB written by FPWrite read back as written');
+    unlink $file, $local;
 }
 
 unmount_or_bail('fuse_afp2_dates: unmount succeeds');

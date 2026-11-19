@@ -3,6 +3,7 @@
  *  Public stateful transport facade for libafpclient consumers
  *
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -362,6 +363,25 @@ static size_t raw_read_size(const void *payload, size_t payload_len,
 }
 
 /*!
+ * @brief Turn a raw command's timeout into the send's wait
+ *
+ * A negative timeout has no limit, DSI_DEFAULT_TIMEOUT's value included,
+ * which the send would otherwise take for the server's default.
+ *
+ * @param[in] timeout  seconds to wait, 0 for AFPC_DEFAULT_RAW_TIMEOUT, below
+ *                     0 for no limit
+ * @returns the wait afpc_dsi_send_with_reply() takes
+ */
+static int raw_wait(int timeout)
+{
+    if (timeout < 0) {
+        return DSI_BLOCK_TIMEOUT;
+    }
+
+    return timeout > 0 ? timeout : AFPC_DEFAULT_RAW_TIMEOUT;
+}
+
+/*!
  * @brief Send an AFP command the caller built and take its reply
  *
  * A read's reply lands in a buffer of up to a quantum, or of reply_capacity
@@ -374,7 +394,7 @@ static size_t raw_read_size(const void *payload, size_t payload_len,
  * @param[in]  dsi_command     DSI command to frame it in
  * @param[in]  data_offset     the DSI header's data offset, for a write
  * @param[in]  timeout         seconds to wait, 0 for
- *                             AFPC_DEFAULT_RAW_TIMEOUT
+ *                             AFPC_DEFAULT_RAW_TIMEOUT, below 0 for no limit
  * @param[out] afp_result      the server's AFP result, or NULL
  * @param[out] reply           receives the reply's payload
  * @param[in]  reply_capacity  capacity of reply
@@ -464,7 +484,7 @@ int afpc_transport_raw_command(struct afpc_transport *transport,
         result = afpc_dsi_send_with_reply(
                      transport->server, message,
                      (int)(sizeof(*header) + payload_len),
-                     timeout ? timeout : AFPC_DEFAULT_RAW_TIMEOUT,
+                     raw_wait(timeout),
                      subcommand, &read_buffer, NULL, &read_buffer);
         raw_context.size = read_buffer.size < reply_capacity
                            ? read_buffer.size : reply_capacity;
@@ -476,7 +496,7 @@ int afpc_transport_raw_command(struct afpc_transport *transport,
         result = afpc_dsi_send_with_reply(
                      transport->server, message,
                      (int)(sizeof(*header) + payload_len),
-                     timeout ? timeout : AFPC_DEFAULT_RAW_TIMEOUT,
+                     raw_wait(timeout),
                      subcommand, &raw_context, raw_reply, NULL);
     }
 
