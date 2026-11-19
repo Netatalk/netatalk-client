@@ -18,7 +18,6 @@ struct dsi_request {
     int wait;
     struct timespec deadline;
     int done_waiting;
-    int ignore_replies;
     /*! whether the receiver holds the request, which its sender then keeps */
     int receiving;
     pthread_cond_t waiting_cond;
@@ -31,16 +30,21 @@ struct dsi_request {
 };
 
 int afpc_dsi_receive(struct afp_server *server, void *data, int size);
-int afpc_dsi_getstatus(struct afp_server *server);
+int afpc_dsi_parse_status(const char *buf, size_t len,
+                          struct afp_server_status *status);
 int afpc_dsi_sendtickle(struct afp_server *server);
 void afpc_dsi_end_sends(struct afp_server *server, int fd);
 void afpc_dsi_flush_request_queue(struct afp_server *server);
-void afpc_dsi_fail_request_queue(struct afp_server *server, int error);
+void afpc_dsi_fail_request_queue(struct afp_server *server, int error,
+                                 unsigned int generation);
 
 int afpc_dsi_opensession(struct afp_server *server);
 
 int afpc_dsi_send(struct afp_server *server, char *msg, int size, int wait,
                   unsigned char subcommand, void *other);
+unsigned short afpc_dsi_fork(const struct afp_server *server,
+                             unsigned int session, unsigned short forkid);
+int afpc_dsi_fork_unsent(void);
 int afpc_dsi_transfer_wait(const struct afp_server *server, uint64_t bytes,
                            unsigned int bytes_per_second);
 void afpc_dsi_set_deadline(struct afp_server *server,
@@ -49,6 +53,9 @@ int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
                              int wait, unsigned char subcommand, void *other,
                              afpc_dsi_reply_handler reply_handler,
                              struct afp_rx_buffer *stream_buffer);
+int afpc_dsi_send_data(struct afp_server *server, char *msg, int size,
+                       const char *data, size_t data_len, int wait,
+                       unsigned char subcommand, void *other);
 struct dsi_session *afpc_dsi_create(struct afp_server *server);
 int afpc_dsi_restart(struct afp_server *server);
 int afpc_dsi_recv(struct afp_server *server);
@@ -56,7 +63,10 @@ void afpc_dsi_incoming_closesession(struct afp_server *server);
 
 #define DSI_BLOCK_TIMEOUT -1
 #define DSI_DONT_WAIT 0
-#define DSI_DEFAULT_TIMEOUT 5
+/* A send's wait for the server's default; no wait in seconds equals it */
+#define DSI_DEFAULT_TIMEOUT (-2)
+/* The default wait of a server whose type sets no other, and a connect's */
+#define DSI_SERVER_DEFAULT_TIMEOUT 5
 /* a spun down time capsule can take up to 20 secs to
  * wake up and reply to a mount request */
 #define DSI_OPENVOLUME_TIMEOUT 20
@@ -64,7 +74,7 @@ void afpc_dsi_incoming_closesession(struct afp_server *server);
 #define DSI_TIMECAPSULE_DEFAULT_TIMEOUT 30
 /* The most a reply's wait grows with its bytes, far inside a 32-bit time_t */
 #define DSI_MAX_TRANSFER_WAIT (7 * 24 * 3600)
-
-#define GETSTATUS_BUF_SIZE 1024
+/* A transfer's wait allows for a link this slow */
+#define AFP_DATA_BYTES_PER_SECOND (32U * 1024U)
 
 #endif

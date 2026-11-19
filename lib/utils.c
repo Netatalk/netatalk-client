@@ -9,6 +9,11 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief String, path and log level helpers of the protocol layer
+ */
+
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -73,6 +78,17 @@ unsigned short utf8_to_string(char *dest, char *buf, unsigned short maxlen)
     return copy_from_pascal_two(dest, buf + 4, maxlen);
 }
 
+/*!
+ * @brief Turn a request's Unix path into its AFP form, in place
+ *
+ * A slash between components becomes the NUL AFP puts there, and a colon
+ * in a name becomes a slash.
+ *
+ * @param[in]     volume  the volume, whose encoding the path is in
+ * @param[in,out] buf     the path, at any alignment: its encoding byte, the
+ *                        UTF-8 form's hint, its length and its bytes
+ * @returns 0
+ */
 unsigned char unixpath_to_afppath(
     const struct afp_volume *volume,
     char *buf)
@@ -83,9 +99,9 @@ unsigned char unixpath_to_afppath(
 
     switch (encoding) {
     case kFPUTF8Name: {
-        unsigned short *len_p = (unsigned short *)(buf + 5);
-        p = buf + 7;
-        len = ntohs(*len_p);
+        const struct afp_path_header_unicode *header = (const void *) buf;
+        p = buf + sizeof(*header);
+        len = ntohs(header->unicode);
     }
     break;
 
@@ -111,7 +127,17 @@ unsigned char unixpath_to_afppath(
     return 0;
 }
 
-unsigned char copy_from_pascal(char *dest, char *pascal, unsigned int max_len)
+/*!
+ * @brief Copy a Pascal string into a C string
+ *
+ * @param[out] dest     receives the string, cut to max_len - 1 bytes, and a
+ *                      NUL
+ * @param[in]  pascal   the Pascal string, its length byte first
+ * @param[in]  max_len  capacity of dest
+ * @returns the length byte, or 0 for no string or no capacity
+ */
+unsigned char copy_from_pascal(char *dest, const char *pascal,
+                               unsigned int max_len)
 {
     unsigned char len;
     unsigned char copy_len;
@@ -120,7 +146,7 @@ unsigned char copy_from_pascal(char *dest, char *pascal, unsigned int max_len)
         return 0;
     }
 
-    len = *pascal;
+    len = (unsigned char) pascal[0];
     copy_len = len;
 
     /* Reserve one byte for null terminator */
@@ -134,6 +160,16 @@ unsigned char copy_from_pascal(char *dest, char *pascal, unsigned int max_len)
     return len;
 }
 
+/*!
+ * @brief Copy a string that a two-byte length leads, at any alignment
+ *
+ * @param[out] dest     receives the string, NUL-terminated and cut to fit;
+ *                      left as it is for a NULL source or no room
+ * @param[in]  pascal   the big-endian length, then the string's bytes
+ * @param[in]  max_len  bytes of dest
+ * @returns the length the source gives, so the caller can step past the
+ *          string; 0 for an empty string, a NULL source or no room
+ */
 unsigned short copy_from_pascal_two(char *dest, char *pascal,
                                     unsigned int max_len)
 {
@@ -144,13 +180,9 @@ unsigned short copy_from_pascal_two(char *dest, char *pascal,
         return 0;
     }
 
-    unsigned short *len_p = (unsigned short *) pascal;
-    len = ntohs(*len_p);
-
-    if (len == 0) {
-        return 0;
-    }
-
+    memset(dest, 0, max_len);
+    memcpy(&len, pascal, sizeof(len));
+    len = ntohs(len);
     copy_len = len;
 
     /* Reserve one byte for null terminator */
@@ -158,7 +190,6 @@ unsigned short copy_from_pascal_two(char *dest, char *pascal,
         copy_len = max_len - 1;
     }
 
-    memset(dest, 0, max_len);
     memcpy(dest, pascal + 2, copy_len);
     /* Return original length so caller can advance pointer correctly */
     return len;

@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2007 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -54,9 +55,6 @@ struct addrinfo *afp_get_address(void *priv, const char *hostname,
 /*!
  * @brief Connect to a server and log in, as a mount or a session needs
  *
- * A status-only connection runs first, and the session connection reuses the
- * status it read.
- *
  * @param[in]     priv  the caller's context for log messages
  * @param[in,out] req   the server's URL, the login it asks for, and its UAM
  *                      mask, which can change to guest
@@ -67,62 +65,17 @@ struct afp_server *afp_server_full_connect(void *priv,
 {
     int ret;
     struct addrinfo * address;
-    struct afp_server  * s = NULL;
-    struct afp_server  * tmpserver;
-    char signature[AFP_SIGNATURE_LEN];
-    unsigned char versions[SERVER_MAX_VERSIONS];
-    unsigned int uams;
-    char machine_type[AFP_MACHINETYPE_LEN];
-    char server_name[AFP_SERVER_NAME_LEN];
-    char server_name_utf8[AFP_SERVER_NAME_UTF8_LEN];
-    char server_name_printable[AFP_SERVER_NAME_UTF8_LEN];
-    char icon[AFP_SERVER_ICON_LEN];
+    struct afp_server  * s;
 
     if ((address = afp_get_address(priv, req->url.servername,
                                    req->url.port)) == NULL) {
-        goto error;
+        return NULL;
     }
 
-    if ((tmpserver = afp_server_init(address)) == NULL) {
-        goto error;
-    }
-
-    if ((ret = afp_server_connect(tmpserver, 1)) < 0) {
-        int connect_error = -ret;
-
-        if (ret == -ETIMEDOUT) {
-            log_for_client(priv, AFPFSD, LOG_INFO,
-                           "Could not connect, never got a response to getstatus, %s", strerror(-ret));
-        } else {
-            log_for_client(priv, AFPFSD, LOG_INFO,
-                           "Could not connect, %s", strerror(-ret));
-        }
-
-        afp_server_remove(tmpserver);
-        errno = connect_error;
-        goto error;
-    }
-
-    loop_disconnect(tmpserver);
-    memcpy(icon, &tmpserver->icon, AFP_SERVER_ICON_LEN);
-    memcpy(&versions, &tmpserver->versions, SERVER_MAX_VERSIONS);
-    uams = tmpserver->supported_uams;
-    memcpy(signature, &tmpserver->signature, AFP_SIGNATURE_LEN);
-    memcpy(machine_type, &tmpserver->machine_type, AFP_MACHINETYPE_LEN);
-    memcpy(server_name, &tmpserver->server_name, AFP_SERVER_NAME_LEN);
-    memcpy(server_name_utf8, &tmpserver->server_name_utf8,
-           AFP_SERVER_NAME_UTF8_LEN);
-    memcpy(server_name_printable, &tmpserver->server_name_printable,
-           AFP_SERVER_NAME_UTF8_LEN);
-    afp_server_remove(tmpserver);
-    s = afp_server_init(address);
-
-    if (!s) {
-        if (errno == 0) {
-            errno = ENOMEM;
-        }
-
-        goto error;
+    if ((s = afp_server_init(address)) == NULL) {
+        freeaddrinfo(address);
+        errno = ENOMEM;
+        return NULL;
     }
 
     /* AFP's advertised server name is not the authority the client used to
@@ -132,48 +85,33 @@ struct afp_server *afp_server_full_connect(void *priv,
             sizeof(s->requested_hostname));
     s->requested_port = req->url.port;
 
-    if ((ret = afp_server_connect(s, 0)) != 0) {
-        int connect_error = -ret;
+    if ((ret = afp_server_connect(s, 1)) < 0) {
         log_for_client(priv, AFPFSD, LOG_INFO,
-                       "Connection to server failed with error: %s",
-                       strerror(connect_error));
-        afp_server_remove(s);
-        errno = connect_error;
-        s = NULL;
-        goto error;
-    }
+                       ret == -ETIMEDOUT
+                       ? "Could not connect, no reply to the status request, %s"
+                       : "Could not connect, %s", strerror(-ret));
 
-    s->supported_uams = uams;
-    memcpy(s->signature, signature, AFP_SIGNATURE_LEN);
-    memcpy(s->server_name, server_name, AFP_SERVER_NAME_LEN);
-    memcpy(s->server_name_utf8, server_name_utf8,
-           AFP_SERVER_NAME_UTF8_LEN);
-    memcpy(s->server_name_printable, server_name_printable,
-           AFP_SERVER_NAME_UTF8_LEN);
-    memcpy(s->machine_type, machine_type, AFP_MACHINETYPE_LEN);
-    memcpy(s->icon, icon, AFP_SERVER_ICON_LEN);
-    afp_server_identify(s);
+        /* A server that never connected is not listed. */
+        if (afp_server_remove(s) != 0) {
+            afp_server_release(s);
+        }
+
+        errno = -ret;
+        return NULL;
+    }
 
     /* if our user and password strings are both empty, or if the username
      * is "nobody" (AFP guest user), and the server supports guest logins,
      * fall back to "No User Authent" (guest) UAM */
     if (((*req->url.username == '\0' && *req->url.password == '\0') ||
             strcmp(req->url.username, "nobody") == 0)
-            && (uams & UAM_NOUSERAUTHENT)) {
+            && (s->supported_uams & UAM_NOUSERAUTHENT)) {
         req->uam_mask = UAM_NOUSERAUTHENT;
     }
 
-    if ((afp_server_complete_connection(priv,
-                                        s, (unsigned char *) &versions, uams,
-                                        req->url.username, req->url.password,
-                                        req->url.requested_version, req->uam_mask)) == NULL) {
-        /* complete_connection already called afp_server_remove() on failure */
-        s = NULL;
-        goto error;
-    }
-
-    afp_server_identify(s);
-    return s;
-error:
-    return NULL;
+    /* complete_connection removes the server on failure. */
+    return afp_server_complete_connection(priv, s, req->url.username,
+                                          req->url.password,
+                                          req->url.requested_version,
+                                          req->uam_mask);
 }

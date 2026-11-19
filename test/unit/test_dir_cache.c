@@ -1351,6 +1351,7 @@ int main(int argc, char **argv)
     fake.data_length = 20;
     CHECK(afp_fake_server_start(&fake) == 0);
     fake.server->server_type = AFPC_SERVER_TYPE_NETATALK;
+    fake.server->flags = kSupportsCopyfile;
     e = record(110, 0, fake_now - 1000);
     e.size = 20;
     dir_cache_upsert(&fake.volume, AFP_ROOT_DID, "same", &e,
@@ -1383,6 +1384,7 @@ int main(int argc, char **argv)
     fake.params_cnid = 113;
     CHECK(afp_fake_server_start(&fake) == 0);
     fake.server->server_type = AFPC_SERVER_TYPE_NETATALK;
+    fake.server->flags = kSupportsCopyfile;
     e = record(112, 0, fake_now - 1000);
     e.size = 20;
     dir_cache_upsert(&fake.volume, AFP_ROOT_DID, "replaced", &e,

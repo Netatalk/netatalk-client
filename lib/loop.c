@@ -86,6 +86,26 @@ void termination_handler(int signum)
 static fd_set rds;
 static int max_fd = 0;
 static pthread_mutex_t rds_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* Ended connections' descriptors, under rds_mutex, for the loop to close
+ * between two passes: a number the loop's receive loaded stays its own */
+static fd_set closing;
+static int closing_count = 0;
+
+/*!
+ * @brief Close the descriptors left for the loop to close
+ *
+ * The caller holds rds_mutex.
+ */
+static void close_ended_descriptors(void)
+{
+    for (int fd = 0; closing_count > 0 && fd < FD_SETSIZE; fd++) {
+        if (FD_ISSET(fd, &closing)) {
+            FD_CLR(fd, &closing);
+            closing_count--;
+            close(fd);
+        }
+    }
+}
 
 /*!
  * @brief Put a descriptor in the loop's set
@@ -258,8 +278,9 @@ void rm_fd_and_signal(int fd)
  *
  * Its callers call it as soon as they take the descriptor, which a peer's
  * close may have made ready: it leaves the loop's set, so no pass of the
- * loop but the one under way sees it with no server holding it, and it is
- * closed once the frame a sender is writing on it has ended.
+ * loop but the one under way sees it with no server holding it. It is shut,
+ * and closed once a sender's frame on it ends; a running loop closes it, so
+ * a receive that loaded it reads the end, not the next connection's bytes.
  *
  * @param[in,out] s   the server the descriptor was taken from
  * @param[in]     fd  the descriptor
@@ -268,47 +289,37 @@ void loop_close_descriptor(struct afp_server *s, int fd)
 {
     rm_fd_and_signal(fd);
     afpc_dsi_end_sends(s, fd);
-    close(fd);
+
+    if (!main_thread_valid || fd >= FD_SETSIZE) {
+        close(fd);
+        return;
+    }
+
+    pthread_mutex_lock(&rds_mutex);
+    FD_SET(fd, &closing);
+    closing_count++;
+    pthread_mutex_unlock(&rds_mutex);
+    signal_main_thread();
 }
 
 /*!
- * @brief End a server's connection, from any thread
+ * @brief End a server's connection of a generation, from any thread
  *
- * Takes the descriptor first, under the list lock and only while the
- * connection generation is the one the call began on, and resets the
- * connection's desktop references with it: of two threads ending the same
- * connection one closes it, a sender that queues from then on writes to
- * none and fails at once, and a connect that overtakes the call, by
- * advancing the generation, keeps the next connection's descriptor. The
- * descriptor then leaves the loop's set, and is closed once the frame a
- * sender is writing on it has ended. Then fails every request waiting on
- * the server with EIO, descriptor or none, since a request that queued as
- * the connection closed waits on nothing. A connected or connecting server
- * becomes disconnected, with its descriptor or without one, unless a
- * connect has started the next connection since the call began; a removed
- * server stays removed. The call keeps errno, which a caller may still be
- * about to read.
+ * A newer connection keeps its descriptor and state. Waiting requests of this
+ * or an older one fail with EIO even with no descriptor: nothing answers them.
  *
- * @param[in,out] s  the server
+ * @param[in,out] s           the server
+ * @param[in]     generation  the connection's generation
  */
-void loop_disconnect(struct afp_server *s)
+static void disconnect_generation(struct afp_server *s,
+                                  unsigned int generation)
 {
     int saved_errno = errno;
-    unsigned int generation = afp_server_connection_generation(s);
     int fd = -1;
     afp_lock_server_list();
 
     if (afp_server_connection_generation(s) == generation) {
         fd = __atomic_exchange_n(&s->fd, -1, __ATOMIC_ACQ_REL);
-    }
-
-    if (fd >= 0) {
-        /* Desktop references are allocated per AFP session and cannot
-         * survive a transport loss, even when the volume will later be
-         * reattached. */
-        for (int i = 0; i < s->num_volumes; i++) {
-            s->volumes[i].dtrefnum = 0;
-        }
     }
 
     afp_unlock_server_list();
@@ -317,8 +328,8 @@ void loop_disconnect(struct afp_server *s)
         loop_close_descriptor(s, fd);
     }
 
-    afpc_dsi_fail_request_queue(s, -EIO);
-    /* The connection the call began on ends disconnected; a removal, or
+    afpc_dsi_fail_request_queue(s, -EIO, generation);
+    /* The connection of that generation ends disconnected; a removal, or
      * the next connection, keeps its own state. */
     afp_lock_server_list();
 
@@ -330,8 +341,17 @@ void loop_disconnect(struct afp_server *s)
     }
 
     afp_unlock_server_list();
-    s->need_resume = 1;
     errno = saved_errno;
+}
+
+/*!
+ * @brief End a server's current connection, from any thread
+ *
+ * @param[in,out] s  the server
+ */
+void loop_disconnect(struct afp_server *s)
+{
+    disconnect_generation(s, afp_server_connection_generation(s));
 }
 
 /*!
@@ -380,9 +400,10 @@ static int process_server_fds(fd_set *set, int **onfd)
             if (ret == -1) {
                 /* Server disconnected or error occurred */
                 log_for_client(NULL, AFPFSD, LOG_INFO,
-                               "Server fd=%d disconnected, cleaning up (need_resume will be set for reconnection)",
+                               "Server fd=%d disconnected, cleaning up",
                                s->fd);
-                loop_disconnect(s);
+                /* A connect may already have made the next connection. */
+                disconnect_generation(s, s->rx_generation);
                 afp_server_release(s);
                 /* Return 0 (not -1) to continue the main loop instead of exiting.
                  * The server is now disconnected and can be reconnected later if needed.
@@ -433,15 +454,29 @@ static void *afp_main_quick_startup_thread(void *other _U_)
 }
 
 
+/*!
+ * @brief Start the loop on a thread of its own, and return once it runs
+ *
+ * The loop's start clears its descriptor set: the replies of a connection
+ * made before it would go unread.
+ *
+ * @param[out] thread  receives the loop's thread, or NULL
+ * @returns 0, or -1 when the thread cannot start
+ */
 int afp_main_quick_startup(pthread_t *thread)
 {
     pthread_t loop_thread;
-    pthread_create(&loop_thread, NULL, afp_main_quick_startup_thread, NULL);
+
+    if (pthread_create(&loop_thread, NULL, afp_main_quick_startup_thread,
+                       NULL) != 0) {
+        return -1;
+    }
 
     if (thread) {
         memcpy(thread, &loop_thread, sizeof(pthread_t));
     }
 
+    afp_wait_for_started_loop();
     return 0;
 }
 
@@ -520,6 +555,7 @@ int afp_main_loop(int command_fd)
         }
 #endif
         pthread_mutex_lock(&rds_mutex);
+        close_ended_descriptors();
         ords = rds;
         nfds = max_fd;
         pthread_mutex_unlock(&rds_mutex);
@@ -737,6 +773,9 @@ int afp_main_loop(int command_fd)
 #endif
 error:
     main_thread_valid = 0;
+    pthread_mutex_lock(&rds_mutex);
+    close_ended_descriptors();
+    pthread_mutex_unlock(&rds_mutex);
 
     if (ending_thread_valid) {
         pthread_detach(ending_thread);

@@ -297,13 +297,10 @@ int afp_copyfile(struct afp_volume * volume,
 }
 
 
-/* A read's wait allows for a link this slow. */
-#define AFP_READ_BYTES_PER_SECOND (32U * 1024U)
-
 /*!
  * @brief Read from an open fork with FPRead, the AFP 2 read
  *
- * The reply's wait grows with count, at AFP_READ_BYTES_PER_SECOND.
+ * The reply's wait grows with count, at AFP_DATA_BYTES_PER_SECOND.
  *
  * @param[in]     volume  volume of the fork
  * @param[in]     forkid  the open fork
@@ -342,7 +339,7 @@ int afp_read(struct afp_volume * volume, unsigned short forkid,
     rc = afpc_dsi_send(volume->server, (char *) &readext_packet,
                        sizeof(readext_packet),
                        afpc_dsi_transfer_wait(volume->server, count,
-                                              AFP_READ_BYTES_PER_SECOND),
+                                              AFP_DATA_BYTES_PER_SECOND),
                        afpRead, (void *) rx);
     return rc;
 }
@@ -390,7 +387,7 @@ int afp_read_reply(struct afp_server *server _U_,
 /*!
  * @brief Read from an open fork with FPReadExt, the AFP 3 read
  *
- * The reply's wait grows with count, at AFP_READ_BYTES_PER_SECOND.
+ * The reply's wait grows with count, at AFP_DATA_BYTES_PER_SECOND.
  *
  * @param[in]     volume  volume of the fork
  * @param[in]     forkid  the open fork
@@ -425,7 +422,7 @@ int afp_readext(struct afp_volume * volume, unsigned short forkid,
     rc = afpc_dsi_send(volume->server, (char *) &readext_packet,
                        sizeof(readext_packet),
                        afpc_dsi_transfer_wait(volume->server, count,
-                                              AFP_READ_BYTES_PER_SECOND),
+                                              AFP_DATA_BYTES_PER_SECOND),
                        afpReadExt, (void *) rx);
     return rc;
 }
@@ -623,18 +620,51 @@ int afp_createfile(struct afp_volume * volume, unsigned char flag,
 }
 
 /*!
+ * @brief Frame a write's parameters and send them with its data
+ *
+ * @param[in]     server    the fork's server
+ * @param[in,out] packet    room for the DSI header, which the call fills
+ *                          in, then the command's parameters
+ * @param[in]     size      bytes of packet
+ * @param[in]     data      the data
+ * @param[in]     reqcount  bytes of data
+ * @param[in]     command   afpWrite or afpWriteExt
+ * @param[out]    written   receives the offset past the last byte written,
+ *                          or NULL
+ * @returns the server's AFP result, or afpc_dsi_send_data()'s error when the
+ *          request fails
+ */
+static int send_write(struct afp_server *server, char *packet, int size,
+                      char *data, uint64_t reqcount, unsigned char command,
+                      void *written)
+{
+    struct dsi_header hdr;
+    afpc_dsi_setup_header(server, &hdr, DSI_DSIWrite);
+    /* The data begin where the command's parameters end. */
+    hdr.return_code.data_offset = htonl((uint32_t)(size - (int) sizeof(hdr)));
+    memcpy(packet, &hdr, sizeof(hdr));
+    return afpc_dsi_send_data(server, packet, size, data, (size_t) reqcount,
+                              afpc_dsi_transfer_wait(server, reqcount,
+                                                     AFP_DATA_BYTES_PER_SECOND),
+                              command, written);
+}
+
+/*!
  * @brief Write to an open fork with FPWrite, the AFP 2 write
  *
- * @param[in]  volume    volume of the fork
+ * The reply's wait grows with reqcount, at AFP_DATA_BYTES_PER_SECOND.
+ *
+ * @param[in]  volume    the fork's volume
  * @param[in]  forkid    the open fork
- * @param[in]  flag      0, or AFP_WRITE_FROM_END for an offset from the end
- * @param[in]  offset    byte offset to write at
- * @param[in]  reqcount  bytes to write
- * @param[in]  data      the bytes
+ * @param[in]  flag      0, or AFP_WRITE_FROM_END for an offset from the
+ *                       fork's end
+ * @param[in]  offset    where the data go
+ * @param[in]  reqcount  bytes of data
+ * @param[in]  data      the data
  * @param[out] written   receives the offset past the last byte written, or
  *                       NULL
- * @returns the server's AFP result, afpc_dsi_send()'s error when the
- *          request fails, or -1 without memory for the request
+ * @returns the server's AFP result, or afpc_dsi_send_data()'s error when the
+ *          request fails
  */
 int afp_write(struct afp_volume * volume, unsigned short forkid,
               unsigned char flag, uint32_t offset, uint32_t reqcount,
@@ -647,35 +677,15 @@ int afp_write(struct afp_volume * volume, unsigned short forkid,
         uint16_t forkid;
         uint32_t offset;
         uint32_t reqcount;
-    }  __attribute__((__packed__)) * request_packet;
-    struct afp_server * server = volume->server;
-    unsigned int len = sizeof(*request_packet) +
-                       reqcount;
-    int ret;
-    char *dataptr, *msg;
-
-    if ((msg = malloc(len)) == NULL) {
-        return -1;
-    }
-
-    request_packet = (void *) msg;
-    dataptr = msg + (sizeof(*request_packet));
-    memcpy(dataptr, data, reqcount);
-    struct dsi_header hdr;
-    afpc_dsi_setup_header(server, &hdr, DSI_DSIWrite);
-    memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
-    request_packet->dsi_header.return_code.data_offset = htonl(sizeof(
-            *request_packet) - sizeof(struct dsi_header));
-    /* For writing data, set the offset correctly */
-    request_packet->command = afpWrite;
-    request_packet->flag = flag;
-    request_packet->forkid = htons(forkid);
-    request_packet->offset = htonl(offset);
-    request_packet->reqcount = htonl(reqcount);
-    ret = afpc_dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
-                        afpWrite, (void *) written);
-    free(msg);
-    return ret;
+    }  __attribute__((__packed__)) request_packet;
+    request_packet.command = afpWrite;
+    request_packet.flag = flag;
+    request_packet.forkid = htons(forkid);
+    request_packet.offset = htonl(offset);
+    request_packet.reqcount = htonl(reqcount);
+    return send_write(volume->server, (char *) &request_packet,
+                      sizeof(request_packet), data, reqcount, afpWrite,
+                      written);
 }
 
 
@@ -717,16 +727,19 @@ int afp_write_reply(struct afp_server *server _U_,
 /*!
  * @brief Write to an open fork with FPWriteExt, the AFP 3 write
  *
- * @param[in]  volume    volume of the fork
+ * The reply's wait grows with reqcount, at AFP_DATA_BYTES_PER_SECOND.
+ *
+ * @param[in]  volume    the fork's volume
  * @param[in]  forkid    the open fork
- * @param[in]  flag      0, or AFP_WRITE_FROM_END for an offset from the end
- * @param[in]  offset    byte offset to write at
- * @param[in]  reqcount  bytes to write
- * @param[in]  data      the bytes
+ * @param[in]  flag      0, or AFP_WRITE_FROM_END for an offset from the
+ *                       fork's end
+ * @param[in]  offset    where the data go
+ * @param[in]  reqcount  bytes of data
+ * @param[in]  data      the data
  * @param[out] written   receives the offset past the last byte written, or
  *                       NULL
- * @returns the server's AFP result, afpc_dsi_send()'s error when the
- *          request fails, or -1 without memory for the request
+ * @returns the server's AFP result, or afpc_dsi_send_data()'s error when the
+ *          request fails
  */
 int afp_writeext(struct afp_volume * volume, unsigned short forkid,
                  unsigned char flag, uint64_t offset, uint64_t reqcount,
@@ -739,35 +752,15 @@ int afp_writeext(struct afp_volume * volume, unsigned short forkid,
         uint16_t forkid;
         uint64_t offset;
         uint64_t reqcount;
-    }  __attribute__((__packed__)) * request_packet;
-    struct afp_server * server = volume->server;
-    unsigned int len = sizeof(*request_packet) +
-                       reqcount;
-    int ret;
-    char *dataptr, *msg;
-
-    if ((msg = malloc(len)) == NULL) {
-        return -1;
-    }
-
-    request_packet = (void *) msg;
-    dataptr = msg + (sizeof(*request_packet));
-    memcpy(dataptr, data, reqcount);
-    struct dsi_header hdr;
-    afpc_dsi_setup_header(server, &hdr, DSI_DSIWrite);
-    memcpy(&request_packet->dsi_header, &hdr, sizeof(struct dsi_header));
-    request_packet->dsi_header.return_code.data_offset = htonl(sizeof(
-            *request_packet) - sizeof(struct dsi_header));
-    /* For writing data, set the offset correctly */
-    request_packet->command = afpWriteExt;
-    request_packet->flag = flag;
-    request_packet->forkid = htons(forkid);
-    request_packet->offset = hton64(offset);
-    request_packet->reqcount = hton64(reqcount);
-    ret = afpc_dsi_send(server, (char *) request_packet, len, DSI_DEFAULT_TIMEOUT,
-                        afpWriteExt, (void *) written);
-    free(msg);
-    return ret;
+    }  __attribute__((__packed__)) request_packet;
+    request_packet.command = afpWriteExt;
+    request_packet.flag = flag;
+    request_packet.forkid = htons(forkid);
+    request_packet.offset = hton64(offset);
+    request_packet.reqcount = hton64(reqcount);
+    return send_write(volume->server, (char *) &request_packet,
+                      sizeof(request_packet), data, reqcount, afpWriteExt,
+                      written);
 }
 
 

@@ -3,6 +3,7 @@
 # Netatalk Client FUSE client tests
 # Based on the original test/Makefile by Simon Vetter
 # Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+# Copyright (C) 2026 Andy Lemin (andylemin)
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -17,10 +18,13 @@ use Config;
 use Cwd qw(getcwd);
 use File::Spec;
 use File::Path   qw(make_path remove_tree);
+use File::Temp   qw(tempdir);
 use Errno        ();
 use Fcntl        qw(O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_SYNC O_DSYNC);
 use Getopt::Long qw(GetOptions);
 use IO::Handle;
+use IO::Socket::UNIX;
+use Math::BigInt;
 use Time::HiRes ();
 
 # O_DIRECT keeps the kernel's page cache out of a transfer, so every byte
@@ -55,6 +59,10 @@ my $AFP_AUTH_URL = sprintf(
                            $AFP_VOL,
 );
 my $AFP_GUEST_URL = "afp://$AFP_HOST/$AFP_VOL";
+
+# afpfsd's status command: its byte, then the three 255-byte names of
+# afpfsd_ipc_status_request (fuse/fuse_ipc.h), here empty.
+my $STATUS_COMMAND = pack('C', 4) . ("\0" x (3 * 255));
 
 sub start_afpfsd_manager {
     # Own the manager's lifetime and keep daemon output out of prove's TAP
@@ -338,6 +346,104 @@ sub server_quantum {
     my ($quantum) = status_text() =~ /^\s+quantum: (\d+)$/m;
     BAIL_OUT('afpc fs status listed no quantum') unless $quantum;
     return $quantum;
+}
+
+# Return the socket path of the daemon of $mountpoint, as afpc names it.
+sub mount_socket {
+    my ($mountpoint) = @_;
+    my $hash         = Math::BigInt->new(5381);
+    my $mask         = Math::BigInt->from_hex('ffffffffffffffff');
+
+    for my $byte (unpack('C*', $mountpoint)) {
+        $hash = ((($hash << 5) + $hash) & $mask) ^ $byte;
+    }
+
+    return sprintf('/tmp/afp_server-%d-%s', $>, substr($hash->as_hex(), 2));
+}
+
+# Send a command to the daemon on $socket_path in @parts, 0.2 s apart so that
+# they arrive separately, and return the result and text of its answer.
+sub daemon_exchange {
+    my ($socket_path, @parts) = @_;
+    # A daemon that answers the first part and closes must not kill the test.
+    local $SIG{PIPE} = 'IGNORE';
+    my $socket = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $socket_path)
+      or BAIL_OUT("Cannot connect to $socket_path: $!");
+
+    for my $i (0 .. $#parts) {
+        select(undef, undef, undef, 0.2) if $i > 0;
+        syswrite($socket, $parts[$i]);
+    }
+
+    my $header = '';
+    sysread($socket, $header, 8) == 8 or BAIL_OUT("No answer on $socket_path");
+    my ($result, $length) = unpack('C x3 L', $header);
+    my $text = '';
+
+    while (length($text) < $length) {
+        sysread($socket, my $chunk, $length - length($text)) or last;
+        $text .= $chunk;
+    }
+
+    close $socket;
+    return ($result, $text);
+}
+
+# Wait up to $seconds for $test to hold, and return whether it did.
+sub within {
+    my ($seconds, $test) = @_;
+    my $deadline = Time::HiRes::time() + $seconds;
+
+    until ($test->()) {
+        return 0 if Time::HiRes::time() > $deadline;
+        Time::HiRes::sleep(0.05);
+    }
+
+    return 1;
+}
+
+# Return the pids of the running mount daemons.
+sub mount_daemons {
+    open(my $fh, '-|', 'pgrep', '-f', 'afpfsd --socket-id')
+      or BAIL_OUT("Cannot run pgrep: $!");
+    chomp(my @pids = <$fh>);
+    close $fh;
+    return @pids;
+}
+
+# Return the afpd pids, the master's and one per session, but for those given.
+sub afpd_pids_besides {
+    my %given = map { $_ => 1 } @_;
+    open(my $fh, '-|', 'pgrep', '-x', 'afpd')
+      or BAIL_OUT("Cannot run pgrep: $!");
+    chomp(my @pids = <$fh>);
+    close $fh;
+    return grep { !$given{$_} } @pids;
+}
+
+# Test whether the kernel lists a FUSE mount at a path, $mnt_dir by default.
+sub fuse_mounted {
+    my $path = shift // $mnt_dir;
+    open(my $fh, '<', '/proc/self/mounts')
+      or BAIL_OUT("Cannot read /proc/self/mounts: $!");
+    my @mounts = grep { my @field = split ' '; $field[1] eq $path && $field[2] =~ /^fuse/ } <$fh>;
+    close $fh;
+    return scalar @mounts;
+}
+
+# Return the afpc fs status of the manager or a mount point, even on failure.
+sub fs_status {
+    open(my $fh, '-|', 'afpc', 'fs', 'status', @_)
+      or BAIL_OUT("Cannot run afpc fs status: $!");
+    my $text = do { local $/; <$fh> };
+    close $fh;
+    return $text // '';
+}
+
+# Detach a mount a failed case left on $mnt_dir, so later cases mount there.
+sub clear_mnt_dir {
+    return unless -r '/proc/self/mounts';
+    system('fusermount3', '-u', '-z', $mnt_dir) if fuse_mounted();
 }
 
 sub unmount_or_bail {
@@ -2364,6 +2470,24 @@ mount_or_bail(
     rmdir $dir;
 }
 
+# -----------------------------------------------------------------------
+# fuse_afp2_write: on an AFP 2.2 session a file's data go out by FPWrite
+# and read back as written.
+# -----------------------------------------------------------------------
+{
+    my $file   = "$mnt_dir/afp2_write.bin";
+    my $local  = tempdir(CLEANUP => 1) . '/afp2_write';
+    my $before = request_counts();
+    write_bytes($file, 3 << 20);
+    my $after = request_counts();
+    write_bytes($local, 3 << 20);
+    ok(request_delta($before, $after, 'afpWrite') > 0,
+       'fuse_afp2_write: an AFP 2.2 mount writes by FPWrite');
+    is(system('cmp', '-s', $file, $local), 0,
+       'fuse_afp2_write: 3 MiB written by FPWrite read back as written');
+    unlink $file, $local;
+}
+
 unmount_or_bail('fuse_afp2_dates: unmount succeeds');
 
 # -----------------------------------------------------------------------
@@ -2419,9 +2543,8 @@ mount_or_bail(
 unmount_or_bail('fuse_appledouble_listing: unmount succeeds');
 
 # -----------------------------------------------------------------------
-# fuse_mount_time: ten mounts in a row each complete within 5 s. Every
-# mount closes its status connection from the connecting thread while the
-# loop thread waits on it; a daemon that sleeps on that takes 10 s more.
+# fuse_mount_time: ten mounts in a row each complete within a second: no
+# step waits a fixed second, as afpc and the manager poll every 20 ms.
 # -----------------------------------------------------------------------
 {
     my $slowest = 0;
@@ -2437,7 +2560,7 @@ unmount_or_bail('fuse_appledouble_listing: unmount succeeds');
         unmount_or_bail("fuse_mount_time: unmount $round succeeds");
     }
 
-    cmp_ok($slowest, '<', 5,
+    cmp_ok($slowest, '<', 1,
            sprintf('fuse_mount_time: the slowest of ten mounts took %.2f s', $slowest));
 }
 
@@ -2546,6 +2669,500 @@ unmount_or_bail('fuse_appledouble_listing: unmount succeeds');
     is(system('afpc', 'fs', 'unmount', $other), 0, 'fuse_locking: the second mount without the option unmounts');
     unmount_or_bail('fuse_locking: the mount without the option unmounts');
     rmdir $other;
+}
+
+# -----------------------------------------------------------------------
+# fuse_continue: a file held open across a suspend and resume keeps its fork,
+# as the session continues: neither the volume nor the file opens again.
+# -----------------------------------------------------------------------
+{
+    mount_or_bail('fuse_continue: a mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    my $path = "$mnt_dir/continue.txt";
+    sysopen(my $fh, $path, O_RDWR | O_CREAT | O_TRUNC)
+      or BAIL_OUT("Cannot create $path: $!");
+    syswrite($fh, 'before') == 6 or BAIL_OUT("Cannot write to $path: $!");
+    my $before = request_counts();
+    is(system('afpc', 'fs', 'suspend', $mnt_dir), 0, 'fuse_continue: suspend succeeds');
+    is(system('afpc', 'fs', 'resume',  $mnt_dir), 0, 'fuse_continue: resume succeeds');
+    is(syswrite($fh, ' after'), 6, 'fuse_continue: a write through the handle after the resume succeeds');
+    my $after = request_counts();
+    ok(close($fh), 'fuse_continue: the handle closes');
+    is(request_delta($before, $after, 'afpDisconnectOldSession'), 1, 'fuse_continue: the resume continues the session');
+    is(request_delta($before, $after, 'afpOpenVol'),              0, 'fuse_continue: the volume does not open again');
+    is(request_delta($before, $after, 'afpOpenFork'),             0, 'fuse_continue: the file does not open again');
+    sysopen(my $check, $path, O_RDONLY | $O_DIRECT)
+      or BAIL_OUT("Cannot read $path: $!");
+    my $content = '';
+    sysread($check, $content, 64);
+    close $check;
+    is($content, 'before after', 'fuse_continue: the file holds both writes');
+    unlink $path;
+    unmount_or_bail('fuse_continue: the mount unmounts');
+}
+
+# -----------------------------------------------------------------------
+# fuse_command_parts: a mount's daemon answers a status command that comes
+# in two writes, split after its command byte, with the status text.
+# -----------------------------------------------------------------------
+{
+    mount_or_bail('fuse_command_parts: a mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    my ($result, $text) =
+      daemon_exchange(mount_socket($mnt_dir), substr($STATUS_COMMAND, 0, 1), substr($STATUS_COMMAND, 1));
+    is($result, 0, 'fuse_command_parts: the split command succeeds');
+    like($text, qr/^Netatalk Client Version/, 'fuse_command_parts: its answer is the status text');
+    unmount_or_bail('fuse_command_parts: the mount unmounts');
+}
+
+# -----------------------------------------------------------------------
+# fuse_command_silent: a file create through a mount completes while a client
+# that connected to its daemon sends nothing, and the daemon then ends that
+# client's connection.
+# -----------------------------------------------------------------------
+{
+    mount_or_bail('fuse_command_silent: a mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    my $silent = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => mount_socket($mnt_dir))
+      or BAIL_OUT("Cannot connect to the mount's daemon: $!");
+    # The daemon takes the connection before the create starts.
+    select(undef, undef, undef, 0.2);
+    my $path = "$mnt_dir/silent.txt";
+    my $pid  = fork() // BAIL_OUT("Cannot fork: $!");
+
+    if ($pid == 0) {
+        close $silent;
+        POSIX::_exit(sysopen(my $fh, $path, O_WRONLY | O_CREAT | O_EXCL) ? 0 : 1);
+    }
+
+    my $done    = within(2, sub { waitpid($pid, WNOHANG) == $pid });
+    my $created = $done && $? == 0;
+    waitpid($pid, 0) unless $done;
+    ok($created, 'fuse_command_silent: a file is created while a client sends nothing');
+    $silent->blocking(0);
+    ok(within(4, sub { defined(sysread($silent, my $byte, 1)) }),
+       'fuse_command_silent: the daemon ends the silent connection');
+    close $silent;
+    unlink $path;
+    unmount_or_bail('fuse_command_silent: the mount unmounts');
+}
+
+# -----------------------------------------------------------------------
+# fuse_daemon_ends: the manager releases a killed daemon's mount within two
+# seconds, even with its attributes cached by a stat(2); the path mounts again.
+# -----------------------------------------------------------------------
+SKIP: {
+    skip 'the mount table is read from /proc/self/mounts', 5 unless -r '/proc/self/mounts';
+    mount_or_bail('fuse_daemon_ends: a mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    my @daemons = mount_daemons();
+    is(scalar @daemons, 1, 'fuse_daemon_ends: one daemon serves the mount');
+    stat($mnt_dir);
+    kill 'KILL', @daemons;
+    ok(within(2, sub { !fuse_mounted() }), 'fuse_daemon_ends: the mount is released within two seconds');
+    clear_mnt_dir();
+    mount_or_bail('fuse_daemon_ends: the path mounts again', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    unmount_or_bail('fuse_daemon_ends: the second mount unmounts');
+}
+
+# -----------------------------------------------------------------------
+# fuse_unmount_outside: a mount's daemon ends within a second of an unmount
+# by fusermount3.
+# -----------------------------------------------------------------------
+SKIP: {
+    skip 'the mount table is read from /proc/self/mounts', 3 unless -r '/proc/self/mounts';
+    mount_or_bail('fuse_unmount_outside: a mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    is(system('fusermount3', '-u', $mnt_dir), 0, 'fuse_unmount_outside: fusermount3 unmounts the mount');
+    ok(within(1, sub { !mount_daemons() }), 'fuse_unmount_outside: the daemon ends within a second');
+}
+
+# -----------------------------------------------------------------------
+# fuse_daemon_hangup: a SIGHUP, which libfuse takes to end its loop, ends a
+# mount's daemon with its mount; the loop sees the signal at its next request.
+# -----------------------------------------------------------------------
+SKIP: {
+    skip 'the mount table is read from /proc/self/mounts', 2 unless -r '/proc/self/mounts';
+    mount_or_bail('fuse_daemon_hangup: a mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    kill 'HUP', mount_daemons();
+
+    if (opendir(my $dh, $mnt_dir)) {
+        closedir($dh);
+    }
+
+    ok(within(5, sub { !mount_daemons() }), 'fuse_daemon_hangup: the daemon ends');
+    clear_mnt_dir();
+}
+
+# -----------------------------------------------------------------------
+# fuse_daemon_ending: a mount waits out a daemon of the path that has stopped
+# listening, as after answering its unmount, then mounts with one of its own.
+# -----------------------------------------------------------------------
+SKIP: {
+    skip 'the mount table is read from /proc/self/mounts', 4 unless -r '/proc/self/mounts';
+    mount_or_bail('fuse_daemon_ending: a mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    my @daemons = mount_daemons();
+    is(scalar @daemons, 1, 'fuse_daemon_ending: one daemon serves the mount');
+    kill 'STOP', @daemons;
+    unlink mount_socket($mnt_dir);
+    open(my $mount, '-|', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir)
+      or BAIL_OUT("Cannot run mount_afpfs: $!");
+    Time::HiRes::sleep(0.3);
+    kill 'KILL', @daemons;
+    my $text = do { local $/; <$mount> };
+    close $mount;
+    is($?, 0, 'fuse_daemon_ending: a mount of the path while its daemon ends succeeds') or diag($text);
+    unmount_or_bail('fuse_daemon_ending: the mount unmounts');
+}
+
+# -----------------------------------------------------------------------
+# fuse_mount_twice: of two mounts of one path at once, one succeeds and the
+# other is refused as already mounted; the manager lists one mount.
+# -----------------------------------------------------------------------
+{
+    my @mounts;
+
+    for (1 .. 2) {
+        open(my $fh, '-|', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir)
+          or BAIL_OUT("Cannot run mount_afpfs: $!");
+        push @mounts, $fh;
+    }
+
+    my $succeeded = 0;
+    my $refusals  = '';
+
+    for my $fh (@mounts) {
+        my $text = do { local $/; <$fh> };
+        close $fh;
+
+        if ($? == 0) {
+            $succeeded++;
+        } else {
+            $refusals .= $text // '';
+        }
+    }
+
+    is($succeeded, 1, 'fuse_mount_twice: one of two mounts of one path succeeds');
+    like($refusals,   qr/already mounted/, 'fuse_mount_twice: the other is refused as already mounted');
+    like(fs_status(), qr/Manager daemon: 1 active mount\n/, 'fuse_mount_twice: the manager lists one mount');
+    unmount_or_bail('fuse_mount_twice: the mount unmounts');
+}
+
+# -----------------------------------------------------------------------
+# fuse_mount_spelling: a mount point given with a trailing slash is released
+# by an unmount of the path without it.
+# -----------------------------------------------------------------------
+{
+    mount_or_bail(
+                  'fuse_mount_spelling: a mount of the path with a trailing slash succeeds',
+                  'mount_afpfs', $AFP_AUTH_URL, "$mnt_dir/"
+    );
+    is(system('afpc', 'fs', 'unmount', $mnt_dir), 0,
+       'fuse_mount_spelling: an unmount of the path without the slash succeeds');
+
+  SKIP: {
+        skip 'the mount table is read from /proc/self/mounts', 1 unless -r '/proc/self/mounts';
+        ok(within(1, sub { !fuse_mounted() }), 'fuse_mount_spelling: the mount is released');
+    }
+}
+
+# -----------------------------------------------------------------------
+# fuse_mount_fails: after a failed mount its daemon ends, its session logs out
+# and the manager has no mount at the path.
+# -----------------------------------------------------------------------
+{
+    (my $missing_url = $AFP_AUTH_URL) =~ s{/\Q$AFP_VOL\E$}{/no_such_volume};
+    my @before = afpd_pids_besides();
+    my $rc     = system('mount_afpfs', $missing_url, $mnt_dir);
+    isnt($rc, 0, 'fuse_mount_fails: a mount of a volume the server lacks fails');
+    ok(within(1, sub { !mount_daemons() }),            'fuse_mount_fails: its daemon ends within a second');
+    ok(within(2, sub { !afpd_pids_besides(@before) }), 'fuse_mount_fails: its session logs out');
+    my $status = fs_status($mnt_dir);
+    like($status, qr/No mount found at \Q$mnt_dir\E/, 'fuse_mount_fails: the manager has no mount at the path');
+}
+
+# -----------------------------------------------------------------------
+# fuse_mount_after_failure: of two mounts of a path at once, the second keeps
+# the daemon past the failure of the first, of a missing volume, and mounts.
+# -----------------------------------------------------------------------
+{
+    (my $missing_url = $AFP_AUTH_URL) =~ s{/\Q$AFP_VOL\E$}{/no_such_volume};
+    open(my $failing, '-|', 'mount_afpfs', $missing_url, $mnt_dir)
+      or BAIL_OUT("Cannot run mount_afpfs: $!");
+    open(my $mounting, '-|', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir)
+      or BAIL_OUT("Cannot run mount_afpfs: $!");
+    my $failure = do { local $/; <$failing> };
+    close $failing;
+    isnt($?, 0, 'fuse_mount_after_failure: the mount of a volume the server lacks fails') or diag($failure);
+    my $text = do { local $/; <$mounting> };
+    close $mounting;
+    is($?, 0, 'fuse_mount_after_failure: the other mount of the path succeeds') or diag($text);
+
+  SKIP: {
+        skip 'the mount table is read from /proc/self/mounts', 1 unless -r '/proc/self/mounts';
+        ok(fuse_mounted(), 'fuse_mount_after_failure: the path is mounted');
+    }
+    unmount_or_bail('fuse_mount_after_failure: the mount unmounts');
+}
+
+# -----------------------------------------------------------------------
+# fuse_status_empty: a mount's daemon with no server says so in its status.
+# -----------------------------------------------------------------------
+{
+    my $socket_path = mount_socket("$mnt_dir.empty");
+    my $pid         = fork() // BAIL_OUT("Cannot fork afpfsd: $!");
+
+    if ($pid == 0) {
+        open(STDOUT, '>',  File::Spec->devnull()) or die "stdout: $!";
+        open(STDERR, '>&', \*STDOUT)              or die "stderr: $!";
+        exec('afpfsd', '--socket-id', $socket_path, '--foreground') or die "exec afpfsd: $!";
+    }
+
+    within(2, sub { IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $socket_path) })
+      or BAIL_OUT("afpfsd does not listen on $socket_path");
+    my (undef, $text) = daemon_exchange($socket_path, $STATUS_COMMAND);
+    like($text, qr/Not connected to any servers/, 'fuse_status_empty: the status says the daemon has no server');
+    kill 'TERM', $pid;
+    waitpid($pid, 0);
+}
+
+# -----------------------------------------------------------------------
+# fuse_unmount_dead: afpc fs unmount releases a mount whose daemon has
+# ended, here with a manager that started after it and has no record of it.
+# -----------------------------------------------------------------------
+SKIP: {
+    skip 'the mount table is read from /proc/self/mounts', 5 unless -r '/proc/self/mounts';
+    mount_or_bail('fuse_unmount_dead: a mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    kill 'KILL', $afpfsd_pid;
+    waitpid($afpfsd_pid, 0);
+    kill 'KILL', mount_daemons();
+    ok(within(1, sub { !mount_daemons() }), 'fuse_unmount_dead: the daemon has ended');
+    start_afpfsd_manager();
+    is(system('afpc', 'fs', 'unmount', $mnt_dir), 0, 'fuse_unmount_dead: afpc fs unmount succeeds');
+    ok(!fuse_mounted(), 'fuse_unmount_dead: the mount is released');
+    clear_mnt_dir();
+}
+
+# -----------------------------------------------------------------------
+# fuse_manager_silent: a mount succeeds behind a silent client of the manager,
+# which holds it up at most as long as the manager waits for a command.
+# -----------------------------------------------------------------------
+{
+    my $silent = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => sprintf('/tmp/afp_server-%d', $>))
+      or BAIL_OUT("Cannot connect to the manager: $!");
+    my $rc = system('mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    is($rc, 0, 'fuse_manager_silent: a mount behind a silent client succeeds');
+    close $silent;
+    unmount_or_bail('fuse_manager_silent: the mount unmounts') if $rc == 0;
+    clear_mnt_dir();
+}
+
+# -----------------------------------------------------------------------
+# fuse_exit_own_user: the manager's exit asks only its own user's daemons to
+# end: a socket of a user ID with the same leading digits takes no connection.
+# -----------------------------------------------------------------------
+{
+    my $other_path = sprintf('/tmp/afp_server-%d0-0', $>);
+    unlink $other_path;
+    my $other = IO::Socket::UNIX->new(Type => SOCK_STREAM, Local => $other_path, Listen => 1)
+      or BAIL_OUT("Cannot listen on $other_path: $!");
+    is(system('afpc', 'fs', 'exit'), 0, 'fuse_exit_own_user: afpc fs exit succeeds');
+    ok(within(5, sub { waitpid($afpfsd_pid, WNOHANG) == $afpfsd_pid }), 'fuse_exit_own_user: the manager ends');
+    undef $afpfsd_pid;
+    $other->blocking(0);
+    ok(!defined($other->accept()), 'fuse_exit_own_user: the other user\'s socket takes no connection');
+    close $other;
+    unlink $other_path;
+    start_afpfsd_manager();
+}
+
+# -----------------------------------------------------------------------
+# fuse_manager_detached: the manager a mount starts leaves the mount's session
+# and output, so $(...) around the mount ends when the mount returns.
+# -----------------------------------------------------------------------
+{
+    is(system('afpc', 'fs', 'exit'), 0, 'fuse_manager_detached: the suite\'s manager exits');
+    ok(within(5, sub { waitpid($afpfsd_pid, WNOHANG) == $afpfsd_pid }), 'fuse_manager_detached: it ends');
+    undef $afpfsd_pid;
+    my $read = eval {
+        local $SIG{ALRM} = sub { die "timeout\n" };
+        alarm 20;
+        open(my $out, '-|', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir) or die "mount_afpfs: $!";
+        my @lines = <$out>;
+        close $out;
+        alarm 0;
+        1;
+    };
+    alarm 0;
+    ok($read, 'fuse_manager_detached: the mount\'s output ends once the mount returns');
+
+  SKIP: {
+        skip 'the mount table is read from /proc/self/mounts', 1 unless -r '/proc/self/mounts';
+        ok(fuse_mounted(), 'fuse_manager_detached: the mount runs');
+    }
+    unmount_or_bail('fuse_manager_detached: the mount unmounts')
+      if !-r '/proc/self/mounts' || fuse_mounted();
+    system('afpc', 'fs', 'exit');
+    # The manager the mount started removes its socket as it ends.
+    my $manager_socket = sprintf('/tmp/afp_server-%d', $>);
+    within(15, sub { !-e $manager_socket });
+    clear_mnt_dir();
+    start_afpfsd_manager();
+}
+
+# -----------------------------------------------------------------------
+# fuse_manager_restart: a manager killed while its daemon serves a mount can
+# restart, as the daemon holds none of its sockets; the mount still unmounts.
+# -----------------------------------------------------------------------
+{
+    mount_or_bail('fuse_manager_restart: a mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    kill 'KILL', $afpfsd_pid;
+    waitpid($afpfsd_pid, 0);
+    start_afpfsd_manager();
+    unmount_or_bail('fuse_manager_restart: the mount unmounts');
+}
+
+# Start afpc fs mount --foreground on a path, $mnt_dir by default, and return
+# its pid.
+sub foreground_mount {
+    my $path = shift  // $mnt_dir;
+    my $afpc = fork() // BAIL_OUT("Cannot fork afpc: $!");
+
+    if ($afpc == 0) {
+        open(STDOUT, '>',  '/dev/null') or die "stdout: $!";
+        open(STDERR, '>&', \*STDOUT)    or die "stderr: $!";
+        exec(
+              'afpc', 'fs', 'mount', '--foreground', '--user', $AFP_USER, '--pass', $AFP_PASS, "$AFP_HOST:$AFP_VOL",
+              $path
+        ) or die "exec afpc: $!";
+    }
+
+    return $afpc;
+}
+
+# -----------------------------------------------------------------------
+# fuse_foreground_dead: a foreground mount whose daemon a SIGTERM ends, as a
+# cgroup stop does, leaves a dead mount; the next one releases it and runs.
+# -----------------------------------------------------------------------
+SKIP: {
+    skip 'the mount table is read from /proc/self/mounts', 3 unless -r '/proc/self/mounts';
+    my $afpc = foreground_mount();
+    ok(within(10, sub { fuse_mounted() && opendir(my $dh, $mnt_dir) }),
+       'fuse_foreground_dead: a foreground mount runs');
+    chomp(my @daemons = `pgrep -P $afpc afpfsd`);
+    kill 'TERM', @daemons;
+    ok(within(5, sub { waitpid($afpc, WNOHANG) == $afpc }), 'fuse_foreground_dead: afpc ends with its daemon');
+    $afpc = foreground_mount();
+    ok(within(10, sub { fuse_mounted() && opendir(my $dh, $mnt_dir) }),
+       'fuse_foreground_dead: the next foreground mount runs');
+    kill 'TERM', $afpc;
+    within(5, sub { waitpid($afpc, WNOHANG) == $afpc });
+
+    if (waitpid($afpc, WNOHANG) == 0) {
+        kill 'KILL', $afpc;
+        waitpid($afpc, 0);
+    }
+
+    clear_mnt_dir();
+}
+
+# -----------------------------------------------------------------------
+# fuse_foreground_hangup: a hangup sends a foreground afpc two SIGHUPs, the
+# shell's and the kernel's; the second, here while a SIGSTOP holds the daemon
+# before the first one's unmount, leaves the daemon to unmount and log out.
+# -----------------------------------------------------------------------
+SKIP: {
+    skip 'the mount table is read from /proc/self/mounts', 4 unless -r '/proc/self/mounts';
+    my @before = afpd_pids_besides();
+    my $afpc   = foreground_mount();
+    ok(within(10, sub { fuse_mounted() && opendir(my $dh, $mnt_dir) }),
+       'fuse_foreground_hangup: a foreground mount runs');
+    chomp(my @daemons = `pgrep -P $afpc afpfsd`);
+    kill 'STOP', @daemons;
+    kill 'HUP',  $afpc;
+    Time::HiRes::sleep(0.5);
+    kill 'HUP', $afpc;
+    Time::HiRes::sleep(0.5);
+    kill 'CONT', @daemons;
+    ok(within(10, sub { waitpid($afpc, WNOHANG) == $afpc }) && $? == 0,
+       'fuse_foreground_hangup: afpc ends with status 0');
+    ok(!fuse_mounted(),                                'fuse_foreground_hangup: the mount is released');
+    ok(within(2, sub { !afpd_pids_besides(@before) }), 'fuse_foreground_hangup: its session logs out');
+
+    if (waitpid($afpc, WNOHANG) == 0) {
+        kill 'KILL', $afpc, @daemons;
+        waitpid($afpc, 0);
+    }
+
+    clear_mnt_dir();
+}
+
+# -----------------------------------------------------------------------
+# fuse_unmount_stalled: the manager answers an unmount of a mount it does not
+# know whose daemon has stopped, and then its status.
+# -----------------------------------------------------------------------
+SKIP: {
+    skip 'the mount table is read from /proc/self/mounts', 3 unless -r '/proc/self/mounts';
+    my $afpc = foreground_mount();
+    ok(within(10, sub { fuse_mounted() && opendir(my $dh, $mnt_dir) }),
+       'fuse_unmount_stalled: a foreground mount runs');
+    chomp(my @daemons = `pgrep -P $afpc afpfsd`);
+    kill 'STOP', @daemons;
+    my $asker = fork() // BAIL_OUT("Cannot fork: $!");
+
+    if ($asker == 0) {
+        # The unmount afpc sends the manager when no daemon listens.
+        my $manager = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => sprintf('/tmp/afp_server-%d', $>))
+          or POSIX::_exit(1);
+        syswrite($manager, pack('C Z255', 6, $mnt_dir));
+        POSIX::_exit(sysread($manager, my $header, 8) == 8 ? 0 : 1);
+    }
+
+    my $answered = within(6, sub { waitpid($asker, WNOHANG) == $asker }) && $? == 0;
+    my $status   = $answered ? fs_status() : '';
+    # The daemon's end fails the kernel's request to it, which frees a probe.
+    kill 'KILL', @daemons;
+    waitpid($asker, 0) unless $answered;
+    ok($answered, 'fuse_unmount_stalled: the manager answers the unmount');
+    like($status, qr/^Manager daemon: /m, 'fuse_unmount_stalled: the manager then answers its status');
+    within(5, sub { waitpid($afpc, WNOHANG) == $afpc });
+
+    if (waitpid($afpc, WNOHANG) == 0) {
+        kill 'KILL', $afpc;
+        waitpid($afpc, 0);
+    }
+
+    clear_mnt_dir();
+}
+
+# -----------------------------------------------------------------------
+# fuse_exit_spares_foreground: a foreground mount started once afpc fs exit
+# returns, while the manager waits 12 s for a stopped daemon, still runs once
+# that manager has ended.
+# -----------------------------------------------------------------------
+SKIP: {
+    skip 'the mount table is read from /proc/self/mounts', 6 unless -r '/proc/self/mounts';
+    my $other = getcwd() . '/afpfs_mnt_exit';
+    mkdir $other;
+    mount_or_bail('fuse_exit_spares_foreground: a mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    my @daemons = mount_daemons();
+    kill 'STOP', @daemons;
+    is(system('afpc', 'fs', 'exit'), 0, 'fuse_exit_spares_foreground: afpc fs exit succeeds');
+    my $afpc = foreground_mount($other);
+    ok(within(10, sub { fuse_mounted($other) && opendir(my $dh, $other) }),
+       'fuse_exit_spares_foreground: a foreground mount runs');
+    ok(within(20, sub { waitpid($afpfsd_pid, WNOHANG) == $afpfsd_pid }),
+       'fuse_exit_spares_foreground: the manager ends');
+    undef $afpfsd_pid;
+    ok(waitpid($afpc, WNOHANG) == 0 && fuse_mounted($other),
+       'fuse_exit_spares_foreground: the foreground mount still runs');
+    kill 'TERM', $afpc;
+    within(5, sub { waitpid($afpc, WNOHANG) == $afpc });
+
+    if (waitpid($afpc, WNOHANG) == 0) {
+        kill 'KILL', $afpc;
+        waitpid($afpc, 0);
+    }
+
+    system('fusermount3', '-u', '-z', $other) if fuse_mounted($other);
+    rmdir $other;
+    clear_mnt_dir();
+    start_afpfsd_manager();
 }
 
 done_testing;

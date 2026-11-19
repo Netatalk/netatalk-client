@@ -62,7 +62,7 @@ static unsigned int count_of(const struct afp_fake_server *fake,
 {
     unsigned int n = 0;
 
-    for (unsigned int i = 0; i < fake->ncommands && i < 16U; i++) {
+    for (unsigned int i = 0; i < fake->ncommands; i++) {
         n += fake->commands[i] == command;
     }
 

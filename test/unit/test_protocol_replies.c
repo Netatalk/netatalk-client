@@ -45,7 +45,8 @@ struct listxattr_reply {
  */
 int main(int argc, char **argv)
 {
-    unsigned char reply[sizeof(struct dsi_header) + 16];
+    /* As aligned as the DSI header the checks write through. */
+    _Alignas(uint32_t) unsigned char reply[sizeof(struct dsi_header) + 16];
     struct dsi_header *header = (struct dsi_header *)reply;
     uint32_t wire32;
     static const unsigned char wire64[] = {
@@ -89,10 +90,20 @@ int main(int argc, char **argv)
     close_volume.open_forks = &open_fork;
     afpc_dsi_incoming_closesession(&close_server);
     CHECK(close_server.connect_state == SERVER_STATE_DISCONNECTED);
-    CHECK(close_server.fd == -1 && close_server.need_resume);
+    CHECK(close_server.fd == -1 && close_server.token_ended);
     CHECK(close_volume.attached == AFP_VOLUME_ATTACHED);
-    CHECK(close_volume.dtrefnum == 0);
+    /* The next session drops the desktop reference, or the detach does. */
+    CHECK(close_volume.dtrefnum == 12);
     CHECK(close_volume.open_forks == &open_fork);
+    close(close_session_fds[1]);
+    /* A reconnect's own connection, which afpd closes once it refuses its
+     * login, ends no token. */
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, close_session_fds) == 0);
+    close_server.fd = close_session_fds[0];
+    close_server.connect_state = SERVER_STATE_CONNECTING;
+    close_server.token_ended = 0;
+    afpc_dsi_incoming_closesession(&close_server);
+    CHECK(close_server.fd == -1 && !close_server.token_ended);
     close(close_session_fds[1]);
     CHECK(afp_date_to_unix(NULL, htonl(UINT32_C(0x80000000)))
           == (time_t)(AD_DATE_DELTA - INT64_C(0x80000000)));
@@ -352,6 +363,183 @@ int main(int argc, char **argv)
         CHECK(afp_openfork_reply(&server, (char *)&open_reply,
                                  sizeof(open_reply), &fork) == 0);
         CHECK(fork.forkid == 0 && fork.size == 0);
+    }
+    {
+        /* A token reply fills the token; a reply too short for its token is
+         * refused, and one without a token leaves it empty. */
+        struct afp_token token;
+        struct {
+            struct dsi_header header __attribute__((__packed__));
+            uint32_t token_len;
+            char token[8];
+        } __attribute__((__packed__)) token_reply;
+        memset(&token_reply, 0, sizeof(token_reply));
+        token_reply.header.length = htonl(sizeof(token_reply)
+                                          - sizeof(struct dsi_header));
+        token_reply.token_len = htonl(8);
+        memcpy(token_reply.token, "TOKEN123", 8);
+        token.length = 99;
+        CHECK(afp_getsessiontoken_reply(NULL, (char *)&token_reply,
+                                        sizeof(token_reply), &token) == 0);
+        CHECK(token.length == 8 && memcmp(token.data, "TOKEN123", 8) == 0);
+        CHECK(afp_getsessiontoken_reply(NULL, (char *)&token_reply,
+                                        sizeof(token_reply) - 1, &token)
+              == -1);
+        CHECK(token.length == 0);
+        token.length = 99;
+        CHECK(afp_getsessiontoken_reply(NULL, (char *)&token_reply,
+                                        sizeof(struct dsi_header), &token)
+              == 0);
+        CHECK(token.length == 0);
+    }
+    {
+        /* A server parameters reply replaces a volume list none of whose
+         * volumes is attached or mounted, and leaves one in use. */
+        struct afp_server parms_server;
+        struct afp_volume *first;
+        struct afp_versions afp34 = { "AFP3.4", 34 };
+        struct {
+            struct dsi_header header __attribute__((__packed__));
+            uint32_t time;
+            uint8_t numvolumes;
+            uint8_t flags1;
+            char name1[4];
+            uint8_t flags2;
+            char name2[4];
+        } __attribute__((__packed__)) parms_reply;
+        size_t one_volume = sizeof(parms_reply) - 5;
+        memset(&parms_server, 0, sizeof(parms_server));
+        parms_server.using_version = &afp34;
+        memset(&parms_reply, 0, sizeof(parms_reply));
+        parms_reply.numvolumes = 2;
+        memcpy(parms_reply.name1, "\x03one", 4);
+        memcpy(parms_reply.name2, "\x03two", 4);
+        CHECK(afp_getsrvrparms_reply(&parms_server, (char *)&parms_reply,
+                                     sizeof(parms_reply), NULL) == 0);
+        CHECK(parms_server.num_volumes == 2);
+        first = parms_server.volumes;
+        CHECK(first != NULL && strcmp(first[1].volume_name, "two") == 0);
+        parms_reply.numvolumes = 1;
+        first[0].attached = AFP_VOLUME_ATTACHED;
+        CHECK(afp_getsrvrparms_reply(&parms_server, (char *)&parms_reply,
+                                     one_volume, NULL) == 0);
+        CHECK(parms_server.volumes == first && parms_server.num_volumes == 2);
+        first[0].attached = AFP_VOLUME_DETACHED;
+        first[1].mounted = AFP_VOLUME_MOUNTED;
+        CHECK(afp_getsrvrparms_reply(&parms_server, (char *)&parms_reply,
+                                     one_volume, NULL) == 0);
+        CHECK(parms_server.volumes == first && parms_server.num_volumes == 2);
+        first[1].mounted = AFP_VOLUME_UNMOUNTED;
+        CHECK(afp_getsrvrparms_reply(&parms_server, (char *)&parms_reply,
+                                     one_volume, NULL) == 0);
+        CHECK(parms_server.num_volumes == 1);
+        CHECK(strcmp(parms_server.volumes[0].volume_name, "one") == 0);
+        /* A reply cut inside its second volume's name fails; the list stays. */
+        first = parms_server.volumes;
+        parms_reply.numvolumes = 2;
+        CHECK(afp_getsrvrparms_reply(&parms_server, (char *)&parms_reply,
+                                     sizeof(parms_reply) - 2, NULL) == -1);
+        CHECK(parms_server.volumes == first && parms_server.num_volumes == 1);
+        dir_cache_destroy(&parms_server.volumes[0]);
+        free(parms_server.volumes);
+    }
+    {
+        /* A server's volume names stop where their buffer ends. */
+        static struct afp_volume names_volumes[3];
+        struct afp_server names_server;
+        char names[32];
+        char untouched[24];
+        memset(&names_server, 0, sizeof(names_server));
+        memcpy(names_volumes[0].volume_name_printable, "alpha", 6);
+        memcpy(names_volumes[1].volume_name_printable, "beta", 5);
+        memcpy(names_volumes[2].volume_name_printable, "gamma", 6);
+        names_server.volumes = names_volumes;
+        names_server.num_volumes = 3;
+        memset(names, 'x', sizeof(names));
+        memset(untouched, 'x', sizeof(untouched));
+        CHECK(afp_list_volnames(&names_server, names, 8) == 7);
+        CHECK(strcmp(names, "alpha, ") == 0);
+        CHECK(memcmp(names + 8, untouched, sizeof(untouched)) == 0);
+        CHECK(afp_list_volnames(&names_server, names, sizeof(names)) == 18);
+        CHECK(strcmp(names, "alpha, beta, gamma") == 0);
+    }
+    {
+        /* A UTF-8 message, then an empty one into the same buffer, which
+         * keeps nothing of the first. */
+        struct {
+            struct dsi_header header __attribute__((__packed__));
+            uint16_t messagetype;
+            uint16_t messagebitmap;
+            uint16_t length;
+            char text[5];
+        } __attribute__((__packed__)) message_reply;
+        char mesg[AFP_LOGINMESG_LEN];
+        memset(&message_reply, 0, sizeof(message_reply));
+        message_reply.messagebitmap = htons(AFP_GETSRVRMSG_UTF8);
+        message_reply.length = htons(5);
+        memcpy(message_reply.text, "hello", 5);
+        CHECK(afp_getsrvrmsg_reply(NULL, (char *)&message_reply,
+                                   sizeof(message_reply), mesg) == 0);
+        CHECK(strcmp(mesg, "hello") == 0);
+        message_reply.length = 0;
+        CHECK(afp_getsrvrmsg_reply(NULL, (char *)&message_reply,
+                                   sizeof(message_reply), mesg) == 0);
+        CHECK(mesg[0] == '\0');
+    }
+    {
+        /* An FPGetVolParms reply with every parameter: its dates lie two bytes
+         * off a 4-byte boundary, where a trapping build stops at a load. */
+        static const unsigned char parameters[] = {
+            0x0f, 0xff,                     /* the bitmap */
+            0, 1, 0, 2,                     /* attributes, signature */
+            0, 0, 0, 16, 0, 0, 0, 32,       /* created, modified */
+            0, 0, 0, 48, 0, 7,              /* backed up, the volume ID */
+            0, 0, 0x10, 0, 0, 0, 0x20, 0,   /* bytes free and in all */
+            0, 0,                           /* the name's offset */
+            0, 0, 0, 0, 0, 3, 0, 0,         /* bytes free, 64-bit */
+            0, 0, 0, 0, 0, 4, 0, 0,         /* bytes in all, 64-bit */
+            0, 0, 0x10, 0,                  /* the block size */
+        };
+        static uint32_t storage[20];
+        char *volume_reply = (char *) storage;
+        unsigned int volume_size = (unsigned int)(sizeof(struct dsi_header)
+                                                  + sizeof(parameters));
+        struct afp_volume volume;
+        memcpy(volume_reply + sizeof(struct dsi_header), parameters,
+               sizeof(parameters));
+        memset(&volume, 0, sizeof(volume));
+        CHECK(afp_getvolparms_reply(NULL, volume_reply, volume_size,
+                                    &volume) == 0);
+        CHECK(volume.attributes == 1 && volume.signature == 2
+              && volume.volid == 7);
+        CHECK(volume.creation_date == afp_date_to_unix(NULL, htonl(16))
+              && volume.modification_date == afp_date_to_unix(NULL, htonl(32))
+              && volume.backup_date == afp_date_to_unix(NULL, htonl(48)));
+        CHECK(volume.stat.f_bfree == 0x30000 && volume.stat.f_blocks == 0x40000
+              && volume.stat.f_bsize == 4096);
+        /* A reply a byte short of its block size is refused. */
+        CHECK(afp_getvolparms_reply(NULL, volume_reply, volume_size - 1,
+                                    &volume) != 0);
+    }
+    {
+        /* AFP 2's statfs asks for the 32-bit sizes alone, which then lie
+         * two bytes off a 4-byte boundary. */
+        static const unsigned char parameters[] = {
+            0x00, 0xc0,                     /* the bitmap */
+            0, 0x10, 0, 0, 0, 0x20, 0, 0,   /* bytes free and in all */
+        };
+        static uint32_t storage[8];
+        char *volume_reply = (char *) storage;
+        struct afp_volume volume;
+        memcpy(volume_reply + sizeof(struct dsi_header), parameters,
+               sizeof(parameters));
+        memset(&volume, 0, sizeof(volume));
+        CHECK(afp_getvolparms_reply(NULL, volume_reply,
+                                    (unsigned int)(sizeof(struct dsi_header)
+                                                   + sizeof(parameters)),
+                                    &volume) == 0);
+        CHECK(volume.stat.f_bfree == 0x100000
+              && volume.stat.f_blocks == 0x200000);
     }
     return test_tap_finish();
 }

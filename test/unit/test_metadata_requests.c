@@ -25,6 +25,7 @@
 #include "afp_fake_server.h"
 #include "lib/afp_protocol.h"
 #include "lib/client.h"
+#include "lib/forklist.h"
 #include "lib/lowlevel.h"
 #include "lib/mapping.h"
 #include "lib/midlevel.h"
@@ -1661,6 +1662,35 @@ static int utest_open_answered_param_error_fails_with_eio(void)
 }
 
 /*!
+ * @brief A fork's record without a fork leaves the list at its close
+ *
+ * A server that answers an open with fork 0 lists such a record, which its
+ * owner frees once the close returns.
+ *
+ * @param[in] resource  1 for a resource fork's record, 0 for a data fork's
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_forkless_close_unlists_it(int resource)
+{
+    struct afp_fake_server fake;
+    struct afp_file_info fork;
+    int listed;
+    memset(&fake, 0, sizeof(fake));
+
+    if (afp_fake_server_start(&fake) != 0) {
+        return 1;
+    }
+
+    memset(&fork, 0, sizeof(fork));
+    fork.resource = resource ? AFP_META_RESOURCE : 0;
+    add_opened_fork(&fake.volume, &fork);
+    ml_close(&fake.volume, &fork);
+    listed = fake.volume.open_forks != NULL;
+    afp_fake_server_stop(&fake);
+    return listed ? 2 : 0;
+}
+
+/*!
  * @brief A server without a Desktop database has no comment pseudo-files
  *
  * The refusal of FPOpenDT is kept: the second stat and the open send nothing.
@@ -1699,7 +1729,7 @@ static int utest_server_without_a_desktop_has_no_comments(void)
 
     afp_fake_server_stop(&fake);
 
-    for (unsigned int i = 0; i < fake.ncommands && i < 16; i++) {
+    for (unsigned int i = 0; i < fake.ncommands; i++) {
         opens += fake.commands[i] == afpOpenDT;
     }
 
@@ -1737,7 +1767,7 @@ static int utest_directory_owner_change(const char *machine_type)
     rc = ml_chown(&fake.volume, "/dir", 1001, (gid_t) -1);
     afp_fake_server_stop(&fake);
 
-    for (unsigned int i = 0; i < fake.ncommands && i < 16; i++) {
+    for (unsigned int i = 0; i < fake.ncommands; i++) {
         dir_sets += fake.commands[i] == afpSetDirParms;
         file_sets += fake.commands[i] == afpSetFileDirParms;
     }
@@ -1783,7 +1813,7 @@ static int utest_directory_owner_and_group_change_in_one_request(void)
         return 2;
     }
 
-    for (unsigned int i = 0; i < fake.ncommands && i < 16; i++) {
+    for (unsigned int i = 0; i < fake.ncommands; i++) {
         dir_sets += fake.commands[i] == afpSetDirParms;
     }
 
@@ -1812,7 +1842,7 @@ static int utest_created_mode_on_another_server_reads_the_ids(void)
     ml_set_created_mode(&fake.volume, "/file", 0600);
     afp_fake_server_stop(&fake);
 
-    for (unsigned int i = 0; i < fake.ncommands && i < 16; i++) {
+    for (unsigned int i = 0; i < fake.ncommands; i++) {
         reads += fake.commands[i] == afpGetFileDirParms;
     }
 
@@ -2002,6 +2032,11 @@ int main(int argc, char **argv)
              "Finder information that makes a file a symlink sends no time");
     TEST_int(utest_open_answered_param_error_fails_with_eio(), 0,
              "an open the server answers with kFPParamErr fails with EIO");
+    TEST_int(utest_forkless_close_unlists_it(0), 0,
+             "a data fork's record without a fork leaves the list at its close");
+    TEST_int(utest_forkless_close_unlists_it(1), 0,
+             "a resource fork's record without a fork leaves the list at its "
+             "close");
     TEST_int(utest_server_without_a_desktop_has_no_comments(), 0,
              "a server without a Desktop database has no comment pseudo-files");
     TEST_int(utest_directory_owner_change("Netatalk4.2.3"), 0,

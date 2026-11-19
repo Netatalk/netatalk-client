@@ -18,6 +18,47 @@ test(
     verbose: true,
 )
 
+connect_test = executable(
+    'test_connect',
+    sources: files(
+        'afp_fake_server.c',
+        'test_connect.c',
+    ),
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'server connect and status',
+    connect_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+reconnect_test = executable(
+    'test_reconnect',
+    sources: files(
+        'afp_fake_server.c',
+        'test_reconnect.c',
+    ),
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'reconnect into the session',
+    reconnect_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    timeout: 90,
+    verbose: true,
+)
+
 copy_range_test = executable(
     'test_copy_range',
     sources: files(
@@ -113,6 +154,26 @@ transport_api_test = executable(
 )
 
 test('stateful transport public API', transport_api_test)
+
+transport_wait_test = executable(
+    'test_transport_wait',
+    sources: files(
+        'afp_fake_server.c',
+        'test_transport_wait.c',
+    ),
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: cflags,
+)
+
+test(
+    'a raw command waits as its timeout says',
+    transport_wait_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
 
 daemon_socket_test = executable(
     'test_daemon_socket',
@@ -231,13 +292,24 @@ test(
     verbose: true,
 )
 
+# A misaligned load or store, or a null a declaration forbids, traps with no
+# runtime to link; the tests check more, so they build without the flags too.
+trap_args = [
+    '-fsanitize=alignment,nonnull-attribute',
+    '-fsanitize-undefined-trap-on-error',
+]
+traps = cc.has_multi_arguments(trap_args)
+
 protocol_replies_test = executable(
     'test_protocol_replies',
-    sources: ['test_protocol_replies.c'],
+    sources: files(
+        '../../lib/proto_volume.c',
+        'test_protocol_replies.c',
+    ),
     include_directories: incdir,
     link_with: libafpclient,
     dependencies: root_dependencies,
-    c_args: cflags,
+    c_args: traps ? cflags + trap_args : cflags,
 )
 
 test(
@@ -260,6 +332,50 @@ filename_validation_test = executable(
 test(
     'AFP filename validation',
     filename_validation_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+write_frames_test = executable(
+    'test_write_frames',
+    sources: files(
+        '../../lib/proto_attr.c',
+        '../../lib/proto_files.c',
+        '../../lib/proto_login.c',
+        '../../lib/proto_server.c',
+        'test_write_frames.c',
+    ),
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: traps ? cflags + trap_args : cflags,
+)
+
+test(
+    'a command hands the send its frame',
+    write_frames_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+unaligned_lengths_test = executable(
+    'test_unaligned_lengths',
+    sources: files(
+        '../../lib/dsi.c',
+        '../../lib/utils.c',
+        'test_unaligned_lengths.c',
+    ),
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: [root_dependencies, pthread_dep],
+    c_args: traps ? cflags + trap_args : cflags,
+)
+
+test(
+    'a length is read and written at any alignment',
+    unaligned_lengths_test,
     args: ['--tap'],
     protocol: 'tap',
     verbose: true,
@@ -401,6 +517,7 @@ test(
     dsi_recv_test,
     args: ['--tap'],
     protocol: 'tap',
+    timeout: 60,
     verbose: true,
 )
 

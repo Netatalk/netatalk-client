@@ -9,6 +9,11 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief How a volume maps the server's user and group IDs to the client's
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <pwd.h>
@@ -68,9 +73,19 @@ int translate_uidgid_to_client(struct afp_volume * volume,
     return 0;
 }
 
+/*!
+ * @brief Find how a volume maps the server's user and group IDs
+ *
+ * A mapping already set stays. Otherwise the IDs are common when the volume
+ * has network IDs and UNIX privileges, and the server knows the user by the
+ * local ID and name; the login's IDs stand for the server's when not.
+ *
+ * @param[in,out] volume  the volume, whose mapping is set
+ * @returns 0
+ */
 int afp_detect_mapping(struct afp_volume * volume)
 {
-    char name[255];
+    char name[AFPC_MAX_NAME_BYTES];
     struct passwd * passwd_entry;
     unsigned int dummy;
     unsigned int tmpgid;
@@ -88,6 +103,15 @@ int afp_detect_mapping(struct afp_volume * volume)
         volume->mapping = AFP_MAPPING_LOGINIDS;
         log_for_client(NULL, AFPFSD, LOG_DEBUG,
                        "Volume has kNoNetworkUserIDs set, forcing LOGINIDS mapping");
+        return 0;
+    }
+
+    /* A volume without UNIX privileges gives a file no owner, which the
+     * common mapping would show as root's. */
+    if (!(volume->extra_flags & VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX)) {
+        volume->mapping = AFP_MAPPING_LOGINIDS;
+        log_for_client(NULL, AFPFSD, LOG_DEBUG,
+                       "Volume has no UNIX privileges, keeping LOGINIDS");
         return 0;
     }
 
@@ -127,19 +151,22 @@ int afp_detect_mapping(struct afp_volume * volume)
                    "UID comparison: server=%u, client=%u",
                    volume->server->server_uid, passwd_entry->pw_uid);
 
-    if (volume->server->server_uid != passwd_entry->pw_uid) {
+    /* A user the passwd database lacks has no name to match. */
+    if (volume->server->server_uid != passwd_entry->pw_uid
+            || passwd_entry->pw_name[0] == '\0') {
         return 0;
     }
 
-    /* 4. send an FPMapID to get the user's username. */
-    afp_mapid(volume->server,
-              (volume->attributes & kSupportsUTF8Names)
-              ? kUserIDToUTF8Name : kUserIDToName,
-              passwd_entry->pw_uid, name);
+    /* An answer can come without the parser filling the name. */
+    name[0] = '\0';
 
-    /* 5. If they match, we're in AFP_MAPPING_COMMON mode. */
-
-    if (strcmp(name, passwd_entry->pw_name) == 0) {
+    /* 4. Send an FPMapID for the user's name. 5. The IDs are common when it
+     * answers with the local name. */
+    if (afp_mapid(volume->server,
+                  (volume->attributes & kSupportsUTF8Names)
+                  ? kUserIDToUTF8Name : kUserIDToName,
+                  passwd_entry->pw_uid, name) == 0
+            && strcmp(name, passwd_entry->pw_name) == 0) {
         volume->mapping = AFP_MAPPING_COMMON;
     }
 

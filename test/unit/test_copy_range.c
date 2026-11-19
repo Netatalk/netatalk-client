@@ -129,6 +129,7 @@ int main(int argc, char **argv)
     fake.data_length = SOURCE_DATA;
     CHECK(afp_fake_server_start(&fake) == 0);
     fake.server->server_type = AFPC_SERVER_TYPE_NETATALK;
+    fake.server->flags = kSupportsCopyfile;
     CHECK(ml_open(&fake.volume, "/source", O_RDONLY, &in) == 0);
     ll_set_thread_deny_write(1);
     CHECK(ml_open(&fake.volume, "/target", O_WRONLY | O_CREAT, &out) == 0);
@@ -150,5 +151,79 @@ int main(int argc, char **argv)
     CHECK(count_commands(&fake, afpCopyFile) == 1);
     CHECK(count_commands(&fake, afpOpenFork) == 3);
     CHECK(afp_fake_server_open_access(&fake) & AFP_OPENFORK_DENYWRITE);
+    /* On a volume with Unix privileges, a source its owner cannot write goes
+     * through the client on an Apple server, whose copy may keep that mode,
+     * and copies on Netatalk's. */
+    static const struct {
+        enum afpc_server_type type;
+        unsigned int copies;
+    } modes[] = {
+        { AFPC_SERVER_TYPE_MACINTOSH, 0 },
+        { AFPC_SERVER_TYPE_NETATALK, 1 },
+    };
+
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        in = NULL;
+        out = NULL;
+        memset(&fake, 0, sizeof(fake));
+        fake.file_params = 1;
+        fake.params_cnid = 7;
+        fake.params_mode = 0100444;
+        fake.params_access = kUserIsOwner | kUserCanRead | kUserCanWrite;
+        fake.data_length = SOURCE_DATA;
+        CHECK(afp_fake_server_start(&fake) == 0);
+        fake.server->server_type = modes[i].type;
+        fake.server->flags = kSupportsCopyfile;
+        fake.volume.extra_flags |= VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX;
+        CHECK(ml_open(&fake.volume, "/source", O_RDONLY, &in) == 0);
+        CHECK(ml_open(&fake.volume, "/target", O_WRONLY | O_CREAT, &out) == 0);
+        fake.params_empty = (uint16_t)(1U << (fake.params_answers + 1));
+
+        if (in && out) {
+            out->size = 0;
+            (void) ml_copy_range_within(&fake.volume, in, 0, out, 0,
+                                        SOURCE_DATA, SIZE_MAX);
+        }
+
+        close_fork(&fake, in);
+        close_fork(&fake, out);
+        afp_fake_server_stop(&fake);
+        CHECK(count_commands(&fake, afpCopyFile) == modes[i].copies);
+    }
+
+    /* A copy whose reopen the server refuses, as Netatalk 2 refuses one that
+     * kept a read-only source's mode, goes: a new file takes its name, and
+     * the client copies into it. */
+    in = NULL;
+    out = NULL;
+    memset(&fake, 0, sizeof(fake));
+    fake.file_params = 1;
+    fake.params_cnid = 7;
+    fake.read_file = 1;
+    fake.data_length = SOURCE_DATA;
+    fake.refuse = afpOpenFork;
+    fake.refusal = kFPLockErr;
+    fake.refuse_skip = 2;
+    CHECK(afp_fake_server_start(&fake) == 0);
+    fake.server->quantum = 1024;
+    fake.server->server_type = AFPC_SERVER_TYPE_NETATALK;
+    fake.server->flags = kSupportsCopyfile;
+    CHECK(ml_open(&fake.volume, "/source", O_RDONLY, &in) == 0);
+    CHECK(ml_open(&fake.volume, "/target", O_WRONLY | O_CREAT, &out) == 0);
+    fake.params_empty = (uint16_t)(1U << (fake.params_answers + 1));
+
+    if (in && out) {
+        out->size = 0;
+        CHECK(ml_copy_range_within(&fake.volume, in, 0, out, 0, SOURCE_DATA,
+                                   SIZE_MAX) > 0);
+        CHECK(out->forkid != 0);
+    }
+
+    close_fork(&fake, in);
+    close_fork(&fake, out);
+    afp_fake_server_stop(&fake);
+    CHECK(count_commands(&fake, afpCopyFile) == 1);
+    CHECK(count_commands(&fake, afpDelete) == 2);
+    CHECK(count_commands(&fake, afpOpenFork) == 4);
     return test_tap_finish();
 }

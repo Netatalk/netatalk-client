@@ -30,6 +30,7 @@
 #include <getopt.h>
 #include <grp.h>
 #include <libgen.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,8 +69,16 @@ static int changegid = 0;
 static char *thisbin;
 static int client_log_min_rank = 2; /* Default to LOG_NOTICE */
 static int list_volumes_only = 0;
+static int foreground_mount = 0;
+/* The foreground mount's daemon, or 0, and how many end signals afpc took */
+static volatile sig_atomic_t foreground_child = 0;
+static volatile sig_atomic_t foreground_stops = 0;
+static char foreground_mountpoint[AFPFSD_IPC_MOUNTPOINT_LEN];
+static char foreground_socket[PATH_MAX];
 
 static int wait_readable(int sock);
+static int send_command(int sock, char *msg, int len);
+static int read_response(int sock);
 
 /* struct afpc_url owns path storage, but the FUSE mount request is written
  * verbatim to another process.  A mount never consumes a URL subdirectory,
@@ -88,26 +97,25 @@ static void clear_outgoing_mount_url_path(void)
     afpc_path_clear(&request->url.path);
 }
 
-/* Log handler that filters by log level */
-static void client_log_for_client(void *priv _U_,
-                                  enum logtypes logtype _U_,
-                                  int loglevel, const char *message)
+/*!
+ * @brief Test whether afpc prints a message at a level
+ *
+ * @param[in] priv      unused
+ * @param[in] loglevel  the message's level
+ * @returns 1 for a level at or above afpc's, 0 otherwise
+ */
+static int client_log_enabled(void *priv _U_, int loglevel)
 {
-    int type_rank = loglevel_to_rank(loglevel);
-
-    if (type_rank < client_log_min_rank) {
-        return; /* Filter out less-verbose messages */
-    }
-
-    printf("%s\n", message);
+    return loglevel_to_rank(loglevel) >= client_log_min_rank;
 }
 
 static struct libafpclient client = {
     .unmount_volume = NULL,
-    .log_for_client = client_log_for_client,
+    .log_for_client = stdout_log_for_client,
     .forced_ending_hook = NULL,
     .scan_extra_fds = NULL,
     .loop_started = NULL,
+    .log_enabled = client_log_enabled,
 };
 
 /* Forward declaration for get_daemon_filename */
@@ -126,6 +134,70 @@ static void sigchld_handler(int sig)
     }
 }
 
+/*!
+ * @brief Exec afpfsd in this process
+ *
+ * @param[in] argv  afpfsd's arguments, its name first
+ */
+static _Noreturn void exec_afpfsd(char *argv[])
+{
+    char filename[PATH_MAX];
+    snprintf(filename, PATH_MAX, AFPFSD_FILENAME);
+
+    if (getenv("PATH") == NULL) {
+        /* mount runs afpc without a PATH. */
+        snprintf(filename, PATH_MAX,
+                 "/usr/local/bin/%s", AFPFSD_FILENAME);
+
+        if (access(filename, X_OK)) {
+            snprintf(filename, sizeof(filename), "/usr/bin/%s",
+                     AFPFSD_FILENAME);
+            filename[sizeof(filename) - 1] = 0;
+
+            if (access(filename, X_OK)) {
+                fprintf(stderr, "Could not find server (%s)\n",
+                        filename);
+                _exit(1);
+            }
+        }
+    }
+
+    if (execvp(filename, argv)) {
+        if (errno == ENOENT) {
+            /* Try the directory containing afpc. */
+            char newpath[PATH_MAX];
+            char binary_path[PATH_MAX];
+            char *directory;
+
+            if (strlcpy(binary_path, thisbin, sizeof(binary_path))
+                    >= sizeof(binary_path)) {
+                perror("Starting up afpfsd");
+                _exit(1);
+            }
+
+            directory = dirname(binary_path);
+            snprintf(newpath, sizeof(newpath), "%s/%s", directory,
+                     AFPFSD_FILENAME);
+
+            if (execvp(newpath, argv)) {
+                perror("Starting up afpfsd");
+                _exit(1);
+            }
+        } else {
+            perror("Starting up afpfsd");
+            _exit(1);
+        }
+    }
+
+    /* execvp never returns on success */
+    _exit(1);
+}
+
+/*!
+ * @brief Start the manager, which goes into the background as it starts
+ *
+ * @returns 0
+ */
 static int start_manager_daemon(void)
 {
     char *argv[4];
@@ -142,8 +214,6 @@ static int start_manager_daemon(void)
     sigaction(SIGCHLD, &sa, &old_sa);
 
     if (fork() == 0) {
-        char filename[PATH_MAX];
-
         if (changegid) {
             if (setegid(gid)) {
                 perror("Changing gid");
@@ -158,57 +228,7 @@ static int start_manager_daemon(void)
             }
         }
 
-        snprintf(filename, PATH_MAX, AFPFSD_FILENAME);
-
-        if (getenv("PATH") == NULL) {
-            /* If we don't have an PATH set, it is probably
-               becaue we are being called from mount,
-               so go search for it */
-            snprintf(filename, PATH_MAX,
-                     "/usr/local/bin/%s", AFPFSD_FILENAME);
-
-            if (access(filename, X_OK)) {
-                snprintf(filename, sizeof(filename), "/usr/bin/%s",
-                         AFPFSD_FILENAME);
-                filename[sizeof(filename) - 1] = 0;
-
-                if (access(filename, X_OK)) {
-                    fprintf(stderr, "Could not find server (%s)\n",
-                            filename);
-                    _exit(1);
-                }
-            }
-        }
-
-        if (execvp(filename, argv)) {
-            if (errno == ENOENT) {
-                /* Try the directory containing afpc. */
-                char newpath[PATH_MAX];
-                char binary_path[PATH_MAX];
-                char *directory;
-
-                if (strlcpy(binary_path, thisbin, sizeof(binary_path))
-                        >= sizeof(binary_path)) {
-                    perror("Starting up afpfsd manager");
-                    _exit(1);
-                }
-
-                directory = dirname(binary_path);
-                snprintf(newpath, sizeof(newpath), "%s/%s", directory,
-                         AFPFSD_FILENAME);
-
-                if (execvp(newpath, argv)) {
-                    perror("Starting up afpfsd manager");
-                    _exit(1);
-                }
-            } else {
-                perror("Starting up afpfsd manager");
-                _exit(1);
-            }
-        }
-
-        /* execvp never returns on success */
-        _exit(1);
+        exec_afpfsd(argv);
     }
 
     /* Restore old signal handler */
@@ -216,59 +236,113 @@ static int start_manager_daemon(void)
     return 0;
 }
 
-static int start_afpfsd(const char *mountpoint, const char *volumename)
+/* A daemon or manager not listening within the limit failed to start. */
+#define CONNECT_RETRY_MS 20
+#define CONNECT_RETRY_LIMIT_MS 2000
+
+/*!
+ * @brief Connect to the socket of a daemon
+ *
+ * @param[in] path  the socket
+ * @returns the connected socket, or -1 with errno set
+ */
+static int connect_socket(const char *path)
 {
-    int sock;
     struct sockaddr_un servaddr;
-    char manager_socket[PATH_MAX];
-    char mount_socket[PATH_MAX];
-    struct afpfsd_ipc_spawn_mount_request req;
-    unsigned char command = AFPFSD_IPC_COMMAND_SPAWN_MOUNT;
-    unsigned char result;
-    /* Get manager socket name (NULL = shared socket) */
-    get_daemon_filename(manager_socket, sizeof(manager_socket), NULL);
-    /* Get mount-specific socket name */
-    get_daemon_filename(mount_socket, sizeof(mount_socket), mountpoint);
-
-    /* Try to connect to manager daemon */
-    if ((sock = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
-        perror("Could not create socket");
-        return -1;
-    }
-
+    int sock;
+    int error;
     memset(&servaddr, 0, sizeof(servaddr));
     servaddr.sun_family = AF_UNIX;
 
-    if (strlcpy(servaddr.sun_path, manager_socket,
-                sizeof(servaddr.sun_path)) >= sizeof(servaddr.sun_path)) {
-        close(sock);
-        fprintf(stderr, "Manager socket path too long\n");
+    if (strlcpy(servaddr.sun_path, path, sizeof(servaddr.sun_path))
+            >= sizeof(servaddr.sun_path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    if ((sock = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
         return -1;
     }
 
     if (connect(sock, (struct sockaddr *)&servaddr,
                 sizeof(servaddr.sun_family) + sizeof(servaddr.sun_path)) < 0) {
-        /* Manager not running, start it */
+        error = errno;
         close(sock);
+        errno = error;
+        return -1;
+    }
 
-        if (start_manager_daemon() != 0) {
-            return -1;
-        }
+    return sock;
+}
 
-        /* Wait for manager to start */
-        sleep(1);
+/*!
+ * @brief Connect to the socket of a daemon that is starting
+ *
+ * @param[in] path  the socket
+ * @returns the connected socket, or -1 with errno set when the daemon does
+ *          not listen within CONNECT_RETRY_LIMIT_MS
+ */
+static int connect_starting_socket(const char *path)
+{
+    const struct timespec step = { 0, CONNECT_RETRY_MS * 1000000L };
+    int sock = connect_socket(path);
 
-        /* Reconnect to manager */
-        if ((sock = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
-            return -1;
-        }
+    for (int waited = 0; sock < 0 && waited < CONNECT_RETRY_LIMIT_MS;
+            waited += CONNECT_RETRY_MS) {
+        nanosleep(&step, NULL);
+        sock = connect_socket(path);
+    }
 
-        if (connect(sock, (struct sockaddr *)&servaddr,
-                    sizeof(servaddr.sun_family) + sizeof(servaddr.sun_path)) < 0) {
-            close(sock);
-            perror("Could not connect to manager daemon");
-            return -1;
-        }
+    return sock;
+}
+
+/*!
+ * @brief Connect to the manager, starting it when none listens
+ *
+ * @returns the connected socket, or -1
+ */
+static int manager_connect(void)
+{
+    char manager_socket[PATH_MAX];
+    int sock;
+    get_daemon_filename(manager_socket, sizeof(manager_socket), NULL);
+
+    if ((sock = connect_socket(manager_socket)) >= 0) {
+        return sock;
+    }
+
+    if (start_manager_daemon() != 0) {
+        return -1;
+    }
+
+    if ((sock = connect_starting_socket(manager_socket)) < 0) {
+        perror("Could not connect to manager daemon");
+    }
+
+    return sock;
+}
+
+/*!
+ * @brief Ask the manager to start the daemon of a mount point
+ *
+ * The manager starts none when one already serves the mount point.
+ *
+ * @param[in] mountpoint  the mount point
+ * @param[in] volumename  the volume the mount names, or NULL
+ * @returns 0 once the manager has answered yes, or -1
+ */
+static int start_afpfsd(const char *mountpoint, const char *volumename)
+{
+    int sock;
+    char mount_socket[PATH_MAX];
+    struct afpfsd_ipc_spawn_mount_request req;
+    unsigned char command = AFPFSD_IPC_COMMAND_SPAWN_MOUNT;
+    unsigned char result;
+    /* Get mount-specific socket name */
+    get_daemon_filename(mount_socket, sizeof(mount_socket), mountpoint);
+
+    if ((sock = manager_connect()) < 0) {
+        return -1;
     }
 
     /* Send spawn mount request */
@@ -326,57 +400,294 @@ static void get_daemon_filename(char *filename, size_t size,
     }
 }
 
-static int daemon_connect(const char *mountpoint, const char *volumename)
+/*!
+ * @brief Connect to the daemon a command goes to
+ *
+ * With no daemon listening at the mount point, a mount has the manager start
+ * one, and another command goes to the manager, where an unmount releases a
+ * dead mount.
+ *
+ * @param[in] mountpoint  the mount point, or NULL
+ * @param[in] volumename  the volume a mount names, or NULL
+ * @param[in] command     the command byte
+ * @returns the connected socket, or -1
+ */
+static int daemon_connect(const char *mountpoint, const char *volumename,
+                          unsigned char command)
 {
-    int sock;
-    struct sockaddr_un servaddr;
     char filename[PATH_MAX];
-    unsigned char trying = 2;
+    int sock;
 
-    if ((sock = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
-        perror("Could not create socket\n");
-        return -1;
+    if (mountpoint == NULL) {
+        return manager_connect();
     }
 
-    memset(&servaddr, 0, sizeof(servaddr));
-    servaddr.sun_family = AF_UNIX;
     get_daemon_filename(filename, sizeof(filename), mountpoint);
 
-    if (strlcpy(servaddr.sun_path, filename,
-                sizeof(servaddr.sun_path)) >= sizeof(servaddr.sun_path)) {
-        close(sock);
-        fprintf(stderr, "Socket path too long\n");
+    if ((sock = connect_socket(filename)) >= 0) {
+        return sock;
+    }
+
+    if (command != AFPFSD_IPC_COMMAND_MOUNT) {
+        return manager_connect();
+    }
+
+    if (start_afpfsd(mountpoint, volumename) != 0) {
+        perror("Error in starting up afpfsd");
         return -1;
     }
 
-    while (trying) {
-        if ((connect(sock, (struct sockaddr *) &servaddr,
-                     sizeof(servaddr.sun_family) +
-                     sizeof(servaddr.sun_path))) >= 0) {
-            goto done;
-        }
-
-        if (start_afpfsd(mountpoint, volumename) != 0) {
-            perror("Error in starting up afpfsd\n");
-            goto error;
-        }
-
-        if ((connect(sock, (struct sockaddr *) &servaddr,
-                     sizeof(servaddr.sun_family) +
-                     sizeof(servaddr.sun_path))) >= 0) {
-            goto done;
-        }
-
-        sleep(1);
-        trying--;
+    if ((sock = connect_starting_socket(filename)) < 0) {
+        perror("Trying to startup afpfsd");
     }
 
-error:
-    perror("Trying to startup afpfsd");
-    close(sock);
-    return -1;
-done:
     return sock;
+}
+
+/*!
+ * @brief Take a signal that ends a mount in the foreground
+ *
+ * wait_foreground_daemon() acts on the first, asking the daemon to unmount.
+ *
+ * @param[in] sig  the signal, SIGINT, SIGQUIT, SIGTERM or SIGHUP
+ */
+static void stop_foreground(int sig)
+{
+    /* One hangup brings SIGHUP twice, from the shell and from the kernel as
+     * the session leader exits, so a SIGHUP only asks for the unmount. */
+    if (sig == SIGHUP && foreground_stops > 0) {
+        return;
+    }
+
+    if (++foreground_stops > 1 && foreground_child > 0) {
+        kill((pid_t) foreground_child, SIGTERM);
+    }
+}
+
+/*!
+ * @brief Take SIGCHLD, which wakes the wait for a daemon in the foreground
+ *
+ * @param[in] sig  the signal
+ */
+static void wake_for_child(int sig _U_)
+{
+    /* The wait reaps the daemon itself. */
+}
+
+/*!
+ * @brief Wait for a foreground daemon's byte on its ready pipe
+ *
+ * @param[in] fd  the pipe's read end
+ * @returns 1 once the daemon listens, 0 when it ended without listening or
+ *          did not listen within CONNECT_RETRY_LIMIT_MS
+ */
+static int daemon_listens(int fd)
+{
+    struct pollfd pfd = { fd, POLLIN, 0 };
+    char byte;
+    int ret;
+
+    do {
+        ret = poll(&pfd, 1, CONNECT_RETRY_LIMIT_MS);
+    } while (ret < 0 && errno == EINTR);
+
+    return ret > 0 && read(fd, &byte, 1) == 1;
+}
+
+/*!
+ * @brief Start a mount point's daemon as a child of afpc and connect to it
+ *
+ * The daemon inherits afpc's descriptors, the one a /dev/fd/N mount point
+ * names among them, and logs where afpc writes.
+ *
+ * @param[in] mountpoint  the mount point
+ * @returns the connected socket, or -1 once any daemon it started has ended
+ */
+static int start_foreground_daemon(const char *mountpoint)
+{
+    char ready_arg[12];
+    char *argv[] = { AFPFSD_FILENAME, "--socket-id", foreground_socket,
+                     "--foreground", "--ready-fd", ready_arg, NULL
+                   };
+    static const int stops[] = { SIGINT, SIGQUIT, SIGTERM, SIGHUP };
+    struct sigaction sa;
+    int ready[2];
+    pid_t pid;
+    int sock;
+    get_daemon_filename(foreground_socket, sizeof(foreground_socket),
+                        mountpoint);
+    snprintf(foreground_mountpoint, sizeof(foreground_mountpoint), "%s",
+             mountpoint);
+
+    if ((sock = connect_socket(foreground_socket)) >= 0) {
+        close(sock);
+        fprintf(stderr, "A daemon already serves %s\n", mountpoint);
+        return -1;
+    }
+
+    if (pipe(ready) != 0) {
+        perror("Starting up afpfsd");
+        return -1;
+    }
+
+    snprintf(ready_arg, sizeof(ready_arg), "%d", ready[1]);
+    /* SIGCHLD inherited as ignored would reap the daemon before the wait. */
+    memset(&sa, 0, sizeof(sa));
+    sigemptyset(&sa.sa_mask);
+    sa.sa_handler = wake_for_child;
+    sigaction(SIGCHLD, &sa, NULL);
+
+    if ((pid = fork()) < 0) {
+        perror("Starting up afpfsd");
+        close(ready[0]);
+        close(ready[1]);
+        return -1;
+    }
+
+    if (pid == 0) {
+        close(ready[0]);
+        /* No terminal's or job's signal reaches a session of its own. */
+        setsid();
+        exec_afpfsd(argv);
+    }
+
+    close(ready[1]);
+    foreground_child = pid;
+    sa.sa_handler = stop_foreground;
+    sigaddset(&sa.sa_mask, SIGINT);
+    sigaddset(&sa.sa_mask, SIGQUIT);
+    sigaddset(&sa.sa_mask, SIGTERM);
+    sigaddset(&sa.sa_mask, SIGHUP);
+
+    for (size_t i = 0; i < sizeof(stops) / sizeof(stops[0]); i++) {
+        struct sigaction old;
+
+        /* What nohup or a shell's background command ignores stays ignored. */
+        if (sigaction(stops[i], NULL, &old) != 0
+                || old.sa_handler != SIG_IGN) {
+            sigaction(stops[i], &sa, NULL);
+        }
+    }
+
+    /* A child that lost the mount point's socket to another daemon ends
+     * without the byte, and that other daemon must not take this mount. */
+    if (!daemon_listens(ready[0])) {
+        close(ready[0]);
+        fprintf(stderr, "The daemon of %s did not start\n", mountpoint);
+        kill(pid, SIGTERM);
+        waitpid(pid, NULL, 0);
+        return -1;
+    }
+
+    close(ready[0]);
+
+    if ((sock = connect_starting_socket(foreground_socket)) < 0) {
+        perror("Trying to startup afpfsd");
+        kill(pid, SIGTERM);
+        waitpid(pid, NULL, 0);
+    }
+
+    return sock;
+}
+
+/*!
+ * @brief Ask the daemon of a mount in the foreground to unmount it
+ *
+ * The daemon unmounts as at afpc fs unmount; with libfuse 3 outside macOS
+ * it logs out and ends with its last server.
+ *
+ * @returns 1 once the daemon has unmounted, 0 when it has not
+ */
+static int unmount_foreground(void)
+{
+    struct afpfsd_ipc_unmount_request request;
+    char command[1 + sizeof(request)];
+    int unmounted = 0;
+    int sock = connect_socket(foreground_socket);
+
+    if (sock < 0) {
+        return 0;
+    }
+
+    memset(&request, 0, sizeof(request));
+    snprintf(request.mountpoint, sizeof(request.mountpoint), "%s",
+             foreground_mountpoint);
+    command[0] = AFPFSD_IPC_COMMAND_UNMOUNT;
+    memcpy(command + 1, &request, sizeof(request));
+
+    if (send_command(sock, command, (int) sizeof(command)) == 0) {
+        unmounted = read_response(sock) == AFPFSD_IPC_RESULT_OK;
+    }
+
+    close(sock);
+    return unmounted;
+}
+
+/*!
+ * @brief Wait for the daemon of a mount in the foreground to end
+ *
+ * The daemon ends with its mount, which afpc's first end signal unmounts with
+ * libfuse 3 outside macOS. Signals are held until the wait, so none is lost.
+ *
+ * @param[in] result  the mount's result
+ * @returns the mount's result when it failed, else 0 for a daemon that
+ *          exited with status 0, or 1
+ */
+static int wait_foreground_daemon(int result)
+{
+    pid_t pid = (pid_t) foreground_child;
+    sigset_t held;
+    sigset_t waiting;
+    pid_t ended;
+    int asked = 0;
+    int status = 0;
+
+    if (result != 0) {
+        kill(pid, SIGTERM);
+    }
+
+    sigemptyset(&held);
+    sigaddset(&held, SIGCHLD);
+    sigaddset(&held, SIGINT);
+    sigaddset(&held, SIGQUIT);
+    sigaddset(&held, SIGTERM);
+    sigaddset(&held, SIGHUP);
+    /* The wait takes these even if afpc started with them blocked. */
+    sigprocmask(SIG_UNBLOCK, &held, NULL);
+    sigprocmask(SIG_BLOCK, &held, &waiting);
+
+    while ((ended = waitpid(pid, &status, WNOHANG)) == 0) {
+        if (result == 0 && foreground_stops > 0 && !asked) {
+            /* A second signal during the unmount ends the daemon at once,
+             * a SIGHUP excepted. */
+            sigprocmask(SIG_SETMASK, &waiting, NULL);
+            asked = unmount_foreground();
+#if !defined(__APPLE__) && FUSE_USE_VERSION >= 30
+
+            /* A start still pending refuses the unmount, which goes again. */
+            if (!asked) {
+                sleep(1);
+            }
+
+#else
+            /* The daemon cannot unmount; its refusal points to umount(8). */
+            asked = 1;
+#endif
+            sigprocmask(SIG_BLOCK, &held, NULL);
+            continue;
+        }
+
+        sigsuspend(&waiting);
+    }
+
+    sigprocmask(SIG_SETMASK, &waiting, NULL);
+
+    if (result != 0) {
+        return result;
+    }
+
+    return ended == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0
+           ? 0 : 1;
 }
 
 
@@ -408,6 +719,9 @@ static void usage(void)
         "         -F, --flush-on-close       : flush a written file at its last close\n"
         "             --locking <yes|no>     : refuse a second open for\n"
         "                                      writing (default no)\n"
+        "             --foreground           : keep the mount's daemon under\n"
+        "                                      afpc until the mount ends; the\n"
+        "                                      mount point may be /dev/fd/N\n"
         "\n"
         "    unmount <mountpoint> : unmount the specified mountpoint\n"
         "    status [mountpoint]  : get status of the AFP daemon;\n"
@@ -512,46 +826,75 @@ static int do_exit(int argc _U_, char **argv _U_)
     return 0;
 }
 
-/* Resolve mountpoint to absolute path */
+/*!
+ * @brief Resolve a mount point to the one path its daemon is known by
+ *
+ * Only the parent is resolved, so a dead or hung mount at the mount point is
+ * not looked at; a name that is a symbolic link, . or .. is resolved whole.
+ *
+ * @param[in]  path      the mount point as given
+ * @param[out] resolved  receives the absolute mount point
+ * @param[in]  size      bytes of resolved
+ * @returns 0, or -1 for a path that does not fit or a working directory
+ *          that cannot be read
+ */
 static int resolve_mountpoint(const char *path, char *resolved, size_t size)
 {
-    char *result;
-
-    /* If already absolute, just copy it */
-    if (path[0] == '/') {
-        snprintf(resolved, size, "%s", path);
-        return 0;
-    }
-
-    /* Resolve relative path */
-    result = realpath(path, NULL);
-
-    if (result) {
-        snprintf(resolved, size, "%s", result);
-        free(result);
-        return 0;
-    }
-
-    /* realpath failed - path might not exist yet, build absolute path manually */
+    char clean[PATH_MAX];
     char cwd[PATH_MAX];
+    char link;
+    char *real = NULL;
+    char *name;
+    const char *tail = NULL;
+    size_t len;
+    int ret;
 
-    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+    if (path[0] == '/') {
+        len = (size_t) snprintf(clean, sizeof(clean), "%s", path);
+    } else if (getcwd(cwd, sizeof(cwd)) != NULL) {
+        len = (size_t) snprintf(clean, sizeof(clean), "%s/%s", cwd, path);
+    } else {
         perror("getcwd");
         return -1;
     }
 
-    /* Check if combined path fits in buffer */
-    size_t needed = strlen(cwd) + 1 + strlen(path) + 1;
-
-    if (needed > size) {
+    if (len >= sizeof(clean)) {
         fprintf(stderr, "Mountpoint path too long\n");
         return -1;
     }
 
-    int ret = snprintf(resolved, size, "%s/%s", cwd, path);
+    while (len > 1 && clean[len - 1] == '/') {
+        clean[--len] = '\0';
+    }
 
-    if (ret < 0 || (size_t)ret >= size) {
-        fprintf(stderr, "Mountpoint path formatting error\n");
+    name = strrchr(clean, '/') + 1;
+
+    /* A descriptor's /dev/fd/N names the descriptor, not a directory. */
+    if (strncmp(clean, "/dev/fd/", 8) != 0) {
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0
+                || readlink(clean, &link, 1) >= 0) {
+            real = realpath(clean, NULL);
+        } else if (name - clean > 1) {
+            name[-1] = '\0';
+            real = realpath(clean, NULL);
+            name[-1] = '/';
+            tail = name;
+        }
+    }
+
+    if (real == NULL) {
+        ret = snprintf(resolved, size, "%s", clean);
+    } else if (tail == NULL) {
+        ret = snprintf(resolved, size, "%s", real);
+    } else {
+        ret = snprintf(resolved, size, "%s/%s",
+                       strcmp(real, "/") == 0 ? "" : real, tail);
+    }
+
+    free(real);
+
+    if (ret < 0 || (size_t) ret >= size) {
+        fprintf(stderr, "Mountpoint path too long\n");
         return -1;
     }
 
@@ -706,7 +1049,7 @@ static int do_mount(int argc, char **argv)
     unsigned int uam_mask = default_uams_mask();
     const char *service_name = NULL;
     const char *volume_name = NULL;
-    enum { OPT_VOLUME = 256, OPT_LOCKING };
+    enum { OPT_VOLUME = 256, OPT_LOCKING, OPT_FOREGROUND };
     struct option long_options[] = {
         {"afpversion", 1, 0, 'f'},
         {"volpass", 1, 0, 'P'},
@@ -719,6 +1062,7 @@ static int do_mount(int argc, char **argv)
         {"service", 1, 0, 's'},
         {"volume", 1, 0, OPT_VOLUME},
         {"locking", 1, 0, OPT_LOCKING},
+        {"foreground", 0, 0, OPT_FOREGROUND},
         {"flush-on-close", 0, 0, 'F'},
         {0, 0, 0, 0},
     };
@@ -753,6 +1097,10 @@ static int do_mount(int argc, char **argv)
                 return -1;
             }
 
+            break;
+
+        case OPT_FOREGROUND:
+            foreground_mount = 1;
             break;
 
         case '?':
@@ -975,6 +1323,13 @@ static int do_mount(int argc, char **argv)
     return 0;
 }
 
+/*!
+ * @brief Log in to a service's server and print the volumes it offers
+ *
+ * @param[in] request  the mount request, whose URL names the server and the
+ *                     login
+ * @returns 0, or -1 when the client cannot start or the login fails
+ */
 static int list_authenticated_volumes(
     const struct afpfsd_ipc_mount_request *request)
 {
@@ -988,8 +1343,6 @@ static int list_authenticated_volumes(
         fprintf(stderr, "Could not start the AFP client loop.\n");
         return -1;
     }
-
-    afp_wait_for_started_loop();
 
     if (init_uams() < 0) {
         fprintf(stderr, "Could not initialize AFP authentication methods.\n");
@@ -1418,6 +1771,19 @@ static int read_response(int sock)
     return answer.result;
 }
 
+/*!
+ * @brief Run an afpc fs command, or the mount of mount_afpfs
+ *
+ * A mount with --foreground runs its daemon as a child of afpc and returns
+ * once the daemon has ended.
+ *
+ * @param[in] argc      argument count
+ * @param[in] argv      the arguments
+ * @param[in] url_mode  1 for mount_afpfs's URL form
+ * @returns the command's result (0 for success), 1 when a foreground mount's
+ *          daemon did not exit with status 0, 2 for unusable arguments, or
+ *          -1 when no daemon answers
+ */
 static int afpc_fs_run(int argc, char *argv[], int url_mode)
 {
     int sock;
@@ -1453,23 +1819,43 @@ static int afpc_fs_run(int argc, char *argv[], int url_mode)
         return ret;
     }
 
-    /* Extract mountpoint and volumename for per-mount daemon routing;
-       STATUS, SUSPEND, RESUME, EXIT go to manager, which forwards appropriately */
+    /* A suspend, resume or unmount request holds the mount point alone. */
     if (mountpoint == NULL) {
         if (outgoing_buffer[0] == AFPFSD_IPC_COMMAND_MOUNT && outgoing_len > 1) {
             const struct afpfsd_ipc_mount_request *req =
                 (const struct afpfsd_ipc_mount_request *)(outgoing_buffer + 1);
             mountpoint = req->mountpoint;
             volumename = req->url.volumename;
-        } else if (outgoing_buffer[0] == AFPFSD_IPC_COMMAND_UNMOUNT
+        } else if ((outgoing_buffer[0] == AFPFSD_IPC_COMMAND_UNMOUNT
+                    || outgoing_buffer[0] == AFPFSD_IPC_COMMAND_SUSPEND
+                    || outgoing_buffer[0] == AFPFSD_IPC_COMMAND_RESUME)
                    && outgoing_len > 1) {
-            const struct afpfsd_ipc_unmount_request *req =
-                (const struct afpfsd_ipc_unmount_request *)(outgoing_buffer + 1);
-            mountpoint = req->mountpoint;
+            mountpoint = outgoing_buffer + 1;
+        } else if (outgoing_buffer[0] == AFPFSD_IPC_COMMAND_STATUS
+                   && outgoing_len > 1) {
+            const struct afpfsd_ipc_status_request *req =
+                (const struct afpfsd_ipc_status_request *)(outgoing_buffer + 1);
+
+            if (req->mountpoint[0] != '\0') {
+                mountpoint = req->mountpoint;
+            }
         }
     }
 
-    if ((sock = daemon_connect(mountpoint, volumename)) < 0) {
+    /* Only afpc's own daemon holds the descriptor a /dev/fd/N names. */
+    if (!foreground_mount && outgoing_buffer[0] == AFPFSD_IPC_COMMAND_MOUNT
+            && mountpoint != NULL && strncmp(mountpoint, "/dev/fd/", 8) == 0) {
+        fprintf(stderr,
+                "A mount point /dev/fd/N needs afpc fs mount --foreground\n");
+        clear_outgoing_mount_url_path();
+        return 2;
+    }
+
+    sock = foreground_mount ? start_foreground_daemon(mountpoint)
+           : daemon_connect(mountpoint, volumename,
+                            (unsigned char) outgoing_buffer[0]);
+
+    if (sock < 0) {
         clear_outgoing_mount_url_path();
         return -1;
     }
@@ -1479,12 +1865,12 @@ static int afpc_fs_run(int argc, char *argv[], int url_mode)
     if (send_command(sock, outgoing_buffer, outgoing_len) != 0) {
         perror("Sending command to afpfsd");
         close(sock);
-        return -1;
+        return foreground_mount ? wait_foreground_daemon(-1) : -1;
     }
 
     ret = read_response(sock);
     close(sock);
-    return ret;
+    return foreground_mount ? wait_foreground_daemon(ret) : ret;
 }
 
 int afpc_fs_command(char *program_path, int argc, char **argv)

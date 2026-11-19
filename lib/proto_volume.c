@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2006 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -24,89 +25,148 @@
 #include "dsi_protocol.h"
 #include "utils.h"
 
-static int parse_volbitmap_reply(struct afp_server *server _U_,
+/*!
+ * @brief Take a volume parameter from a reply, at any alignment
+ *
+ * @param[in,out] p      the parameter, advanced past it
+ * @param[in]     end    the reply's end
+ * @param[out]    field  receives the parameter's bytes, in network order,
+ *                       or NULL for a parameter to step over
+ * @param[in]     len    bytes of the parameter
+ * @returns 0, or -1 for a reply too short for the parameter
+ */
+static int take_parameter(const char **p, const char *end, void *field,
+                          size_t len)
+{
+    if ((size_t)(end - *p) < len) {
+        return -1;
+    }
+
+    if (field != NULL) {
+        memcpy(field, *p, len);
+    }
+
+    *p += len;
+    return 0;
+}
+
+/*!
+ * @brief Read the volume parameters a bitmap names from a reply
+ *
+ * Each parameter follows the one before, in the bitmap's order, at whatever
+ * offset that leaves it.
+ *
+ * @param[in]     server  the server, whose AFP 2 dates are its local time
+ * @param[in,out] tmpvol  the volume, which receives the parameters
+ * @param[in]     bitmap  the parameters the reply carries
+ * @param[in]     msg     the reply's parameters, after its bitmap
+ * @param[in]     size    bytes of msg
+ * @returns 0, or -1 for a reply too short for its bitmap's parameters
+ */
+static int parse_volbitmap_reply(struct afp_server *server,
                                  struct afp_volume *tmpvol,
-                                 unsigned short bitmap, char *msg,
+                                 unsigned short bitmap, const char *msg,
                                  unsigned int size)
 {
-    char *p = msg;
+    const char *p = msg;
+    const char *end = msg + size;
+    uint16_t u16;
+    uint32_t u32;
+    uint64_t u64;
 
     if (bitmap & kFPVolAttributeBit) {
-        unsigned short *attr = (void *) p;
-
-        if (p > msg + size) {
+        if (take_parameter(&p, end, &u16, sizeof(u16)) != 0) {
             return -1;
         }
 
-        tmpvol->attributes = ntohs(*attr);
-        p += 2;
+        tmpvol->attributes = ntohs(u16);
     }
 
     if (bitmap & kFPVolSignatureBit) {
-        unsigned short *sig = (void *) p;
-        tmpvol->signature = ntohs(*sig);
-        p += 2;
+        if (take_parameter(&p, end, &u16, sizeof(u16)) != 0) {
+            return -1;
+        }
+
+        tmpvol->signature = ntohs(u16);
     }
 
     if (bitmap & kFPVolCreateDateBit) {
-        unsigned int *date = (void *) p;
-        tmpvol->creation_date = afp_date_to_unix(server, *date);
-        p += 4;
+        if (take_parameter(&p, end, &u32, sizeof(u32)) != 0) {
+            return -1;
+        }
+
+        tmpvol->creation_date = afp_date_to_unix(server, u32);
     }
 
     if (bitmap & kFPVolModDateBit) {
-        unsigned int *date = (void *) p;
-        tmpvol->modification_date = afp_date_to_unix(server, *date);
-        p += 4;
+        if (take_parameter(&p, end, &u32, sizeof(u32)) != 0) {
+            return -1;
+        }
+
+        tmpvol->modification_date = afp_date_to_unix(server, u32);
     }
 
     if (bitmap & kFPVolBackupDateBit) {
-        unsigned int *date = (void *) p;
-        tmpvol->backup_date = afp_date_to_unix(server, *date);
-        p += 4;
+        if (take_parameter(&p, end, &u32, sizeof(u32)) != 0) {
+            return -1;
+        }
+
+        tmpvol->backup_date = afp_date_to_unix(server, u32);
     }
 
     if (bitmap & kFPVolIDBit) {
-        unsigned short *discovered_volid = (void *) p;
-        tmpvol->volid = ntohs(*discovered_volid);
-        p += 2;
+        if (take_parameter(&p, end, &u16, sizeof(u16)) != 0) {
+            return -1;
+        }
+
+        tmpvol->volid = ntohs(u16);
     }
 
     if (bitmap & kFPVolBytesFreeBit) {
-        unsigned int *size = (void *) p;
-        tmpvol->stat.f_bfree = ntohl(*size);
-        p += 4;
+        if (take_parameter(&p, end, &u32, sizeof(u32)) != 0) {
+            return -1;
+        }
+
+        tmpvol->stat.f_bfree = ntohl(u32);
     }
 
     if (bitmap & kFPVolBytesTotalBit) {
-        unsigned int *size = (void *) p;
-        tmpvol->stat.f_blocks = ntohl(*size);
-        p += 4;
+        if (take_parameter(&p, end, &u32, sizeof(u32)) != 0) {
+            return -1;
+        }
+
+        tmpvol->stat.f_blocks = ntohl(u32);
     }
 
-    if (bitmap & kFPVolNameBit) {
-        /* Skip the 2-byte name offset. The volume name is already set
-         * by the caller; the server reply contains it in wire encoding
-         * (e.g. Mac Roman or UTF-8 decomposed) so it cannot be used as-is. */
-        p += 2;
+    /* The caller has set the name, so only its offset is stepped over: the
+     * reply's name is in wire encoding (Mac Roman or decomposed UTF-8). */
+    if ((bitmap & kFPVolNameBit)
+            && take_parameter(&p, end, NULL, sizeof(u16)) != 0) {
+        return -1;
     }
 
     if (bitmap & kFPVolExtBytesFreeBit) {
-        uint64_t *size = (void *) p;
-        tmpvol->stat.f_bfree = ntoh64(*size);
-        p += 8;
+        if (take_parameter(&p, end, &u64, sizeof(u64)) != 0) {
+            return -1;
+        }
+
+        tmpvol->stat.f_bfree = ntoh64(u64);
     }
 
     if (bitmap & kFPVolExtBytesTotalBit) {
-        uint64_t *size = (void *) p;
-        tmpvol->stat.f_blocks = ntoh64(*size);
-        p += 8;
+        if (take_parameter(&p, end, &u64, sizeof(u64)) != 0) {
+            return -1;
+        }
+
+        tmpvol->stat.f_blocks = ntoh64(u64);
     }
 
     if (bitmap & kFPVolBlockSizeBit) {
-        unsigned int *size = (void *) p;
-        tmpvol->stat.f_bsize = ntohl(*size);
-        p += 4;
+        if (take_parameter(&p, end, &u32, sizeof(u32)) != 0) {
+            return -1;
+        }
+
+        tmpvol->stat.f_bsize = ntohl(u32);
     }
 
     return 0;

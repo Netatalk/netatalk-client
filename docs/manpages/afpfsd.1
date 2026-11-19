@@ -12,6 +12,7 @@
 .Op Fl d | Fl -debug
 .Op Fl m | Fl -manager
 .Op Fl s | Fl -socket-id Ar socket_name
+.Op Fl r | Fl -ready-fd Ar fd
 .Sh DESCRIPTION
 .Nm
 is the daemon used by the AFP (Apple Filing Protocol) FUSE client.
@@ -29,6 +30,8 @@ There are two modes:
 (one per user): started with
 .Fl -manager ,
 listens on a shared socket, and spawns mount-specific daemons.
+It starts only one daemon for a mount point.
+On Linux, it releases the mount of a daemon that ended.
 .It
 .Em Mount daemon
 (one per mount): started with
@@ -37,10 +40,10 @@ owns a single FUSE mount.
 .El
 .Pp
 .Xr afpc 1
-talks to the manager; the manager spawns per-mount
-daemons as needed.
-Management commands (status, unmount, exit) go to the
-manager, which coordinates the mount daemons.
+sends a command that names a mount point to that mount point's daemon.
+When no daemon listens there, the manager starts one for a mount and takes
+any other command.
+The manager also takes the exit command and a status without a mount point.
 .Sh OPTIONS
 .Bl -tag -width Ds
 .It Fl l , Fl -logmethod Ar method
@@ -60,6 +63,10 @@ and
 .Cm error .
 .It Fl f , Fl -foreground
 Doesn't fork the daemon.
+Logs to stdout unless
+.Fl -logmethod
+selects
+.Cm syslog .
 .It Fl d , Fl -debug
 Puts the daemon in the foreground, sets log level to debug, and dumps logs to stdout.
 .It Fl m , Fl -manager
@@ -75,6 +82,12 @@ Each mount daemon uses a unique socket derived from the mountpoint hash, e.g.\&
 .Pa /tmp/afp_server- Ns Aq Ar uid Ns - Ns Aq Ar hash .
 This option is primarily used internally by
 .Xr afpc 1 .
+.It Fl r , Fl -ready-fd Ar fd
+Writes one byte to the descriptor
+.Ar fd
+once the mount daemon listens, then closes it.
+.Xr afpc 1
+passes this option to the daemon of a foreground mount.
 .El
 .Sh SEE ALSO
 .Xr afpc 1 ,

@@ -148,7 +148,7 @@ int server_version_at_least(const struct afpc_server_version *version,
  */
 void afp_server_identify(struct afp_server * s)
 {
-    s->dsi_default_timeout = DSI_DEFAULT_TIMEOUT;
+    s->dsi_default_timeout = DSI_SERVER_DEFAULT_TIMEOUT;
     s->server_type = afp_identify_machine_type(s->machine_type);
     memset(&s->server_version, 0, sizeof(s->server_version));
 
@@ -229,17 +229,12 @@ int afp_server_reports_fork_length(const struct afp_server *s)
 /*!
  * @brief Test whether the offload may copy files with the server's FPCopyFile
  *
- * Netatalk qualifies from 3.1.1, its first release on AFP 3.4. Netatalk 2.x
- * gives a copy the source's exact mode, which can refuse the reopen for
- * writing.
- *
- * @param[in] s  identified server with a negotiated AFP version
- * @returns 1 for Netatalk on AFP 3.4, 0 otherwise
+ * @param[in] s  server whose FPGetSrvrInfo flags are read
+ * @returns 1 for a server whose flags announce FPCopyFile, 0 otherwise
  */
 int afp_server_copies_files(const struct afp_server *s)
 {
-    return s->server_type == AFPC_SERVER_TYPE_NETATALK
-           && s->using_version->av_number >= 34;
+    return (s->flags & kSupportsCopyfile) != 0;
 }
 
 /*!
@@ -254,6 +249,24 @@ int afp_server_drops_long_commands(const struct afp_server *s)
 {
     return s->server_type == AFPC_SERVER_TYPE_NETATALK
            && !server_version_at_least(&s->server_version, 4, 5, 0);
+}
+
+/*!
+ * @brief Test whether a reconnect can continue the session it lost
+ *
+ * FPDisconnectOldSession moves a new connection to the session its token
+ * names, open forks and volumes kept. Netatalk on AFP 3 does so without
+ * announcing kSupportsReconnect.
+ *
+ * @param[in] s  identified server with a negotiated AFP version
+ * @returns 1 for a server whose flags announce reconnects, or Netatalk on
+ *          AFP 3, 0 otherwise
+ */
+int afp_server_continues_sessions(const struct afp_server *s)
+{
+    return (s->flags & kSupportsReconnect) != 0
+           || (s->server_type == AFPC_SERVER_TYPE_NETATALK
+               && s->using_version->av_number >= 30);
 }
 
 /*!

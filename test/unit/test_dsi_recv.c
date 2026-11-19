@@ -7,6 +7,11 @@
     See the file COPYING.
 */
 
+/*!
+ * @file
+ * @brief Unit tests of a session's DSI sends, receive path and connect
+ */
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -20,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -28,6 +34,8 @@
 #include "lib/client.h"
 #include "lib/dsi.h"
 #include "lib/dsi_protocol.h"
+#include "lib/mapping.h"
+#include "lib/utils.h"
 #include "tap.h"
 
 /*!
@@ -231,7 +239,7 @@ static void queue_request(struct afp_server *server, struct dsi_request *r,
     r->subcommand = subcommand;
     r->other = other;
     r->reply_handler = handler;
-    r->wait = DSI_DEFAULT_TIMEOUT;
+    r->wait = server->dsi_default_timeout;
     r->connection_generation = afp_server_connection_generation(server);
     pthread_cond_init(&r->waiting_cond, NULL);
     pthread_mutex_init(&r->waiting_mutex, NULL);
@@ -810,7 +818,7 @@ static int listener_open(struct listener *l)
     if (fcntl(l->fd, F_SETFL, O_NONBLOCK) != 0
             || bind(l->fd, (struct sockaddr *) &l->addr, sizeof(l->addr)) != 0
             || getsockname(l->fd, (struct sockaddr *) &l->addr, &len) != 0
-            || listen(l->fd, 1) != 0) {
+            || listen(l->fd, 4) != 0) {
         listener_close(l);
         return -1;
     }
@@ -1155,6 +1163,23 @@ static int utest_server_valid_until_removed(void)
 }
 
 /*!
+ * @brief Wait for the end of a session's connection at the test's end
+ *
+ * A shutdown does not end an AF_UNIX connection everywhere; the close the
+ * loop makes between two passes does.
+ *
+ * @param[in] peer  the test's end
+ * @returns 1 once it reads the end, 0 otherwise
+ */
+static int peer_ended(int peer)
+{
+    struct pollfd pfd = { peer, POLLIN, 0 };
+    char byte;
+    return poll(&pfd, 1, 2000) == 1
+           && recv(peer, &byte, 1, MSG_DONTWAIT) == 0;
+}
+
+/*!
  * @brief A disconnect ends a server already marked disconnected
  *
  * The request waiting on a server marked disconnected while its descriptor is
@@ -1166,7 +1191,6 @@ static int utest_disconnect_ends_a_disconnected_server(void)
 {
     struct session s;
     struct dsi_request waiting;
-    char byte;
     int ret = 0;
 
     if (session_open(&s, 4096) != 0) {
@@ -1181,7 +1205,7 @@ static int utest_disconnect_ends_a_disconnected_server(void)
         ret = 2;
     } else if (s.server->fd != -1) {
         ret = 3;
-    } else if (recv(s.peer, &byte, 1, MSG_DONTWAIT) != 0) {
+    } else if (!peer_ended(s.peer)) {
         ret = 4;
     }
 
@@ -1352,6 +1376,21 @@ static int is_socket_pair_end(int fd)
 }
 
 /*!
+ * @brief Wait up to 2 s for the loop to close a descriptor a disconnect took
+ *
+ * @param[in] fd  the descriptor
+ * @returns 1 once it is closed, 0 while it stays open
+ */
+static int descriptor_closed(int fd)
+{
+    for (int i = 0; i < 200 && fcntl(fd, F_GETFD) != -1; i++) {
+        sleep_ms(10);
+    }
+
+    return fcntl(fd, F_GETFD) == -1;
+}
+
+/*!
  * @brief A connect closes the old descriptor only after the frame in flight
  *
  * A sender holds send_mutex while it writes a frame. A connect that takes
@@ -1423,10 +1462,10 @@ static int utest_connect_waits_for_the_frame_in_flight(void)
 }
 
 /*!
- * @brief A disconnect closes the descriptor only after the frame in flight
+ * @brief A disconnect lets the descriptor close only after the frame in flight
  *
  * A sender holds send_mutex while it writes a frame. A disconnect that takes
- * the descriptor meanwhile waits for the frame before it closes the
+ * the descriptor meanwhile waits for the frame before the loop closes the
  * descriptor, so no frame's tail reaches a descriptor number reused since.
  *
  * @returns 0, or the number of the step that failed
@@ -1462,7 +1501,7 @@ static int utest_disconnect_waits_for_the_frame_in_flight(void)
     pthread_mutex_unlock(&s.server->send_mutex);
     pthread_join(thread, NULL);
 
-    if (ret == 0 && fcntl(old_fd, F_GETFD) != -1) {
+    if (ret == 0 && !descriptor_closed(old_fd)) {
         ret = 5;
     }
 
@@ -1644,17 +1683,19 @@ out:
     return ret;
 }
 
-/* A sender's thread: one request with a wait, and its result. */
+/* A sender's thread: one request with a wait, its result and its replies. */
 struct sender {
     struct afp_server *server;
     int wait;
     int result;
+    int replies;
 };
 
 /*!
  * @brief Send one request and wait for its reply, as a sender's thread does
  *
- * @param[in,out] arg  the sender, whose result receives the send's
+ * @param[in,out] arg  the sender, whose result receives the send's and
+ *                     whose replies counts the replies the request took
  * @returns NULL
  */
 static void *send_and_wait(void *arg)
@@ -1662,9 +1703,11 @@ static void *send_and_wait(void *arg)
     struct sender *s = arg;
     struct dsi_header header;
     int result;
+    s->replies = 0;
     afpc_dsi_setup_header(s->server, &header, DSI_DSICommand);
-    result = afpc_dsi_send(s->server, (char *) &header, sizeof(header),
-                           s->wait, afpGetVolParms, NULL);
+    result = afpc_dsi_send_with_reply(s->server, (char *) &header,
+                                      sizeof(header), s->wait, afpGetVolParms,
+                                      &s->replies, record_reply, NULL);
     /* Stored for a test that polls it while the thread runs. */
     __atomic_store_n(&s->result, result, __ATOMIC_RELEASE);
     return NULL;
@@ -1691,6 +1734,67 @@ static const struct dsi_request *wait_for_deadline(struct afp_server *server)
     }
 
     return NULL;
+}
+
+/*!
+ * @brief A request queued before a reconnect replaced its connection fails
+ *        unsent
+ *
+ * The receiver would drop its reply, which comes on the next connection, and
+ * the sender would wait out its time.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_request_of_a_replaced_connection_fails_unsent(void)
+{
+    struct session s;
+    struct sender sender;
+    pthread_t thread;
+    char byte;
+    int queued = 0;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    sender.server = s.server;
+    sender.wait = 1;
+    sender.result = 1;
+    /* Another sender's frame is being written. */
+    pthread_mutex_lock(&s.server->send_mutex);
+
+    if (pthread_create(&thread, NULL, send_and_wait, &sender) != 0) {
+        pthread_mutex_unlock(&s.server->send_mutex);
+        session_close(&s);
+        return 2;
+    }
+
+    for (int i = 0; i < 200 && !queued; i++) {
+        pthread_mutex_lock(&s.server->request_queue_mutex);
+        queued = s.server->command_requests != NULL;
+        pthread_mutex_unlock(&s.server->request_queue_mutex);
+
+        if (!queued) {
+            sleep_ms(10);
+        }
+    }
+
+    /* A reconnect has made the next connection meanwhile. */
+    afp_server_next_connection_generation(s.server);
+    pthread_mutex_unlock(&s.server->send_mutex);
+    pthread_join(thread, NULL);
+
+    if (!queued) {
+        ret = 3;
+    } else if (sender.result != -EIO) {
+        ret = 4;
+    } else if (recv(s.peer, &byte, 1, MSG_DONTWAIT) != -1) {
+        ret = 5;
+    }
+
+    session_close(&s);
+    return ret;
 }
 
 /*!
@@ -1972,8 +2076,7 @@ static int cut_off_open(struct listener *l, pthread_t *acceptor,
 /*!
  * @brief A connect whose status read is cut off returns -EIO
  *
- * The connect fails with the read's errno, negative, which errno holds too,
- * and leaves the server listed.
+ * The connect fails with the read's errno before it lists the server.
  *
  * @returns 0, or the number of the step that failed
  */
@@ -1982,6 +2085,7 @@ static int utest_cut_off_status_read_fails_the_connect(void)
     struct listener l;
     struct afp_server *server;
     pthread_t acceptor;
+    int ret = 0;
 
     if (cut_off_open(&l, &acceptor, &server) != 0) {
         return 1;
@@ -1995,18 +2099,22 @@ static int utest_cut_off_status_read_fails_the_connect(void)
         return 3;
     }
 
+    if (find_server_by_pointer(server) != NULL) {
+        ret = 4;
+    }
+
     /* The address is the test's, not the server's to free. */
     server->address = NULL;
-    afp_server_remove(server);
+    afp_server_release(server);
     listener_close(&l);
-    return 0;
+    return ret;
 }
 
 /*!
  * @brief A connect of a removed server is refused and lists nothing
  *
- * The removal comes first; the connect finds the server destroyed under the
- * list lock, and the server stays removed.
+ * A connect without the status lists the server, and a reference holds it
+ * across its removal; the next connect leaves it removed.
  *
  * @returns 0, or the number of the step that failed
  */
@@ -2015,6 +2123,7 @@ static int utest_connect_of_a_removed_server_is_refused(void)
     struct listener l;
     struct afp_server *server;
     pthread_t acceptor;
+    int peer;
     int ret = 0;
 
     if (cut_off_open(&l, &acceptor, &server) != 0) {
@@ -2029,21 +2138,33 @@ static int utest_connect_of_a_removed_server_is_refused(void)
         return 3;
     }
 
+    if (afp_server_connect(server, 0) != 0) {
+        return 4;
+    }
+
+    peer = accept_within(l.fd);
     afp_server_hold(server);
 
-    if (afp_server_remove(server) != 0) {
-        ret = 4;
-    } else if (afp_server_connect(server, 0) != -ENOENT) {
+    if (peer < 0) {
         ret = 5;
-    } else if (server_still_valid(server) != 0) {
+    } else if (afp_server_remove(server) != 0) {
         ret = 6;
-    } else if (find_server_by_pointer(server) != NULL) {
+    } else if (afp_server_connect(server, 0) != -ENOENT) {
         ret = 7;
+    } else if (server_still_valid(server) != 0) {
+        ret = 8;
+    } else if (find_server_by_pointer(server) != NULL) {
+        ret = 9;
     }
 
     server->address = NULL;
     afp_server_release(server);
     listener_close(&l);
+
+    if (peer >= 0) {
+        close(peer);
+    }
+
     return ret;
 }
 
@@ -2101,7 +2222,8 @@ static int utest_disconnect_keeps_an_answered_result(void)
     queue_request(s.server, &waiting, 9, afpGetVolParms, NULL, NULL);
     answered.done_waiting = 1;
     answered.return_code = 42;
-    afpc_dsi_fail_request_queue(s.server, -EIO);
+    afpc_dsi_fail_request_queue(s.server, -EIO,
+                                afp_server_connection_generation(s.server));
 
     if (answered.return_code != 42) {
         ret = 2;
@@ -2126,6 +2248,76 @@ static int utest_disconnect_keeps_an_answered_result(void)
     }
 
 out:
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A disconnect of a replaced connection spares the next one's request
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_disconnect_leaves_the_next_connection_waiting(void)
+{
+    struct session s;
+    struct dsi_request next;
+    unsigned int ended;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    ended = afp_server_connection_generation(s.server);
+    afp_server_next_connection_generation(s.server);
+    queue_request(s.server, &next, 8, afpGetVolParms, NULL, NULL);
+    afpc_dsi_fail_request_queue(s.server, -EIO, ended);
+
+    if (next.done_waiting != 0) {
+        ret = 2;
+    }
+
+    afpc_dsi_flush_request_queue(s.server);
+
+    if (ret == 0 && (next.return_code != -EIO || next.done_waiting != 1)) {
+        ret = 3;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A busy refusal of a session's open leaves the quantum alone
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_busy_open_keeps_the_quantum(void)
+{
+    struct session s;
+    struct dsi_request pending;
+    struct dsi_header header;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    queue_request(s.server, &pending, 9, DSI_DSIOpenSession, NULL, NULL);
+    memset(&header, 0, sizeof(header));
+    header.flags = DSI_REPLY;
+    header.command = DSI_DSIOpenSession;
+    header.requestid = htons(9);
+    header.return_code.error_code = (int) htonl(DSIERR_SERVBUSY);
+
+    if (write(s.peer, &header, sizeof(header)) != (ssize_t) sizeof(header)) {
+        ret = 2;
+    } else if (receive_all(s.server) != 0) {
+        ret = 3;
+    } else if (s.server->quantum != 65536) {
+        ret = 4;
+    }
+
     session_close(&s);
     return ret;
 }
@@ -2158,10 +2350,8 @@ static int utest_answer_as_the_wait_expires_is_the_result(void)
 
     wait_for_deadline(s.server);
     /* The sender is in its wait; the answer takes the mutex, so the
-     * sender's wait expires before it can read the answer. A removal
-     * frees the request under the queue's mutex, which the answer holds
-     * while it finds and answers the request; the sender needs only the
-     * request's mutex until then. */
+     * sender's wait expires before it can read the answer. The removal that
+     * ends the send waits for the queue's mutex, which the answer holds. */
     sleep_ms(200);
     pthread_mutex_lock(&s.server->request_queue_mutex);
     request = s.server->command_requests;
@@ -2276,7 +2466,8 @@ static int utest_failed_request_waits_for_its_receiver(void)
     }
 
     wait_for_receiver(&call);
-    afpc_dsi_fail_request_queue(s.server, -EIO);
+    afpc_dsi_fail_request_queue(s.server, -EIO,
+                                afp_server_connection_generation(s.server));
     sleep_ms(200);
 
     if (__atomic_load_n(&reader.result, __ATOMIC_ACQUIRE) != 1) {
@@ -2292,7 +2483,8 @@ static int utest_failed_request_waits_for_its_receiver(void)
 out:
 
     if (ret == 3) {
-        afpc_dsi_fail_request_queue(s.server, -EIO);
+        afpc_dsi_fail_request_queue(s.server, -EIO,
+                                    afp_server_connection_generation(s.server));
     }
 
     pthread_join(sender, NULL);
@@ -2301,6 +2493,334 @@ out:
         ret = 7;
     } else if (ret == 0 && reader.rx.size != sizeof(payload)) {
         ret = 8;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief Limit a socket's reads to 10 s, so a missing frame fails the case
+ *
+ * @param[in] fd  the socket
+ * @returns 0, or -1
+ */
+static int limit_reads(int fd)
+{
+    struct timeval limit = { 10, 0 };
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof(limit));
+}
+
+/*! A slow handler's state: whether it runs, and whether it has run. */
+struct slow_reply {
+    int running;
+    int handled;
+};
+
+/*!
+ * @brief Handle a reply for longer than its sender's wait of 2 s
+ *
+ * @param[in]     server  unused
+ * @param[in]     buf     unused
+ * @param[in]     size    unused
+ * @param[in,out] other   the slow reply
+ * @returns 0
+ */
+static int handle_slowly(struct afp_server *server, char *buf,
+                         unsigned int size, void *other)
+{
+    struct slow_reply *reply = other;
+    (void) server;
+    (void) buf;
+    (void) size;
+    __atomic_store_n(&reply->running, 1, __ATOMIC_RELEASE);
+    sleep_ms(3000);
+    reply->handled = 1;
+    __atomic_store_n(&reply->running, 0, __ATOMIC_RELEASE);
+    return 0;
+}
+
+/*! A sender whose reply the receiver handles slowly, and what it saw. */
+struct slow_sender {
+    struct afp_server *server;
+    struct slow_reply *reply;
+    int result;
+    int running_at_return;
+};
+
+/*!
+ * @brief Send a request that waits 2 s, whose handler outlasts it
+ *
+ * @param[in,out] arg  the slow sender, which receives the send's result and
+ *                     whether the handler still ran when it returned
+ * @returns NULL
+ */
+static void *send_slowly_answered(void *arg)
+{
+    struct slow_sender *s = arg;
+    struct dsi_header header;
+    afpc_dsi_setup_header(s->server, &header, DSI_DSICommand);
+    s->result = afpc_dsi_send_with_reply(s->server, (char *) &header,
+                                         sizeof(header), 2, afpGetVolParms,
+                                         s->reply, handle_slowly, NULL);
+    s->running_at_return = __atomic_load_n(&s->reply->running,
+                                           __ATOMIC_ACQUIRE);
+    return NULL;
+}
+
+/*!
+ * @brief A reply whose handler outlasts its sender's wait is the send's result
+ *
+ * The receiver holds the request while the handler runs, so the send
+ * returns once the handler is done, with the reply's result.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_slow_handler_is_the_result(void)
+{
+    struct session s;
+    struct slow_reply reply = { 0, 0 };
+    struct slow_sender sender;
+    struct receive_call call;
+    struct dsi_header sent;
+    pthread_t sending;
+    pthread_t receiving;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    sender.server = s.server;
+    sender.reply = &reply;
+    sender.result = 1;
+    sender.running_at_return = 1;
+
+    if (limit_reads(s.peer) != 0
+            || pthread_create(&sending, NULL, send_slowly_answered,
+                              &sender) != 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    call.server = s.server;
+    call.started = 0;
+    call.result = 1;
+
+    if (recv(s.peer, &sent, sizeof(sent), MSG_WAITALL)
+            != (ssize_t) sizeof(sent)) {
+        ret = 3;
+    } else if (pthread_create(&receiving, NULL, receive_once, &call) != 0) {
+        ret = 4;
+    } else {
+        /* The receiver is in its read when the reply comes, so it finds
+         * the request within the sender's wait. */
+        wait_for_receiver(&call);
+
+        if (send_header(s.peer, DSI_REPLY, DSI_DSICommand,
+                        ntohs(sent.requestid), 0) != 0) {
+            shutdown(s.peer, SHUT_RDWR);
+            ret = 3;
+        }
+
+        pthread_join(receiving, NULL);
+    }
+
+    pthread_join(sending, NULL);
+
+    if (ret == 0 && call.result != 0) {
+        ret = 5;
+    } else if (ret == 0 && sender.running_at_return != 0) {
+        ret = 6;
+    } else if (ret == 0 && (sender.result != 0 || reply.handled != 1)) {
+        ret = 7;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A request without an answer fails and leaves the queue
+ *
+ * It fails with ETIMEDOUT once its wait runs out, and with -EIO when its
+ * frame cannot be written.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_unanswered_request_fails(void)
+{
+    struct session s;
+    struct sender sender;
+    struct dsi_header sent;
+    pthread_t thread;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    sender.server = s.server;
+    sender.wait = 1;
+    sender.result = 0;
+
+    if (limit_reads(s.peer) != 0
+            || pthread_create(&thread, NULL, send_and_wait, &sender) != 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    if (recv(s.peer, &sent, sizeof(sent), MSG_WAITALL)
+            != (ssize_t) sizeof(sent)) {
+        ret = 3;
+    }
+
+    pthread_join(thread, NULL);
+
+    if (ret == 0 && (sender.result != ETIMEDOUT
+                     || s.server->command_requests != NULL
+                     || s.server->stats.requests_pending != 0)) {
+        ret = 4;
+    }
+
+    /* The peer's end goes, so the next frame cannot be written. */
+    close(s.peer);
+    s.peer = -1;
+    sender.result = 0;
+
+    if (ret == 0
+            && pthread_create(&thread, NULL, send_and_wait, &sender) != 0) {
+        ret = 5;
+    } else if (ret == 0) {
+        pthread_join(thread, NULL);
+
+        if (sender.result != -EIO || s.server->command_requests != NULL
+                || s.server->stats.requests_pending != 0) {
+            ret = 6;
+        }
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A request with no wait limit takes a reply past the server's default
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_unlimited_wait_is_answered(void)
+{
+    struct session s;
+    struct sender sender;
+    struct dsi_header sent;
+    pthread_t thread;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    s.server->dsi_default_timeout = 1;
+    sender.server = s.server;
+    sender.wait = DSI_BLOCK_TIMEOUT;
+    sender.result = 1;
+
+    if (limit_reads(s.peer) != 0
+            || pthread_create(&thread, NULL, send_and_wait, &sender) != 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    if (recv(s.peer, &sent, sizeof(sent), MSG_WAITALL)
+            != (ssize_t) sizeof(sent)) {
+        ret = 3;
+    } else {
+        sleep_ms(2000);
+
+        if (send_header(s.peer, DSI_REPLY, DSI_DSICommand,
+                        ntohs(sent.requestid), 0) != 0
+                || receive_all(s.server) != 0) {
+            ret = 4;
+        }
+    }
+
+    /* The disconnect fails a request the reply did not answer, queued or still
+     * to come, so the join ends; an answered request keeps its result. */
+    loop_disconnect(s.server);
+    pthread_join(thread, NULL);
+
+    if (ret == 0 && (sender.result != 0 || sender.replies != 1)) {
+        ret = 5;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A request answered while it waits for the send's lock fails unsent
+ *
+ * A reconnect to a server without a replay cache restarts the request IDs, so
+ * the answer can be a later request's.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_unsent_request_takes_no_answer(void)
+{
+    struct session s;
+    struct sender sender;
+    pthread_t thread;
+    unsigned short id = 0;
+    char byte;
+    int queued = 0;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    sender.server = s.server;
+    sender.wait = 1;
+    sender.result = 1;
+    /* Another sender's frame is being written. */
+    pthread_mutex_lock(&s.server->send_mutex);
+
+    if (pthread_create(&thread, NULL, send_and_wait, &sender) != 0) {
+        pthread_mutex_unlock(&s.server->send_mutex);
+        session_close(&s);
+        return 2;
+    }
+
+    for (int i = 0; i < 200 && !queued; i++) {
+        pthread_mutex_lock(&s.server->request_queue_mutex);
+        queued = s.server->command_requests != NULL;
+
+        if (queued) {
+            id = s.server->command_requests->requestid;
+        }
+
+        pthread_mutex_unlock(&s.server->request_queue_mutex);
+
+        if (!queued) {
+            sleep_ms(10);
+        }
+    }
+
+    if (!queued) {
+        ret = 3;
+    } else if (send_header(s.peer, DSI_REPLY, DSI_DSICommand, id, 0) != 0
+               || receive_all(s.server) != 0) {
+        ret = 4;
+    }
+
+    pthread_mutex_unlock(&s.server->send_mutex);
+    pthread_join(thread, NULL);
+
+    if (ret == 0 && sender.result != -EIO) {
+        ret = 5;
+    } else if (ret == 0 && recv(s.peer, &byte, 1, MSG_DONTWAIT) != -1) {
+        ret = 6;
     }
 
     session_close(&s);
@@ -2490,62 +3010,75 @@ static void drain_peer(int fd)
 }
 
 /*!
- * @brief A tickle waits for no room: a connection that takes no more skips it
+ * @brief Open a session on a loopback TCP connection with small buffers
  *
- * The session's socket pair gives way to a TCP connection with small
- * buffers, filled until it takes no more.
+ * @param[out] s  receives the session
+ * @returns 0, or -1
+ */
+static int tcp_session_open(struct session *s)
+{
+    struct listener l;
+    int client;
+    int peer;
+    int rc;
+
+    if (session_open(s, 4096) != 0) {
+        return -1;
+    }
+
+    if (listener_open(&l) != 0) {
+        session_close(s);
+        return -1;
+    }
+
+    rc = small_tcp_pair(&l, &client, &peer);
+    listener_close(&l);
+
+    if (rc != 0) {
+        session_close(s);
+        return -1;
+    }
+
+    close(s->server->fd);
+    close(s->peer);
+    s->server->fd = client;
+    s->peer = peer;
+    return 0;
+}
+
+/*!
+ * @brief A tickle waits for no room: a connection that takes no more skips it
  *
  * @returns 0, or the number of the step that failed
  */
 static int utest_tickle_waits_for_no_room(void)
 {
     struct session s;
-    struct listener l;
     struct tickler t;
     pthread_t thread;
-    int client;
-    int peer;
     int rc;
     int ret = 0;
 
-    if (session_open(&s, 4096) != 0) {
+    if (tcp_session_open(&s) != 0) {
         return 1;
     }
 
-    if (listener_open(&l) != 0) {
+    if (fill_connection(s.server->fd) != 0) {
         session_close(&s);
         return 2;
     }
 
-    if (small_tcp_pair(&l, &client, &peer) != 0) {
-        listener_close(&l);
-        session_close(&s);
-        return 3;
-    }
-
-    close(s.server->fd);
-    close(s.peer);
-    s.server->fd = client;
-    s.peer = peer;
-
-    if (fill_connection(client) != 0) {
-        listener_close(&l);
-        session_close(&s);
-        return 4;
-    }
-
     t.server = s.server;
     rc = tickle_returns(&t, &thread);
-    drain_peer(peer);
+    drain_peer(s.peer);
 
     if (rc < 0) {
-        ret = 5;
+        ret = 3;
     } else {
         pthread_join(thread, NULL);
-        ret = rc ? 6 : 0;
+        ret = rc ? 4 : 0;
     }
 
-    listener_close(&l);
     session_close(&s);
     return ret;
 }
@@ -2636,6 +3169,762 @@ static int utest_restart_keeps_its_reconnect(void)
     return ret;
 }
 
+/*! A write through a volume of a session, on its own thread. */
+struct volume_write {
+    struct afp_volume volume;
+    char *data;
+    uint64_t len;
+    uint64_t written;
+    int result;
+    int done;  /*!< 1 once the write has returned */
+    pthread_t thread;
+};
+
+/*!
+ * @brief Write the data through the volume, as ll_write() does
+ *
+ * @param[in,out] arg  the write, whose result receives afp_writeext()'s
+ * @returns NULL
+ */
+static void *write_through(void *arg)
+{
+    struct volume_write *w = arg;
+    w->result = afp_writeext(&w->volume, 9, 0, 0, w->len, w->data,
+                             &w->written);
+    __atomic_store_n(&w->done, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+/*!
+ * @brief Read len bytes of a socket, a read at a time
+ *
+ * Each read frees room for the sender at once; a read that waits for all its
+ * bytes may not until it returns, on some systems.
+ *
+ * @param[in]  fd   the socket, its reads limited by limit_reads()
+ * @param[out] buf  receives the bytes
+ * @param[in]  len  bytes to read
+ * @returns 0, or -1 when the stream ends or a read fails or times out first
+ */
+static int recv_whole(int fd, void *buf, size_t len)
+{
+    for (size_t done = 0; done < len;) {
+        ssize_t n = recv(fd, (char *) buf + done, len - done, 0);
+
+        if (n <= 0) {
+            return -1;
+        }
+
+        done += (size_t) n;
+    }
+
+    return 0;
+}
+
+/*!
+ * @brief Run the receiver until a write has returned, or 10 s have gone
+ *
+ * One pass may end inside a reply that comes in pieces.
+ *
+ * @param[in] s  the session
+ * @param[in] w  the write
+ * @returns 0, or -1 when the receiver fails or the write has not returned
+ */
+static int receive_until_done(const struct session *s,
+                              const struct volume_write *w)
+{
+    for (int pass = 0; pass < 50
+            && !__atomic_load_n(&w->done, __ATOMIC_ACQUIRE); pass++) {
+        if (receive_all(s->server) != 0) {
+            return -1;
+        }
+    }
+
+    return __atomic_load_n(&w->done, __ATOMIC_ACQUIRE) ? 0 : -1;
+}
+
+/*!
+ * @brief Start a write through a volume of a session, on its own thread
+ *
+ * @param[in]  s     the session
+ * @param[out] w     receives the write
+ * @param[in]  data  the data
+ * @param[in]  len   bytes of data
+ * @returns 0, or -1 when the thread does not start
+ */
+static int start_write(const struct session *s, struct volume_write *w,
+                       char *data, uint64_t len)
+{
+    memset(w, 0, sizeof(*w));
+    w->volume.server = s->server;
+    w->data = data;
+    w->len = len;
+    w->result = 1;
+    return pthread_create(&w->thread, NULL, write_through, w) == 0 ? 0 : -1;
+}
+
+/*!
+ * @brief Wait for a write to end, cut loose first when a step failed
+ *
+ * The disconnect frees a writer blocked in its write or waiting for its
+ * reply, and fails at once one that queues after it.
+ *
+ * @param[in]     s       the session
+ * @param[in,out] w       the write
+ * @param[in]     failed  whether a step of the test failed
+ * @returns 1 when the write succeeded and wrote all its data, 0 otherwise
+ */
+static int end_write(const struct session *s, struct volume_write *w,
+                     int failed)
+{
+    if (failed) {
+        loop_disconnect(s->server);
+    }
+
+    pthread_join(w->thread, NULL);
+    return w->result == 0 && w->written == w->len;
+}
+
+/*!
+ * @brief Do nothing, so a signal only interrupts the thread's blocked call
+ *
+ * @param[in] signal_number  unused
+ */
+static void interrupt(int signal_number)
+{
+    (void) signal_number;
+}
+
+/*!
+ * @brief A write a signal cuts short again and again goes on where it stopped
+ *
+ * Before each 64 KiB the peer reads, the writer has filled the connection
+ * and blocks in its write, which the signal cuts short.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_interrupted_write_goes_on(void)
+{
+    static char data[1U << 20];
+    static char got[1U << 20];
+    /* FPWriteExt of fork 9 at offset 0, its count 1 MiB. */
+    static const unsigned char parameters[20] = {
+        afpWriteExt, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0x10, 0, 0,
+    };
+    unsigned char got_parameters[sizeof(parameters)];
+    struct session s;
+    struct volume_write w;
+    struct sigaction action;
+    struct sigaction before;
+    struct dsi_header head;
+    uint64_t written = hton64(sizeof(data));
+    int ret = 0;
+
+    if (tcp_session_open(&s) != 0) {
+        return 1;
+    }
+
+    /* Each four-byte word holds its own index, so no stretch of the data
+     * repeats another. */
+    for (size_t i = 0; i < sizeof(data); i += 4) {
+        uint32_t word = htonl((uint32_t)(i / 4));
+        memcpy(data + i, &word, sizeof(word));
+    }
+
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = interrupt;
+
+    if (limit_reads(s.peer) != 0
+            || sigaction(SIGUSR1, &action, &before) != 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    if (start_write(&s, &w, data, sizeof(data)) != 0) {
+        sigaction(SIGUSR1, &before, NULL);
+        session_close(&s);
+        return 3;
+    }
+
+    if (recv(s.peer, &head, sizeof(head), MSG_WAITALL)
+            != (ssize_t) sizeof(head)
+            || recv(s.peer, got_parameters, sizeof(got_parameters),
+                    MSG_WAITALL) != (ssize_t) sizeof(got_parameters)) {
+        ret = 4;
+    }
+
+    for (size_t done = 0; ret == 0 && done < sizeof(got); done += 65536) {
+        sleep_ms(5);
+
+        if (pthread_kill(w.thread, SIGUSR1) != 0
+                || recv_whole(s.peer, got + done, 65536) != 0) {
+            ret = 5;
+        }
+    }
+
+    if (ret == 0 && (ntohl(head.length) != sizeof(parameters) + sizeof(data)
+                     || memcmp(got_parameters, parameters,
+                               sizeof(parameters)) != 0
+                     || memcmp(got, data, sizeof(data)) != 0)) {
+        ret = 6;
+    } else if (ret == 0 && (send_frame(s.peer, DSI_REPLY, DSI_DSIWrite,
+                                       ntohs(head.requestid), &written,
+                                       sizeof(written)) != 0
+                            || receive_until_done(&s, &w) != 0)) {
+        ret = 7;
+    }
+
+    if (!end_write(&s, &w, ret != 0) && ret == 0) {
+        ret = 8;
+    }
+
+    sigaction(SIGUSR1, &before, NULL);
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A write's wait grows with its data, and runs out
+ *
+ * At a default of 1 s, a 128 KiB write waits 5 s and takes a reply at 2 s;
+ * an unanswered 96 KiB write waits 4 s, times out and leaves the queue.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_write_waits_by_its_size(void)
+{
+    static char data[128U * 1024U];
+    static unsigned char rest[20U + sizeof(data)];
+    struct session s;
+    struct volume_write w;
+    struct dsi_header head;
+    struct timespec sent;
+    struct timespec ended;
+    uint64_t written = hton64(sizeof(data));
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    s.server->dsi_default_timeout = 1;
+
+    if (limit_reads(s.peer) != 0
+            || start_write(&s, &w, data, sizeof(data)) != 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    if (recv_whole(s.peer, &head, sizeof(head)) != 0
+            || recv_whole(s.peer, rest, sizeof(rest)) != 0) {
+        ret = 3;
+    } else {
+        sleep_ms(2000);
+
+        if (send_frame(s.peer, DSI_REPLY, DSI_DSIWrite,
+                       ntohs(head.requestid), &written,
+                       sizeof(written)) != 0
+                || receive_until_done(&s, &w) != 0) {
+            ret = 4;
+        }
+    }
+
+    if (!end_write(&s, &w, ret != 0) && ret == 0) {
+        ret = 5;
+    }
+
+    /* Read before the write starts: its 4 s wait ends no sooner than 4 s
+     * after, and a 2 s wait within 3 s unless the frame takes 1 s to write. */
+    clock_gettime(CLOCK_MONOTONIC, &sent);
+
+    if (ret == 0 && start_write(&s, &w, data, 96U * 1024U) != 0) {
+        ret = 6;
+    } else if (ret == 0) {
+        if (recv_whole(s.peer, &head, sizeof(head)) != 0
+                || recv_whole(s.peer, rest, 20U + 96U * 1024U) != 0) {
+            ret = 7;
+        }
+
+        for (int ms = 0; ret == 0 && ms < 8000
+                && !__atomic_load_n(&w.done, __ATOMIC_ACQUIRE); ms += 10) {
+            sleep_ms(10);
+        }
+
+        clock_gettime(CLOCK_MONOTONIC, &ended);
+
+        if (ret == 0 && !__atomic_load_n(&w.done, __ATOMIC_ACQUIRE)) {
+            ret = 8;
+        } else if (ret == 0
+                   && (ended.tv_sec - sent.tv_sec) * 1000
+                   + (ended.tv_nsec - sent.tv_nsec) / 1000000 < 3000) {
+            ret = 9;
+        }
+
+        end_write(&s, &w, ret != 0);
+
+        if (ret == 0 && (w.result != ETIMEDOUT
+                         || s.server->command_requests != NULL
+                         || s.server->stats.requests_pending != 0)) {
+            ret = 10;
+        }
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief Answer the next request, of the given command, with the given reply
+ *
+ * The receive buffer is first filled with 'x', which no reply here holds, so
+ * a read past a reply's end finds no earlier reply's bytes.
+ *
+ * @param[in] s        the session, its peer's reads limited by limit_reads()
+ * @param[in] command  the AFP command the request must carry
+ * @param[in] answer   the reply's bytes after its DSI header
+ * @param[in] len      bytes of answer
+ * @returns 0, or -1 when the request does not arrive, carries another
+ *          command, or the reply is not read
+ */
+static int answer_request(const struct session *s, unsigned char command,
+                          const void *answer, uint32_t len)
+{
+    struct dsi_header head;
+    unsigned char request[64];
+    uint32_t request_len;
+    memset(s->server->incoming_buffer, 'x', (size_t) s->server->bufsize);
+
+    if (recv(s->peer, &head, sizeof(head), MSG_WAITALL)
+            != (ssize_t) sizeof(head)) {
+        return -1;
+    }
+
+    request_len = ntohl(head.length);
+
+    if (request_len == 0 || request_len > sizeof(request)
+            || recv(s->peer, request, request_len, MSG_WAITALL)
+            != (ssize_t) request_len
+            || request[0] != command
+            || send_frame(s->peer, DSI_REPLY, DSI_DSICommand,
+                          ntohs(head.requestid), answer, len) != 0
+            || receive_all(s->server) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+/*! An FPMapID on its own thread, and the name it gave. */
+struct id_mapping {
+    struct afp_server *server;
+    unsigned char subfunction;
+    char name[AFPC_MAX_NAME_BYTES];
+    int result;
+};
+
+/*!
+ * @brief Ask the server for user 1000's name, as a mount's mapping does
+ *
+ * @param[in,out] arg  the mapping, which receives the name and the result
+ * @returns NULL
+ */
+static void *map_id(void *arg)
+{
+    struct id_mapping *m = arg;
+    m->result = afp_mapid(m->server, m->subfunction, 1000, m->name);
+    return NULL;
+}
+
+/*!
+ * @brief Run a call on its own thread and answer the request it sends
+ *
+ * @param[in]     s        the session
+ * @param[in]     command  the AFP command the request must carry
+ * @param[in]     answer   the reply's bytes after its DSI header
+ * @param[in]     len      bytes of answer
+ * @param[in]     call     the call, run on the thread
+ * @param[in,out] arg      what the call takes and gives back
+ * @returns 0, or -1 when the request does not arrive or the reply is not
+ *          read
+ */
+static int answer_call(const struct session *s, unsigned char command,
+                       const void *answer, uint32_t len,
+                       void *(*call)(void *), void *arg)
+{
+    pthread_t thread;
+    int rc;
+
+    if (pthread_create(&thread, NULL, call, arg) != 0) {
+        return -1;
+    }
+
+    rc = answer_request(s, command, answer, len);
+
+    /* The disconnect fails the request, sent or still to come. */
+    if (rc != 0) {
+        loop_disconnect(s->server);
+    }
+
+    pthread_join(thread, NULL);
+    return rc;
+}
+
+/*!
+ * @brief Ask for user 1000's name on a thread and answer with the given reply
+ *
+ * @param[in]  s            the session
+ * @param[in]  subfunction  the request's subfunction
+ * @param[in]  answer       the reply's bytes after its DSI header
+ * @param[in]  len          bytes of answer
+ * @param[out] m            receives the mapping, its name and its result
+ * @returns 0, or -1 when the request does not arrive or the reply is not
+ *          read
+ */
+static int answer_mapid(const struct session *s, unsigned char subfunction,
+                        const void *answer, uint32_t len,
+                        struct id_mapping *m)
+{
+    memset(m, 0, sizeof(*m));
+    m->server = s->server;
+    m->subfunction = subfunction;
+    m->result = 1;
+    return answer_call(s, afpMapID, answer, len, map_id, m);
+}
+
+/*!
+ * @brief An FPMapID reply's name is read where the reply puts it
+ *
+ * A UTF-8 name's length takes two bytes, a Mac Roman name's one, so a 17-byte
+ * reply holds an empty Mac Roman name; a name past the reply's end fails.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_mapid_reads_the_name(void)
+{
+    static const unsigned char utf8[] = {
+        0, 6, 't', 'e', 's', 't', 0xc3, 0xa9
+    };
+    static const unsigned char roman[] = { 4, 't', 'e', 's', 't' };
+    static const unsigned char cut[] = { 0, 200, 'c', 'u', 't' };
+    static const unsigned char empty[] = { 0 };
+    static const unsigned char roman_cut[] = { 200, 'c', 'u', 't' };
+    struct session s;
+    struct id_mapping m;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    if (limit_reads(s.peer) != 0) {
+        ret = 2;
+    } else if (answer_mapid(&s, kUserIDToUTF8Name, utf8, sizeof(utf8), &m)
+               != 0 || m.result != 0 || strcmp(m.name, "test\xc3\xa9") != 0) {
+        ret = 3;
+    } else if (answer_mapid(&s, kUserIDToName, roman, sizeof(roman), &m)
+               != 0 || m.result != 0 || strcmp(m.name, "test") != 0) {
+        ret = 4;
+    } else if (answer_mapid(&s, kUserIDToUTF8Name, cut, sizeof(cut), &m)
+               != 0 || m.result == 0 || m.name[0] != '\0') {
+        ret = 5;
+    } else if (answer_mapid(&s, kUserIDToName, empty, sizeof(empty), &m)
+               != 0 || m.result != 0 || m.name[0] != '\0') {
+        ret = 6;
+    } else if (answer_mapid(&s, kUserIDToName, roman_cut, sizeof(roman_cut),
+                            &m) != 0 || m.result == 0 || m.name[0] != '\0') {
+        ret = 7;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief Find a volume's mapping on a thread of its own, as a mount does
+ *
+ * @param[in,out] volume  the volume
+ * @returns NULL
+ */
+static void *detect_mapping(void *volume)
+{
+    afp_detect_mapping(volume);
+    return NULL;
+}
+
+/*!
+ * @brief Run a mount's mapping against a server that gives the local user's ID
+ *
+ * @param[in]  local_name  the local user's name
+ * @param[in]  unix_privs  1 for a volume with UNIX privileges, 0 for one
+ *                         without, whose mapping asks the server nothing
+ * @param[in]  answer      the FPMapID reply's bytes after its DSI header, or
+ *                         NULL for a mapping that asks no name
+ * @param[in]  len         bytes of answer
+ * @param[out] mapping     receives the volume's mapping
+ * @returns 0, or -1 when a request does not arrive, carries another
+ *          command or comes unasked for, or a reply is not read
+ */
+static int map_against(const char *local_name, int unix_privs,
+                       const void *answer, uint32_t len, int *mapping)
+{
+    /* FPGetUserInfo's answers as afpd packs them: the bitmap, then the one
+     * ID it names, 1000. */
+    static const unsigned char user_id[] = {
+        0, kFPGetUserInfo_USER_ID, 0, 0, 0x03, 0xe8
+    };
+    static const unsigned char group_id[] = {
+        0, kFPGetUserInfo_PRI_GROUPID, 0, 0, 0x03, 0xe8
+    };
+    struct session s;
+    struct afp_volume volume;
+    struct dsi_header head;
+    pthread_t thread;
+    int rc = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return -1;
+    }
+
+    memset(&volume, 0, sizeof(volume));
+    volume.server = s.server;
+    volume.attributes = kSupportsUTF8Names;
+    volume.extra_flags = unix_privs ? VOLUME_EXTRA_FLAGS_VOL_SUPPORTS_UNIX : 0;
+    volume.mapping = AFP_MAPPING_UNKNOWN;
+    s.server->passwd.pw_uid = 1000;
+    snprintf(s.server->passwd_name, sizeof(s.server->passwd_name), "%s",
+             local_name);
+
+    if (limit_reads(s.peer) != 0
+            || pthread_create(&thread, NULL, detect_mapping, &volume) != 0) {
+        session_close(&s);
+        return -1;
+    }
+
+    if (unix_privs
+            && (answer_request(&s, afpGetUserInfo, user_id,
+                               sizeof(user_id)) != 0
+                || answer_request(&s, afpGetUserInfo, group_id,
+                                  sizeof(group_id)) != 0
+                || (answer != NULL
+                    && answer_request(&s, afpMapID, answer, len) != 0))) {
+        loop_disconnect(s.server);
+        rc = -1;
+    }
+
+    pthread_join(thread, NULL);
+
+    /* A mapping that asks no name leaves nothing more on the wire. */
+    if (rc == 0 && answer == NULL
+            && recv(s.peer, &head, sizeof(head), MSG_DONTWAIT) >= 0) {
+        rc = -1;
+    }
+
+    *mapping = volume.mapping;
+    session_close(&s);
+    return rc;
+}
+
+/*!
+ * @brief Only a server that names the local user's ID makes the IDs common
+ *
+ * The name must reach the mapping's buffer. No name is asked for a user the
+ * passwd database lacks, and nothing on a volume without UNIX privileges.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_mapping_finds_common_ids(void)
+{
+    static const unsigned char name[] = { 0, 4, 't', 'e', 's', 't' };
+    int mapping = AFP_MAPPING_UNKNOWN;
+
+    if (map_against("test", 1, name, sizeof(name), &mapping) != 0) {
+        return 1;
+    } else if (mapping != AFP_MAPPING_COMMON) {
+        return 2;
+    } else if (map_against("", 1, NULL, 0, &mapping) != 0) {
+        return 3;
+    } else if (mapping != AFP_MAPPING_LOGINIDS) {
+        return 4;
+    }
+
+    if (map_against("test", 0, NULL, 0, &mapping) != 0) {
+        return 5;
+    } else if (mapping != AFP_MAPPING_LOGINIDS) {
+        return 6;
+    }
+
+    return 0;
+}
+
+/*! An FPGetUserInfo on its own thread, and the IDs it gave. */
+struct user_info {
+    struct afp_server *server;
+    unsigned short bitmap;
+    unsigned int uid;
+    unsigned int gid;
+    int result;
+};
+
+/*!
+ * @brief Ask the server for the session's user's IDs the bitmap names
+ *
+ * @param[in,out] arg  the request, which receives the IDs and the result
+ * @returns NULL
+ */
+static void *get_user_info(void *arg)
+{
+    struct user_info *u = arg;
+    u->result = afp_getuserinfo(u->server, 1, 0, u->bitmap, &u->uid,
+                                &u->gid);
+    return NULL;
+}
+
+/*!
+ * @brief Ask for the user's IDs on a thread and answer with the given reply
+ *
+ * Both IDs start as 7, which an ID the call does not give keeps.
+ *
+ * @param[in]  s       the session
+ * @param[in]  bitmap  the IDs to ask for
+ * @param[in]  answer  the reply's bytes after its DSI header
+ * @param[in]  len     bytes of answer
+ * @param[out] u       receives the request, its IDs and its result
+ * @returns 0, or -1 when the request does not arrive or the reply is not
+ *          read
+ */
+static int answer_user_info(const struct session *s, unsigned short bitmap,
+                            const void *answer, uint32_t len,
+                            struct user_info *u)
+{
+    memset(u, 0, sizeof(*u));
+    u->server = s->server;
+    u->bitmap = bitmap;
+    u->uid = 7;
+    u->gid = 7;
+    u->result = 1;
+    return answer_call(s, afpGetUserInfo, answer, len, get_user_info, u);
+}
+
+/*!
+ * @brief An FPGetUserInfo reply's IDs are read as its bitmap packs them
+ *
+ * afpd puts each ID the bitmap names after it, the user's first; a reply
+ * without an ID asked for or named fails and leaves the caller's IDs.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_user_info_reads_the_ids(void)
+{
+    static const unsigned char user[] = {
+        0, kFPGetUserInfo_USER_ID, 0, 0, 0x03, 0xe8
+    };
+    static const unsigned char group[] = {
+        0, kFPGetUserInfo_PRI_GROUPID, 0, 0, 0x03, 0xe9
+    };
+    static const unsigned char both[] = {
+        0, kFPGetUserInfo_USER_ID | kFPGetUserInfo_PRI_GROUPID,
+        0, 0, 0x03, 0xe8, 0, 0, 0x03, 0xe9
+    };
+    static const unsigned char no_id[] = { 0, kFPGetUserInfo_USER_ID };
+    static const unsigned char one_id[] = {
+        0, kFPGetUserInfo_USER_ID | kFPGetUserInfo_PRI_GROUPID, 0, 0, 0x03, 0xe8
+    };
+    struct session s;
+    struct user_info u;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    if (limit_reads(s.peer) != 0) {
+        ret = 2;
+    } else if (answer_user_info(&s, kFPGetUserInfo_USER_ID, user,
+                                sizeof(user), &u) != 0
+               || u.result != 0 || u.uid != 1000 || u.gid != 7) {
+        ret = 3;
+    } else if (answer_user_info(&s, kFPGetUserInfo_PRI_GROUPID, group,
+                                sizeof(group), &u) != 0
+               || u.result != 0 || u.uid != 7 || u.gid != 1001) {
+        ret = 4;
+    } else if (answer_user_info(&s, kFPGetUserInfo_USER_ID
+                                | kFPGetUserInfo_PRI_GROUPID, both,
+                                sizeof(both), &u) != 0
+               || u.result != 0 || u.uid != 1000 || u.gid != 1001) {
+        ret = 5;
+    } else if (answer_user_info(&s, kFPGetUserInfo_USER_ID, no_id,
+                                sizeof(no_id), &u) != 0
+               || u.result == 0 || u.uid != 7 || u.gid != 7) {
+        ret = 6;
+    } else if (answer_user_info(&s, kFPGetUserInfo_USER_ID
+                                | kFPGetUserInfo_PRI_GROUPID, one_id,
+                                sizeof(one_id), &u) != 0
+               || u.result == 0 || u.uid != 7 || u.gid != 7) {
+        ret = 7;
+    } else if (answer_user_info(&s, kFPGetUserInfo_USER_ID, group,
+                                sizeof(group), &u) != 0
+               || u.result == 0 || u.uid != 7 || u.gid != 7) {
+        ret = 8;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A request sent with the default's sentinel waits the server's default
+ *
+ * The send turns the sentinel into the server's default before it looks
+ * at the wait's sign, which would otherwise take it for no limit.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_default_wait_is_the_servers(void)
+{
+    struct session s;
+    struct sender sender;
+    pthread_t thread;
+    int result = 1;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    s.server->dsi_default_timeout = 1;
+    sender.server = s.server;
+    sender.wait = DSI_DEFAULT_TIMEOUT;
+    sender.result = 1;
+
+    if (pthread_create(&thread, NULL, send_and_wait, &sender) != 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    /* The default of 1 s ends the wait well within 3 s. */
+    for (int i = 0; i < 300 && result == 1; i++) {
+        sleep_ms(10);
+        result = __atomic_load_n(&sender.result, __ATOMIC_ACQUIRE);
+    }
+
+    if (result == 1) {
+        ret = 3;
+    }
+
+    /* A sender that still waits would wait for ever; the disconnect fails
+     * it, so the join ends. */
+    loop_disconnect(s.server);
+    pthread_join(thread, NULL);
+
+    if (ret == 0 && result != ETIMEDOUT) {
+        ret = 4;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
 /*!
  * @brief Run the DSI receive path checks as TAP
  *
@@ -2713,10 +4002,22 @@ int main(int argc, char **argv)
              "a request without a wait never reconnects a disconnected server");
     TEST_int(utest_disconnect_keeps_an_answered_result(), 0,
              "a disconnect keeps an answered request's result");
+    TEST_int(utest_disconnect_leaves_the_next_connection_waiting(), 0,
+             "a disconnect of a replaced connection spares the next one's");
+    TEST_int(utest_busy_open_keeps_the_quantum(), 0,
+             "a busy refusal of a session's open leaves the quantum");
     TEST_int(utest_answer_as_the_wait_expires_is_the_result(), 0,
              "an answer landing as the wait expires is the result");
     TEST_int(utest_failed_request_waits_for_its_receiver(), 0,
              "a failed request stays its sender's until the receiver is done");
+    TEST_int(utest_slow_handler_is_the_result(), 0,
+             "a reply whose handler outlasts its sender's wait is the result");
+    TEST_int(utest_unanswered_request_fails(), 0,
+             "a request with no answer times out, one not written fails");
+    TEST_int(utest_unlimited_wait_is_answered(), 0,
+             "a request whose wait has no limit takes a late reply");
+    TEST_int(utest_unsent_request_takes_no_answer(), 0,
+             "a request answered before its frame goes out fails unsent");
     TEST_int(utest_tickle_waits_for_no_writer(), 0,
              "a tickle skips a frame on its way instead of waiting");
     TEST_int(utest_restart_keeps_its_reconnect(), 0,
@@ -2724,5 +4025,20 @@ int main(int argc, char **argv)
              "wipe");
     TEST_int(utest_tickle_waits_for_no_room(), 0,
              "a tickle skips a full socket instead of waiting");
+    TEST_int(utest_request_of_a_replaced_connection_fails_unsent(), 0,
+             "a request queued before a reconnect replaced its connection "
+             "fails unsent");
+    TEST_int(utest_interrupted_write_goes_on(), 0,
+             "a write a signal cuts short goes on where it stopped");
+    TEST_int(utest_write_waits_by_its_size(), 0,
+             "a write waits by its size, and gives up after it");
+    TEST_int(utest_default_wait_is_the_servers(), 0,
+             "a request with the default wait gives up after the server's");
+    TEST_int(utest_mapid_reads_the_name(), 0,
+             "an FPMapID reply's name is read where the reply puts it");
+    TEST_int(utest_mapping_finds_common_ids(), 0,
+             "a server that names the local user's ID makes the IDs common");
+    TEST_int(utest_user_info_reads_the_ids(), 0,
+             "an FPGetUserInfo reply's IDs are read as its bitmap packs them");
     return test_tap_finish();
 }
