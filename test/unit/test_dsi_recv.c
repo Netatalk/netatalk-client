@@ -251,6 +251,27 @@ static void queue_request(struct afp_server *server, struct dsi_request *r,
 }
 
 /*!
+ * @brief A DSI header that announces length payload bytes
+ *
+ * @param[in] flags    the header's flags
+ * @param[in] command  its DSI command
+ * @param[in] id       its request ID
+ * @param[in] length   payload bytes it announces
+ * @returns the header
+ */
+static struct dsi_header dsi_header_of(uint8_t flags, uint8_t command,
+                                       unsigned short id, uint32_t length)
+{
+    struct dsi_header header;
+    memset(&header, 0, sizeof(header));
+    header.flags = flags;
+    header.command = command;
+    header.requestid = htons(id);
+    header.length = htonl(length);
+    return header;
+}
+
+/*!
  * @brief Write a DSI header that announces length payload bytes
  *
  * @param[in] peer     the server's end of the session
@@ -263,12 +284,7 @@ static void queue_request(struct afp_server *server, struct dsi_request *r,
 static int send_header(int peer, uint8_t flags, uint8_t command,
                        unsigned short id, uint32_t length)
 {
-    struct dsi_header header;
-    memset(&header, 0, sizeof(header));
-    header.flags = flags;
-    header.command = command;
-    header.requestid = htons(id);
-    header.length = htonl(length);
+    struct dsi_header header = dsi_header_of(flags, command, id, length);
     return write(peer, &header, sizeof(header)) == (ssize_t) sizeof(header)
            ? 0 : -1;
 }
@@ -923,10 +939,40 @@ static void *receive_once(void *arg)
 }
 
 /*!
- * @brief Wait for a receiver's thread to reach its read
+ * @brief Run the receiver once its socket reports readable, as the loop
+ *        thread does
  *
- * The thread has started once it sets the flag, and is in its read 100 ms
- * later.
+ * The receiver never waits for bytes, so the thread waits for the socket
+ * first, 10 s at most. It polls a duplicate of the descriptor: the loop
+ * closes a connection's descriptor itself between its passes, but here a
+ * connect closes it at once, and another socket could take its number. A
+ * connection shut down before the poll ends it as one shut down during it.
+ *
+ * @param[in,out] arg  the call, whose result receives the receiver's
+ * @returns NULL
+ */
+static void *receive_when_ready(void *arg)
+{
+    struct receive_call *call = arg;
+    struct pollfd pfd;
+    pfd.fd = dup(__atomic_load_n(&call->server->fd, __ATOMIC_ACQUIRE));
+    pfd.events = POLLIN;
+    __atomic_store_n(&call->started, 1, __ATOMIC_RELEASE);
+    poll(&pfd, 1, 10000);
+
+    if (pfd.fd >= 0) {
+        close(pfd.fd);
+    }
+
+    __atomic_store_n(&call->result, afpc_dsi_recv(call->server),
+                     __ATOMIC_RELEASE);
+    return NULL;
+}
+
+/*!
+ * @brief Wait for a receiver's thread to reach its wait or its read
+ *
+ * The thread has started once it sets the flag, and is there 100 ms later.
  *
  * @param[in] call  the receiver's call
  */
@@ -938,6 +984,24 @@ static void wait_for_receiver(struct receive_call *call)
     }
 
     sleep_ms(100);
+}
+
+/*!
+ * @brief Wait for a receiver's thread to return, 2 s at most
+ *
+ * @param[in] call     the receiver's call
+ * @param[in] pending  the result the call holds until the receiver returns
+ * @returns the receiver's result, or pending
+ */
+static int receiver_result(struct receive_call *call, int pending)
+{
+    for (int i = 0; i < 200
+            && __atomic_load_n(&call->result, __ATOMIC_ACQUIRE) == pending;
+            i++) {
+        sleep_ms(10);
+    }
+
+    return __atomic_load_n(&call->result, __ATOMIC_ACQUIRE);
 }
 
 /*! A connect on its own thread, and its result. */
@@ -992,9 +1056,10 @@ static int utest_receive_without_descriptor_reads_nothing(void)
  * @brief A frame dropped as a connect replaces the connection leaves the
  *        next connection's stream alone
  *
- * The receiver's read of the old connection returns 0 once the connect has
- * shut it down, with nothing more from the peer, and the next connection's
- * first reply, which the loop reads, is still served.
+ * The receiver's wait for the old connection ends once the connect has shut
+ * it down, with nothing more from the peer; its pass reads none of the next
+ * connection's bytes, whose first reply, which the loop reads, is still
+ * served.
  *
  * @returns 0, or the number of the step that failed
  */
@@ -1042,7 +1107,7 @@ static int utest_drop_across_a_reconnect_keeps_the_next_stream(void)
     conn.server = s.server;
     conn.result = 1;
 
-    if (pthread_create(&receiver, NULL, receive_once, &call) != 0) {
+    if (pthread_create(&receiver, NULL, receive_when_ready, &call) != 0) {
         session_close(&s);
         listener_close(&l);
         return 4;
@@ -1060,17 +1125,12 @@ static int utest_drop_across_a_reconnect_keeps_the_next_stream(void)
 
     pthread_join(connector, NULL);
 
-    /* A receive that began before the connect returns once the connect has
-     * shut its descriptor down; one that began after it would read the next
-     * connection, which the close of the accepted end ends. */
-    for (int i = 0; i < 200
-            && __atomic_load_n(&call.result, __ATOMIC_ACQUIRE) == 1; i++) {
-        sleep_ms(10);
-    }
-
-    if (__atomic_load_n(&call.result, __ATOMIC_ACQUIRE) == 1) {
+    /* A receiver that waited before the connect wakes once the connect has
+     * shut its descriptor down, and its pass finds no bytes on either
+     * connection. */
+    if (receiver_result(&call, 1) == 1) {
         ret = 7;
-        /* A receive still in the old read ends at the peer's close. */
+        /* A receiver still in its wait ends at the peer's close. */
         shutdown(s.peer, SHUT_WR);
 
         if (conn.result == 0 && (next_peer = accept_within(l.fd)) >= 0) {
@@ -2380,53 +2440,82 @@ static int utest_answer_as_the_wait_expires_is_the_result(void)
     return ret;
 }
 
-/*! A reader's thread: one FPReadExt with a wait, into its own buffer. */
-struct reader {
+/*! A reply whose handler holds its request until the case lets it go. */
+struct held_reply {
+    int running; /*!< 1 while the handler holds the request */
+    int release; /*!< set by the case to let the handler go */
+};
+
+/*!
+ * @brief Handle a reply until the case lets the handler go, 10 s at most
+ *
+ * @param[in]     server  unused
+ * @param[in]     buf     unused
+ * @param[in]     size    unused
+ * @param[in,out] other   the held reply
+ * @returns 0
+ */
+static int handle_until_released(struct afp_server *server, char *buf,
+                                 unsigned int size, void *other)
+{
+    struct held_reply *reply = other;
+    (void) server;
+    (void) buf;
+    (void) size;
+    __atomic_store_n(&reply->running, 1, __ATOMIC_RELEASE);
+
+    for (int i = 0; i < 1000
+            && !__atomic_load_n(&reply->release, __ATOMIC_ACQUIRE); i++) {
+        sleep_ms(10);
+    }
+
+    __atomic_store_n(&reply->running, 0, __ATOMIC_RELEASE);
+    return 0;
+}
+
+/*! A sender whose reply's handler the case holds, and the send's result. */
+struct held_sender {
     struct afp_server *server;
-    char data[256];
-    struct afp_rx_buffer rx;
+    struct held_reply *reply;
     int result;
 };
 
 /*!
- * @brief Send a read and wait for its reply, as ll_read() does
+ * @brief Send a request whose reply's handler the case holds
  *
- * @param[in,out] arg  the reader, whose result receives the send's
+ * @param[in,out] arg  the held sender, whose result receives the send's
  * @returns NULL
  */
-static void *read_and_wait(void *arg)
+static void *send_and_be_held(void *arg)
 {
-    struct reader *r = arg;
+    struct held_sender *s = arg;
     struct dsi_header header;
-    r->rx.data = r->data;
-    r->rx.maxsize = sizeof(r->data);
-    r->rx.size = 0;
-    r->rx.errorcode = 0;
-    afpc_dsi_setup_header(r->server, &header, DSI_DSICommand);
-    __atomic_store_n(&r->result,
-                     afpc_dsi_send_with_reply(r->server, (char *) &header,
-                                              sizeof(header), 5, afpReadExt,
-                                              NULL, NULL, &r->rx),
+    afpc_dsi_setup_header(s->server, &header, DSI_DSICommand);
+    __atomic_store_n(&s->result,
+                     afpc_dsi_send_with_reply(s->server, (char *) &header,
+                                              sizeof(header), 5,
+                                              afpGetVolParms, s->reply,
+                                              handle_until_released, NULL),
                      __ATOMIC_RELEASE);
     return NULL;
 }
 
 /*!
- * @brief A request a disconnect fails while the receiver fills its buffer
+ * @brief A request a disconnect fails while the receiver handles its reply
  *        stays its sender's until the receiver lets it go
  *
- * The receiver blocks in the read that fills the buffer; the sender, woken
- * by the failure, returns only once that read is done.
+ * The receiver holds the request while the reply's handler runs; the
+ * sender, woken by the failure, returns only once the handler is done.
  *
  * @returns 0, or the number of the step that failed
  */
 static int utest_failed_request_waits_for_its_receiver(void)
 {
     struct session s;
-    struct reader reader;
+    struct held_reply reply = { 0, 0 };
+    struct held_sender held;
     struct receive_call call;
     struct dsi_header sent;
-    char payload[200];
     pthread_t sender;
     pthread_t receiver;
     int ret = 0;
@@ -2435,23 +2524,18 @@ static int utest_failed_request_waits_for_its_receiver(void)
         return 1;
     }
 
-    memset(&reader, 0, sizeof(reader));
-    reader.server = s.server;
-    reader.result = 1;
-    memset(payload, 'p', sizeof(payload));
+    held.server = s.server;
+    held.reply = &reply;
+    held.result = 1;
 
-    if (pthread_create(&sender, NULL, read_and_wait, &reader) != 0) {
+    if (pthread_create(&sender, NULL, send_and_be_held, &held) != 0) {
         session_close(&s);
         return 2;
     }
 
-    /* The first 50 bytes of the reply land; the rest are on their way. */
     if (read(s.peer, &sent, sizeof(sent)) != (ssize_t) sizeof(sent)
             || send_header(s.peer, DSI_REPLY, DSI_DSICommand,
-                           ntohs(sent.requestid), sizeof(payload)) != 0
-            || write(s.peer, payload, 50) != 50
-            || afpc_dsi_recv(s.server) != 0
-            || afpc_dsi_recv(s.server) != 0) {
+                           ntohs(sent.requestid), 0) != 0) {
         ret = 3;
         goto out;
     }
@@ -2460,25 +2544,30 @@ static int utest_failed_request_waits_for_its_receiver(void)
     call.started = 0;
     call.result = 1;
 
-    if (pthread_create(&receiver, NULL, receive_once, &call) != 0) {
+    if (pthread_create(&receiver, NULL, receive_when_ready, &call) != 0) {
         ret = 4;
         goto out;
     }
 
-    wait_for_receiver(&call);
+    /* The receiver holds the request in the reply's handler. */
+    for (int i = 0; i < 200
+            && !__atomic_load_n(&reply.running, __ATOMIC_ACQUIRE); i++) {
+        sleep_ms(10);
+    }
+
+    if (!__atomic_load_n(&reply.running, __ATOMIC_ACQUIRE)) {
+        ret = 5;
+    }
+
     afpc_dsi_fail_request_queue(s.server, -EIO,
                                 afp_server_connection_generation(s.server));
     sleep_ms(200);
 
-    if (__atomic_load_n(&reader.result, __ATOMIC_ACQUIRE) != 1) {
-        ret = 5;
-    }
-
-    if (write(s.peer, payload + 50, sizeof(payload) - 50)
-            != (ssize_t)(sizeof(payload) - 50) && ret == 0) {
+    if (ret == 0 && __atomic_load_n(&held.result, __ATOMIC_ACQUIRE) != 1) {
         ret = 6;
     }
 
+    __atomic_store_n(&reply.release, 1, __ATOMIC_RELEASE);
     pthread_join(receiver, NULL);
 out:
 
@@ -2489,10 +2578,8 @@ out:
 
     pthread_join(sender, NULL);
 
-    if (ret == 0 && reader.result != -EIO) {
+    if (ret == 0 && held.result != -EIO) {
         ret = 7;
-    } else if (ret == 0 && reader.rx.size != sizeof(payload)) {
-        ret = 8;
     }
 
     session_close(&s);
@@ -2610,11 +2697,12 @@ static int utest_slow_handler_is_the_result(void)
     if (recv(s.peer, &sent, sizeof(sent), MSG_WAITALL)
             != (ssize_t) sizeof(sent)) {
         ret = 3;
-    } else if (pthread_create(&receiving, NULL, receive_once, &call) != 0) {
+    } else if (pthread_create(&receiving, NULL, receive_when_ready,
+                              &call) != 0) {
         ret = 4;
     } else {
-        /* The receiver is in its read when the reply comes, so it finds
-         * the request within the sender's wait. */
+        /* The receiver waits for the socket when the reply comes, so it
+         * finds the request within the sender's wait. */
         wait_for_receiver(&call);
 
         if (send_header(s.peer, DSI_REPLY, DSI_DSICommand,
@@ -3807,6 +3895,666 @@ static int answer_user_info(const struct session *s, unsigned short bitmap,
 }
 
 /*!
+ * @brief Read a socket's receive low-water mark or receive buffer
+ *
+ * @param[in] fd    the socket
+ * @param[in] name  SO_RCVLOWAT or SO_RCVBUF
+ * @returns the option's bytes, or -1
+ */
+static int socket_option(int fd, int name)
+{
+    int value = 0;
+    socklen_t len = sizeof(value);
+    return getsockopt(fd, SOL_SOCKET, name, &value, &len) == 0 ? value : -1;
+}
+
+/*!
+ * @brief Tell whether a socket keeps a receive low-water mark it is given
+ *
+ * @param[in] fd  the socket, whose mark is one byte on return
+ * @returns 1 when it does, 0 otherwise
+ */
+static int keeps_low_water_mark(int fd)
+{
+    int mark = 2;
+    int kept = setsockopt(fd, SOL_SOCKET, SO_RCVLOWAT, &mark,
+                          sizeof(mark)) == 0
+               && socket_option(fd, SO_RCVLOWAT) == 2;
+    mark = 1;
+    setsockopt(fd, SOL_SOCKET, SO_RCVLOWAT, &mark, sizeof(mark));
+    return kept;
+}
+
+/*!
+ * @brief Say in the run's log that a case has nothing to check here
+ *
+ * The case still passes, as tap.h has no skip.
+ *
+ * @param[in] why  what the platform lacks for the case
+ */
+static void say_nothing_to_check(const char *why)
+{
+    printf("# nothing to check: %s\n", why);
+}
+
+/*!
+ * @brief Wait, 2 s at most, until a socket holds a number of bytes
+ *
+ * Over TCP a write reaches the other end some time after it returns.
+ *
+ * @param[in] fd     the socket
+ * @param[in] bytes  the bytes, 256 KiB at most
+ * @returns 1 once they wait, 0 otherwise
+ */
+static int bytes_wait(int fd, size_t bytes)
+{
+    static char peek[262144];
+    ssize_t queued = 0;
+
+    for (int i = 0; i < 200 && queued < (ssize_t) bytes; i++) {
+        sleep_ms(10);
+        queued = recv(fd, peek, min(bytes, sizeof(peek)),
+                      MSG_PEEK | MSG_DONTWAIT);
+    }
+
+    return queued >= (ssize_t) bytes;
+}
+
+/*!
+ * @brief Give a socket the largest receive buffer it takes of 512, 256 and
+ *        192 KiB
+ *
+ * @param[in] fd  the socket
+ * @returns the buffer the socket reports, or -1 when it takes none
+ */
+static int large_receive_buffer(int fd)
+{
+    static const int sizes[] = { 524288, 262144, 196608 };
+
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &sizes[i],
+                       sizeof(sizes[i])) == 0) {
+            return socket_option(fd, SO_RCVBUF);
+        }
+    }
+
+    return -1;
+}
+
+/*!
+ * @brief Write the header of a read reply and the first bytes of its
+ *        payload, and wait until they reach the session's socket
+ *
+ * @param[in] s        the session
+ * @param[in] id       the reply's request ID
+ * @param[in] length   payload bytes the header announces
+ * @param[in] payload  the payload
+ * @param[in] first    payload bytes to write with the header
+ * @returns 0, or -1
+ */
+static int send_reply_start(const struct session *s, unsigned short id,
+                            uint32_t length, const char *payload,
+                            size_t first)
+{
+    char frame[sizeof(struct dsi_header) + 1024];
+    struct dsi_header header = dsi_header_of(DSI_REPLY, DSI_DSICommand, id,
+                                             length);
+    size_t len = sizeof(header) + first;
+
+    if (first > sizeof(frame) - sizeof(header)) {
+        return -1;
+    }
+
+    memcpy(frame, &header, sizeof(header));
+    memcpy(frame + sizeof(header), payload, first);
+
+    if (write(s->peer, frame, len) != (ssize_t) len) {
+        return -1;
+    }
+
+    return bytes_wait(s->server->fd, len) ? 0 : -1;
+}
+
+/*!
+ * @brief With part of a reply's payload read, the connection waits for the
+ *        rest whole
+ *
+ * A read reply arrives in two pieces over TCP. After the first the socket
+ * holds back until the rest waits, and once the reply is whole it reports
+ * the first byte again. The reply is 8 KiB, so its rest fits half of a
+ * default receive buffer of 16 KiB, as OpenBSD's is.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_reply_remainder_is_awaited_whole(void)
+{
+    static char payload[8192];
+    static char got[sizeof(payload)];
+    const size_t first = 1000;
+    struct session s;
+    struct dsi_request pending;
+    struct afp_rx_buffer rx;
+    int rcvbuf;
+    int awaited;
+    int ret = 0;
+
+    if (tcp_session_open(&s) != 0) {
+        return 1;
+    }
+
+    if (!keeps_low_water_mark(s.server->fd)) {
+        say_nothing_to_check("the socket refuses a receive low-water mark");
+        session_close(&s);
+        return 0;
+    }
+
+    rcvbuf = socket_option(s.server->fd, SO_RCVBUF);
+
+    if (rcvbuf < 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    awaited = (int) min(sizeof(payload) - first, (size_t) rcvbuf / 2);
+
+    for (size_t i = 0; i < sizeof(payload); i++) {
+        payload[i] = (char)(i * 11 + 3);
+    }
+
+    memset(&rx, 0, sizeof(rx));
+    rx.data = got;
+    rx.maxsize = sizeof(got);
+    queue_request(s.server, &pending, 40, afpReadExt, &rx, NULL);
+
+    if (awaited < 2) {
+        ret = 3;
+    } else if (send_reply_start(&s, 40, sizeof(payload), payload, first) != 0
+               || receive_all(s.server) != 0 || rx.size != first) {
+        ret = 4;
+    } else if (socket_option(s.server->fd, SO_RCVLOWAT) != awaited) {
+        ret = 5;
+    } else if (write(s.peer, payload + first, sizeof(payload) - first)
+               != (ssize_t)(sizeof(payload) - first)
+               || receive_all(s.server) != 0) {
+        ret = 6;
+    } else if (pending.done_waiting != 1 || rx.size != sizeof(payload)
+               || memcmp(got, payload, sizeof(payload)) != 0) {
+        ret = 7;
+    } else if (socket_option(s.server->fd, SO_RCVLOWAT) != 1) {
+        ret = 8;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A receive pass that finds no bytes returns
+ *
+ * The loop calls the receiver for a socket that reported readable; one
+ * whose bytes are gone by then gives the pass nothing, and the pass does
+ * not wait for them.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_pass_without_bytes_returns(void)
+{
+    struct session s;
+    struct receive_call call;
+    pthread_t thread;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    call.server = s.server;
+    call.started = 0;
+    call.result = -9;
+
+    if (pthread_create(&thread, NULL, receive_once, &call) != 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    if (receiver_result(&call, -9) != 0) {
+        ret = 3;
+    }
+
+    /* A receiver that waits in its read ends with this frame. */
+    if (send_header(s.peer, DSI_REQUEST, DSI_DSITickle, 0, 0) != 0
+            && ret == 0) {
+        ret = 4;
+    }
+
+    pthread_join(thread, NULL);
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A receive pass takes the bytes that wait below the mark
+ *
+ * A socket reports readable below its mark once its buffer or the peer's
+ * window is full. The pass takes what waits and returns, and the reply
+ * ends whole once its last bytes arrive. The session is TCP, as a
+ * server's is: FreeBSD 15's local sockets give a read below the mark
+ * nothing.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_pass_below_the_mark_takes_what_waits(void)
+{
+    char payload[3000];
+    char got[sizeof(payload)];
+    const size_t first = 1000;
+    const size_t second = 500;
+    struct session s;
+    struct dsi_request pending;
+    struct afp_rx_buffer rx;
+    struct receive_call call;
+    pthread_t thread;
+    int ret = 0;
+
+    if (tcp_session_open(&s) != 0) {
+        return 1;
+    }
+
+    if (!keeps_low_water_mark(s.server->fd)) {
+        say_nothing_to_check("the socket refuses a receive low-water mark");
+        session_close(&s);
+        return 0;
+    }
+
+    for (size_t i = 0; i < sizeof(payload); i++) {
+        payload[i] = (char)(i * 17 + 9);
+    }
+
+    memset(&rx, 0, sizeof(rx));
+    rx.data = got;
+    rx.maxsize = sizeof(got);
+    queue_request(s.server, &pending, 41, afpReadExt, &rx, NULL);
+
+    /* The second piece then waits below the mark the first leaves. */
+    if (send_reply_start(&s, 41, sizeof(payload), payload, first) != 0
+            || receive_all(s.server) != 0 || rx.size != first
+            || socket_option(s.server->fd, SO_RCVLOWAT) <= (int) second) {
+        session_close(&s);
+        return 2;
+    }
+
+    call.server = s.server;
+    call.started = 0;
+    call.result = -9;
+
+    if (write(s.peer, payload + first, second) != (ssize_t) second
+            || !bytes_wait(s.server->fd, second)
+            || pthread_create(&thread, NULL, receive_once, &call) != 0) {
+        session_close(&s);
+        return 3;
+    }
+
+    if (receiver_result(&call, -9) != 0 || rx.size != first + second) {
+        ret = 4;
+    }
+
+    /* The rest ends a receiver that waits in its read for the mark. */
+    if (write(s.peer, payload + first + second,
+              sizeof(payload) - first - second)
+            != (ssize_t)(sizeof(payload) - first - second) && ret == 0) {
+        ret = 5;
+    }
+
+    pthread_join(thread, NULL);
+
+    if (ret == 0 && (receive_all(s.server) != 0 || pending.done_waiting != 1
+                     || rx.size != sizeof(payload)
+                     || memcmp(got, payload, sizeof(payload)) != 0)) {
+        ret = 6;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*! A read reply written on its own thread, as a peer sends it. */
+struct reply_writer {
+    int peer;
+    unsigned short id;
+    const char *payload;
+    size_t len;
+    size_t from; /*!< payload bytes the case wrote itself, with the header */
+    int result;  /*!< 0 once the whole reply is written */
+};
+
+/*!
+ * @brief Write a read reply: its header and payload, or the rest of a
+ *        payload the case began
+ *
+ * @param[in,out] arg  the writer, whose result receives 0 or -1
+ * @returns NULL
+ */
+static void *write_reply(void *arg)
+{
+    struct reply_writer *w = arg;
+    size_t done = w->from;
+    ssize_t n = 1;
+    int rc = w->from > 0 ? 0
+             : send_header(w->peer, DSI_REPLY, DSI_DSICommand, w->id,
+                           (uint32_t) w->len);
+
+    while (rc == 0 && done < w->len && n > 0) {
+        n = write(w->peer, w->payload + done, w->len - done);
+
+        if (n > 0) {
+            done += (size_t) n;
+        }
+    }
+
+    __atomic_store_n(&w->result, rc == 0 && done == w->len ? 0 : -1,
+                     __ATOMIC_RELEASE);
+    return NULL;
+}
+
+/*!
+ * @brief The socket holds back no more than half its receive buffer
+ *
+ * The peer's window admits no more than the receive buffer takes, so a
+ * socket that held back for more would never report readable. With a
+ * buffer of 32 KiB and most of a 256 KiB reply still to come, the mark is
+ * half the buffer the socket reports, where the buffer stays as given.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_mark_stays_within_half_the_buffer(void)
+{
+    static char payload[262144];
+    static char got[sizeof(payload)];
+    struct session s;
+    struct dsi_request pending;
+    struct afp_rx_buffer rx;
+    struct reply_writer writer;
+    pthread_t thread;
+    int size = 32768;
+    int ret = 0;
+
+    if (tcp_session_open(&s) != 0) {
+        return 1;
+    }
+
+    if (!keeps_low_water_mark(s.server->fd)) {
+        say_nothing_to_check("the socket refuses a receive low-water mark");
+        session_close(&s);
+        return 0;
+    }
+
+    if (setsockopt(s.server->fd, SOL_SOCKET, SO_RCVBUF, &size,
+                   sizeof(size)) != 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    size = socket_option(s.server->fd, SO_RCVBUF);
+
+    /* A socket that keeps a larger buffer than it was given holds back
+     * for a whole batch, which the buffer does not bound. */
+    if (size / 2 >= 65536) {
+        say_nothing_to_check("the receive buffer stays at 128 KiB or more");
+        session_close(&s);
+        return 0;
+    }
+
+    for (size_t i = 0; i < sizeof(payload); i++) {
+        payload[i] = (char)(i * 3 + 2);
+    }
+
+    memset(&rx, 0, sizeof(rx));
+    rx.data = got;
+    rx.maxsize = sizeof(got);
+    queue_request(s.server, &pending, 43, afpReadExt, &rx, NULL);
+    writer.peer = s.peer;
+    writer.id = 43;
+    writer.payload = payload;
+    writer.len = sizeof(payload);
+    writer.from = 0;
+    writer.result = 1;
+
+    if (pthread_create(&thread, NULL, write_reply, &writer) != 0) {
+        session_close(&s);
+        return 3;
+    }
+
+    /* The header and some of the payload wait before the first pass. */
+    if (!bytes_wait(s.server->fd, 1016) || afpc_dsi_recv(s.server) != 0
+            || afpc_dsi_recv(s.server) != 0 || rx.size == 0) {
+        ret = 4;
+    } else if (socket_option(s.server->fd, SO_RCVBUF) != size) {
+        /* macOS still sizes a buffer it was given, while bytes arrive. */
+        say_nothing_to_check("the kernel resizes the receive buffer");
+    } else if (socket_option(s.server->fd, SO_RCVLOWAT) != size / 2) {
+        ret = 5;
+    }
+
+    for (int i = 0; i < 500 && rx.size < sizeof(payload); i++) {
+        if (receive_all(s.server) != 0) {
+            ret = ret ? ret : 6;
+            break;
+        }
+    }
+
+    if (rx.size < sizeof(payload)) {
+        shutdown(s.server->fd, SHUT_RDWR);
+    }
+
+    pthread_join(thread, NULL);
+
+    if (ret == 0 && (writer.result != 0 || pending.done_waiting != 1
+                     || rx.size != sizeof(payload)
+                     || memcmp(got, payload, sizeof(payload)) != 0)) {
+        ret = 7;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief The socket holds back for 64 KiB of a long payload at most
+ *
+ * The loop takes a long payload while it arrives, a batch at a time: with
+ * a receive buffer of 192 KiB or more and a megabyte still to come, the
+ * mark is 64 KiB.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_long_payload_is_awaited_a_batch_at_a_time(void)
+{
+    static char payload[1024 * 1024];
+    static char got[sizeof(payload)];
+    const size_t first = 1000;
+    struct session s;
+    struct dsi_request pending;
+    struct afp_rx_buffer rx;
+    struct reply_writer writer;
+    pthread_t thread;
+    int size;
+    int ret = 0;
+
+    if (tcp_session_open(&s) != 0) {
+        return 1;
+    }
+
+    if (!keeps_low_water_mark(s.server->fd)) {
+        say_nothing_to_check("the socket refuses a receive low-water mark");
+        session_close(&s);
+        return 0;
+    }
+
+    size = large_receive_buffer(s.server->fd);
+
+    if (size < 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    /* A socket that keeps a buffer of two batches or less is bounded by
+     * its half, which another case checks. */
+    if (size / 2 <= 65536) {
+        say_nothing_to_check("the receive buffer stays at 128 KiB or less");
+        session_close(&s);
+        return 0;
+    }
+
+    for (size_t i = 0; i < sizeof(payload); i++) {
+        payload[i] = (char)(i * 7 + 5);
+    }
+
+    memset(&rx, 0, sizeof(rx));
+    rx.data = got;
+    rx.maxsize = sizeof(got);
+    queue_request(s.server, &pending, 44, afpReadExt, &rx, NULL);
+
+    if (send_reply_start(&s, 44, sizeof(payload), payload, first) != 0
+            || receive_all(s.server) != 0 || rx.size != first) {
+        session_close(&s);
+        return 3;
+    }
+
+    if (socket_option(s.server->fd, SO_RCVLOWAT) != 65536) {
+        ret = 4;
+    }
+
+    writer.peer = s.peer;
+    writer.id = 44;
+    writer.payload = payload;
+    writer.len = sizeof(payload);
+    writer.from = first;
+    writer.result = 1;
+
+    if (pthread_create(&thread, NULL, write_reply, &writer) != 0) {
+        session_close(&s);
+        return 5;
+    }
+
+    for (int i = 0; i < 500 && rx.size < sizeof(payload); i++) {
+        if (receive_all(s.server) != 0) {
+            ret = ret ? ret : 6;
+            break;
+        }
+    }
+
+    if (rx.size < sizeof(payload)) {
+        shutdown(s.server->fd, SHUT_RDWR);
+    }
+
+    pthread_join(thread, NULL);
+
+    if (ret == 0 && (writer.result != 0 || pending.done_waiting != 1
+                     || rx.size != sizeof(payload)
+                     || memcmp(got, payload, sizeof(payload)) != 0)) {
+        ret = 7;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A pass that took two batches of a payload leaves the socket
+ *        reporting its first byte
+ *
+ * A peer that sends faster than the loop reads has its bytes waiting when
+ * the loop is back, and holding back for more would only delay them. Once
+ * 128 KiB of a 2 MiB reply wait, one pass takes them, and the socket holds
+ * nothing back though the reply is not whole. A connection whose buffers
+ * cannot hold that much at once has no such pass to check.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_pass_of_two_batches_holds_nothing_back(void)
+{
+    static char payload[2 * 1024 * 1024];
+    static char got[sizeof(payload)];
+    const ssize_t two_batches = 2 * 65536;
+    struct session s;
+    struct dsi_request pending;
+    struct afp_rx_buffer rx;
+    struct reply_writer writer;
+    pthread_t thread;
+    int ret = 0;
+
+    if (tcp_session_open(&s) != 0) {
+        return 1;
+    }
+
+    if (!keeps_low_water_mark(s.server->fd)) {
+        say_nothing_to_check("the socket refuses a receive low-water mark");
+        session_close(&s);
+        return 0;
+    }
+
+    large_receive_buffer(s.server->fd);
+
+    for (size_t i = 0; i < sizeof(payload); i++) {
+        payload[i] = (char)(i * 5 + 1);
+    }
+
+    memset(&rx, 0, sizeof(rx));
+    rx.data = got;
+    rx.maxsize = sizeof(got);
+    queue_request(s.server, &pending, 42, afpReadExt, &rx, NULL);
+    writer.peer = s.peer;
+    writer.id = 42;
+    writer.payload = payload;
+    writer.len = sizeof(payload);
+    writer.from = 0;
+    writer.result = 1;
+
+    if (pthread_create(&thread, NULL, write_reply, &writer) != 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    /* The header and two batches wait before the first pass. */
+    if (bytes_wait(s.server->fd, (size_t) two_batches + 16)) {
+        /* The header's pass, then the pass that takes what waits. */
+        if (afpc_dsi_recv(s.server) != 0 || afpc_dsi_recv(s.server) != 0) {
+            ret = 3;
+        } else if (rx.size < (unsigned int) two_batches) {
+            ret = 4;
+        } else if (rx.size < sizeof(payload)
+                   && socket_option(s.server->fd, SO_RCVLOWAT) != 1) {
+            ret = 5;
+        }
+    } else {
+        say_nothing_to_check("the connection never holds two batches");
+    }
+
+    /* The rest, which also ends the writer. */
+    for (int i = 0; i < 500 && rx.size < sizeof(payload); i++) {
+        if (receive_all(s.server) != 0) {
+            ret = ret ? ret : 6;
+            break;
+        }
+    }
+
+    if (rx.size < sizeof(payload)) {
+        shutdown(s.server->fd, SHUT_RDWR);
+    }
+
+    pthread_join(thread, NULL);
+
+    if (ret == 0 && (writer.result != 0 || pending.done_waiting != 1
+                     || rx.size != sizeof(payload)
+                     || memcmp(got, payload, sizeof(payload)) != 0)) {
+        ret = 7;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
  * @brief An FPGetUserInfo reply's IDs are read as its bitmap packs them
  *
  * afpd puts each ID the bitmap names after it, the user's first; a reply
@@ -4038,6 +4786,18 @@ int main(int argc, char **argv)
              "an FPMapID reply's name is read where the reply puts it");
     TEST_int(utest_mapping_finds_common_ids(), 0,
              "a server that names the local user's ID makes the IDs common");
+    TEST_int(utest_reply_remainder_is_awaited_whole(), 0,
+             "a reply read in part is awaited whole");
+    TEST_int(utest_pass_without_bytes_returns(), 0,
+             "a receive pass that finds no bytes returns");
+    TEST_int(utest_pass_below_the_mark_takes_what_waits(), 0,
+             "a receive pass takes the bytes that wait below the mark");
+    TEST_int(utest_mark_stays_within_half_the_buffer(), 0,
+             "the socket holds back no more than half its receive buffer");
+    TEST_int(utest_long_payload_is_awaited_a_batch_at_a_time(), 0,
+             "a long payload is awaited a batch at a time");
+    TEST_int(utest_pass_of_two_batches_holds_nothing_back(), 0,
+             "a pass that took two batches holds nothing back");
     TEST_int(utest_user_info_reads_the_ids(), 0,
              "an FPGetUserInfo reply's IDs are read as its bitmap packs them");
     return test_tap_finish();
