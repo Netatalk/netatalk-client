@@ -1334,21 +1334,25 @@ static void afpc_dsi_release_request(struct afp_server *server,
     pthread_mutex_unlock(&server->request_queue_mutex);
 }
 
-/* afpc_dsi_read()'s answer for a connection replaced during the read. */
-#define DSI_READ_REPLACED (-2)
+/* afpc_dsi_read()'s answer for a read that gives the pass no bytes: the
+ * connection was replaced during it, or none waited. */
+#define DSI_READ_NONE (-2)
 
 /*!
- * @brief Read from the connection a receive began on
+ * @brief Take the bytes that wait on the connection a receive began on
  *
- * A read a signal cut short is retried. Bytes read after a connect has
- * replaced the connection belong to no stream this side still follows.
+ * The read never waits: a socket reports readable below its mark once its
+ * buffer fills, and a read waiting there for the mark is not woken by the
+ * fewer bytes it lacks, which would hold the loop thread. Bytes read after
+ * a connect has replaced the connection belong to no stream this side still
+ * follows.
  *
  * @param[in]  server      server whose stream to read
  * @param[in]  fd          the connection's descriptor
  * @param[in]  generation  the connection's generation
  * @param[out] buf         receives the bytes
  * @param[in]  len         bytes to read at most
- * @returns what read() returns, or DSI_READ_REPLACED
+ * @returns what recv() returns, or DSI_READ_NONE
  */
 static ssize_t afpc_dsi_read(struct afp_server *server, int fd,
                              unsigned int generation, void *buf, size_t len)
@@ -1356,14 +1360,72 @@ static ssize_t afpc_dsi_read(struct afp_server *server, int fd,
     ssize_t ret;
 
     do {
-        ret = read(fd, buf, len);
+        ret = recv(fd, buf, len, MSG_DONTWAIT);
     } while (ret < 0 && errno == EINTR);
 
-    if (afp_server_connection_generation(server) != generation) {
-        return DSI_READ_REPLACED;
+    if (afp_server_connection_generation(server) != generation
+            || (ret < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))) {
+        return DSI_READ_NONE;
     }
 
     return ret;
+}
+
+/* The bytes of a payload a connection gathers before the loop wakes for
+ * them, while they arrive slower than the loop takes them. */
+#define DSI_RX_BATCH 65536
+
+/*!
+ * @brief Have the socket report readable once the bytes the next pass needs
+ *        are there
+ *
+ * A pass for each segment of a payload costs the loop thread a wakeup and a
+ * read. With part of a payload taken, the socket holds back for the rest:
+ * at most DSI_RX_BATCH, so the loop takes a long payload while it arrives,
+ * and at most half the receive buffer, which the peer's window always
+ * admits. Between frames, and after a pass that took two batches, whose
+ * bytes arrive faster than the loop takes them, it reports the first byte.
+ *
+ * @param[in,out] server  server whose receive state names the bytes awaited
+ * @param[in]     fd      the connection's descriptor
+ * @param[in]     took    bytes the pass took
+ */
+static void afpc_dsi_await(struct afp_server *server, int fd, uint64_t took)
+{
+    const struct dsi_header *header = (void *) server->incoming_buffer;
+    size_t awaited = 1;
+    int rcvbuf = 0;
+    socklen_t len = sizeof(rcvbuf);
+    int mark;
+
+    if (server->discard_remaining > 0) {
+        awaited = min(server->discard_remaining, (size_t) server->bufsize);
+    } else if ((size_t) server->data_read >= sizeof(*header)) {
+        size_t taken = server->stream_read + (size_t) server->data_read
+                       - sizeof(*header);
+
+        if (taken > 0) {
+            awaited = ntohl(header->length) - taken;
+        }
+    }
+
+    if (awaited > 1) {
+        if (took >= 2 * DSI_RX_BATCH
+                || getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, &len) != 0) {
+            awaited = 1;
+        } else {
+            awaited = min(min(awaited, (size_t) DSI_RX_BATCH),
+                          (size_t) rcvbuf / 2);
+        }
+    }
+
+    mark = (int) max(awaited, (size_t) 1);
+
+    if (mark != server->rx_lowat
+            && setsockopt(fd, SOL_SOCKET, SO_RCVLOWAT, &mark,
+                          sizeof(mark)) == 0) {
+        server->rx_lowat = mark;
+    }
 }
 
 /*!
@@ -1424,7 +1486,7 @@ static int afpc_dsi_recv_frame(struct afp_server *server, int fd,
         ret = afpc_dsi_read(server, fd, generation, server->incoming_buffer,
                             amount_to_read);
 
-        if (ret == DSI_READ_REPLACED) {
+        if (ret == DSI_READ_NONE) {
             return 0;
         }
 
@@ -1458,7 +1520,7 @@ static int afpc_dsi_recv_frame(struct afp_server *server, int fd,
                             server->incoming_buffer + server->data_read,
                             amount_to_read);
 
-        if (ret == DSI_READ_REPLACED) {
+        if (ret == DSI_READ_NONE) {
             return 0;
         }
 
@@ -1590,7 +1652,7 @@ gotenough:
         ret = afpc_dsi_read(server, fd, generation, buf->data + buf->size,
                             newmax);
 
-        if (ret == DSI_READ_REPLACED) {
+        if (ret == DSI_READ_NONE) {
             return 0;
         }
 
@@ -1714,7 +1776,7 @@ gotenough:
                             server->incoming_buffer + server->data_read,
                             amount_to_read);
 
-        if (ret == DSI_READ_REPLACED) {
+        if (ret == DSI_READ_NONE) {
             return 0;
         }
 
@@ -1896,7 +1958,8 @@ error:
  * connection starts it afresh. The descriptor and generation are read
  * together, so a connect that has taken the descriptor or replaced the
  * connection meanwhile leaves the call nothing to read, as does a
- * disconnect that has taken it.
+ * disconnect that has taken it. The pass never waits for bytes, and leaves
+ * the socket holding back for those the next pass needs.
  *
  * @param[in,out] server  server whose descriptor is ready
  * @returns 0, or -1 for a stream that has ended or lost its framing
@@ -1906,6 +1969,7 @@ int afpc_dsi_recv(struct afp_server * server)
     struct dsi_request *found = NULL;
     unsigned int generation = afp_server_connection_generation(server);
     int fd = __atomic_load_n(&server->fd, __ATOMIC_ACQUIRE);
+    uint64_t before;
     int ret;
 
     if (fd < 0 || afp_server_connection_generation(server) != generation) {
@@ -1916,13 +1980,19 @@ int afpc_dsi_recv(struct afp_server * server)
         server->data_read = 0;
         server->discard_remaining = 0;
         server->stream_read = 0;
+        server->rx_lowat = 1;
         server->rx_generation = generation;
     }
 
+    before = server->stats.rx_bytes;
     ret = afpc_dsi_recv_frame(server, fd, generation, &found);
 
     if (found) {
         afpc_dsi_release_request(server, found);
+    }
+
+    if (ret == 0) {
+        afpc_dsi_await(server, fd, server->stats.rx_bytes - before);
     }
 
     return ret;
