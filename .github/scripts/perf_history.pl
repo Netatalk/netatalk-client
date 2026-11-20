@@ -66,13 +66,12 @@
 # that of "DEN.<rest>", both from the sections loaded in this run, and its
 # history is the same quotient at every stored PR whose two values carry
 # one timestamp, the mark of one merge, over the window of the other
-# stats. A zero on either side, a time below the millisecond, gives no
-# ratio. Table rows gain the current ratio, its delta from the historical
-# average and that average with its min and max; "≈" marks a ratio with a
-# side so small that its integer rounding alone moves it by over a tenth.
-# Each inline stat is followed by a line of its own with the same figures,
-# named after the stat with LABEL after its first word (Peak Read becomes
-# Peak AFP/SMB Read). LABEL (default "NUM/DEN") heads the ratio column.
+# stats. A zero on either side gives no ratio. Table rows gain the current
+# ratio, its delta from the historical average and that average with its
+# min and max. Each inline stat is followed by a line of its own with the
+# same figures, named after the stat with LABEL after its first word (Peak
+# Read becomes Peak AFP/SMB Read). LABEL (default "NUM/DEN") heads the
+# ratio column.
 # Keys matching --ratio-exclude get no ratio: a dash in the table, no
 # inline line; the per-operation time is the total over a constant count.
 # Nothing is stored: the history keeps the two measured series only.
@@ -150,10 +149,6 @@ sub load_history {
     for my $k (keys %hist) {
         $hist{$k} =
           [grep { defined $_->{pr} && defined $_->{value} && $_->{value} =~ /^-?\d+(?:\.\d+)?$/ } @{$hist{$k}}];
-        # 1 ms is the smallest runtime, as in lantest.
-        if ($k =~ /_ms$/) {
-            $_->{value} = 1 for grep { $_->{value} + 0 < 1 } @{$hist{$k}};
-        }
     }
     return \%hist;
 }
@@ -193,11 +188,15 @@ sub save_history {
     close $fh;
 }
 
-# Integers plain; otherwise one decimal from 10 up, two below.
+# Integers plain; otherwise one decimal from 10 up, two from 1 up, three
+# below, judged after rounding so 9.996 prints 10.0.
 sub fmt_value {
     my ($v) = @_;
     return sprintf('%d', $v) if $v == int($v);
-    return abs($v) >= 10 ? sprintf('%.1f', $v) : sprintf('%.2f', $v);
+    my $three = sprintf('%.3f', $v);
+    return $three if abs($three) < 1;
+    my $two = sprintf('%.2f', $v);
+    return abs($two) >= 10 ? sprintf('%.1f', $v) : $two;
 }
 
 # Ratios keep two decimals so 1.00 reads as parity at a glance.
@@ -285,16 +284,15 @@ sub ratio_keys {
     return ("$ratio->{num}.$rest", "$ratio->{den}.$rest");
 }
 
-# Current ratio of a key from this run's rows as (ratio, coarse): an empty
-# list when a side is missing or zero; coarse when a side is so small
-# that its integer rounding alone moves the ratio by more than a tenth.
+# Current ratio of a key from this run's rows; an empty list when a side
+# is missing or zero.
 sub current_ratio {
     my ($ratio, $current, $key) = @_;
     my ($num_key, $den_key) = ratio_keys($ratio, $key);
     my $num = $current->{$num_key};
     my $den = $current->{$den_key};
     return unless defined $num && defined $den && $num > 0 && $den > 0;
-    return ($num / $den, 0.5 / $num + 0.5 / $den > 0.1);
+    return $num / $den;
 }
 
 # Parse "SECTION=NUM/DEN[:LABEL]" ratio specs into section => spec.
@@ -395,7 +393,7 @@ sub baseline_delta {
 # across all sections, to its value.
 sub render_section {
     my ($rows, $hist, $pr, $adjust, $exclude_re, $ratio, $ratio_exclude, $current) = @_;
-    my (@table_rows, @inline_bits, $any_coarse);
+    my (@table_rows, @inline_bits);
     my $unit_hdr = '';
     my ($base_d, $base_mad);
     ($base_d, $base_mad) = baseline_delta($rows, $hist, $pr, $exclude_re)
@@ -403,18 +401,16 @@ sub render_section {
     for my $row (@$rows) {
         my ($render, $key, $name, $unit, $value) = @$row;
         my ($avg, $min, $max, $n) = hist_stats($hist, $key, $pr);
-        my $r      = $ratio && (!defined $ratio_exclude || $key !~ /$ratio_exclude/) ? $ratio : undef;
-        my @r_hist = $r ? ratio_hist_stats($hist, ratio_keys($r, $key), $pr)                  : ();
-        my ($r_cur, $r_coarse) = $r ? current_ratio($r, $current, $key) : ();
-        my $r_mark = $r_coarse ? "\x{2248}" : '';
-        $any_coarse ||= $r_coarse;
+        my $r       = $ratio && (!defined $ratio_exclude || $key !~ /$ratio_exclude/) ? $ratio : undef;
+        my @r_hist  = $r ? ratio_hist_stats($hist, ratio_keys($r, $key), $pr) : ();
+        my ($r_cur) = $r ? current_ratio($r, $current, $key) : ();
         if ($render eq 'inline') {
             my $stat = sprintf('**%s: %s %s**', $name, fmt_value($value), $unit);
             $stat .= fmt_hist_note(\&fmt_value, $value, $unit, $avg, $min, $max, $n)
               if defined $avg;
             push @inline_bits, $stat;
             if (defined $r_cur) {
-                my $r_stat = sprintf('**%s: %s%s**', ratio_name($name, $ratio->{label}), $r_mark, fmt_ratio($r_cur));
+                my $r_stat = sprintf('**%s: %s**', ratio_name($name, $ratio->{label}), fmt_ratio($r_cur));
                 $r_stat .= fmt_hist_note(\&fmt_ratio, $r_cur, '', @r_hist)
                   if @r_hist;
                 push @inline_bits, $r_stat;
@@ -441,7 +437,7 @@ sub render_section {
             }
             if ($ratio) {
                 my ($r_avg, $r_min, $r_max) = @r_hist;
-                push @cells, defined $r_cur ? $r_mark . fmt_ratio($r_cur) : "\x{2014}";
+                push @cells, defined $r_cur ? fmt_ratio($r_cur) : "\x{2014}";
                 push @cells,
                   defined $r_cur && defined $r_avg
                   ? fmt_delta($r_cur, $r_avg)
@@ -484,10 +480,6 @@ sub render_section {
                                  $base_d, $base_mad
             );
         }
-        $table_md .=
-            "\n\n_\x{2248}: one side of the ratio is so small that its integer rounding "
-          . "alone moves the ratio by more than 10%._"
-          if $any_coarse;
     }
     # One stat per line: markdown needs the trailing double-space for a
     # line break inside the same paragraph.

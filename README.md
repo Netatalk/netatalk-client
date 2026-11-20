@@ -133,7 +133,8 @@ Use *afpcmd* in batch mode to download files from the AFP share to the local mac
 benchmarks `afp_lantest` and `afp_speedtest` as POSIX file operations on any
 mounted filesystem, so a FUSE mount of an AFP volume, a CIFS mount of a Samba
 share and a local directory are measured with the same commands and charted
-with the same Netatalk scripts:
+with the scripts in `contrib/scripts`, which read the CSV files of
+`afp_lantest -c` and `afp_speedtest -c` too:
 
     vfs_lantest -c -n 20 -P /mnt/afpfs > lantest.csv
     vfs_speedtest -c -n 20 -f Read,Write,Copy,ServerCopy \

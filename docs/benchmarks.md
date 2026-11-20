@@ -8,11 +8,11 @@ behind the mount. What they measure is the whole path from the system call to
 the server and back: the kernel, the filesystem client and the server.
 
 They run the workloads of the Netatalk server benchmarks `afp_lantest` and
-`afp_speedtest`, with the same test set, geometry, statistics and CSV layout.
-The server tools issue AFP requests and need an AFP server; these two issue
-file operations and need a directory. The same Netatalk scripts chart both,
-so a server measured directly and a server measured through a mount can be
-compared.
+`afp_speedtest`, with the same test set, geometry, statistics and CSV columns;
+`vfs_lantest` gives its times to the microsecond. The server tools issue AFP
+requests and need an AFP server; these two issue file operations and need a
+directory. The same chart scripts read both, so a server measured directly and
+a server measured through a mount can be compared.
 
 ## Building
 
@@ -124,8 +124,9 @@ delete it on exit, also after an error.
 
 ## Charts
 
-The CSV layouts are those of `afp_lantest -c` and `afp_speedtest -c`, so the
-chart scripts in the Netatalk repository read them:
+The chart scripts in
+[contrib/scripts](https://github.com/Netatalk/netatalk-client/tree/main/contrib/scripts)
+read these CSV files and those of `afp_lantest -c` and `afp_speedtest -c`:
 
 ```sh
 perl contrib/scripts/plot_lantest.pl lantest.csv -o lantest
