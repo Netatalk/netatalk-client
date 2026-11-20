@@ -17,9 +17,9 @@
  * against a directory, so a mounted filesystem is measured end to end: the
  * kernel, the filesystem client (afpfsd and libafpclient on a FUSE mount, the
  * CIFS client on an SMB mount) and the server. Test set, order, statistics
- * and CSV layout are those of afp_lantest, which the Netatalk chart and
- * dashboard scripts read. Every data read and write opens with O_DIRECT so
- * the kernel page cache never answers for the filesystem; -D keeps the page
+ * and CSV columns are those of afp_lantest, with the times in milliseconds
+ * to three decimals. Every data read and write opens with O_DIRECT so the
+ * kernel page cache never answers for the filesystem; -D keeps the page
  * cache for a plain filesystem, which rejects O_DIRECT for the 1024-byte
  * transfers.
  */
@@ -146,7 +146,7 @@ static bool testdir_created;
 static bool removing;
 static char *big_buf;
 static char *small_buf;
-/*! samples[iteration * NUM_TESTS + test], in ms, valid when valid[] is set */
+/*! samples[iteration * NUM_TESTS + test], in µs, valid when valid[] is set */
 static uint64_t *samples;
 static bool *valid;
 
@@ -284,35 +284,53 @@ static void list_names(const char *path)
 }
 
 /*!
+ * @brief Bytes of a UTF-8 string beyond its width in columns
+ *
+ * printf pads by bytes, and "±" and "×" take two each.
+ *
+ * @param[in] s  the string
+ *
+ * @returns the count of its continuation bytes
+ */
+static int utf8_extra(const char *s)
+{
+    int extra = 0;
+
+    for (size_t i = 0; s[i] != '\0'; i++) {
+        if (((unsigned char)s[i] & 0xC0) == 0x80) {
+            extra++;
+        }
+    }
+
+    return extra;
+}
+
+/*!
  * @brief Store the timed region of one test and print its progress line
  *
- * A run under a millisecond counts as one: the dashboard's log axis has no 0.
+ * A run under a microsecond counts as one: the dashboard's log axis has no 0.
  *
  * @param[in] test       test index
  * @param[in] iteration  iteration index, from 0
  */
 static void record(int test, int iteration)
 {
-    uint64_t ms = vfs_timer_us() / 1000;
+    uint64_t us = vfs_timer_us();
+    int width = NAME_WIDTH + utf8_extra(test_names[test]);
 
-    if (ms == 0) {
-        ms = 1;
+    if (us == 0) {
+        us = 1;
     }
 
-    samples[iteration * NUM_TESTS + test] = ms;
+    samples[iteration * NUM_TESTS + test] = us;
     valid[iteration * NUM_TESTS + test] = true;
-    fprintf(stderr, "Run %d => %-*.*s %6" PRIu64 " ms", iteration + 1,
-            NAME_WIDTH, NAME_WIDTH, test_names[test], ms);
+    fprintf(stderr, "Run %d => %-*.*s %10.3f ms", iteration + 1,
+            width, width, test_names[test], (double)us / 1000.0);
 
     if (test == TEST_WRITE_BIG || test == TEST_READ_BIG) {
         uintmax_t mib = (uintmax_t)(rwsize / MIB);
-
-        if (ms > 0) {
-            fprintf(stderr, " for %ju MiB (avg. %ju MiB/s)", mib,
-                    (uintmax_t)(mib * 1000 / ms));
-        } else {
-            fprintf(stderr, " for %ju MiB", mib);
-        }
+        fprintf(stderr, " for %ju MiB (avg. %ju MiB/s)", mib,
+                (uintmax_t)(mib * 1000000 / us));
     }
 
     fprintf(stderr, "\n");
@@ -955,8 +973,7 @@ static void test_stats(int test, struct stats *st)
         vfs_fatal_msg("cannot allocate the sample table");
     }
 
-    /* A 0 ms sample is data: afp_lantest zeroes samples to drop outliers
-     * and so has to skip zeros, this tool flags them in valid[]. */
+    /* Outliers are cleared in valid[], not zeroed as in afp_lantest. */
     for (int it = 0; it < iterations; it++) {
         if (valid[it * NUM_TESTS + test]) {
             sorted[st->count++] = samples[it * NUM_TESTS + test];
@@ -1009,8 +1026,10 @@ static void display_results(void)
         printf("\nNetatalk Client Lantest Results (mean and standard deviation "
                "across %d iteration%s)\n", iterations,
                iterations == 1 ? "" : "s");
-        printf("%-66s %7s %6s %6s\n", "Test", "Time_ms", "Time±", "MB/s");
-        printf("%-66s %7s %6s %6s\n", DASHES, "-------", "------", "------");
+        printf("%-66s %10s %*s %6s\n", "Test", "Time_ms",
+               8 + utf8_extra("Time±"), "Time±", "MB/s");
+        printf("%-66s %10s %8s %6s\n", DASHES, "----------", "--------",
+               "------");
     }
 
     for (int test = 0; test < NUM_TESTS; test++) {
@@ -1025,36 +1044,39 @@ static void display_results(void)
 
         if ((test == TEST_WRITE_BIG || test == TEST_READ_BIG)
                 && st.mean > 0) {
-            mbs = (uint64_t)(rwsize / MIB) * 1000 / st.mean;
+            mbs = (uint64_t)(rwsize / MIB) * 1000000 / st.mean;
         }
 
         if (csv_output) {
-            printf("%s,%" PRIu64 ",%.1f,%" PRIu64 ",%" PRIu64 ",%" PRIu64
-                   ",%" PRIu64 "\n", test_names[test], st.mean, st.stddev,
-                   st.min, st.max, st.median, mbs);
+            printf("%s,%.3f,%.3f,%.3f,%.3f,%.3f,%" PRIu64 "\n",
+                   test_names[test], (double)st.mean / 1000.0,
+                   st.stddev / 1000.0, (double)st.min / 1000.0,
+                   (double)st.max / 1000.0, (double)st.median / 1000.0, mbs);
         } else {
-            printf("%-66s %7" PRIu64 " %6.1f %6" PRIu64 "\n", test_names[test],
-                   st.mean, st.stddev, mbs);
+            printf("%-*s %10.3f %8.3f %6" PRIu64 "\n",
+                   NAME_WIDTH + utf8_extra(test_names[test]), test_names[test],
+                   (double)st.mean / 1000.0, st.stddev / 1000.0, mbs);
         }
 
-        sum_mean += (double)st.mean;
-        sum_median += (double)st.median;
+        sum_mean += (double)st.mean / 1000.0;
+        sum_median += (double)st.median / 1000.0;
         total_ops += test_ops[test];
     }
 
     if (csv_output) {
-        printf("Sum of all file ops = %d,%.0f,,,,,\n", total_ops, sum_mean);
+        printf("Sum of all file ops = %d,%.3f,,,,,\n", total_ops, sum_mean);
         printf("# Aggregate,Value\n");
         printf("Total file ops,%d\n", total_ops);
-        printf("Total median time (ms),%.0f\n", sum_median);
+        printf("Total median time (ms),%.3f\n", sum_median);
         printf("Avg time per file op (µs),%.0f\n",
                sum_median * 1000.0 / (double)total_ops);
     } else {
         char sum_row[64];
         snprintf(sum_row, sizeof(sum_row), "Sum of all file ops = %d",
                  total_ops);
-        printf("%-66s %7s %6s %6s\n", DASHES, "-------", "------", "------");
-        printf("%-66s %7.0f\n", sum_row, sum_mean);
+        printf("%-66s %10s %8s %6s\n", DASHES, "----------", "--------",
+               "------");
+        printf("%-66s %10.3f\n", sum_row, sum_mean);
         printf("\nAverage time per file op: %.0f µs (from per-test medians)\n",
                sum_median * 1000.0 / (double)total_ops);
     }

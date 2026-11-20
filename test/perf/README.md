@@ -11,8 +11,8 @@ and then against the Samba (SMB) CIFS mount of the same directory.
 ## Pieces
 
 - `vfs_lantest.c`: the `afp_lantest` test set as POSIX calls. Same test
-  names, order, geometry, statistics and CSV layout, so the chart and
-  history scripts read its output.
+  names, order, geometry, statistics and CSV columns, the times to the
+  microsecond, so the chart and history scripts read its output.
 - `vfs_speedtest.c`: the `afp_speedtest` Read, Write, Copy and ServerCopy
   sweeps as POSIX calls, same runs, warmup, statistics and CSV layout.
 - `vfs_common.[ch]`: checked file operations, aligned buffers, the timer
