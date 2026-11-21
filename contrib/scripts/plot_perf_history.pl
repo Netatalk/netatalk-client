@@ -154,10 +154,6 @@ sub load_history {
     for my $k (keys %hist) {
         $hist{$k} =
           [grep { defined $_->{pr} && defined $_->{value} && $_->{value} =~ /^-?\d+(?:\.\d+)?$/ } @{$hist{$k}}];
-        # 1 ms is the smallest runtime, as in lantest: the log axis has no 0.
-        if ($k =~ /_ms$/) {
-            $_->{value} = 1 for grep { $_->{value} + 0 < 1 } @{$hist{$k}};
-        }
     }
     return \%hist;
 }
@@ -332,10 +328,9 @@ sub plot {
 
     # Log y-axis with the same explicit per-decade tic list as
     # plot_lantest.pl, so sub-decade values stay readable to a linear eye.
-    # Floor: 0.1 ms for runtimes; a ratio may sit far below 1.
-    my $y_floor = $ratio ? 0.001 : 0.1;
-    my $y_lo    = $data_min / 1.6;
-    $y_lo = $y_floor if $y_lo < $y_floor;
+    # Floor: 0.001, the microsecond of a runtime, or a ratio far below 1.
+    my $y_lo = $data_min / 1.6;
+    $y_lo = 0.001 if $y_lo < 0.001;
     my $y_hi = $data_max * 1.6;
     my @ytics;
     my $dec = 10**int((log($y_lo) / log(10)) - 1);
@@ -490,7 +485,7 @@ sub main {
         }
         # The quotient of the two sides at each PR, keyed and labelled by
         # the PREFIX series; equal timestamps mark one merge, so one run,
-        # and a zero is a time below the millisecond.
+        # and a zero on either side gives no ratio.
         my $num_key = $ratio_prefix . substr($key, length $prefix);
         my %num     = map { $_->{pr} => $_ } @{$hist->{$num_key} // []};
         my @both    = grep {

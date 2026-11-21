@@ -17,18 +17,22 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 
-# afp_lantest, run with -c, prints one summary row per test:
+# afp_lantest and vfs_lantest, run with -c, print a header and one summary
+# row per test, afp_lantest in whole milliseconds and vfs_lantest to three
+# decimals:
 #
 #     Test,Time_ms,Time±,Min_ms,Max_ms,Median_ms,MB/s
 #     Stat 2000 files [6,000 AFP ops],260,3.6,258,263,260,0
+#     Stat (lookup+getparams) 2000 files [stat x2000],15.873,0.412,15.201,16.940,15.802,0
 #     ...
 #     Sum of all AFP OPs = 80686,4921,,
 #
 # Two parsing wrinkles handled here:
-#   * test names contain commas, so rows are parsed right-anchored — the
-#     numeric columns are the trailing fields, the name is everything
-#     before them.
-#   * a trailing "Sum of all AFP OPs" row is ignored.
+#   * columns are found by their header names, so afp_lantest's
+#     I/O-monitoring layout, four AFPD_ columns before MB/s, reads too.
+#   * test names contain commas, so a row's numeric fields are taken from
+#     its end, one per header column after Test; a row with an empty
+#     field, such as the sum row, is skipped.
 #
 # Each test becomes a candlestick: thin wick = min..max, box = mean ± stddev,
 # horizontal line = median. Y is time in ms (log scale, since tests span ~2ms
@@ -56,9 +60,14 @@ my $COV_COLOR = '#ff7f0e';
 my $WIDTH_PX  = 1430;
 my $HEIGHT_PX = 590;
 
-# Match the 6 trailing numeric fields so a comma-containing test name (group
-# 1) is left intact: Time_ms,Time±,Min_ms,Max_ms,Median_ms,MB/s.
-my $ROW_TAIL_RE = qr/^(.+),(\d+),([\d.]+),(\d+),(\d+),(\d+),(\d+)\s*$/;
+# The header column each candle field reads.
+my %COLUMN = (
+              mean   => 'Time_ms',
+              stddev => 'Time±',
+              min    => 'Min_ms',
+              max    => 'Max_ms',
+              median => 'Median_ms',
+);
 
 # Map each lantest test (matched by a substring of its full name) to a short
 # axis label. Order matters: first matching substring wins.
@@ -104,24 +113,27 @@ sub short_label {
     return $stripped;
 }
 
-# Parse afp_lantest CSV into per-test hashes in file (execution) order.
+# Parse a lantest CSV into per-test hashes in file (execution) order.
 sub parse_csv {
     my ($path) = @_;
-    my @tests;
+    my (@tests, @cols);
     open my $fh, '<', $path or die "cannot open $path: $!\n";
     while (my $line = <$fh>) {
         $line =~ s/^\s+|\s+$//g;
-        next if $line eq '' || index($line, 'Sum of all AFP OPs') == 0;
-        next unless $line =~ $ROW_TAIL_RE;
-        push @tests, {
-                      name   => $1,
-                      label  => short_label($1),
-                      mean   => $2 + 0,
-                      stddev => $3 + 0,
-                      min    => $4 + 0,
-                      max    => $5 + 0,
-                      median => $6 + 0,
-        };
+        if (index($line, 'Test,') == 0) {
+            (undef, @cols) = split /,/, $line;
+            my %have    = map  { $_ => 1 } @cols;
+            my @missing = grep { !$have{$_} } sort values %COLUMN;
+            die "$path: the header lacks @missing\n" if @missing;
+            next;
+        }
+        my @fields = split /,/, $line, -1;
+        next unless @cols && @fields > @cols;
+        my %v;
+        @v{@cols} = splice @fields, -@cols;
+        next if grep { !/^\d+(?:\.\d+)?$/ } values %v;
+        my $name = join ',', @fields;
+        push @tests, {name => $name, label => short_label($name), map { $_ => $v{$COLUMN{$_}} + 0 } keys %COLUMN};
     }
     close $fh;
     return \@tests;
@@ -186,8 +198,9 @@ sub plot {
         $data_min = $t->{min} if $t->{min} < $data_min;
         $data_max = $t->{max} if $t->{max} > $data_max;
     }
+    # Floored at the microsecond, the resolution of vfs_lantest's times.
     my $y_lo = $data_min / 1.6;
-    $y_lo = 0.1 if $y_lo < 0.1;
+    $y_lo = 0.001 if $y_lo < 0.001;
     # The candle-max labels sit a fixed character height above the tallest
     # candle, so on a log axis they occupy more *decades* of headroom the wider
     # the data range. Reserve top headroom as a fraction of the decade span
@@ -356,8 +369,9 @@ plot \$DATA using 1:2:3:5:4 with candlesticks whiskerbars 0.48 \\
         linewidth 2 linecolor rgb "$MEDIAN_COLOR" notitle, \\
      \$DATA using (\$1 - 0.24):5:(0.48):(0.0) with vectors nohead \\
         linewidth 1 dashtype (2,1) linecolor rgb "$MAX_COLOR" notitle, \\
-     \$DATA using 1:5:(\$9 < 10 ? sprintf("%d · %.1f%%", \$8, \$9) \\
-        : sprintf("%d · %.0f%%", \$8, \$9)) with labels \\
+     \$DATA using 1:5:(sprintf(\$8 >= 99.95 || \$8 == int(\$8) ? "%.0f" \\
+        : \$8 < 0.9995 ? "%.3f" : \$8 < 9.995 ? "%.2f" : "%.1f", \$8) \\
+        . sprintf(\$9 < 10 ? " · %.1f%%" : " · %.0f%%", \$9)) with labels \\
         offset 0,0.6 font ",5" textcolor rgb "$BOX_COLOR" notitle, \\
      keyentry with lines linecolor rgb "$BOX_COLOR" linewidth 1 \\
         title "min–max range", \\

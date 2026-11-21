@@ -208,12 +208,12 @@ jobs:
             echo "| Test | Median ms | Min | Max | MB/s |"
             echo "|------|-----------|-----|-----|------|"
             awk -F, '
-              NF >= 7 && $(NF) ~ /^[0-9]+$/ && $(NF-1) ~ /^[0-9]+$/ && $(NF-2) ~ /^[0-9]+$/ \
-                && $(NF-3) ~ /^[0-9]+$/ && $(NF-4) ~ /^[0-9.]+$/ && $(NF-5) ~ /^[0-9]+$/ {
+              NF >= 7 && $(NF) ~ /^[0-9]+$/ && $(NF-1) ~ /^[0-9.]+$/ && $(NF-2) ~ /^[0-9.]+$/ \
+                && $(NF-3) ~ /^[0-9.]+$/ && $(NF-4) ~ /^[0-9.]+$/ && $(NF-5) ~ /^[0-9.]+$/ {
                 mbs = $(NF); median = $(NF-1); max = $(NF-2); min = $(NF-3)
                 name = $1; for (i = 2; i <= NF-6; i++) name = name "," $i
                 sub(/ *\[[^]]*\] *$/, "", name)
-                printf "%d\t| %s | %d | %d | %d | %d |\n", median, name, median, min, max, mbs
+                printf "%s\t| %s | %s | %s | %s | %d |\n", median, name, median, min, max, mbs
               }' "$2" | sort -rn | cut -f2-
             echo ""
           }
@@ -273,21 +273,22 @@ jobs:
           # Two inline aggregate stats follow: the summed per-test means from
           # the "Sum of all file ops = N,SUM,,,,," row and the average time
           # per file operation from the "# Aggregate" block; only a stat that
-          # parsed is emitted.
+          # parsed is emitted. The times pass through as printed: awk's
+          # number formatting keeps only six digits.
           # $1 key prefix, $2 CSV, $3 metrics file
           extract() {
             awk -F, -v prefix="$1" '
-              NF >= 7 && $(NF) ~ /^[0-9]+$/ && $(NF-1) ~ /^[0-9]+$/ && $(NF-2) ~ /^[0-9]+$/ \
-                && $(NF-3) ~ /^[0-9]+$/ && $(NF-4) ~ /^[0-9.]+$/ && $(NF-5) ~ /^[0-9]+$/ {
-                mean=$(NF-5)+0
+              NF >= 7 && $(NF) ~ /^[0-9]+$/ && $(NF-1) ~ /^[0-9.]+$/ && $(NF-2) ~ /^[0-9.]+$/ \
+                && $(NF-3) ~ /^[0-9.]+$/ && $(NF-4) ~ /^[0-9.]+$/ && $(NF-5) ~ /^[0-9.]+$/ {
+                mean=$(NF-5)
                 name=$1; for (i=2; i<=NF-6; i++) name=name","$i
                 sub(/ *\[[^]]*\] *$/, "", name)
                 slug=tolower(name); gsub(/[^a-z0-9]+/, "_", slug)
                 gsub(/^_+|_+$/, "", slug)
-                printf "table|%s.%s.mean_ms|%s|ms|%d\n", prefix, slug, name, mean
+                printf "table|%s.%s.mean_ms|%s|ms|%s\n", prefix, slug, name, mean
               }' "$2" > "$3"
             TOTAL=$(awk -F, '
-              /^Sum of all file ops =/ { print $2 + 0; exit }
+              /^Sum of all file ops =/ { print $2; exit }
             ' "$2")
             AVG_OP=$(awk -F, '
               /^# Aggregate/ { agg = 1; next }

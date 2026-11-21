@@ -1,4 +1,4 @@
-.Dd October 20, 2026
+.Dd November 20, 2026
 .Dt VFS_LANTEST 1
 .Os Netatalk Client
 .Sh NAME
@@ -24,9 +24,9 @@ On a FUSE mount of an AFP volume that is the Netatalk client; on a CIFS
 mount it is the kernel SMB client; on a local directory it is the
 filesystem alone.
 The seventeen tests, their order, their 2000-item geometry, the
-statistics and the CSV layout are those of
+statistics and the CSV columns are those of
 .Xr afp_lantest 1 ,
-so the same chart and history scripts read both.
+with the times to the microsecond.
 .Pp
 Every data read and write opens with
 .Dv O_DIRECT ,
@@ -54,8 +54,8 @@ which is removed at the end.
 Directory on the mounted filesystem to run in.
 .It Fl c
 CSV output: one row per test with the mean, standard deviation, minimum,
-maximum and median in milliseconds and the MB/s of the large-file tests,
-then the sum row and the aggregate block.
+maximum and median in milliseconds to three decimals and the MB/s of the
+large-file tests, then the sum row and the aggregate block.
 .It Fl D
 Buffered I/O in place of
 .Dv O_DIRECT .

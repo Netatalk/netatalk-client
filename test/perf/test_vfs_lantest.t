@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 
-# CSV layout and cleanup checks for vfs_lantest on a plain filesystem
+# CSV layout, text table and cleanup checks for vfs_lantest on a plain
+# filesystem
 # Copyright (C) 2026 Andy Lemin (andylemin)
 #
 # This program is free software; you can redistribute it and/or
@@ -12,6 +13,7 @@ use strict;
 use warnings;
 
 use Test::More;
+use Encode qw(decode);
 use File::Spec;
 use File::Temp qw(tempdir);
 
@@ -20,8 +22,9 @@ my ($tool) = @ARGV;
 $tool = File::Spec->rel2abs($tool);
 -x $tool or BAIL_OUT("vfs_lantest is not executable: $tool");
 
-my $dir    = tempdir(CLEANUP => 1);
-my $row_re = qr/^(.+),(\d+),([\d.]+),(\d+),(\d+),(\d+),(\d+)$/;
+my $dir     = tempdir(CLEANUP => 1);
+my $time_re = qr/\d+\.\d{3}/;
+my $row_re  = qr/^(.+),($time_re),($time_re),($time_re),($time_re),($time_re),(\d+)$/;
 
 # Run the tool and return its stdout lines and exit code; stderr passes
 # through to the harness.
@@ -72,22 +75,51 @@ is($out->[0], "Test,Time_ms,Time±,Min_ms,Max_ms,Median_ms,MB/s\n",
 @rows = grep {/$row_re/} @$out;
 is(scalar @rows, 17, 'full: one row per test');
 
+my $mean_total   = 0;
+my $median_total = 0;
+my %fractions;
+
 for my $row (@rows) {
-    my ($name, $mean, $sd, $min, $max, $median) = $row =~ $row_re;
+    my ($name, $mean, $sd, $min, $max, $median, $mbs) = $row =~ $row_re;
     $name =~ s/ \[.*\]$//;
     ok($min <= $mean && $mean <= $max && $min <= $median && $median <= $max,
        "full: spread is consistent for $name");
+    ok($sd <= $max - $min + 0.002, "full: the deviation fits the spread for $name");
+    my $us = sprintf('%.0f', $mean * 1000);
+    is($mbs, $name =~ /one large file$/ ? int(4_000_000 / $us) : 0, "full: MB/s is 4 MiB over the mean for $name");
+    $mean_total   += $mean;
+    $median_total += $median;
+    # A time under 1 ms may be the 1 µs floor, so only longer times prove
+    # the microseconds.
+    my %column = (mean => $mean, min => $min, max => $max, median => $median);
+    $fractions{$_}++ for grep { $column{$_} >= 1 && $column{$_} !~ /\.000$/ } keys %column;
 }
 
-my $sum_rows = grep {/^Sum of all file ops = \d+,\d+,,,,,$/} @$out;
-is($sum_rows, 1, 'full: the sum row has the seven columns');
+ok($fractions{$_}, "full: the $_ column keeps its microseconds") for qw(mean min max median);
+my @sums = map { /^Sum of all file ops = \d+,($time_re),,,,,$/ ? $1 : () } @$out;
+is(scalar @sums, 1, 'full: the sum row has the seven columns');
+ok(@sums && abs($sums[0] - $mean_total) < 0.0005, 'full: the sum row totals the means');
 my $aggregate_rows = grep {/^# Aggregate,Value$/} @$out;
 is($aggregate_rows, 1, 'full: the aggregate block follows');
 my $total_rows = grep {/^Total file ops,56082$/} @$out;
 is($total_rows, 1, 'full: the file op total counts the 4 MiB large file in 1 MiB chunks');
-my $average_rows = grep {/^Avg time per file op \(µs\),\d+$/} @$out;
-is($average_rows, 1, 'full: the average per op is a whole number of microseconds');
+my @averages = map { /^Avg time per file op \(µs\),(\d+)$/ ? $1 : () } @$out;
+is(scalar @averages, 1, 'full: the average per op is a whole number of microseconds');
+my @medians = map { /^Total median time \(ms\),($time_re)$/ ? $1 : () } @$out;
+ok(@medians && abs($medians[0] - $median_total) < 0.0005, 'full: the total median time totals the medians');
+ok(@averages && @medians && abs($averages[0] - $medians[0] * 1000 / 56082) <= 0.5001,
+   'full: the average per op is the total median time over the op count');
 
 is(leftovers(), 0, 'full: the test directory is removed');
+
+# -----------------------------------------------------------------------
+# text: the table lines up although "±" and "×" take two bytes each
+# -----------------------------------------------------------------------
+($out, $rc) = run_tool('-D', '-n', '1', '-s', '4', '-f', '1,4', '-P', $dir);
+is($rc, 0, 'text: run exits 0');
+my @table  = grep {/^(?:Test |-{66} |Writing one large file|Create 2000 dirs tree)/} @$out;
+my %widths = map  { length(decode('UTF-8', s/\n\z//r)) => 1 } @table;
+is(scalar @table,        5, 'text: the header, two rules and two test rows');
+is(scalar(keys %widths), 1, 'text: every table line has one width in columns');
 
 done_testing;
