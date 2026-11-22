@@ -29,13 +29,6 @@ static void write_uint16_be(uint8_t **cursor, uint16_t value)
     *cursor += sizeof(encoded);
 }
 
-static void write_uint32_be(uint8_t **cursor, uint32_t value)
-{
-    uint32_t encoded = htonl(value);
-    memcpy(*cursor, &encoded, sizeof(encoded));
-    *cursor += sizeof(encoded);
-}
-
 static void write_pascal_string(uint8_t **cursor, const char *value,
                                 size_t value_len)
 {
@@ -44,10 +37,9 @@ static void write_pascal_string(uint8_t **cursor, const char *value,
     *cursor += value_len;
 }
 
-static void write_afp_name(uint8_t **cursor, const char *value,
-                           size_t value_len)
+static void write_loginext_name(uint8_t **cursor, const char *value,
+                                size_t value_len)
 {
-    write_uint32_be(cursor, AFP_TEXT_ENCODING_UTF8);
     write_uint16_be(cursor, (uint16_t)value_len);
     memcpy(*cursor, value, value_len);
     *cursor += value_len;
@@ -110,8 +102,8 @@ int afp_loginext_build_payload(const char *afp_version,
     prefix_len = fixed_len
                  + 1U + version_len
                  + 1U + uam_len
-                 + 1U + sizeof(uint32_t) + sizeof(uint16_t) + username_len
-                 + 1U + sizeof(uint32_t) + sizeof(uint16_t) + domain_len;
+                 + 1U + sizeof(uint16_t) + username_len
+                 + 1U + sizeof(uint16_t) + domain_len;
     path_pad = prefix_len & 1U;
 
     if (userauthinfo_len > (size_t)INT_MAX - sizeof(struct dsi_header)
@@ -134,9 +126,9 @@ int afp_loginext_build_payload(const char *afp_version,
     write_pascal_string(&p, afp_version, version_len);
     write_pascal_string(&p, uam_name, uam_len);
     *p++ = kFPUTF8Name;
-    write_afp_name(&p, username, username_len);
+    write_loginext_name(&p, username, username_len);
     *p++ = kFPUTF8Name;
-    write_afp_name(&p, directory_domain, domain_len);
+    write_loginext_name(&p, directory_domain, domain_len);
 
     if (path_pad != 0) {
         *p++ = 0;

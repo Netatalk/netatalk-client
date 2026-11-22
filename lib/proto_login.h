@@ -29,8 +29,9 @@ int afp_login_initial_build_payload(int afp_version_number,
  * returned buffer and must release it with afp_loginext_payload_free(), since
  * it contains a copy of UserAuthInfo.
  *
- * directory_domain is encoded as a type-3 AFPName.  Pass the empty string for
- * the default directory domain.
+ * UserName is type 3 with a 16-bit big-endian byte length and UTF-8 bytes.
+ * The type-3 directory_domain uses the same length-prefixed format in
+ * Netatalk's FPLoginExt parser.  Pass "" for the default directory domain.
  */
 int afp_loginext_build_payload(const char *afp_version,
                                const char *uam_name,
