@@ -72,31 +72,31 @@ static void check_initial(int version_number, const char *version,
 
 int main(int argc, char **argv)
 {
-    static const uint8_t ascii_authinfo[] = { 0xaa, 0xbb };
+    static const uint8_t ascii_authinfo[] = { 0xaa, 0x00, 0xbb };
     static const uint8_t ascii_expected[] = {
         0x3f, 0x00, 0x00, 0x00,
         0x06, 'A', 'F', 'P', '3', '.', '4',
         0x03, 'S', 'R', 'P',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x03, 'b', 'o', 'b',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x00,
-        0xaa, 0xbb,
+        0x03, 0x00, 0x03, 'b', 'o', 'b',
+        0x03, 0x00, 0x00,
+        0xaa, 0x00, 0xbb,
     };
-    static const uint8_t unicode_authinfo[] = { 0xcc };
+    static const uint8_t unicode_authinfo[] = { 0xcc, 0x00, 0xdd };
     static const uint8_t unicode_expected[] = {
         0x3f, 0x00, 0x00, 0x00,
         0x06, 'A', 'F', 'P', '3', '.', '4',
         0x03, 'S', 'R', 'P',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x02, 0xc3, 0xa9,
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x00,
+        0x03, 0x00, 0x02, 0xc3, 0xa9,
+        0x03, 0x00, 0x00,
         0x00,
-        0xcc,
+        0xcc, 0x00, 0xdd,
     };
     static const uint8_t domain_expected[] = {
         0x3f, 0x00, 0x00, 0x00,
         0x06, 'A', 'F', 'P', '3', '.', '4',
         0x03, 'S', 'R', 'P',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x01, 'a',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x03, 0xe5, 0x9f, 0x9f,
+        0x03, 0x00, 0x01, 'a',
+        0x03, 0x00, 0x03, 0xe5, 0x9f, 0x9f,
         0x00,
     };
     static const uint8_t password[] = {
@@ -116,8 +116,8 @@ int main(int argc, char **argv)
         0x3f, 0, 0, 0, 0x06, 'A', 'F', 'P', '3', '.', '4',
         0x0f, 'N', 'o', ' ', 'U', 's', 'e', 'r', ' ',
         'A', 'u', 't', 'h', 'e', 'n', 't',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x00,
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x00,
     };
     static const uint8_t clear_legacy[] = {
         0x12, 0x06, 'A', 'F', 'P', '2', '.', '2',
@@ -137,16 +137,16 @@ int main(int argc, char **argv)
         0x3f, 0, 0, 0, 0x06, 'A', 'F', 'P', '3', '.', '4',
         0x10, 'C', 'l', 'e', 'a', 'r', 't', 'x', 't', ' ',
         'P', 'a', 's', 's', 'w', 'r', 'd',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x03, 'b', 'o', 'b',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x03, 'b', 'o', 'b',
+        0x03, 0x00, 0x00, 0x00,
         'p', 'w', 0, 0, 0, 0, 0, 0,
     };
     static const uint8_t clear_ext_unicode[] = {
         0x3f, 0, 0, 0, 0x06, 'A', 'F', 'P', '3', '.', '4',
         0x10, 'C', 'l', 'e', 'a', 'r', 't', 'x', 't', ' ',
         'P', 'a', 's', 's', 'w', 'r', 'd',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x02, 0xc3, 0xa9,
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x00,
+        0x03, 0x00, 0x02, 0xc3, 0xa9,
+        0x03, 0x00, 0x00,
         'p', 'w', 0, 0, 0, 0, 0, 0,
     };
     static const uint8_t rand_legacy[] = {
@@ -159,8 +159,8 @@ int main(int argc, char **argv)
         0x3f, 0, 0, 0, 0x06, 'A', 'F', 'P', '3', '.', '4',
         0x10, 'R', 'a', 'n', 'd', 'n', 'u', 'm', ' ',
         'E', 'x', 'c', 'h', 'a', 'n', 'g', 'e',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x03, 'b', 'o', 'b',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x03, 'b', 'o', 'b',
+        0x03, 0x00, 0x00, 0x00,
     };
     static const uint8_t rand2_legacy[] = {
         0x12, 0x06, 'A', 'F', 'P', '2', '.', '2',
@@ -172,8 +172,8 @@ int main(int argc, char **argv)
         0x3f, 0, 0, 0, 0x06, 'A', 'F', 'P', '3', '.', '4',
         0x16, '2', '-', 'W', 'a', 'y', ' ', 'R', 'a', 'n', 'd', 'n', 'u',
         'm', ' ', 'E', 'x', 'c', 'h', 'a', 'n', 'g', 'e',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x03, 'b', 'o', 'b',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x03, 'b', 'o', 'b',
+        0x03, 0x00, 0x00, 0x00,
     };
     static const uint8_t dhx_legacy[] = {
         0x12, 0x06, 'A', 'F', 'P', '2', '.', '2',
@@ -185,8 +185,8 @@ int main(int argc, char **argv)
     static const uint8_t dhx_ext[] = {
         0x3f, 0, 0, 0, 0x06, 'A', 'F', 'P', '3', '.', '4',
         0x09, 'D', 'H', 'C', 'A', 'S', 'T', '1', '2', '8',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x03, 'b', 'o', 'b',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x00,
+        0x03, 0x00, 0x03, 'b', 'o', 'b',
+        0x03, 0x00, 0x00,
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
         0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
     };
@@ -197,15 +197,28 @@ int main(int argc, char **argv)
     static const uint8_t dhx2_ext[] = {
         0x3f, 0, 0, 0, 0x06, 'A', 'F', 'P', '3', '.', '4',
         0x04, 'D', 'H', 'X', '2',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x03, 'b', 'o', 'b',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x03, 'b', 'o', 'b',
+        0x03, 0x00, 0x00, 0x00,
     };
     static const uint8_t srp_ext[] = {
         0x3f, 0, 0, 0, 0x06, 'A', 'F', 'P', '3', '.', '4',
         0x03, 'S', 'R', 'P',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x03, 'b', 'o', 'b',
-        0x03, 0x08, 0x00, 0x01, 0x03, 0x00, 0x00,
+        0x03, 0x00, 0x03, 'b', 'o', 'b',
+        0x03, 0x00, 0x00,
         0x00, 0x01,
+    };
+    static const uint8_t kerberos_ext[] = {
+        0x3f, 0, 0, 0, 0x06, 'A', 'F', 'P', '3', '.', '4',
+        0x0d, 'C', 'l', 'i', 'e', 'n', 't', ' ', 'K', 'r', 'b', ' ', 'v', '2',
+        0x03, 0x00, 0x00,
+        0x03, 0x00, 0x00,
+        0x00,
+    };
+    uint8_t max_username_expected[1042] = {
+        0x3f, 0, 0, 0, 0x06, 'A', 'F', 'P', '3', '.', '4',
+        0x03, 'S', 'R', 'P',
+        0x03, 0x03, 0xfc,
+        [1038] = 0x03, /* Empty pathname, then a zero pad. */
     };
     char too_many_characters[257];
     char too_long_pascal[257];
@@ -215,8 +228,6 @@ int main(int argc, char **argv)
     char max_username_url[sizeof("afp://@server")
                           + AFPC_MAX_USERNAME_BYTES];
     struct afpc_url parsed_url;
-    uint8_t *payload = NULL;
-    size_t payload_len = 0;
     uint8_t auth_marker = 0;
     test_tap_init(argc, argv);
     check_initial(22, "AFP2.2", "No User Authent", NULL, 0, NULL, 0,
@@ -252,6 +263,8 @@ int main(int argc, char **argv)
                   NULL, 0, dhx2_ext, sizeof(dhx2_ext));
     check_initial(34, "AFP3.4", "SRP", "bob", 0,
                   srp_marker, sizeof(srp_marker), srp_ext, sizeof(srp_ext));
+    check_initial(34, "AFP3.4", "Client Krb v2", NULL, 0, NULL, 0,
+                  kerberos_ext, sizeof(kerberos_ext));
     /* Empty type-3 domain ends even: UserAuthInfo follows immediately. */
     check_payload("bob", "", ascii_authinfo, sizeof(ascii_authinfo),
                   ascii_expected, sizeof(ascii_expected));
@@ -280,18 +293,9 @@ int main(int argc, char **argv)
     CHECK(afp_parse_url_quiet(&parsed_url, max_username_url) == 0);
     CHECK(memcmp(parsed_url.username, max_username,
                  sizeof(max_username)) == 0);
-    CHECK(afp_loginext_build_payload("AFP3.4", "SRP", max_username, "",
-                                     NULL, 0, &payload, &payload_len) == 0);
-    CHECK(payload_len == 1050U);
-    CHECK(payload[20] == 0x03 && payload[21] == 0xfc);
-    afp_loginext_payload_free(payload, payload_len);
-    payload = NULL;
-    payload_len = 0;
-    CHECK(afp_loginext_build_payload("AFP3.4", "SRP",
-                                     parsed_url.username, "", NULL, 0,
-                                     &payload, &payload_len) == 0);
-    CHECK(payload_len == 1050U);
-    afp_loginext_payload_free(payload, payload_len);
+    memcpy(max_username_expected + 18, max_username, sizeof(max_username) - 1);
+    check_payload(parsed_url.username, "", NULL, 0, max_username_expected,
+                  sizeof(max_username_expected));
     afpc_path_clear(&parsed_url.path);
     memset(legacy_max, 'l', sizeof(legacy_max) - 1U);
     legacy_max[sizeof(legacy_max) - 1U] = '\0';
@@ -310,6 +314,7 @@ int main(int argc, char **argv)
     check_rejected("AFP3.4", "SRP", "\xf4\x90\x80\x80", "", NULL, 0,
                    -EILSEQ);
     check_rejected("AFP3.4", "SRP", "\xe2\x82", "", NULL, 0, -EILSEQ);
+    check_rejected("AFP3.4", "SRP", "user", "\xe2\x82", NULL, 0, -EILSEQ);
     check_rejected("AFP3.4", "SRP", too_many_characters, "", NULL, 0,
                    -ENAMETOOLONG);
     check_rejected("AFP3.4", "SRP", "user", too_many_characters, NULL, 0,
