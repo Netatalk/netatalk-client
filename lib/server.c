@@ -11,6 +11,11 @@
 /*!
  * @file
  * @brief The steps of a connection after the socket: session, version, login
+ *
+ * Part of the session layer: a first connection's steps after the socket.
+ * Lane: session.
+ * Northbound: connect.c of its own layer.
+ * Southbound: afp.c and the protocol layer.
  */
 
 #include <errno.h>

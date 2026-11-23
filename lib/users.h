@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief A volume's ID mapping: its detection and its translation of IDs
+ *
+ * The ID mapping's interface, outside the layers.
+ * Lane: shared.
+ * Northbound: the mid level and the listings.
+ */
+
 #ifndef __USERS_H_
 #define __USERS_H_
 

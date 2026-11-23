@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief The fs namespace of afpc and the mount_afpfs form
+ *
+ * The FUSE command line's interface; fuse/client.c holds its calls.
+ * Lane: control.
+ * Northbound: afpc's dispatcher.
+ */
+
 #ifndef NETATALK_CLIENT_CONTROL_CONTROLLER_FS_H
 #define NETATALK_CLIENT_CONTROL_CONTROLLER_FS_H
 

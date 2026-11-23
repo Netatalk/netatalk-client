@@ -9,6 +9,16 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief The DHX2 UAM
+ *
+ * A login method of the session layer.
+ * Lane: session.
+ * Northbound: the registry of uams.c.
+ * Southbound: the protocol layer.
+ */
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif

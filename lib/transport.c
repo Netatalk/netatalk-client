@@ -15,6 +15,11 @@
 /*!
  * @file
  * @brief The public transport: one AFP session that library consumers drive
+ *
+ * The public transport, a front end inside libafpclient.
+ * Lane: session.
+ * Northbound: programs that link the library.
+ * Southbound: the session layer, the DSI layer and the event loop.
  */
 
 #include <errno.h>

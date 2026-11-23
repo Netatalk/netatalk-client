@@ -1,6 +1,9 @@
 /*!
  * @file
  * @brief afpfsd's loop, listener and mounts, as its commands use them
+ *
+ * afpfsd's internal header, shared by daemon.c and commands.c.
+ * Lane: control.
  */
 
 #ifndef __DAEMON_H_

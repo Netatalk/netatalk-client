@@ -11,7 +11,13 @@
 
 /*!
  * @file
- * @brief AFP directory requests, the enumerate commands, and their replies
+ * @brief AFP requests that create a directory, move, rename, exchange or
+ *        enumerate, and the parsers of the replies that carry data
+ *
+ * Part of the protocol layer (afp_*): one call per AFP command.
+ * Lanes: metadata, directory.
+ * Northbound: the low and mid levels.
+ * Southbound: the DSI layer.
  */
 
 #include <string.h>

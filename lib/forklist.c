@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief A volume's list of open forks, and the flushes and checks it serves
+ *
+ * The list of a volume's open forks, outside libafpclient's layers.
+ * Lane: shared.
+ * Northbound: the mid and low levels, and the session layer.
+ * Southbound: the protocol layer and the DSI layer.
  */
 
 #include <stdio.h>

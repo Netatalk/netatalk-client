@@ -13,6 +13,11 @@
 /*!
  * @file
  * @brief The client's UAMs: their registry, names, logins and password changes
+ *
+ * Part of the session layer: the registry of the login methods.
+ * Lane: session.
+ * Northbound: a session's login and password change.
+ * Southbound: the login methods.
  */
 
 #ifdef HAVE_CONFIG_H

@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief The .AppleDouble pseudo-files that expose a file's metadata
+ *
+ * Part of the mid level: a volume's .AppleDouble view.
+ * Lanes: data, metadata, directory.
+ * Northbound: midlevel.c.
+ * Southbound: the low level and the protocol layer.
  */
 
 #include <limits.h>

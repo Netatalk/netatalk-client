@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief AFP server parameter, message, and sleep requests, and their replies
+ *
+ * Part of the protocol layer (afp_*): one call per AFP command.
+ * Lane: session.
+ * Northbound: the session layer.
+ * Southbound: the DSI layer.
  */
 
 #include <stdlib.h>

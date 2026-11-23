@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief The public transport: one AFP session, its connection and commands
+ *
+ * The public transport's interface; lib/transport.c holds its calls.
+ * Lane: session.
+ * Northbound: programs that link libafpclient and send their own AFP commands.
+ */
+
 #ifndef NETATALK_CLIENT_TRANSPORT_H
 #define NETATALK_CLIENT_TRANSPORT_H
 

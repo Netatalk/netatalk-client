@@ -1,6 +1,11 @@
 /*!
  * @file
  * @brief afpsld's IPC protocol: its commands, results, requests and answers
+ *
+ * afpsld's IPC wire format.
+ * Lanes: data, metadata, directory, control.
+ * Northbound: libafpsl.
+ * Southbound: afpsld.
  */
 
 #ifndef NETATALK_CLIENT_DAEMON_STATELESS_IPC_H

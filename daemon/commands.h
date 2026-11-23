@@ -1,3 +1,11 @@
+/*!
+ * @file
+ * @brief afpsld's command entry and its attach of a volume
+ *
+ * afpsld's internal header, shared by daemon.c, daemon_client.c and commands.c.
+ * Lane: control.
+ */
+
 #ifndef NETATALK_CLIENT_DAEMON_COMMANDS_H
 #define NETATALK_CLIENT_DAEMON_COMMANDS_H
 

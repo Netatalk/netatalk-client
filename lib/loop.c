@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief The event loop: the servers' and clients' descriptors and signals
+ *
+ * The event loop of libafpclient, one thread beside the DSI layer.
+ * Lane: DSI.
+ * Northbound: the DSI layer, and the front end for its own descriptors.
+ * Southbound: the servers' TCP connections.
  */
 
 #include <errno.h>

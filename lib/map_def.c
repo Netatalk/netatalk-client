@@ -8,6 +8,16 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief The names of the ID mappings
+ *
+ * The ID mappings' names, outside libafpclient's layers.
+ * Lane: shared.
+ * Northbound: any file that reads or prints one.
+ * Southbound: none.
+ */
+
 #include <string.h>
 
 #include "afp_internal.h"

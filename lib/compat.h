@@ -1,6 +1,10 @@
 /*!
  * @file
  * @brief What a platform's libc or compiler may lack, and its stand-ins
+ *
+ * Common to the whole tree, outside every layer.
+ * Lane: shared.
+ * Northbound: any file.
  */
 
 #ifndef _COMPAT_H_

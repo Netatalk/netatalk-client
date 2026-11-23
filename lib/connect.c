@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief Address lookup and the full connection of a server, through login
+ *
+ * Part of the session layer: a new server's connect and login in one call.
+ * Lane: session.
+ * Northbound: the front ends.
+ * Southbound: afp.c and server.c of its own layer.
  */
 
 #include <sys/socket.h>

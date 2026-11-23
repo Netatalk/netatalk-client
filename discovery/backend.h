@@ -1,3 +1,13 @@
+/*!
+ * @file
+ * @brief The discovery backend: its operations and the events it emits
+ *
+ * The seam between the discovery library and its backend.
+ * Lane: control.
+ * Northbound: discovery.c.
+ * Southbound: the one backend a build links: Avahi, DNS-SD or the stub.
+ */
+
 #ifndef NETATALK_CLIENT_DISCOVERY_BACKEND_H
 #define NETATALK_CLIENT_DISCOVERY_BACKEND_H
 

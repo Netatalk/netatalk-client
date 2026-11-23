@@ -28,7 +28,12 @@
 
 /*!
  * @file
- * @brief afpcmd's commands, each run on a volume through libafpsl
+ * @brief afpcmd's commands, run on a server and its volumes through libafpsl
+ *
+ * Part of afpcmd: its commands.
+ * Lanes: data, metadata, directory, control.
+ * Northbound: the command loop of cmdline_main.c.
+ * Southbound: libafpsl.
  */
 
 #include <string.h>

@@ -1,6 +1,9 @@
 /*!
  * @file
  * @brief afpsld's record of a client connection, and the pool's calls
+ *
+ * afpsld's internal header, for the files of the daemon.
+ * Lane: control.
  */
 
 #ifndef NETATALK_CLIENT_DAEMON_DAEMON_CLIENT_H

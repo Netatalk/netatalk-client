@@ -10,6 +10,11 @@
 /*!
  * @file
  * @brief afpgetstatus, which prints the status an AFP server reports
+ *
+ * afpgetstatus, an application that is its own front end, with no daemon.
+ * Lane: control.
+ * Northbound: the user.
+ * Southbound: libafpclient's session layer and event loop.
  */
 
 #include <errno.h>

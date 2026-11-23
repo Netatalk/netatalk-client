@@ -12,7 +12,12 @@
 
 /*!
  * @file
- * @brief Fork and directory requests for data forks and AppleDouble metadata
+ * @brief Requests on a name in a directory or on an open data or resource fork
+ *
+ * The low level of libafpclient (ll_*).
+ * Lanes: data, metadata, directory.
+ * Northbound: the mid level.
+ * Southbound: the protocol layer.
  */
 
 #include <stdlib.h>

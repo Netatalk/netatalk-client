@@ -1,6 +1,10 @@
 /*!
  * @file
  * @brief The directory cache: identities, attributes and absences by name
+ *
+ * The directory cache's interface, outside the layers.
+ * Lane: shared.
+ * Northbound: the mid and low levels, and the session layer.
  */
 
 #ifndef __DID_H_

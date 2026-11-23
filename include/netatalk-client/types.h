@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief The public types: URLs, paths, and server, volume and file records
+ *
+ * Part of the public interface: afpsl.h, path.h and url.h build on it, and the
+ * library's own headers include it.
+ * Lane: shared.
+ */
+
 #ifndef NETATALK_CLIENT_TYPES_H
 #define NETATALK_CLIENT_TYPES_H
 

@@ -27,6 +27,16 @@
  *
  **********************************************************************/
 
+/*!
+ * @file
+ * @brief UTF-8 and UCS-2 strings: conversion, composition and decomposition
+ *
+ * Part of the name conversion, outside the layers.
+ * Lane: shared.
+ * Northbound: codepage.c.
+ * Southbound: none.
+ */
+
 #include <pthread.h>
 #include <stdlib.h>
 

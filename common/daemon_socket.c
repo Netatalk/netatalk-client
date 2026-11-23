@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief The daemons' listening socket, from its bind to its unlink
+ *
+ * Common to the two daemons, afpsld and afpfsd, and outside AFP.
+ * Lane: control.
+ * Northbound: each daemon's listener.
+ * Southbound: the kernel's UNIX sockets.
  */
 
 #ifdef HAVE_LIBBSD

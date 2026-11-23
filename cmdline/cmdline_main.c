@@ -29,6 +29,11 @@
 /*!
  * @file
  * @brief afpcmd's entry point, its options and its interactive command loop
+ *
+ * The top of afpcmd, the application of the stateless front end.
+ * Lane: control.
+ * Northbound: the user.
+ * Southbound: the commands of cmdline_afp.c.
  */
 
 #include <stdlib.h>

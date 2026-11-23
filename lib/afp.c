@@ -13,6 +13,11 @@
 /*!
  * @file
  * @brief Servers and volumes: connecting, attaching, detaching, server list
+ *
+ * The main file of the session layer, libafpclient's control side.
+ * Lane: session.
+ * Northbound: the front ends.
+ * Southbound: the protocol layer and the DSI layer.
  */
 
 #ifdef HAVE_CONFIG_H

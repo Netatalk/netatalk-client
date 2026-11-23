@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief libfuse's captured errors and the text of mount errors
+ *
+ * The interface of fuse_error.c.
+ * Lane: control.
+ * Northbound: the mount daemon's commands and file operations.
+ */
+
 #ifndef NETATALK_CLIENT_FUSE_ERROR_H
 #define NETATALK_CLIENT_FUSE_ERROR_H
 

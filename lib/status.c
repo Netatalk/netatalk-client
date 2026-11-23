@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief The status text of a server, its session, and its attached volumes
+ *
+ * The status text, outside libafpclient's layers.
+ * Lane: control.
+ * Northbound: the front ends.
+ * Southbound: none.
  */
 
 #include <string.h>

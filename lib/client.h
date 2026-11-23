@@ -1,7 +1,12 @@
 
 /*!
  * @file
- * @brief A front end's callbacks for the library, and the log calls
+ * @brief A front end's callbacks, the log calls and the loop's wake-up call
+ *
+ * The seam between libafpclient and its front end, for both sides.
+ * Lane: control.
+ * Northbound: the front end, which registers its callbacks.
+ * Southbound: the library's layers, which call back and log through it.
  */
 
 #ifndef __CLIENT_H_

@@ -22,6 +22,15 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+/*!
+ * @file
+ * @brief The Mac Roman and Unicode lookup tables
+ *
+ * Data of the name conversion, outside the layers.
+ * Lane: shared.
+ * Northbound: codepage.c alone.
+ */
+
 #ifndef mac_roman_h
 #define mac_roman_h
 

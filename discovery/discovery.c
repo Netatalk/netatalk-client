@@ -7,6 +7,16 @@
  *  (at your option) any later version.
  */
 
+/*!
+ * @file
+ * @brief Discovery of AFP services: a session's events, snapshot and resolve
+ *
+ * The discovery library, beside libafpclient and outside AFP.
+ * Lane: control.
+ * Northbound: its clients, in afpc and afpcmd.
+ * Southbound: the one backend a build links.
+ */
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <net/if.h>

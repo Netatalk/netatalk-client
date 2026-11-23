@@ -1,3 +1,11 @@
+/*!
+ * @file
+ * @brief The DNS-SD service types of an AFP server's advertisements
+ *
+ * Constants of the discovery library, which discovery.h includes.
+ * Lane: control.
+ */
+
 #ifndef NETATALK_CLIENT_DISCOVERY_SERVICE_TYPES_H
 #define NETATALK_CLIENT_DISCOVERY_SERVICE_TYPES_H
 

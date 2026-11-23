@@ -11,7 +11,12 @@
 
 /*!
  * @file
- * @brief Server type, version, and behavior predicates from the machine type
+ * @brief Server type and version from the machine type, and behavior predicates
+ *
+ * Part of the session layer: it tells servers apart by type and release.
+ * Lane: session.
+ * Northbound: every layer that branches on either.
+ * Southbound: none.
  */
 
 #include <ctype.h>

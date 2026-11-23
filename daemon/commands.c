@@ -14,6 +14,11 @@
 /*!
  * @file
  * @brief The command handlers of afpsld, the stateless daemon
+ *
+ * Part of afpsld, the daemon of the stateless front end: the command handlers.
+ * Lanes: data, metadata, directory, control.
+ * Northbound: libafpsl, through the connections of daemon_client.c.
+ * Southbound: libafpclient's session layer and mid level.
  */
 
 #include <errno.h>

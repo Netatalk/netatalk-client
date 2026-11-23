@@ -1,3 +1,13 @@
+/*!
+ * @file
+ * @brief afpfsd's IPC: its socket, commands, requests and response
+ *
+ * afpfsd's IPC wire format, and the interface of fuse_ipc.c.
+ * Lane: control.
+ * Northbound: the command line of client.c.
+ * Southbound: afpfsd's manager and mount daemons.
+ */
+
 #ifndef NETATALK_CLIENT_FUSE_IPC_H
 #define NETATALK_CLIENT_FUSE_IPC_H
 

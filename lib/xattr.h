@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief Extended attribute names, limits and the record a request fills
+ *
+ * Common to the mid level and the front ends north of it, which name a file's
+ * metadata the same way.
+ * Lane: metadata.
+ */
+
 #ifndef __AFP_XATTR_H_
 #define __AFP_XATTR_H_
 

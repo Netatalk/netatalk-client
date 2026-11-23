@@ -1,3 +1,11 @@
+/*!
+ * @file
+ * @brief Path storage of the public interface: set, copy, join and validation
+ *
+ * Part of the public interface; lib/path.c holds its calls.
+ * Lane: shared.
+ */
+
 #ifndef NETATALK_CLIENT_PATH_H
 #define NETATALK_CLIENT_PATH_H
 

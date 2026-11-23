@@ -14,6 +14,11 @@
 /*!
  * @file
  * @brief afpsld's entry point: its options, its fork, its listener and its log
+ *
+ * The top of afpsld, the daemon of the stateless front end.
+ * Lane: control.
+ * Northbound: libafpsl, over a UNIX socket.
+ * Southbound: libafpclient's event loop, which it runs.
  */
 
 #include <errno.h>

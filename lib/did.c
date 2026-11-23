@@ -11,6 +11,11 @@
 /*!
  * @file
  * @brief The directory cache: objects and absences by directory and name
+ *
+ * The directory cache, outside libafpclient's layers.
+ * Lane: shared.
+ * Northbound: the mid and low levels, and the session layer.
+ * Southbound: the low level.
  */
 
 #include <errno.h>

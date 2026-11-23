@@ -1,3 +1,11 @@
+/*!
+ * @file
+ * @brief The local metadata stores of libafpsl
+ *
+ * Internal to libafpsl: metadata.c and its unit test include it.
+ * Lane: metadata.
+ */
+
 #ifndef NETATALK_CLIENT_DAEMON_METADATA_H
 #define NETATALK_CLIENT_DAEMON_METADATA_H
 

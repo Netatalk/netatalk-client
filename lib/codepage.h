@@ -1,6 +1,10 @@
 /*!
  * @file
  * @brief Conversions of names and paths between UNIX and a volume's forms
+ *
+ * The name conversion's interface, outside the layers.
+ * Lane: shared.
+ * Northbound: every layer that converts a name or a path.
  */
 
 #ifndef __CODE_PAGE_H_

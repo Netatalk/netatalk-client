@@ -14,6 +14,11 @@
 /*!
  * @file
  * @brief A mount daemon's commands, and the threads of its FUSE mounts
+ *
+ * Part of afpfsd, the FUSE front end: a mount daemon's commands.
+ * Lane: control.
+ * Northbound: the command line of client.c, over a UNIX socket.
+ * Southbound: libafpclient's session layer.
  */
 
 #include <stdint.h>

@@ -11,6 +11,11 @@
 /*!
  * @file
  * @brief FPGetUserInfo, FPMapID and FPMapName: user and group IDs and names
+ *
+ * Part of the protocol layer (afp_*): one call per AFP command.
+ * Lane: metadata.
+ * Northbound: a volume's ID mapping.
+ * Southbound: the DSI layer.
  */
 
 #include <stdlib.h>

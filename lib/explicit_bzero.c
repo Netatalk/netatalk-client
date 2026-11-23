@@ -9,6 +9,16 @@
  * (at your option) any later version.
  */
 
+/*!
+ * @file
+ * @brief explicit_bzero() for a libc with neither it nor memset_explicit()
+ *
+ * Common to the whole tree, outside every layer.
+ * Lane: shared.
+ * Northbound: any file, through compat.h.
+ * Southbound: none.
+ */
+
 #include <string.h>
 
 #if !defined(HAVE_EXPLICIT_BZERO) && !defined(HAVE_MEMSET_EXPLICIT)

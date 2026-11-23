@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief afpcmd's choice of a discovered server
+ *
+ * The interface of cmdline/discover.c.
+ * Lane: control.
+ * Northbound: afpcmd's entry point.
+ */
+
 #ifndef NETATALK_CLIENT_CMDLINE_DISCOVER_H
 #define NETATALK_CLIENT_CMDLINE_DISCOVER_H
 

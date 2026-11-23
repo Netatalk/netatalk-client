@@ -7,6 +7,16 @@
  *  (at your option) any later version.
  */
 
+/*!
+ * @file
+ * @brief The discovery backend of a build without Zeroconf
+ *
+ * The backend of a build without Zeroconf.
+ * Lane: control.
+ * Northbound: discovery.c, through the operations of backend.h.
+ * Southbound: none: such a build has no discovery.
+ */
+
 #include <errno.h>
 
 #include "backend.h"

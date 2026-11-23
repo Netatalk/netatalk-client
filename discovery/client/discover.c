@@ -7,6 +7,16 @@
  *  (at your option) any later version.
  */
 
+/*!
+ * @file
+ * @brief afpc's discover command, and the resolving of a service name
+ *
+ * A client of the discovery library, and outside AFP.
+ * Lane: control.
+ * Northbound: afpc's dispatcher and the FUSE command line.
+ * Southbound: discovery.c.
+ */
+
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>

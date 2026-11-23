@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief afpc's discover command, and the resolving of a service name
+ *
+ * The interface of discovery/client/discover.c.
+ * Lane: control.
+ * Northbound: afpc's dispatcher and the FUSE command line.
+ */
+
 #ifndef NETATALK_CLIENT_DISCOVERY_CLIENT_DISCOVER_H
 #define NETATALK_CLIENT_DISCOVERY_CLIENT_DISCOVER_H
 

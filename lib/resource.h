@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief The .AppleDouble view: the kinds of its entries and its operations
+ *
+ * The .AppleDouble view's interface, part of the mid level.
+ * Lanes: data, metadata, directory.
+ * Northbound: midlevel.c, and the files that read the kinds of its entries.
+ */
+
 #ifndef __RESOURCE_H_
 #define __RESOURCE_H_
 

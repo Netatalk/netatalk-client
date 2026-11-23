@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief AFP fork requests and the parsing of their replies
+ *
+ * Part of the protocol layer (afp_*): one call per AFP command.
+ * Lanes: data, metadata.
+ * Northbound: the low and mid levels.
+ * Southbound: the DSI layer.
  */
 
 #include <stdlib.h>

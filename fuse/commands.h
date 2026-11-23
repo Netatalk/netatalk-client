@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief afpfsd's registration with the library, and its log settings
+ *
+ * The interface of fuse/commands.c.
+ * Lane: control.
+ * Northbound: afpfsd's daemon.c.
+ */
+
 #ifndef __COMMANDS_H_
 #define __COMMANDS_H_
 

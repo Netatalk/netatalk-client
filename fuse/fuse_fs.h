@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief The entry to a mount's FUSE loop
+ *
+ * The interface of fuse_fs.c.
+ * Lanes: data, metadata, directory.
+ * Northbound: the mount thread of commands.c.
+ */
+
 #ifndef NETATALK_CLIENT_FUSE_FS_H
 #define NETATALK_CLIENT_FUSE_FS_H
 

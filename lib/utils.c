@@ -11,7 +11,12 @@
 
 /*!
  * @file
- * @brief String, path and log level helpers of the protocol layer
+ * @brief String, path and log level helpers
+ *
+ * String, path and log level helpers, outside libafpclient's layers.
+ * Lane: shared.
+ * Northbound: every layer and the front ends.
+ * Southbound: none.
  */
 
 #include <errno.h>
