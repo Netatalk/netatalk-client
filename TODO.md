@@ -25,7 +25,6 @@ Authentication
 * LDAP directory integration
   * optional GSSAPI-bound identity, UUID, and group resolution for local mapping
   * TLS, bounded identity cache, and Active Directory objectGUID support
-* Support fpLoginExt command in addition to fpLogin
 
 Performance
 -----------

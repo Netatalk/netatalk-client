@@ -67,6 +67,7 @@
 
 #include "netatalk-client/afpsl.h"
 
+#include "lib/utils.h"
 #include "cmdline_afp.h"
 
 #define CMDLINE_ERROR_LEN 1024
@@ -4995,9 +4996,11 @@ int cmdline_afp_setup(int batch_mode, char *url_string,
             }
 
             if (username_override
-                    && strlcpy(url.username, username_override,
-                               sizeof(url.username)) >= sizeof(url.username)) {
-                fprintf(stderr, "Username is too long.\n");
+                    && (afp_validate_username(username_override, NULL) != 0
+                        || strlcpy(url.username, username_override,
+                                   sizeof(url.username)) >= sizeof(url.username))) {
+                fprintf(stderr,
+                        "Username must be valid UTF-8 and no more than 255 characters.\n");
                 return -1;
             }
 

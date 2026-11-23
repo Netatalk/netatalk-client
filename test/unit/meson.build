@@ -306,6 +306,23 @@ test(
     verbose: true,
 )
 
+login_packets_test = executable(
+    'test_login_packets',
+    sources: ['test_login_packets.c'],
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'AFP login packet construction',
+    login_packets_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
 path_conversion_allocs_test = executable(
     'test_path_conversion_allocs',
     sources: files(

@@ -67,6 +67,12 @@ struct afp_server *afp_server_full_connect(void *priv,
     struct addrinfo * address;
     struct afp_server  * s;
 
+    if (req == NULL
+            || afp_validate_username(req->url.username, NULL) != 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+
     if ((address = afp_get_address(priv, req->url.servername,
                                    req->url.port)) == NULL) {
         return NULL;

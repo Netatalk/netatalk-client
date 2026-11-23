@@ -144,6 +144,13 @@ int srp_login(struct afp_server *server, char *username, char *passwd)
     gcry_mpi_t x = NULL, v = NULL, k = NULL, u = NULL;
     gcry_mpi_t S = NULL, kv = NULL, tmp = NULL;
 
+    if (server == NULL || server->using_version == NULL
+            || server->using_version->av_number < 30) {
+        log_for_client(NULL, AFPFSD, LOG_WARNING,
+                       "SRP requires AFP 3.x FPLoginExt");
+        return kFPCallNotSupported;
+    }
+
     if (!gcry_check_version(UAM_NEED_LIBGCRYPT_VERSION)) {
         log_for_client(NULL, AFPFSD, LOG_ERR,
                        "SRP: libgcrypt version check failed");
@@ -170,8 +177,8 @@ int srp_login(struct afp_server *server, char *username, char *passwd)
     }
 
     rbuf.size = 0;
-    ret = afp_loginext(server, "SRP", username,
-                       (char *)init_marker, sizeof(init_marker), &rbuf);
+    ret = afp_login_initial(server, "SRP", username, 0,
+                            init_marker, sizeof(init_marker), &rbuf);
 
     if (ret != kFPAuthContinue) {
         if (ret == SRP_AUTH_FAILURE) {

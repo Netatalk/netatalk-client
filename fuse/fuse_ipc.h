@@ -13,13 +13,14 @@
 #define AFPFSD_IPC_FUSE_OPTIONS_LEN 256
 
 /* FUSE manager daemon command codes. */
-#define AFPFSD_IPC_COMMAND_MOUNT 1
 #define AFPFSD_IPC_COMMAND_STATUS 4
 #define AFPFSD_IPC_COMMAND_UNMOUNT 6
 #define AFPFSD_IPC_COMMAND_SUSPEND 8
 #define AFPFSD_IPC_COMMAND_RESUME 9
 #define AFPFSD_IPC_COMMAND_PING 11
 #define AFPFSD_IPC_COMMAND_EXIT 12
+/* The original mount command (1) carried the shorter username field. */
+#define AFPFSD_IPC_COMMAND_MOUNT 13
 #define AFPFSD_IPC_COMMAND_SPAWN_MOUNT 100
 
 /* FUSE manager daemon result codes. */
