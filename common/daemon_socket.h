@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief The daemons' listening socket: its creation, its close, a stale one
+ *
+ * The interface of daemon_socket.c.
+ * Lane: control.
+ * Northbound: afpsld and afpfsd.
+ */
+
 #ifndef NETATALK_CLIENT_DAEMON_SOCKET_H
 #define NETATALK_CLIENT_DAEMON_SOCKET_H
 

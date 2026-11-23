@@ -9,6 +9,16 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief AFP Desktop database requests and the parsing of their replies
+ *
+ * Part of the protocol layer (afp_*): one call per AFP command.
+ * Lane: metadata.
+ * Northbound: the mid level's .AppleDouble view.
+ * Southbound: the DSI layer.
+ */
+
 #include <limits.h>
 #include <string.h>
 #include <stdlib.h>

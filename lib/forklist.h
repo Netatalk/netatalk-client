@@ -1,6 +1,10 @@
 /*!
  * @file
  * @brief Recording and searching a volume's open forks
+ *
+ * The fork list's interface, outside the layers.
+ * Lane: shared.
+ * Northbound: the mid and low levels, and the session layer.
  */
 
 #ifndef __FORKLIST_H_

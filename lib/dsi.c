@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief DSI framing, the request queue and reply dispatch of a session
+ *
+ * The DSI layer, the bottom of libafpclient, with the event loop beside it.
+ * Lane: DSI, under every other lane.
+ * Northbound: the protocol layer.
+ * Southbound: the server's TCP connection.
  */
 
 #include <sys/socket.h>

@@ -1,6 +1,10 @@
 /*!
  * @file
  * @brief AFP constants: commands, parameter bitmaps, and result codes
+ *
+ * AFP's wire values, part of the protocol layer.
+ * Lanes: data, metadata, directory, session.
+ * Northbound: every layer that names a command, a bitmap or a result.
  */
 
 #ifndef _AFP_PROTOCOL_H_

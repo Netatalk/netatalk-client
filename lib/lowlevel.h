@@ -1,6 +1,10 @@
 /*!
  * @file
  * @brief The low level's AFP calls on a name in its directory or an open fork
+ *
+ * The low level's interface (ll_*).
+ * Lanes: data, metadata, directory.
+ * Northbound: the mid level.
  */
 
 #ifndef __LOWLEVEL_H_

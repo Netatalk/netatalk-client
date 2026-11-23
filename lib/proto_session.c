@@ -12,6 +12,11 @@
  * @file
  * @brief A session token's requests, FPGetSessionToken and
  *        FPDisconnectOldSession
+ *
+ * Part of the protocol layer (afp_*): one call per AFP command.
+ * Lane: session.
+ * Northbound: the session layer.
+ * Southbound: the DSI layer.
  */
 
 #include <stdlib.h>

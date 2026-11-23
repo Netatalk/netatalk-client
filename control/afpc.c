@@ -9,6 +9,16 @@
  * (at your option) any later version.
  */
 
+/*!
+ * @file
+ * @brief afpc's entry point: dispatch by program name, namespace and command
+ *
+ * The top of afpc, the control application of both front ends.
+ * Lane: control.
+ * Northbound: the user.
+ * Southbound: the FUSE command line, the sl namespace, the discovery client.
+ */
+
 #include <stdio.h>
 #include <string.h>
 

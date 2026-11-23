@@ -11,7 +11,13 @@
 
 /*!
  * @file
- * @brief AFP file requests, reads, copies, and the parsing of their replies
+ * @brief AFP file and parameter requests, reads, writes and copies, and the
+ *        parsers of the replies that carry data
+ *
+ * Part of the protocol layer (afp_*): one call per AFP command.
+ * Lanes: data, metadata.
+ * Northbound: the low and mid levels.
+ * Southbound: the DSI layer.
  */
 
 #include <errno.h>

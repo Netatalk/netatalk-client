@@ -8,6 +8,16 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief AFP URLs: their parsing and their defaults
+ *
+ * AFP URLs, outside libafpclient's layers.
+ * Lane: shared.
+ * Northbound: the front ends and the public transport.
+ * Southbound: none.
+ */
+
 #ifdef HAVE_LIBBSD
 #include <bsd/string.h>
 #endif

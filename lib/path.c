@@ -7,6 +7,16 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief Path storage of the public interface: set, copy, join and validation
+ *
+ * Path storage of the public interface, outside libafpclient's layers.
+ * Lane: shared.
+ * Northbound: the front ends, the URL parser and the mid level.
+ * Southbound: none.
+ */
+
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>

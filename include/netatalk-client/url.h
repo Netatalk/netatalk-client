@@ -1,3 +1,11 @@
+/*!
+ * @file
+ * @brief AFP URL records of the public interface: their set-up and parsing
+ *
+ * Part of the public interface; libafpsl holds its calls.
+ * Lane: shared.
+ */
+
 #ifndef NETATALK_CLIENT_URL_H
 #define NETATALK_CLIENT_URL_H
 

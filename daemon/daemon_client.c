@@ -11,7 +11,12 @@
 
 /*!
  * @file
- * @brief afpsld's client connections: their pool, their requests and answers
+ * @brief afpsld's client connections: pool, hand-over, answers and heartbeats
+ *
+ * Part of afpsld: its client connections.
+ * Lane: control.
+ * Northbound: libafpsl, over a UNIX socket.
+ * Southbound: the command handlers of commands.c.
  */
 
 #include <errno.h>

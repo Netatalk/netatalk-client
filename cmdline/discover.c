@@ -7,6 +7,16 @@
  *  (at your option) any later version.
  */
 
+/*!
+ * @file
+ * @brief afpcmd's choice of a discovered server, returned as an AFP URL
+ *
+ * Part of afpcmd, and outside AFP: the choice of a discovered server.
+ * Lane: control.
+ * Northbound: afpcmd's entry point.
+ * Southbound: the discovery library.
+ */
+
 #include <errno.h>
 #include <net/if.h>
 #include <netinet/in.h>

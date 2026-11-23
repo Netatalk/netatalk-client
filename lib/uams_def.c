@@ -9,6 +9,16 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief The names of the UAMs: text to bitmap, bitmap to text, short forms
+ *
+ * The login methods' names, outside libafpclient's layers.
+ * Lane: shared.
+ * Northbound: the library and the front ends.
+ * Southbound: none.
+ */
+
 #include <string.h>
 #include <stdlib.h>
 

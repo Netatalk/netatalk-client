@@ -11,7 +11,12 @@
 
 /*!
  * @file
- * @brief libafpsl, the client library whose calls afpsld runs
+ * @brief libafpsl's calls to afpsld, and its URL, UAM and log helpers
+ *
+ * libafpsl, the client library of the stateless front end.
+ * Lanes: data, metadata, directory, control.
+ * Northbound: the programs that link it, afpcmd and afpc among them.
+ * Southbound: afpsld, over a UNIX socket.
  */
 
 #include <errno.h>

@@ -8,6 +8,16 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief The names of the AFP commands
+ *
+ * The AFP commands' names, outside libafpclient's layers.
+ * Lane: shared.
+ * Northbound: any layer.
+ * Southbound: none.
+ */
+
 #include <stdio.h>
 
 /* AFP function names */

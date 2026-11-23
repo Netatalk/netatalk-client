@@ -1,6 +1,11 @@
 /*!
  * @file
  * @brief libafpclient's internal servers, volumes, forks, and their calls
+ *
+ * libafpclient's internal header: the structures and calls that its layers
+ * share.
+ * Lane: shared.
+ * Northbound: the bundled front ends, which include it. Nothing installs it.
  */
 
 #ifndef AFPCLIENT_INTERNAL_H

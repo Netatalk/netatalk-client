@@ -17,6 +17,11 @@
  *
  * A member holds a value when its bit is set in valid; a record holds its
  * name's offset in the pool, as both arrays move when they grow.
+ *
+ * A listing's records, outside libafpclient's layers.
+ * Lane: shared.
+ * Northbound: the protocol layer, the low and mid levels, and the front ends.
+ * Southbound: none.
  */
 
 #include <errno.h>

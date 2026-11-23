@@ -8,6 +8,16 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief A front end's callbacks: their registration and the defaults
+ *
+ * The seam between libafpclient and its front end: the callbacks.
+ * Lane: control.
+ * Northbound: the front end, which registers its callbacks here.
+ * Southbound: the library's layers, which call back through them.
+ */
+
 #include "afp_internal.h"
 #include "client.h"
 

@@ -1,6 +1,10 @@
 /*!
  * @file
- * @brief String, path and log level helpers of the protocol layer
+ * @brief String, path and log level helpers
+ *
+ * The helpers' interface, outside the layers.
+ * Lane: shared.
+ * Northbound: every layer and the front ends.
  */
 
 #ifndef __UTILS_H_

@@ -7,6 +7,16 @@
  *  (at your option) any later version.
  */
 
+/*!
+ * @file
+ * @brief The Avahi backend of discovery
+ *
+ * A backend of the discovery library.
+ * Lane: control.
+ * Northbound: discovery.c, through the operations of backend.h.
+ * Southbound: Avahi.
+ */
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>

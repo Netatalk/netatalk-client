@@ -9,6 +9,16 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief The parser of the file and directory parameters a reply carries
+ *
+ * Part of the protocol layer (afp_*): the parser of a parameter block.
+ * Lanes: metadata, directory.
+ * Northbound: the reply parsers of its own layer.
+ * Southbound: none.
+ */
+
 #include <string.h>
 
 #include "afp_internal.h"

@@ -14,6 +14,11 @@
  * @brief Name conversion between client UTF-8 and the AFP name encodings
  *
  * Supports UTF-8 (kFPUTF8Name) and Mac Roman (kFPLongName) encodings.
+ *
+ * The name conversion, outside libafpclient's layers.
+ * Lane: shared.
+ * Northbound: every layer that converts a name or a path.
+ * Southbound: none.
  */
 
 #include <limits.h>

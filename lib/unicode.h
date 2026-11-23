@@ -26,6 +26,15 @@
  *
  **********************************************************************/
 
+/*!
+ * @file
+ * @brief UTF-8 and UCS-2 conversion, composition and decomposition calls
+ *
+ * The interface of unicode.c, part of the name conversion.
+ * Lane: shared.
+ * Northbound: codepage.c and utils.c.
+ */
+
 #ifndef unicode_h
 #define unicode_h
 

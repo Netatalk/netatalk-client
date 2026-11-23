@@ -8,6 +8,16 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief libfuse's error output for a mount's client, and mount error text
+ *
+ * Part of afpfsd, the FUSE front end, and outside AFP.
+ * Lane: control.
+ * Northbound: the mount daemon's commands and file operations.
+ * Southbound: none.
+ */
+
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>

@@ -1,3 +1,13 @@
+/*!
+ * @file
+ * @brief The login methods' entry points and shared vectors, and the
+ *        registry's login and password change calls
+ *
+ * Internal to the session layer's login methods: uams.c and the method files
+ * share it.
+ * Lane: session.
+ */
+
 #ifndef __UAMS_H_
 #define __UAMS_H_
 

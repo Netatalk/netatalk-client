@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief The parsers of AFP replies, and the call that picks one
+ *
+ * Part of the protocol layer: the reply parsers, and the call that picks one.
+ * Lanes: data, metadata, directory, session.
+ * Southbound: the DSI layer, which hands a reply up through that call.
+ */
+
 #ifndef __AFP_REPLIES_H_
 #define __AFP_REPLIES_H_
 

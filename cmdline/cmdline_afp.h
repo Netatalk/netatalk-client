@@ -1,6 +1,9 @@
 /*!
  * @file
  * @brief afpcmd's commands, and the settings its options give them
+ *
+ * afpcmd's internal header, shared by cmdline_afp.c and cmdline_main.c.
+ * Lanes: data, metadata, directory, control.
  */
 
 #ifndef CMDLINE_AFP_H_

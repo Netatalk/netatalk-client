@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief How a volume maps the server's user and group IDs to the client's
+ *
+ * A volume's ID mapping, outside libafpclient's layers.
+ * Lane: shared.
+ * Northbound: the mid level and the listings.
+ * Southbound: the protocol layer.
  */
 
 #include <stdio.h>

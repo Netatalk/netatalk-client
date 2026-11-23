@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief FPListExtAttrs, FPGetExtAttr, FPSetExtAttr and FPRemoveExtAttr
+ *
+ * Part of the protocol layer (afp_*): one call per AFP command.
+ * Lane: metadata.
+ * Northbound: the mid level.
+ * Southbound: the DSI layer.
  */
 
 #include <string.h>

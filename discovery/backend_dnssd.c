@@ -7,6 +7,16 @@
  *  (at your option) any later version.
  */
 
+/*!
+ * @file
+ * @brief The DNS-SD backend of discovery
+ *
+ * A backend of the discovery library.
+ * Lane: control.
+ * Northbound: discovery.c, through the operations of backend.h.
+ * Southbound: the system's DNS-SD API.
+ */
+
 #include <arpa/inet.h>
 #include <dns_sd.h>
 #include <errno.h>

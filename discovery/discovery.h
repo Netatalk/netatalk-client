@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief Discovery of AFP services: the options, events and calls
+ *
+ * The discovery library's interface.
+ * Lane: control.
+ * Northbound: its clients, in afpc and afpcmd.
+ */
+
 #ifndef NETATALK_CLIENT_DISCOVERY_H
 #define NETATALK_CLIENT_DISCOVERY_H
 

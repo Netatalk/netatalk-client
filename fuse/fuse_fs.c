@@ -14,6 +14,11 @@
 /*!
  * @file
  * @brief The FUSE operations of a mounted AFP volume
+ *
+ * Part of afpfsd, the FUSE front end: the file operations.
+ * Lanes: data, metadata, directory.
+ * Northbound: the kernel's FUSE requests, through libfuse.
+ * Southbound: libafpclient's mid level.
  */
 
 #define HAVE_ARCH_STRUCT_FLOCK

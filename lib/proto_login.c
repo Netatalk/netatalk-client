@@ -13,6 +13,11 @@
 /*!
  * @file
  * @brief FPLogin, FPLoginExt, FPLoginCont, FPLogout and FPChangePassword
+ *
+ * Part of the protocol layer (afp_*): one call per AFP command.
+ * Lane: session.
+ * Northbound: the session layer and its login methods.
+ * Southbound: the DSI layer.
  */
 
 #include <stdlib.h>

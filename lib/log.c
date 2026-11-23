@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief Log calls that hand the client's logger trimmed, escaped messages
+ *
+ * The log calls, outside libafpclient's layers.
+ * Lane: shared.
+ * Northbound: every layer and the front ends.
+ * Southbound: none.
  */
 
 #include <stdarg.h>

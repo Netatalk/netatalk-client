@@ -1,6 +1,10 @@
 /*!
  * @file
- * @brief POSIX file operations on a volume, for the FUSE and afpsld layers
+ * @brief POSIX file operations on a volume, for the FUSE and afpsld front ends
+ *
+ * The mid level's interface (ml_*).
+ * Lanes: data, metadata, directory.
+ * Northbound: the front ends.
  */
 
 #ifndef __MIDLEVEL_H_

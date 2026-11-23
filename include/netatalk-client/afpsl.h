@@ -1,6 +1,10 @@
 /*!
  * @file
- * @brief libafpsl's public API, whose calls afpsld runs
+ * @brief libafpsl's public API: its calls to afpsld and its local helpers
+ *
+ * The public interface of libafpsl, the stateless front end's client library.
+ * Lanes: data, metadata, directory, control.
+ * Northbound: the programs that link libafpsl.
  */
 
 #ifndef NETATALK_CLIENT_AFPSL_H

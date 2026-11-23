@@ -1,6 +1,9 @@
 /*!
  * @file
  * @brief The event loop's and afpsld's calls that the command handlers make
+ *
+ * afpsld's internal header, for the files of the daemon.
+ * Lane: control.
  */
 
 #ifndef NETATALK_CLIENT_DAEMON_DAEMON_H

@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief AFP volume requests: opening and closing volumes, volume parameters
+ *
+ * Part of the protocol layer (afp_*): one call per AFP command.
+ * Lanes: metadata, session.
+ * Northbound: the session layer and the mid level.
+ * Southbound: the DSI layer.
  */
 
 #include <string.h>

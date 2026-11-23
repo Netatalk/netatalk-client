@@ -1,3 +1,12 @@
+/*!
+ * @file
+ * @brief The ID mappings of a volume, and their names
+ *
+ * Part of the ID mapping, outside the layers.
+ * Lane: shared.
+ * Northbound: the front ends, which choose a volume's mapping, and users.c.
+ */
+
 #ifndef __MAP_H_
 #define __MAP_H_
 

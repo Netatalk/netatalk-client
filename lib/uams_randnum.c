@@ -9,6 +9,16 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief The Randnum Exchange and 2-Way Randnum Exchange UAMs
+ *
+ * Two login methods of the session layer.
+ * Lane: session.
+ * Northbound: the registry of uams.c.
+ * Southbound: the protocol layer.
+ */
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif

@@ -12,6 +12,11 @@
 /*!
  * @file
  * @brief POSIX file operations on a volume, carried out with AFP requests
+ *
+ * The mid level of libafpclient (ml_*), its top layer.
+ * Lanes: data, metadata, directory.
+ * Northbound: the front ends.
+ * Southbound: the low level and the protocol layer.
  */
 
 #include <sys/stat.h>

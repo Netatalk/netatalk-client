@@ -11,7 +11,12 @@
 
 /*!
  * @file
- * @brief The FUSE manager daemon and the mount daemons it starts
+ * @brief The FUSE manager daemon and a mount's daemon
+ *
+ * The top of afpfsd, the FUSE front end: the manager and a mount's daemon.
+ * Lane: control.
+ * Northbound: the command line of client.c, over a UNIX socket.
+ * Southbound: libafpclient's event loop, which a mount's daemon runs.
  */
 
 #ifdef HAVE_LIBBSD

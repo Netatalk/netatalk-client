@@ -1,6 +1,10 @@
 /*!
  * @file
- * @brief The UAM bits, the libgcrypt version they need, and their names
+ * @brief The UAM bits, their names, and the libgcrypt version five of them need
+ *
+ * The login methods' bits and names.
+ * Lane: session.
+ * Northbound: the session layer, and the front ends that parse or print one.
  */
 
 #ifndef __UAM_DEFS_H_

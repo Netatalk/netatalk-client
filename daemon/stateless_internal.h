@@ -1,3 +1,11 @@
+/*!
+ * @file
+ * @brief libafpsl's reading of an answer from afpsld
+ *
+ * Internal to libafpsl: stateless.c and its unit test include it.
+ * Lane: control.
+ */
+
 #ifndef NETATALK_CLIENT_DAEMON_STATELESS_INTERNAL_H
 #define NETATALK_CLIENT_DAEMON_STATELESS_INTERNAL_H
 

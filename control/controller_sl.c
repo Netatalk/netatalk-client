@@ -12,6 +12,16 @@
  * (at your option) any later version.
  */
 
+/*!
+ * @file
+ * @brief The sl namespace of afpc: afpsld's status and exit commands
+ *
+ * Part of afpc: the sl namespace.
+ * Lane: control.
+ * Northbound: afpc's dispatcher.
+ * Southbound: libafpsl's public interface.
+ */
+
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>

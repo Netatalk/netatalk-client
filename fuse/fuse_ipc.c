@@ -7,6 +7,16 @@
  *  See the file COPYING.
  */
 
+/*!
+ * @file
+ * @brief Whole reads and writes of afpfsd's IPC messages
+ *
+ * Common to the FUSE front end, and outside AFP: whole IPC messages.
+ * Lane: control.
+ * Northbound: afpfsd's processes and their command line.
+ * Southbound: none.
+ */
+
 #include <errno.h>
 #include <unistd.h>
 

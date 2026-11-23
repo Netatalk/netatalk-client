@@ -17,6 +17,16 @@
  *
  */
 
+/*!
+ * @file
+ * @brief libafpsl's metadata transfers and the local metadata stores
+ *
+ * Part of libafpsl: metadata transfers and the local metadata stores.
+ * Lane: metadata.
+ * Northbound: the programs that link libafpsl.
+ * Southbound: the calls of stateless.c.
+ */
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>

@@ -1,6 +1,10 @@
 /*!
  * @file
  * @brief DSI requests and reply waits of a session
+ *
+ * The DSI layer's interface.
+ * Lane: DSI.
+ * Northbound: the protocol layer, the session layer and the event loop.
  */
 
 #ifndef AFPCLIENT_DSI_H

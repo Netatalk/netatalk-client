@@ -11,7 +11,12 @@
 
 /*!
  * @file
- * @brief afpc fs and mount_afpfs: FUSE manager requests from command lines
+ * @brief afpc fs and mount_afpfs, the command-line clients of afpfsd
+ *
+ * The command line of the FUSE front end (afpc fs, mount_afpfs).
+ * Lane: control.
+ * Northbound: the user, through afpc's dispatcher.
+ * Southbound: afpfsd's manager and mount daemons, over a UNIX socket.
  */
 
 #ifdef HAVE_CONFIG_H

@@ -2,6 +2,10 @@
 /*!
  * @file
  * @brief DSI's commands, flags, options and results, and its frame header
+ *
+ * DSI's wire format, part of the DSI layer.
+ * Lane: DSI.
+ * Northbound: the protocol layer, which fills a frame's header.
  */
 
 #ifndef __DSI_PROTOCOL_H_
