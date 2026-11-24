@@ -108,6 +108,9 @@ void fuse_forced_ending_hook(void)
         struct afp_server * next_server = s->next;
 
         if (s->connect_state == SERVER_STATE_CONNECTED) {
+            /* The last unmount's logout removes the server. */
+            afp_server_hold(s);
+
             for (int i = 0; i < s->num_volumes; i++) {
                 volume = &s->volumes[i];
 
@@ -122,6 +125,8 @@ void fuse_forced_ending_hook(void)
 
                 afp_unmount_volume(volume);
             }
+
+            afp_server_release(s);
         }
 
         s = next_server;

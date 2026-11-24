@@ -494,12 +494,9 @@ static int volopen(struct afpfsd_client * c, struct afp_volume * volume)
 /*!
  * @brief Suspend the session of a mount's server, for afpc fs suspend
  *
- * The server sleeps with FPZzzzz and is marked suspended, so no request
- * reconnects it, before its connection ends.
- *
  * @param[in] c  the client, whose command names the mount point
  * @returns AFPFSD_IPC_RESULT_OK, or AFPFSD_IPC_RESULT_ERROR for an unknown
- *          mount point or a refused sleep
+ *          mount point or a failed suspend
  */
 static unsigned char process_suspend(struct afpfsd_client * c)
 {
@@ -516,13 +513,14 @@ static unsigned char process_suspend(struct afpfsd_client * c)
 
     s = v->server;
 
-    if (afp_zzzzz(s)) {
+    if (afp_server_suspend(s)) {
         afp_server_release(s);
+        log_for_client((void *) c, AFPFSD, LOG_ERR,
+                       "Unable to suspend the connection for %s",
+                       req.mountpoint);
         return AFPFSD_IPC_RESULT_ERROR;
     }
 
-    afp_server_set_suspended(s, 1);
-    loop_disconnect(s);
     afp_server_release(s);
     log_for_client((void *) c, AFPFSD, LOG_NOTICE,
                    "Suspended connection for %s", req.mountpoint);
@@ -530,16 +528,16 @@ static unsigned char process_suspend(struct afpfsd_client * c)
 }
 
 
-static int afp_server_reconnect_loud(struct afpfsd_client * c,
-                                     struct afp_server * s)
+static int afp_server_resume_loud(struct afpfsd_client * c,
+                                  struct afp_server * s)
 {
     char mesg[MAX_ERROR_LEN];
     unsigned int l = 0;
     int rc;
     memset(mesg, 0, sizeof(mesg));
-    rc = afp_server_reconnect(s, mesg, &l, sizeof(mesg));
+    rc = afp_server_resume(s, mesg, &l, sizeof(mesg));
 
-    if (rc)
+    if (rc > 0)
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "%s", mesg);
 
@@ -550,17 +548,16 @@ static int afp_server_reconnect_loud(struct afpfsd_client * c,
 /*!
  * @brief Resume the session of a mount's server, for afpc fs resume
  *
- * A failed reconnect leaves the server suspended.
- *
  * @param[in] c  the client, whose command names the mount point
  * @returns AFPFSD_IPC_RESULT_OK, or AFPFSD_IPC_RESULT_ERROR for an unknown
- *          mount point or a failed reconnect
+ *          mount point, one that is not suspended, or a failed reconnect
  */
 static unsigned char process_resume(struct afpfsd_client * c)
 {
     struct afpfsd_ipc_resume_request req;
     struct afp_server * s;
     struct afp_volume * v = NULL;
+    int rc;
     memcpy(&req, (void *)((uintptr_t)c->incoming_string + 1), sizeof(req));
 
     if ((v = afp_volume_find_by_mountpoint_hold(req.mountpoint)) == NULL) {
@@ -570,17 +567,22 @@ static unsigned char process_resume(struct afpfsd_client * c)
     }
 
     s = v->server;
-    afp_server_set_suspended(s, 0);
+    rc = afp_server_resume_loud(c, s);
+    afp_server_release(s);
 
-    if (afp_server_reconnect_loud(c, s)) {
-        afp_server_set_suspended(s, 1);
-        afp_server_release(s);
+    if (rc < 0) {
+        log_for_client((void *) c, AFPFSD, LOG_ERR,
+                       "The connection for %s is not suspended",
+                       req.mountpoint);
+        return AFPFSD_IPC_RESULT_ERROR;
+    }
+
+    if (rc) {
         log_for_client((void *) c, AFPFSD, LOG_ERR,
                        "Unable to reconnect for %s", req.mountpoint);
         return AFPFSD_IPC_RESULT_ERROR;
     }
 
-    afp_server_release(s);
     log_for_client((void *) c, AFPFSD, LOG_NOTICE,
                    "Resumed connection for %s", req.mountpoint);
     return AFPFSD_IPC_RESULT_OK;
@@ -978,8 +980,7 @@ static int process_mount(struct afpfsd_client * c)
 error:
 
     if ((s) && (!something_is_mounted(s))) {
-        afp_logout(s, DSI_DONT_WAIT);
-        afp_server_remove(s);
+        afp_server_logout(s, DSI_DONT_WAIT);
     }
 
     signal_main_thread();

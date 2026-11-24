@@ -46,6 +46,7 @@
 #include "lib/compat.h"
 #include "lib/dsi.h"
 #include "lib/client.h"
+#include "lib/forklist.h"
 #include "lib/lowlevel.h"
 #include "lib/mapping.h"
 #include "lib/midlevel.h"
@@ -330,31 +331,6 @@ static int register_file_handle(struct afp_file_info *fp,
 static int is_pseudo_file(const struct afp_file_info *fp)
 {
     return fp->resource != AFP_META_NONE && fp->resource != AFP_META_RESOURCE;
-}
-
-/*!
- * @brief Whether a record is on a volume's open-fork list
- *
- * @param[in] volume  the volume
- * @param[in] fp      the record
- * @returns 1 when listed, 0 when not
- */
-static int fork_is_listed(struct afp_volume *volume,
-                          const struct afp_file_info *fp)
-{
-    int listed = 0;
-    pthread_mutex_lock(&volume->open_forks_mutex);
-
-    for (const struct afp_file_info *p = volume->open_forks; p;
-            p = p->largelist_next) {
-        if (p == fp) {
-            listed = 1;
-            break;
-        }
-    }
-
-    pthread_mutex_unlock(&volume->open_forks_mutex);
-    return listed;
 }
 
 /*!
@@ -812,7 +788,8 @@ static unsigned char process_changepw(struct daemon_client * c)
         goto done;
     }
 
-    ret = ml_passwd(server, req->url.username, req->oldpasswd, req->newpasswd);
+    ret = afp_server_passwd(server, req->url.username, req->oldpasswd,
+                            req->newpasswd);
     pthread_mutex_unlock(&server->op_mutex);
 
     if (ret == 0) {
@@ -885,8 +862,7 @@ static unsigned char process_disconnect(struct daemon_client * c)
     }
 
     afp_unmount_all_volumes(server);
-    afp_logout(server, DSI_DONT_WAIT);
-    afp_server_remove(server);
+    afp_server_logout(server, DSI_DONT_WAIT);
     response.header.result = AFPSL_IPC_RESULT_OK;
 done:
     response.header.len = sizeof(struct afpsl_ipc_disconnect_response);
@@ -3390,8 +3366,8 @@ static int process_connect(struct daemon_client * c)
     * Sets connect_error:
     * 0:
     *      No error
-    * ENONET:
-    *      could not get the address of the server
+    * EHOSTUNREACH:
+    *      no address for the server's name, or no route to it
     * ENOMEM:
     *      could not allocate memory
     * ETIMEDOUT:

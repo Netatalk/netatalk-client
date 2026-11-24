@@ -39,7 +39,6 @@
 #include "midlevel.h"
 #include "forklist.h"
 #include "resource.h"
-#include "uams.h"
 #include "users.h"
 #include "utils.h"
 #include "xattr.h"
@@ -2790,20 +2789,6 @@ int ml_statfs(struct afp_volume * vol, const char *path _U_,
     return 0;
 }
 
-/*!
- * @brief Change a user's password with the session's UAM
- *
- * @param[in] server     the server
- * @param[in] username   the user
- * @param[in] oldpasswd  the current password
- * @param[in] newpasswd  the new one
- * @returns afp_dopasswd()'s result
- */
-int ml_passwd(struct afp_server *server,
-              char *username, char *oldpasswd, char *newpasswd)
-{
-    return afp_dopasswd(server, server->using_uam, username, oldpasswd, newpasswd);
-}
 
 /* Extended Attributes (AFP 3.2+) */
 

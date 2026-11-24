@@ -1357,8 +1357,8 @@ static int list_authenticated_volumes(
     server = afp_server_full_connect(NULL, &connection_request);
 
     if (server == NULL) {
-        fprintf(stderr, "Could not authenticate with AFP service %s.\n",
-                request->url.servername);
+        fprintf(stderr, "Could not log in to AFP service %s: %s\n",
+                request->url.servername, strerror(errno));
         return -1;
     }
 
@@ -1372,8 +1372,7 @@ static int list_authenticated_volumes(
         }
     }
 
-    afp_logout(server, 1);
-    afp_server_remove(server);
+    afp_server_logout(server, 1);
     return 0;
 }
 

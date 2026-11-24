@@ -29,7 +29,6 @@
 #include "client.h"
 #include "codepage.h"
 #include "dsi.h"
-#include "server.h"
 #include "uam_registry.h"
 #include "users.h"
 #include "utils.h"
@@ -74,6 +73,7 @@ struct afp_server *afp_server_full_connect(void *priv,
 
     if ((address = afp_get_address(priv, req->url.servername,
                                    req->url.port)) == NULL) {
+        errno = EHOSTUNREACH;
         return NULL;
     }
 

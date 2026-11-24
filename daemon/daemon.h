@@ -19,7 +19,4 @@ void daemon_stop_listener(void);
 
 int get_debug_mode(void);
 
-int fuse_unmount_volume(struct afp_volume * volume);
-void fuse_forced_ending_hook(void);
-
 #endif

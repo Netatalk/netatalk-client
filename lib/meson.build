@@ -33,6 +33,7 @@ libafpclient_sources = files(
     'proto_fork.c',
     'proto_login.c',
     'proto_map.c',
+    'proto_reply.c',
     'proto_replyblock.c',
     'proto_server.c',
     'proto_session.c',

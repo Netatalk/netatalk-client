@@ -53,8 +53,6 @@ void signal_main_thread(void);
 #define LOG_METHOD_SYSLOG 1
 #define LOG_METHOD_STDOUT 2
 
-void set_log_method(int m);
-
 /* Public logging API: message is complete text, not a printf format. */
 void log_for_client(void *priv,
                     enum logtypes logtype, int loglevel,

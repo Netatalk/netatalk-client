@@ -4,7 +4,7 @@
  *
  * The fork list's interface, outside the layers.
  * Lane: shared.
- * Northbound: the mid and low levels, and the session layer.
+ * Northbound: the mid and low levels, the session layer, and afpsld.
  */
 
 #ifndef __FORKLIST_H_
@@ -23,6 +23,7 @@ void flush_dirty_forks_for_file(struct afp_volume * volume,
                                 struct afp_file_info * fp);
 int other_fork_open(struct afp_volume * volume, struct afp_file_info * fp);
 int other_writer_open(struct afp_volume * volume, struct afp_file_info * fp);
+int fork_is_listed(struct afp_volume *volume, const struct afp_file_info *fp);
 void remove_fork_list(struct afp_volume * volume);
 void forget_open_forks(struct afp_volume * volume);
 void forget_unclosed_forks(struct afp_server *server);

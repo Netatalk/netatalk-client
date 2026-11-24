@@ -431,6 +431,18 @@ int main(int argc, char **argv)
         afp_fake_server_stop_listening(&fake);
     }
     {
+        /* A name that gives no address fails the connect with EHOSTUNREACH:
+         * no resolver takes a label of 70 bytes. */
+        struct afp_connection_request request;
+        memset(&request, 0, sizeof(request));
+        afp_default_url(&request.url);
+        memset(request.url.servername, 'a', 70);
+        request.uam_mask = UAM_NOUSERAUTHENT;
+        errno = 0;
+        CHECK(afp_server_full_connect(NULL, &request) == NULL);
+        CHECK(errno == EHOSTUNREACH);
+    }
+    {
         /* A server without a UTF-8 name is known by its Mac Roman name,
          * converted. */
         memset(&fake, 0, sizeof(fake));

@@ -453,6 +453,48 @@ int main(int argc, char **argv)
         close_session(&fake, server, volume, fp);
     }
     {
+        /* A resume of a session that is not suspended is refused. */
+        char mesg[MAX_ERROR_LEN];
+        unsigned int len = 0;
+        memset(&fake, 0, sizeof(fake));
+        fake.status_flags = FAKE_FLAGS;
+        CHECK(afp_fake_server_listen(&fake) == 0);
+        server = open_session(&fake, &volume, &fp);
+        CHECK(afp_server_resume(server, mesg, &len, sizeof(mesg)) == -1);
+        CHECK(server->connect_state == SERVER_STATE_CONNECTED);
+        CHECK(!afp_server_is_suspended(server));
+        CHECK(afp_fake_server_count(&fake, afpLogin) == 1);
+        CHECK(afp_fake_server_count(&fake, afpDisconnectOldSession) == 0);
+        /* The login's message alone. */
+        CHECK(afp_fake_server_count(&fake, afpGetSrvrMsg) == 1);
+        CHECK(fp->forkid == AFP_FAKE_SERVER_FORK);
+        close_session(&fake, server, volume, fp);
+    }
+    {
+        /* A resume refuses a dropped session that no suspend marked, and a
+         * failed one keeps the mark. */
+        char mesg[MAX_ERROR_LEN];
+        unsigned int len = 0;
+        memset(&fake, 0, sizeof(fake));
+        fake.status_flags = FAKE_FLAGS;
+        CHECK(afp_fake_server_listen(&fake) == 0);
+        server = open_session(&fake, &volume, &fp);
+        drop_session(&fake, server);
+        fake.refuse = afpLogin;
+        CHECK(afp_server_resume(server, mesg, &len, sizeof(mesg)) == -1);
+        CHECK(!afp_server_is_suspended(server));
+        CHECK(afp_fake_server_count(&fake, afpLogin) == 1);
+        afp_server_set_suspended(server, 1);
+        CHECK(afp_server_resume(server, mesg, &len, sizeof(mesg)) == 1);
+        CHECK(afp_server_is_suspended(server));
+        fake.refuse = 0;
+        len = 0;
+        CHECK(afp_server_resume(server, mesg, &len, sizeof(mesg)) == 0);
+        CHECK(!afp_server_is_suspended(server));
+        CHECK(server->connect_state == SERVER_STATE_CONNECTED);
+        close_session(&fake, server, volume, fp);
+    }
+    {
         /* A request on an ended session's fork number fails with EIO unsent,
          * whatever the record holds, as a new session may reuse the number. */
         memset(&fake, 0, sizeof(fake));

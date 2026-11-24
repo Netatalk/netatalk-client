@@ -97,6 +97,21 @@ sub afpgetstatus_run {
 }
 
 # -----------------------------------------------------------------------
+# test_getstatus_refused: a port that refuses the connection gives no response
+# -----------------------------------------------------------------------
+{
+    my ($out, $status) = afpgetstatus_run("afp://$AFP_HOST:1");
+
+    isnt($status, 0, 'getstatus_refused: exits non-zero');
+
+    like( $out, qr/Connecting to server/,
+          'getstatus_refused: the failed connection is reported');
+
+    unlike($out, qr/AFP response from/,
+           'getstatus_refused: no response header is printed');
+}
+
+# -----------------------------------------------------------------------
 # test_getstatus_help: -h flag prints usage and exits 0
 # -----------------------------------------------------------------------
 {
