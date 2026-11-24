@@ -98,7 +98,7 @@ int afp_setforkparms(struct afp_volume * volume,
  * @param[in] server   server of the fork's session
  * @param[in] command  FPCloseFork, FPFlushFork, or FPSyncFork
  * @param[in] forkid   the open fork
- * @param[in] wait     seconds to wait for the reply, as afpc_dsi_send() takes
+ * @param[in] wait     the reply's wait, as afpc_dsi_send() takes it
  * @returns the server's AFP result, or afpc_dsi_send()'s error when the
  *          request fails
  */
@@ -142,7 +142,7 @@ int afp_closefork(struct afp_server *server, unsigned short forkid)
  *
  * @param[in] volume  volume of the fork
  * @param[in] forkid  the open fork
- * @param[in] wait    seconds to wait for the reply
+ * @param[in] wait    the reply's wait, as afpc_dsi_send() takes it
  * @returns the server's AFP result, or afpc_dsi_send()'s error when the
  *          request fails
  */
@@ -159,7 +159,7 @@ int afp_flushfork(struct afp_volume * volume,
  *
  * @param[in] volume  volume of the fork
  * @param[in] forkid  the open fork
- * @param[in] wait    seconds to wait for the reply
+ * @param[in] wait    the reply's wait, as afpc_dsi_send() takes it
  * @returns the server's AFP result, or afpc_dsi_send()'s error when the
  *          request fails
  */

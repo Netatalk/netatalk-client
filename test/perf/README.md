@@ -77,7 +77,7 @@ and once per pass otherwise.
 | Open, write 1024 bytes, close | `open`, `pwrite`, `close` | 6,000 | `FPOpenFork`, `FPWriteExt`, `FPCloseFork` |
 | Open, read 1024 bytes, close | `open`, `pread`, `close` | 6,000 | `FPOpenFork`, `FPReadExt`, `FPCloseFork` |
 | Copying 1000 files client-side | read a file, create and write another | 6,000 | both fork lifecycles and `FPSetFileDirParms` for the copy's mode; the kernel's capability probe before each write is answered locally |
-| Copying 2000 files server-side | `open` x2, `copy_file_range`, `close` x2 | 10,000 | thirteen requests per file: about five `FPGetFileDirParms`, two `FPOpenFork`, `FPCreateFile`, `FPSetFileDirParms` for the mode, `FPReadExt`, `FPWriteExt`, two `FPCloseFork`; the files are below 512 KiB, so the FUSE `copy_file_range` operation copies them through the client, and a whole file of 512 KiB and up, before Netatalk 4.5 with at most 1 GiB in its two forks, goes to a Netatalk server on AFP 3.4 as one `FPCopyFile` |
+| Copying 2000 files server-side | `open` x2, `copy_file_range`, `close` x2 | 10,000 | thirteen requests per file: about five `FPGetFileDirParms`, two `FPOpenFork`, `FPCreateFile`, `FPSetFileDirParms` for the mode, `FPReadExt`, `FPWriteExt`, two `FPCloseFork`; the files are below 1 MiB, so the FUSE `copy_file_range` operation copies them through the client, and a whole file of 1 MiB and up, before Netatalk 4.5 with at most 1 GiB in its two forks, goes to a Netatalk server on AFP 3.4 as one `FPCopyFile` |
 | Stat 2000 files | `stat` | 2,000 | one `FPGetFileDirParms` per file whose record's parameters have lapsed in the client's cache |
 | Enumerate dir with 2000 files | `opendir`, `readdir` with `fstatat` per entry, `closedir` | 2,002 | `FPEnumerateExt2` pages; the per-entry `fstatat` is answered by the kernel's attribute cache, which the preceding stat test refreshed |
 | Lock then unlock 2000 open forks | `fcntl` lock and unlock | 4,000 | kernel-local locks; no FUSE lock operation (an SMB mount sends them to the server) |
@@ -163,7 +163,7 @@ default one-second attribute cache) and runs the same tool with the same
 arguments. `smbd` is pinned with `AFP_SERVER_CPUS` like `afpd`. On the CIFS
 mount the lock tests and ServerCopy reach the server (SMB byte-range locks,
 a server-side copy), where the FUSE client keeps locks in the kernel and
-copies on a Netatalk server on AFP 3.4 only a whole file of 512 KiB and up,
+copies on a Netatalk server on AFP 3.4 only a whole file of 1 MiB and up,
 before Netatalk 4.5 with at most 1 GiB in its two forks, into a file the copy
 created.
 

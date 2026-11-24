@@ -144,7 +144,7 @@ static int parse_volbitmap_reply(struct afp_server *server,
     }
 
     /* The caller has set the name, so only its offset is stepped over: the
-     * reply's name is in wire encoding (Mac Roman or decomposed UTF-8). */
+     * reply gives the name in the server's Mac charset. */
     if ((bitmap & kFPVolNameBit)
             && take_parameter(&p, end, NULL, sizeof(u16)) != 0) {
         return -1;

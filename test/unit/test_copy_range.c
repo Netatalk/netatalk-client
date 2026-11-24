@@ -225,5 +225,32 @@ int main(int argc, char **argv)
     CHECK(count_commands(&fake, afpCopyFile) == 1);
     CHECK(count_commands(&fake, afpDelete) == 2);
     CHECK(count_commands(&fake, afpOpenFork) == 4);
+    /* A source a byte short of the offload's threshold copies through the
+     * client, though the server could copy it. */
+    in = NULL;
+    out = NULL;
+    memset(&fake, 0, sizeof(fake));
+    fake.file_params = 1;
+    fake.params_cnid = 7;
+    fake.read_file = 1;
+    fake.data_length = SOURCE_DATA - 1;
+    CHECK(afp_fake_server_start(&fake) == 0);
+    fake.server->quantum = 1024;
+    fake.server->server_type = AFPC_SERVER_TYPE_NETATALK;
+    fake.server->flags = kSupportsCopyfile;
+    CHECK(ml_open(&fake.volume, "/source", O_RDONLY, &in) == 0);
+    CHECK(ml_open(&fake.volume, "/target", O_WRONLY | O_CREAT, &out) == 0);
+    fake.params_empty = (uint16_t)(1U << (fake.params_answers + 1));
+
+    if (in && out) {
+        out->size = 0;
+        CHECK(ml_copy_range_within(&fake.volume, in, 0, out, 0,
+                                   SOURCE_DATA - 1, SIZE_MAX) > 0);
+    }
+
+    close_fork(&fake, in);
+    close_fork(&fake, out);
+    afp_fake_server_stop(&fake);
+    CHECK(count_commands(&fake, afpCopyFile) == 0);
     return test_tap_finish();
 }

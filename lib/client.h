@@ -35,7 +35,7 @@ struct libafpclient {
     void (*forced_ending_hook)(void);
     int (*scan_extra_fds)(int command_fd, fd_set *set, int *max_fd);
     void (*loop_started)(void);
-    /*! whether log_for_client() keeps a message; NULL for every message */
+    /*! whether log_for_client() keeps a level's messages; NULL keeps all */
     int (*log_enabled)(void *priv, int loglevel);
 };
 

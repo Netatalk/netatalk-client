@@ -73,10 +73,17 @@ struct dsi_attention_context {
 /*!
  * @brief Take the session's next request ID
  *
- * @param[in,out] server  the server, whose last request ID advances
+ * A connect restarts the IDs of a server without a replay cache under the
+ * same lock, so the generation read with the ID is that of the ID's
+ * sequence.
+ *
+ * @param[in,out] server      the server, whose last request ID advances
+ * @param[out]    generation  receives the generation of the connection the
+ *                            ID is for, or NULL
  * @returns the ID, in network byte order
  */
-static uint16_t take_request_id(struct afp_server *server)
+static uint16_t take_request_id(struct afp_server *server,
+                                unsigned int *generation)
 {
     uint16_t id;
     pthread_mutex_lock(&server->requestid_mutex);
@@ -95,23 +102,32 @@ static uint16_t take_request_id(struct afp_server *server)
 
     server->expectedrequestid = server->lastrequestid;
     id = htons(server->lastrequestid);
+
+    if (generation) {
+        *generation = afp_server_connection_generation(server);
+    }
+
     pthread_mutex_unlock(&server->requestid_mutex);
     return id;
 }
 
 /*!
- * @brief Fill a DSI header with the session's next request ID
+ * @brief Fill a DSI header, whose request ID its send takes
  *
- * @param[in,out] server   the server, whose last request ID advances
- * @param[out]    header   the header
- * @param[in]     command  the DSI command
+ * The send takes the ID with the generation of the connection the frame
+ * goes out on, so a connect between the two leaves no frame an ID of the
+ * sequence the connect ended.
+ *
+ * @param[in]  server   unused
+ * @param[out] header   the header
+ * @param[in]  command  the DSI command
  */
 void afpc_dsi_setup_header(struct afp_server * server,
                            struct dsi_header * header,
                            char command)
 {
+    (void) server;
     memset(header, 0, sizeof(struct dsi_header));
-    header->requestid = take_request_id(server);
     header->command = command;
 }
 
@@ -141,6 +157,7 @@ static void afpc_dsi_tickle_unless_busy(struct afp_server *server)
             .head_len = sizeof(header),
         };
         afpc_dsi_setup_header(server, &header, DSI_DSITickle);
+        header.requestid = take_request_id(server, NULL);
         (void) afpc_dsi_write_frame(server, &frame, DSI_DSITickle, 0, 0);
     }
 
@@ -189,8 +206,9 @@ int afpc_dsi_opensession(struct afp_server *server)
  * @brief Take a sender's request off the queue, once no receiver holds it
  *
  * The request lives on the sender's stack; a flush may have taken it off
- * already. Every answer and failure is given under the queue's lock, so
- * once the call returns the sender reads the result without one.
+ * already. Every answer and failure is given under the queue's lock to a
+ * queued request, so once the call returns no thread writes the request,
+ * and the sender reads its result without a lock.
  *
  * @param[in,out] server    server whose queue held the request
  * @param[in,out] toremove  the sender's request
@@ -441,6 +459,42 @@ static int may_write(const struct afp_server *server, int tied,
 }
 
 /*!
+ * @brief Shut both directions of a connection
+ *
+ * Each direction is shut on a call of its own: macOS refuses SHUT_RDWR once
+ * the peer's close has arrived and leaves the write side open.
+ *
+ * @param[in] fd  the connection's descriptor
+ */
+static void shut_both_ways(int fd)
+{
+    shutdown(fd, SHUT_WR);
+    shutdown(fd, SHUT_RD);
+}
+
+/*!
+ * @brief Whether a failed send of a frame must end its connection
+ *
+ * Once part of a frame is queued, the next frame would start inside it. A
+ * send that counted bytes queued them, and a BSD kernel fails a send that
+ * queued part of its data, so a failure that counted none may have queued
+ * some, unless the send would have blocked. A connection the peer reset,
+ * or whose sending side or descriptor is gone, takes no next frame.
+ *
+ * @param[in] counted  the frame's bytes the sends counted
+ * @param[in] err      the failed send's errno, not EINTR
+ * @returns 1 when the connection must end, 0 otherwise
+ */
+int afpc_dsi_failed_send_ends_connection(size_t counted, int err)
+{
+    if (err == EPIPE || err == ECONNRESET || err == EBADF) {
+        return 0;
+    }
+
+    return counted > 0 || !(err == EAGAIN || err == EWOULDBLOCK);
+}
+
+/*!
  * @brief Write one DSI frame to the server's socket
  *
  * The caller holds send_mutex: frames never interleave, and the descriptor
@@ -474,6 +528,7 @@ static int afpc_dsi_write_frame(struct afp_server *server,
         .msg_iovlen = frame->data_len > 0 ? 2 : 1,
     };
     ssize_t ret;
+    size_t sent = 0;
 
     if (!may_write(server, tied, session)) {
         return -EIO;
@@ -488,18 +543,31 @@ static int afpc_dsi_write_frame(struct afp_server *server,
               : sendmsg(fd, &msg, MSG_NOSIGNAL);
 
         if (ret < 0) {
-            if (errno == EINTR) {
+            int err = errno;
+
+            if (err == EINTR) {
                 continue;
             }
 
             /* A connection the server has closed ends when the loop reads
              * the close; the write only reports it. */
-            if (errno != EPIPE && errno != EBADF) {
+            if (err != EPIPE && err != EBADF) {
                 perror("writing to server");
+            }
+
+            if (afpc_dsi_failed_send_ends_connection(sent, err)) {
+                log_for_client(NULL, AFPFSD, LOG_ERR,
+                               "dsi_send: ending the connection on fd=%d: a frame of DSI command %u failed with %zu of %zu bytes counted: %s (errno=%d)",
+                               fd, command, sent,
+                               frame->head_len + frame->data_len,
+                               strerror(err), err);
+                shut_both_ways(fd);
             }
 
             return -EIO;
         }
+
+        sent += (size_t) ret;
 
         while (msg.msg_iovlen > 0
                 && (size_t) ret >= msg.msg_iov->iov_len) {
@@ -531,17 +599,14 @@ static int afpc_dsi_write_frame(struct afp_server *server,
  * A sender writes its frame, under send_mutex, to the descriptor it loaded
  * at the frame's start. The shutdown fails a send waiting for room, and
  * taking the mutex waits for the frame, so the caller closes a descriptor
- * no sender writes on, and its number can be reused. Each direction is shut
- * on a call of its own: macOS refuses SHUT_RDWR once the peer's close has
- * arrived and leaves the write side open.
+ * no sender writes on, and its number can be reused.
  *
  * @param[in,out] server  server the descriptor was taken from
  * @param[in]     fd      the descriptor
  */
 void afpc_dsi_end_sends(struct afp_server *server, int fd)
 {
-    shutdown(fd, SHUT_WR);
-    shutdown(fd, SHUT_RD);
+    shut_both_ways(fd);
     pthread_mutex_lock(&server->send_mutex);
     pthread_mutex_unlock(&server->send_mutex);
 }
@@ -623,6 +688,8 @@ static int send_frame(struct afp_server *server,
         }
 
         pthread_mutex_lock(&server->send_mutex);
+        header.requestid = take_request_id(server, NULL);
+        memcpy(frame->head, &header, sizeof(header));
         rc = afpc_dsi_write_frame(server, frame, subcommand, tied, tie_session);
         pthread_mutex_unlock(&server->send_mutex);
 
@@ -677,11 +744,6 @@ static int send_frame(struct afp_server *server,
                 && subcommand != afpLogout) {
             return -EIO;
         }
-
-        /* A connect restarts the request IDs of a server without a replay
-         * cache, so the one this request took before may come again. */
-        header.requestid = take_request_id(server);
-        memcpy(frame->head, &header, sizeof(header));
     }
 
     if (server->fd < 0) {
@@ -689,11 +751,13 @@ static int send_frame(struct afp_server *server,
     }
 
     memset(&request, 0, sizeof(request));
+    header.requestid = take_request_id(server, &request.connection_generation);
+    memcpy(frame->head, &header, sizeof(header));
     request.requestid = ntohs(header.requestid);
     request.subcommand = subcommand;
+    request.dsi_command = header.command;
     request.other = other;
     request.wait = wait;
-    request.connection_generation = afp_server_connection_generation(server);
     request.reply_handler = reply_handler;
     request.stream_buffer = stream_buffer;
     /* Initialize before queueing so dsi_recv can signal this request safely. */
@@ -751,7 +815,8 @@ static int send_frame(struct afp_server *server,
     pthread_mutex_unlock(&request.waiting_mutex);
     afpc_dsi_remove_from_request_queue(server, &request);
 
-    /* A request not sent has no answer of its own. */
+    /* An answer a sent request has once it leaves the queue is the result,
+     * though its wait ran out; one not sent has no answer of its own. */
     if (sent && request.done_waiting) {
         rc = request.return_code;
     } else if (rc == ETIMEDOUT) {
@@ -829,19 +894,14 @@ int afpc_dsi_send_data(struct afp_server *server, char *msg, int size,
 /*!
  * @brief Hand a DSICommand reply to its AFP command's parser
  *
- * A read's data goes from the socket into the read's buffer.
- *
  * @param[in,out] server      the server, with the reply read so far
  * @param[in]     subcommand  the AFP command the reply answers
  * @param[in,out] other       the request's caller data
- * @returns the parser's result, or -1 for a short reply, no command, or a
- *          read that fails or finds the connection closed
+ * @returns the parser's result, or -1 for a short reply or no command
  */
 int afpc_dsi_command_reply(struct afp_server* server, unsigned short subcommand,
                            void *other)
 {
-    int ret = 0;
-
     if ((unsigned long) server->data_read < sizeof(struct dsi_header)) {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
                        "Got a short reply command, I am just ignoring it. size: %d",
@@ -855,33 +915,7 @@ int afpc_dsi_command_reply(struct afp_server* server, unsigned short subcommand,
         return -1;
     }
 
-    if ((subcommand == afpRead) || (subcommand == afpReadExt)) {
-        struct afp_rx_buffer * buf = other;
-#ifdef DEBUG_DSI
-        log_for_client(NULL, AFPFSD, LOG_DEBUG, "=== read() for afpRead, %d bytes",
-                       buf->maxsize - buf->size);
-#endif
-
-        do {
-            ret = read(server->fd, buf->data + buf->size,
-                       buf->maxsize - buf->size);
-        } while (ret < 0 && errno == EINTR);
-
-        if (ret < 0) {
-            return -1;
-        }
-
-        server->stats.rx_bytes += ret;
-
-        if (ret == 0) {
-            return -1;
-        }
-
-        server->data_read += ret;
-    }
-
-    ret = afp_reply(subcommand, server, other);
-    return ret;
+    return afp_reply(subcommand, server, other);
 }
 
 
@@ -1447,20 +1481,29 @@ void *afpc_dsi_incoming_attention(void *other)
 /*!
  * @brief Find the queued request a reply answers, and hold it
  *
- * Its sender's call waits until afpc_dsi_release_request() lets it go.
+ * A reconnect to a server without a replay cache restarts the IDs, so a
+ * request of the replaced connection can carry a later request's; a reply
+ * answers a request of its own connection and DSI command. Its sender's call
+ * waits until afpc_dsi_release_request() lets it go.
  *
  * @param[in,out] server      server whose queue to search
  * @param[in]     request_id  the reply's request ID
+ * @param[in]     generation  the generation of the reply's connection
+ * @param[in]     command     the reply's DSI command
  * @returns the request, or NULL when none waits for the reply
  */
-struct dsi_request *afpc_dsi_find_request(struct afp_server *server,
-                                          unsigned short request_id)
+static struct dsi_request *afpc_dsi_find_request(struct afp_server *server,
+                                                 unsigned short request_id,
+                                                 unsigned int generation,
+                                                 unsigned char command)
 {
     struct dsi_request *p;
     pthread_mutex_lock(&server->request_queue_mutex);
 
     for (p = server->command_requests; p; p = p->next) {
-        if (!p->done_waiting && request_id == p->requestid) {
+        if (!p->done_waiting && request_id == p->requestid
+                && p->connection_generation == generation
+                && p->dsi_command == command) {
             p->receiving = 1;
             pthread_mutex_unlock(&server->request_queue_mutex);
             return p;
@@ -1743,7 +1786,8 @@ gotenough:
      * searched for it: a tickle whose id equals a pending request's would
      * otherwise be taken for that request's reply. */
     if (header->flags == DSI_REPLY) {
-        request = afpc_dsi_find_request(server, ntohs(header->requestid));
+        request = afpc_dsi_find_request(server, ntohs(header->requestid),
+                                        generation, header->command);
         *found = request;
 
         if (!request) {
@@ -1850,38 +1894,19 @@ gotenough:
         buf->size += ret;
         server->stream_read += ret;
 
-        /* Check to see if we've read enough */
-        if (ntohl(header->length) == buf->size) {
-            char *tmpbuf;
-            int size_to_copy = server->data_read
-                               - sizeof(struct dsi_header);
-            server->stream_read = 0;
-
-            if (size_to_copy == 0) {
-                server->data_read = 0;
-                goto out;
-            } else if (size_to_copy < 0) {
-                goto error;
-            }
-
-            /* Okay, so there is a buffer we have to shift */
-            if ((tmpbuf = malloc(size_to_copy)) == NULL) {
-                log_for_client(NULL, AFPFSD, LOG_ERR,
-                               "Problem allocating memory for dsi_recv of size %d", size_to_copy);
-                goto error;
-            }
-
-            memcpy(tmpbuf,
-                   server->incoming_buffer +
-                   sizeof(struct dsi_header),
-                   size_to_copy);
-            memcpy(server->incoming_buffer, tmpbuf,
-                   size_to_copy);
-            server->data_read = size_to_copy;
-            free(tmpbuf);
-        } else {
+        if (ntohl(header->length) != buf->size) {
             return 0;
         }
+
+        server->stream_read = 0;
+
+        /* The header's pass reads no byte past the header. */
+        if (server->data_read != sizeof(struct dsi_header)) {
+            goto error;
+        }
+
+        server->data_read = 0;
+        goto out;
     } else {
         /* Okay, so it isn't a response to an afpRead or afpReadExt */
         if (((server->data_read == sizeof(struct dsi_header)) &&

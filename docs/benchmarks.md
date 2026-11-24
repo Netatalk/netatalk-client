@@ -94,7 +94,7 @@ offload the kernel reads and writes the data itself.
 
 On 64-bit Linux, the Netatalk FUSE client makes such a copy with `FPCopyFile`
 where the server announces that command. The copy must be of a whole file of
-512 KiB and up, into a file that the copy created. Before Netatalk 4.5, the
+1 MiB and up, into a file that the copy created. Before Netatalk 4.5, the
 file's two forks together must hold at most 1 GiB. Any other range of a data
 or resource fork goes through the client in quantum-sized reads and writes.
 On other systems the kernel copies.

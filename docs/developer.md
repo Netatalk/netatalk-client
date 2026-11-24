@@ -104,7 +104,7 @@ They are:
 trailing newlines, escapes control characters, and forwards the sanitized text to the registered client logger.
 If the message pointer is null, it is logged as `(null)`. A client that sets `log_enabled` in its
 `struct libafpclient` is asked first, once, with the message's `priv` and level; a message it refuses is neither
-formatted nor copied. A client that leaves it NULL gets every message.
+formatted nor copied. A client that leaves it NULL gets the messages of every level.
 
 Inside the netatalk-client build, `log_for_client()` is also available as a checked printf-style convenience macro.
 Internal callers may use literal format strings:

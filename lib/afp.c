@@ -1755,10 +1755,19 @@ int afp_server_connect(struct afp_server *server, int full)
     struct timeval t1, t2;
     int error = EINVAL;
     int fd = __atomic_exchange_n(&server->fd, -1, __ATOMIC_ACQ_REL);
+    unsigned int connection_generation;
     /* The next generation starts before the old descriptor is shut down,
-     * so a receiver the shutdown wakes finds its connection replaced. */
-    unsigned int connection_generation =
-        afp_server_next_connection_generation(server);
+     * so a receiver the shutdown wakes finds its connection replaced. A
+     * server without AFP 3.3's replay cache restarts the request IDs with
+     * it, under the lock a send holds to take an ID with its generation. */
+    pthread_mutex_lock(&server->requestid_mutex);
+    connection_generation = afp_server_next_connection_generation(server);
+
+    if (!server->supports_replay_cache) {
+        server->lastrequestid = 0;
+    }
+
+    pthread_mutex_unlock(&server->requestid_mutex);
 
     if (fd >= 0) {
         loop_close_descriptor(server, fd);
@@ -1848,13 +1857,6 @@ int afp_server_connect(struct afp_server *server, int full)
     }
 
     server->exit_flag = 0;
-
-    /* AFP 3.3+: Only reset request ID if replay cache is not supported.
-     * With replay cache, request IDs persist across reconnections. */
-    if (!server->supports_replay_cache) {
-        server->lastrequestid = 0;
-    }
-
     /* A server removed while this connect ran stays removed: its state,
      * its list entry and its published descriptor change under the list
      * lock. */

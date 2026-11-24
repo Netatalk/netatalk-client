@@ -248,7 +248,7 @@ int afp_getsrvrparms_reply(struct afp_server *server, char *msg,
  * @param[in]  buf     the reply
  * @param[in]  size    its length
  * @param[out] other   receives AFP_LOGINMESG_LEN bytes of message, or NULL
- * @returns 0, or -1 for a reply cut short
+ * @returns 0, or -1 for a reply cut short or a message that runs past it
  */
 int afp_getsrvrmsg_reply(struct afp_server *server _U_,
                          char *buf, unsigned int size, void *other)
@@ -260,6 +260,10 @@ int afp_getsrvrmsg_reply(struct afp_server *server _U_,
     }  __attribute__((__packed__)) * afp_getsrvrmsg_reply = (void *) buf;
     char *mesg = other;
     char *src;
+    size_t rest;
+    size_t width;
+    size_t length;
+    uint16_t length16;
 
     if (size < sizeof(struct afp_getsrvrmsg_reply_packet)) {
         log_for_client(NULL, AFPFSD, LOG_WARNING,
@@ -271,9 +275,27 @@ int afp_getsrvrmsg_reply(struct afp_server *server _U_,
         return 0;
     }
 
-    src = buf + (sizeof(struct afp_getsrvrmsg_reply_packet));
+    src = buf + sizeof(struct afp_getsrvrmsg_reply_packet);
+    rest = size - sizeof(struct afp_getsrvrmsg_reply_packet);
+    width = (ntohs(afp_getsrvrmsg_reply->messagebitmap)
+             & AFP_GETSRVRMSG_UTF8) ? 2 : 1;
 
-    if (ntohs(afp_getsrvrmsg_reply->messagebitmap) & AFP_GETSRVRMSG_UTF8) {
+    if (rest < width) {
+        return -1;
+    }
+
+    if (width == 2) {
+        memcpy(&length16, src, sizeof(length16));
+        length = ntohs(length16);
+    } else {
+        length = (unsigned char) src[0];
+    }
+
+    if (length > rest - width) {
+        return -1;
+    }
+
+    if (width == 2) {
         copy_from_pascal_two(mesg, src, AFP_LOGINMESG_LEN);
     } else {
         copy_from_pascal(mesg, src, AFP_LOGINMESG_LEN);
@@ -288,8 +310,7 @@ int afp_getsrvrmsg_reply(struct afp_server *server _U_,
  * @param[in]  server       the server
  * @param[in]  messagetype  AFPMESG_LOGIN or AFPMESG_SERVER
  * @param[in]  utf8         1 to ask for the message in UTF-8
- * @param[in]  wait         seconds to wait for the reply, as afpc_dsi_send()
- *                          takes it
+ * @param[in]  wait         the reply's wait, as afpc_dsi_send() takes it
  * @param[out] mesg         receives AFP_LOGINMESG_LEN bytes, or NULL
  * @returns the server's AFP result, or afpc_dsi_send()'s error when the
  *          request fails
