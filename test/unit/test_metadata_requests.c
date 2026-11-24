@@ -1909,6 +1909,39 @@ static int utest_attribute_name_takes_the_volume_form(void)
 }
 
 /*!
+ * @brief An attribute's value past the server's quantum fails with E2BIG
+ *
+ * afpd drops the connection of a command longer than its quantum, so none
+ * is sent.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_attribute_past_the_quantum_fails_with_e2big(void)
+{
+    static const char value[2048];
+    struct afp_fake_server fake;
+    int ret = 0;
+    memset(&fake, 0, sizeof(fake));
+    fake.volume.attributes = kSupportsExtAttrs;
+
+    if (afp_fake_server_start(&fake) != 0) {
+        return 1;
+    }
+
+    fake.server->quantum = 1024;
+
+    if (ml_setxattr(&fake.volume, "/file", "user.k", value, sizeof(value), 0)
+            != -E2BIG) {
+        ret = 2;
+    } else if (afp_fake_server_count(&fake, afpSetExtAttr) != 0) {
+        ret = 3;
+    }
+
+    afp_fake_server_stop(&fake);
+    return ret;
+}
+
+/*!
  * @brief Check the requests each operation sends and what it returns
  *
  * @param[in] argc  argument count
@@ -2054,5 +2087,8 @@ int main(int argc, char **argv)
              "a directory's owner and group change go in one FPSetDirParms");
     TEST_int(utest_attribute_name_takes_the_volume_form(), 0,
              "an attribute's request names its file in the volume's form");
+    TEST_int(utest_attribute_past_the_quantum_fails_with_e2big(), 0,
+             "an attribute's value past the server's quantum fails with "
+             "E2BIG, unsent");
     return test_tap_finish();
 }

@@ -1496,9 +1496,11 @@ int ml_write(struct afp_volume * volume,
 
 /* The offload sends seven requests where a copy through the client sends
  * two. Below about 2.5 times a link's bandwidth-delay product, the five
- * extra round trips cost more than the data's two crossings. That is about
- * 400 KiB on loopback, and 500 KB on 400 Mbit/s Wi-Fi with 4 ms round trips. */
-#define AFP_COPY_OFFLOAD_MIN_BYTES (512U * 1024U)
+ * extra round trips cost more than the data's two crossings: 1 MiB at
+ * 100 Mbit/s with 34 ms round trips. On loopback, where a round trip is
+ * mostly the server's turnaround, a server copy is slower than one through
+ * the client at 512 KiB and faster at 1 MiB. */
+#define AFP_COPY_OFFLOAD_MIN_BYTES (1024U * 1024U)
 /* The cap counts both forks and applies where a long command drops the
  * session. On a server that copies faster than about 9 MB/s, 1 GiB stays
  * inside afpd's idle limit, 2 minutes by default. */
@@ -3597,6 +3599,9 @@ int ml_setxattr(struct afp_volume * volume, const char *path,
 
     case kFPVolLocked:
         return -EROFS;
+
+    case -E2BIG:
+        return -E2BIG;
 
     case kFPMiscErr:
         return -EIO;

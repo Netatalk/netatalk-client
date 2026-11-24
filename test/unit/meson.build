@@ -293,7 +293,8 @@ test(
 )
 
 # A misaligned load or store, or a null a declaration forbids, traps with no
-# runtime to link; the tests check more, so they build without the flags too.
+# runtime to link; the tests check more, so a compiler without the flags
+# builds them without.
 trap_args = [
     '-fsanitize=alignment,nonnull-attribute',
     '-fsanitize-undefined-trap-on-error',
@@ -425,6 +426,38 @@ log_test = executable(
     link_with: libafpclient,
     dependencies: root_dependencies,
     c_args: cflags,
+)
+
+fuse_error_test = executable(
+    'test_fuse_error',
+    sources: ['test_fuse_error.c', '../../fuse/fuse_error.c'],
+    include_directories: incdir,
+    link_with: libafpclient,
+    dependencies: root_dependencies,
+    c_args: cflags,
+)
+
+test(
+    'libfuse start errors',
+    fuse_error_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
+)
+
+fuse_ipc_test = executable(
+    'test_fuse_ipc',
+    sources: ['test_fuse_ipc.c', '../../fuse/fuse_ipc.c'],
+    include_directories: incdir,
+    c_args: cflags,
+)
+
+test(
+    'mount daemon command checks',
+    fuse_ipc_test,
+    args: ['--tap'],
+    protocol: 'tap',
+    verbose: true,
 )
 
 test(

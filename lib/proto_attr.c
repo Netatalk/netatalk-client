@@ -19,6 +19,7 @@
  * Southbound: the DSI layer.
  */
 
+#include <errno.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -292,8 +293,9 @@ int afp_getextattr(struct afp_volume * volume, unsigned int dirid,
  * @param[in] attribdatalen  bytes of the value
  * @param[in] attribdata     the value, or NULL with a length of 0
  * @returns the server's AFP result, -1 without a volume, for a NULL value
- *          with a length or when the request cannot be built, or
- *          afpc_dsi_send_data()'s error when it fails
+ *          with a length or when the request cannot be built, -E2BIG for a
+ *          request longer than the server's quantum, or afpc_dsi_send_data()'s
+ *          error when it fails
  */
 int afp_setextattr(struct afp_volume * volume, unsigned int dirid,
                    unsigned short bitmap, uint64_t offset, const char *pathname,
@@ -327,7 +329,16 @@ int afp_setextattr(struct afp_volume * volume, unsigned int dirid,
         int wait = afpc_dsi_transfer_wait(server, attribdatalen,
                                           AFP_DATA_BYTES_PER_SECOND);
         char *p, *p2;
-        char *msg = malloc(len);
+        char *msg;
+
+        /* afpd drops the connection of a command longer than its
+         * quantum. */
+        if (server->quantum && (uint64_t) len - sizeof(struct dsi_header)
+                + attribdatalen > server->quantum) {
+            return -E2BIG;
+        }
+
+        msg = malloc(len);
 
         if (!msg) {
             log_for_client(NULL, AFPFSD, LOG_WARNING, "Out of memory in afp_setextattr");

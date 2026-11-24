@@ -38,8 +38,12 @@
 #include "lib/utils.h"
 #include "tap.h"
 
+/* Whether a log message has told of a connection a failed send ends. */
+static int logged_send_end;
+
 /*!
- * @brief Swallow a log message
+ * @brief Swallow a log message, noting one that tells of a connection a
+ *        failed send ends
  */
 static void discard_log(void *priv, enum logtypes logtype, int loglevel,
                         const char *message)
@@ -47,7 +51,10 @@ static void discard_log(void *priv, enum logtypes logtype, int loglevel,
     (void) priv;
     (void) logtype;
     (void) loglevel;
-    (void) message;
+
+    if (strstr(message, "ending the connection") != NULL) {
+        __atomic_store_n(&logged_send_end, 1, __ATOMIC_RELEASE);
+    }
 }
 
 /* The library's log lines would otherwise land in the TAP stream. */
@@ -237,6 +244,7 @@ static void queue_request(struct afp_server *server, struct dsi_request *r,
     memset(r, 0, sizeof(*r));
     r->requestid = id;
     r->subcommand = subcommand;
+    r->dsi_command = DSI_DSICommand;
     r->other = other;
     r->reply_handler = handler;
     r->wait = server->dsi_default_timeout;
@@ -2081,6 +2089,91 @@ static int utest_second_reply_is_dropped(void)
 }
 
 /*!
+ * @brief A reply answers the request of its own connection
+ *
+ * An older connection's request with the same ID, ahead of it in the queue
+ * as its earlier send would put it, takes nothing.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_reply_answers_its_connection(void)
+{
+    struct session s;
+    struct dsi_request older;
+    struct dsi_request current;
+    int older_replies = 0;
+    int current_replies = 0;
+    unsigned int ended;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    ended = afp_server_connection_generation(s.server);
+    afp_server_next_connection_generation(s.server);
+    queue_request(s.server, &current, 21, afpGetVolParms, &current_replies,
+                  record_reply);
+    queue_request(s.server, &older, 21, afpGetVolParms, &older_replies,
+                  record_reply);
+    older.connection_generation = ended;
+
+    if (send_frame(s.peer, DSI_REPLY, DSI_DSICommand, 21, NULL, 0) != 0) {
+        ret = 2;
+    } else if (receive_all(s.server) != 0) {
+        ret = 3;
+    } else if (current_replies != 1 || current.done_waiting != 1) {
+        ret = 4;
+    } else if (older_replies != 0 || older.done_waiting != 0) {
+        ret = 5;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A reply of another DSI command answers no request
+ *
+ * A tickle flagged as a reply with a pending request's ID would complete
+ * the request without its parser.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_reply_of_another_command_is_dropped(void)
+{
+    struct session s;
+    struct dsi_request pending;
+    int replies = 0;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    queue_request(s.server, &pending, 22, afpGetUserInfo, &replies,
+                  record_reply);
+
+    if (send_frame(s.peer, DSI_REPLY, DSI_DSITickle, 22, NULL, 0) != 0) {
+        ret = 2;
+    } else if (receive_all(s.server) != 0) {
+        ret = 3;
+    } else if (replies != 0 || pending.done_waiting != 0) {
+        ret = 4;
+    } else if (send_frame(s.peer, DSI_REPLY, DSI_DSICommand, 22, NULL, 0)
+               != 0) {
+        ret = 5;
+    } else if (receive_all(s.server) != 0) {
+        ret = 6;
+    } else if (replies != 1 || pending.done_waiting != 1) {
+        ret = 7;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
  * @brief Accept one connection and close it unanswered
  *
  * @param[in] listener  the listener
@@ -2364,6 +2457,7 @@ static int utest_busy_open_keeps_the_quantum(void)
     }
 
     queue_request(s.server, &pending, 9, DSI_DSIOpenSession, NULL, NULL);
+    pending.dsi_command = DSI_DSIOpenSession;
     memset(&header, 0, sizeof(header));
     header.flags = DSI_REPLY;
     header.command = DSI_DSIOpenSession;
@@ -2374,8 +2468,11 @@ static int utest_busy_open_keeps_the_quantum(void)
         ret = 2;
     } else if (receive_all(s.server) != 0) {
         ret = 3;
-    } else if (s.server->quantum != 65536) {
+    } else if (pending.done_waiting != 1
+               || pending.return_code != (int) DSIERR_SERVBUSY) {
         ret = 4;
+    } else if (s.server->quantum != 65536) {
+        ret = 5;
     }
 
     session_close(&s);
@@ -3814,7 +3911,7 @@ static int map_against(const char *local_name, int unix_privs,
 }
 
 /*!
- * @brief Only a server that names the local user's ID makes the IDs common
+ * @brief A server knowing the local user's ID and name makes the IDs common
  *
  * The name must reach the mapping's buffer. No name is asked for a user the
  * passwd database lacks, and nothing on a volume without UNIX privileges.
@@ -4674,6 +4771,186 @@ static int utest_default_wait_is_the_servers(void)
 }
 
 /*!
+ * @brief A frame the write cuts short ends its connection
+ *
+ * A send timeout on the client's socket stops a write the peer does not
+ * read, partway through its frame. The log tells of the end, and the
+ * client's receiver sees it before the peer closes anything.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_cut_frame_ends_the_connection(void)
+{
+    static char data[1U << 20];
+    static char got[65536];
+    struct session s;
+    struct volume_write w;
+    struct timeval send_limit = { 0, 200000 };
+    struct timeval read_limit = { 2, 0 };
+    int small = 4096;
+    ssize_t n;
+    int ret = 0;
+
+    if (tcp_session_open(&s) != 0) {
+        return 1;
+    }
+
+    __atomic_store_n(&logged_send_end, 0, __ATOMIC_RELAXED);
+
+    if (setsockopt(s.server->fd, SOL_SOCKET, SO_SNDBUF, &small,
+                   sizeof(small)) != 0
+            || setsockopt(s.peer, SOL_SOCKET, SO_RCVBUF, &small,
+                          sizeof(small)) != 0
+            || setsockopt(s.server->fd, SOL_SOCKET, SO_SNDTIMEO,
+                          &send_limit, sizeof(send_limit)) != 0
+            || setsockopt(s.peer, SOL_SOCKET, SO_RCVTIMEO, &read_limit,
+                          sizeof(read_limit)) != 0
+            || start_write(&s, &w, data, sizeof(data)) != 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    for (int i = 0; i < 500 && !__atomic_load_n(&w.done, __ATOMIC_ACQUIRE);
+            i++) {
+        sleep_ms(10);
+    }
+
+    if (!__atomic_load_n(&w.done, __ATOMIC_ACQUIRE)) {
+        ret = 3;
+    } else if (w.result != -EIO) {
+        ret = 4;
+    } else if (!__atomic_load_n(&logged_send_end, __ATOMIC_ACQUIRE)) {
+        ret = 5;
+    } else if (afpc_dsi_recv(s.server) != -1) {
+        ret = 6;
+    }
+
+    /* The peer reads what the write sent, then the connection's end. */
+    do {
+        n = recv(s.peer, got, sizeof(got), 0);
+    } while (ret == 0 && n > 0);
+
+    if (ret == 0 && n != 0) {
+        ret = 7;
+    }
+
+    end_write(&s, &w, ret != 0);
+    session_close(&s);
+    return ret;
+}
+
+/*!
+ * @brief A failed send ends its connection wherever part of the frame may
+ *        be queued
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_failed_send_ends_where_part_may_be_queued(void)
+{
+    int ret = 0;
+
+    if (!afpc_dsi_failed_send_ends_connection(0, EACCES)) {
+        ret = 1;
+    } else if (!afpc_dsi_failed_send_ends_connection(0, ENOBUFS)) {
+        ret = 2;
+    } else if (!afpc_dsi_failed_send_ends_connection(16, EAGAIN)) {
+        ret = 3;
+    } else if (afpc_dsi_failed_send_ends_connection(0, EAGAIN)) {
+        ret = 4;
+    } else if (afpc_dsi_failed_send_ends_connection(16, EPIPE)) {
+        ret = 5;
+    } else if (afpc_dsi_failed_send_ends_connection(16, ECONNRESET)) {
+        ret = 6;
+    }
+
+    return ret;
+}
+
+/* A sender's thread, with a header set up before the thread starts. */
+struct prepared_sender {
+    struct afp_server *server;
+    struct dsi_header header;
+    int result;
+    int replies;
+};
+
+/*!
+ * @brief Send a header set up before, and wait for its reply
+ *
+ * @param[in,out] arg  the sender, whose result receives the send's
+ * @returns NULL
+ */
+static void *send_prepared(void *arg)
+{
+    struct prepared_sender *p = arg;
+    p->result = afpc_dsi_send_with_reply(p->server, (char *) &p->header,
+                                         sizeof(p->header), 5,
+                                         afpGetVolParms, &p->replies,
+                                         record_reply, NULL);
+    return NULL;
+}
+
+/*!
+ * @brief A request carries an ID of its own connection's sequence
+ *
+ * A connect restarts the IDs of a server without a replay cache. A header
+ * set up before the connect, as by a sender the connect overtook, still
+ * goes out with an ID of the new sequence, which no later request takes.
+ *
+ * @returns 0, or the number of the step that failed
+ */
+static int utest_request_takes_its_connections_id(void)
+{
+    struct session s;
+    struct prepared_sender sender;
+    struct dsi_header sent;
+    pthread_t thread;
+    int ret = 0;
+
+    if (session_open(&s, 4096) != 0) {
+        return 1;
+    }
+
+    s.server->supports_replay_cache = 0;
+    s.server->lastrequestid = 731;
+    sender.server = s.server;
+    sender.result = 1;
+    sender.replies = 0;
+    afpc_dsi_setup_header(s.server, &sender.header, DSI_DSICommand);
+    /* A connect starts the next connection and restarts the IDs. */
+    afp_server_next_connection_generation(s.server);
+    s.server->lastrequestid = 0;
+
+    if (pthread_create(&thread, NULL, send_prepared, &sender) != 0) {
+        session_close(&s);
+        return 2;
+    }
+
+    if (read(s.peer, &sent, sizeof(sent)) != (ssize_t) sizeof(sent)) {
+        ret = 3;
+    } else if (ntohs(sent.requestid) != 1) {
+        ret = 4;
+    } else if (send_header(s.peer, DSI_REPLY, DSI_DSICommand, 1, 0) != 0
+               || receive_all(s.server) != 0) {
+        ret = 5;
+    }
+
+    /* The disconnect frees a sender whose reply did not come. */
+    if (ret != 0) {
+        loop_disconnect(s.server);
+    }
+
+    pthread_join(thread, NULL);
+
+    if (ret == 0 && (sender.result != 0 || sender.replies != 1)) {
+        ret = 6;
+    }
+
+    session_close(&s);
+    return ret;
+}
+
+/*!
  * @brief Run the DSI receive path checks as TAP
  *
  * @param[in] argc  argument count
@@ -4742,6 +5019,10 @@ int main(int argc, char **argv)
              "a write to a closed connection fails and leaves it to the loop");
     TEST_int(utest_second_reply_is_dropped(), 0,
              "a second reply to an answered request is dropped");
+    TEST_int(utest_reply_answers_its_connection(), 0,
+             "a reply answers the request of its own connection");
+    TEST_int(utest_reply_of_another_command_is_dropped(), 0,
+             "a reply of another DSI command answers no request");
     TEST_int(utest_cut_off_status_read_fails_the_connect(), 0,
              "a connect whose status read is cut off returns -EIO");
     TEST_int(utest_connect_of_a_removed_server_is_refused(), 0,
@@ -4778,6 +5059,13 @@ int main(int argc, char **argv)
              "fails unsent");
     TEST_int(utest_interrupted_write_goes_on(), 0,
              "a write a signal cuts short goes on where it stopped");
+    TEST_int(utest_cut_frame_ends_the_connection(), 0,
+             "a frame the write cuts short ends its connection");
+    TEST_int(utest_failed_send_ends_where_part_may_be_queued(), 0,
+             "a failed send ends its connection wherever part of the frame "
+             "may be queued");
+    TEST_int(utest_request_takes_its_connections_id(), 0,
+             "a request carries an ID of its own connection's sequence");
     TEST_int(utest_write_waits_by_its_size(), 0,
              "a write waits by its size, and gives up after it");
     TEST_int(utest_default_wait_is_the_servers(), 0,
@@ -4785,7 +5073,7 @@ int main(int argc, char **argv)
     TEST_int(utest_mapid_reads_the_name(), 0,
              "an FPMapID reply's name is read where the reply puts it");
     TEST_int(utest_mapping_finds_common_ids(), 0,
-             "a server that names the local user's ID makes the IDs common");
+             "a server knowing the user's ID and name makes the IDs common");
     TEST_int(utest_reply_remainder_is_awaited_whole(), 0,
              "a reply read in part is awaited whole");
     TEST_int(utest_pass_without_bytes_returns(), 0,

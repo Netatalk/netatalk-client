@@ -18,6 +18,8 @@ typedef int (*afpc_dsi_reply_handler)(struct afp_server *server, char *buffer,
 struct dsi_request {
     unsigned short requestid;
     unsigned char subcommand;
+    /*! the DSI command of its frame, which its reply repeats */
+    unsigned char dsi_command;
     void *other;
     int wait;
     struct timespec deadline;
@@ -39,6 +41,7 @@ int afpc_dsi_parse_status(const char *buf, size_t len,
 int afpc_dsi_getstatus(int fd, struct afp_server_status *status);
 int afpc_dsi_sendtickle(struct afp_server *server);
 void afpc_dsi_end_sends(struct afp_server *server, int fd);
+int afpc_dsi_failed_send_ends_connection(size_t counted, int err);
 void afpc_dsi_flush_request_queue(struct afp_server *server);
 void afpc_dsi_fail_request_queue(struct afp_server *server, int error,
                                  unsigned int generation);
@@ -80,7 +83,7 @@ void afpc_dsi_incoming_closesession(struct afp_server *server);
 #define DSI_TIMECAPSULE_DEFAULT_TIMEOUT 30
 /* The most a reply's wait grows with its bytes, far inside a 32-bit time_t */
 #define DSI_MAX_TRANSFER_WAIT (7 * 24 * 3600)
-/* A transfer's wait allows for a link this slow */
+/* A wait for a request's or reply's data allows for a link this slow */
 #define AFP_DATA_BYTES_PER_SECOND (32U * 1024U)
 
 #endif

@@ -312,7 +312,7 @@ broken Unix privilege support, notably when setting the execute bit.
 On 64-bit Linux, a copy of a whole file into a new file with
 `copy_file_range(2)`, as `cp` makes, is one `FPCopyFile` on the server. The
 server's `FPGetSrvrInfo` flags must announce that command, as Netatalk's do.
-The data fork must hold 512 KiB or more. Before Netatalk 4.5, the two forks
+The data fork must hold 1 MiB or more. Before Netatalk 4.5, the two forks
 together must hold at most 1 GiB.
 
 Such a copy carries the source's resource fork, extended attributes, Finder

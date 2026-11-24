@@ -13,6 +13,7 @@
  */
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,7 +94,8 @@ static int write_header(uint32_t parameters)
 /*!
  * @brief Check the frames and waits the AFP commands hand the DSI send
  *
- * A trapping build stops at a misaligned store and at a null memcpy() source.
+ * A trapping build stops at a misaligned store, and at a null memcpy() source
+ * where the C library declares memcpy() nonnull.
  *
  * @param[in] argc  argument count
  * @param[in] argv  --tap for TAP output
@@ -168,6 +170,13 @@ int main(int argc, char **argv)
     sent_subcommand = 0;
     CHECK(afp_setextattr(&volume, 2, 0, 0, "f", 1, "n", 8, NULL) == -1
           && sent_subcommand == 0);
+    /* The 33 bytes of the command's parameters ride on the value. */
+    volume.server->quantum = 1U << 20;
+    CHECK(afp_setextattr(&volume, 2, 0, 0, "f", 1, "n", sizeof(data), data)
+          == -E2BIG && sent_subcommand == 0);
+    CHECK(afp_setextattr(&volume, 2, 0, 0, "f", 1, "n", sizeof(data) - 33,
+                         data) == 0 && sent_subcommand == afpSetExtAttr);
+    volume.server->quantum = 0;
     volume.server->using_version = &afp34;
     CHECK(afp_login(volume.server, "No User Authent", NULL, 0, NULL) == 0);
     CHECK(sent_subcommand == afpLogin && sent_size == 40);
@@ -186,6 +195,10 @@ int main(int argc, char **argv)
           && sent_wait == DSI_DEFAULT_TIMEOUT);
     CHECK(afp_logout(volume.server, DSI_DEFAULT_TIMEOUT) == 0
           && sent_subcommand == afpLogout && sent_wait == DSI_DEFAULT_TIMEOUT);
+    CHECK(afp_getsrvrmsg(volume.server, AFPMESG_LOGIN, 1, 7, NULL) == 0
+          && sent_wait == 7);
+    CHECK(afp_logout(volume.server, DSI_DONT_WAIT) == 0
+          && sent_wait == DSI_DONT_WAIT);
     afp_server_release(volume.server);
     return test_tap_finish();
 }

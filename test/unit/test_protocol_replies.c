@@ -485,6 +485,15 @@ int main(int argc, char **argv)
         CHECK(afp_getsrvrmsg_reply(NULL, (char *)&message_reply,
                                    sizeof(message_reply), mesg) == 0);
         CHECK(mesg[0] == '\0');
+        /* A message past the reply's end is refused, in UTF-8 and in Mac
+         * Roman, whose one-byte length is the next byte. */
+        message_reply.length = htons(5);
+        CHECK(afp_getsrvrmsg_reply(NULL, (char *)&message_reply,
+                                   sizeof(message_reply) - 1, mesg) == -1);
+        message_reply.messagebitmap = 0;
+        ((unsigned char *) &message_reply.length)[0] = 9;
+        CHECK(afp_getsrvrmsg_reply(NULL, (char *)&message_reply,
+                                   sizeof(message_reply), mesg) == -1);
     }
     {
         /* An FPGetVolParms reply with every parameter: its dates lie two bytes

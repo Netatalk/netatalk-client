@@ -941,10 +941,9 @@ static int handle_manager_command(int client_fd)
             return -1;
         }
 
-        request_is_valid = memchr(req.mountpoint, '\0', sizeof(req.mountpoint)) != NULL
-                           &&
-                           memchr(req.socket_id, '\0', sizeof(req.socket_id)) != NULL &&
-                           memchr(req.volumename, '\0', sizeof(req.volumename)) != NULL;
+        request_is_valid = AFPFSD_IPC_FIELD_ENDS(req.mountpoint)
+                           && AFPFSD_IPC_FIELD_ENDS(req.socket_id)
+                           && AFPFSD_IPC_FIELD_ENDS(req.volumename);
         int serving = request_is_valid ? wait_for_mount_daemon(req.mountpoint)
                       : 0;
 
@@ -1006,9 +1005,9 @@ static int handle_manager_command(int client_fd)
             break;
         }
 
-        if (memchr(req.volumename, '\0', sizeof(req.volumename)) == NULL ||
-                memchr(req.servername, '\0', sizeof(req.servername)) == NULL ||
-                memchr(req.mountpoint, '\0', sizeof(req.mountpoint)) == NULL) {
+        if (!AFPFSD_IPC_FIELD_ENDS(req.volumename)
+                || !AFPFSD_IPC_FIELD_ENDS(req.servername)
+                || !AFPFSD_IPC_FIELD_ENDS(req.mountpoint)) {
             if (send_response(client_fd, AFPFSD_IPC_RESULT_ERROR,
                               NULL, 0) < 0) {
                 return -1;
@@ -1145,7 +1144,7 @@ static int handle_manager_command(int client_fd)
             break;
         }
 
-        if (memchr(req.mountpoint, '\0', sizeof(req.mountpoint)) == NULL) {
+        if (!AFPFSD_IPC_FIELD_ENDS(req.mountpoint)) {
             if (send_response(client_fd, AFPFSD_IPC_RESULT_ERROR,
                               NULL, 0) < 0) {
                 return -1;

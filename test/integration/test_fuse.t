@@ -23,6 +23,7 @@ use Errno        ();
 use Fcntl        qw(O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_SYNC O_DSYNC);
 use Getopt::Long qw(GetOptions);
 use IO::Handle;
+use IO::Select;
 use IO::Socket::UNIX;
 use Math::BigInt;
 use Time::HiRes ();
@@ -799,7 +800,7 @@ SKIP: {
 
 # -----------------------------------------------------------------------
 # fuse_copy: coreutils cp uses copy_file_range, so a file copies on the
-# server, with its resource fork, once its data fork reaches 512 KiB. Before
+# server, with its resource fork, once its data fork reaches 1 MiB. Before
 # Netatalk 4.5, the cap is 1 GiB for both forks together. Any other file goes
 # through the client.
 # -----------------------------------------------------------------------
@@ -825,35 +826,37 @@ SKIP: {
     # The name is UTF-8 "copy_gate_é".
     $src = "$mnt_dir/copy_gate_\xc3\xa9.src";
     $dst = "$mnt_dir/copy_gate_\xc3\xa9.dst";
-    write_bytes($src, 512 << 10);
+    write_bytes($src, 1 << 20);
     $before = request_counts();
-    is(system('cp', $src, $dst), 0, 'fuse_copy: cp of 512 KiB succeeds');
+    is(system('cp', $src, $dst), 0, 'fuse_copy: cp of 1 MiB succeeds');
     $after = request_counts();
     is(request_delta($before, $after, 'afpCopyFile'), 1,
-       'fuse_copy: a 512 KiB copy under a non-ASCII name is one FPCopyFile');
+       'fuse_copy: a 1 MiB copy under a non-ASCII name is one FPCopyFile');
     is(system('cmp', '-s', $src, $dst), 0,
-       'fuse_copy: the 512 KiB copy matches its source');
+       'fuse_copy: the 1 MiB copy matches its source');
     unlink $src, $dst;
 
     $src = "$mnt_dir/copy_small.src";
     $dst = "$mnt_dir/copy_small.dst";
-    write_bytes($src, 508 << 10);
+    my $quantum = server_quantum();
+    my $quanta  = int(((1020 << 10) + $quantum - 1) / $quantum);
+    write_bytes($src, 1020 << 10);
     $before = request_counts();
-    is(system('cp', $src, $dst), 0, 'fuse_copy: cp of 508 KiB succeeds');
+    is(system('cp', $src, $dst), 0, 'fuse_copy: cp of 1020 KiB succeeds');
     $after = request_counts();
     is(request_delta($before, $after, 'afpCopyFile'), 0,
-       'fuse_copy: a copy below 512 KiB stays on the client');
-    is(request_delta($before, $after, 'afpReadExt'), 1,
-       'fuse_copy: a 508 KiB copy is one FPReadExt');
-    is(request_delta($before, $after, 'afpWriteExt'), 1,
-       'fuse_copy: a 508 KiB copy is one FPWriteExt');
+       'fuse_copy: a copy below 1 MiB stays on the client');
+    is(request_delta($before, $after, 'afpReadExt'), $quanta,
+       'fuse_copy: a 1020 KiB copy reads a quantum at a time');
+    is(request_delta($before, $after, 'afpWriteExt'), $quanta,
+       'fuse_copy: a 1020 KiB copy writes a quantum at a time');
     is(system('cmp', '-s', $src, $dst), 0,
-       'fuse_copy: the 508 KiB copy matches its source');
+       'fuse_copy: the 1020 KiB copy matches its source');
     unlink $src, $dst;
 
     $src = "$mnt_dir/copy_forked.src";
     $dst = "$mnt_dir/copy_forked.dst";
-    write_bytes($src,                                    512 << 10);
+    write_bytes($src,                                    1 << 20);
     write_bytes("$mnt_dir/.AppleDouble/copy_forked.src", 4096);
     $before = request_counts();
     is(system('cp', $src, $dst), 0, 'fuse_copy: cp of a file with a resource fork succeeds');
@@ -1024,17 +1027,17 @@ SKIP: {
     skip $SYSCALL_SKIP, 4 unless $copy_file_range_nr;
     my $src = "$mnt_dir/metadata.src";
     my $dst = "$mnt_dir/metadata.dst";
-    write_bytes($src, 512 << 10);
+    write_bytes($src, 1 << 20);
     chmod(0600, $src)                                   or BAIL_OUT("Cannot chmod $src: $!");
     utime(978307200, 978307200, $src)                   or BAIL_OUT("Cannot set the times of $src: $!");
     sysopen(my $in, $src, O_RDONLY)                     or BAIL_OUT("Cannot open $src: $!");
     sysopen(my $out, $dst, O_WRONLY | O_CREAT | O_EXCL) or BAIL_OUT("Cannot create $dst: $!");
     chmod(0640, $dst)                                   or BAIL_OUT("Cannot chmod $dst: $!");
     my $start = time;
-    my ($copied, $before, $after) = counted_copy($in, $out, 512 << 10, 0, 0);
+    my ($copied, $before, $after) = counted_copy($in, $out, 1 << 20, 0, 0);
     close $out;
     close $in;
-    is($copied, 512 << 10, 'fuse_copy_metadata: the copy copies the whole source');
+    is($copied, 1 << 20, 'fuse_copy_metadata: the copy copies the whole source');
     is(request_delta($before, $after, 'afpCopyFile'), 1,
        'fuse_copy_metadata: the copy goes to the server');
     # The sleep outlasts the kernel's attribute cache, so stat(2) asks the
@@ -1053,17 +1056,17 @@ SKIP: {
 SKIP: {
     skip $SYSCALL_SKIP, 4 unless $copy_file_range_nr;
     my $src = "$mnt_dir/sync.src";
-    write_bytes($src, 512 << 10);
+    write_bytes($src, 1 << 20);
 
     for my $flag ([O_SYNC, 'O_SYNC'], [O_DSYNC, 'O_DSYNC']) {
         my ($bits, $name) = @$flag;
         my $dst = "$mnt_dir/sync.$name";
         sysopen(my $in,  $src, O_RDONLY)                            or BAIL_OUT("Cannot open $src: $!");
         sysopen(my $out, $dst, O_WRONLY | O_CREAT | O_EXCL | $bits) or BAIL_OUT("Cannot create $dst: $!");
-        my ($copied, $before, $after) = counted_copy($in, $out, 512 << 10, 0, 0);
+        my ($copied, $before, $after) = counted_copy($in, $out, 1 << 20, 0, 0);
         close $out;
         close $in;
-        is($copied, 512 << 10, "fuse_copy_sync: the copy into an $name file succeeds");
+        is($copied, 1 << 20, "fuse_copy_sync: the copy into an $name file succeeds");
         is(request_delta($before, $after, 'afpSyncFork'), 1,
            "fuse_copy_sync: the copy into an $name file sends one FPSyncFork");
         unlink $dst;
@@ -2711,6 +2714,23 @@ unmount_or_bail('fuse_appledouble_listing: unmount succeeds');
     is($result, 0, 'fuse_command_parts: the split command succeeds');
     like($text, qr/^Netatalk Client Version/, 'fuse_command_parts: its answer is the status text');
     unmount_or_bail('fuse_command_parts: the mount unmounts');
+}
+
+# -----------------------------------------------------------------------
+# fuse_command_unterminated: a mount's daemon ends, unanswered, a command whose
+# mount point fills its field without its terminator, and answers the next.
+# -----------------------------------------------------------------------
+{
+    mount_or_bail('fuse_command_unterminated: a mount succeeds', 'mount_afpfs', $AFP_AUTH_URL, $mnt_dir);
+    my $socket = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => mount_socket($mnt_dir))
+      or BAIL_OUT("Cannot connect to the mount's daemon: $!");
+    syswrite($socket, pack('C', 6) . ('x' x 255));
+    my $read = IO::Select->new($socket)->can_read(5) ? sysread($socket, my $answer, 8) : -1;
+    is($read, 0, 'fuse_command_unterminated: the daemon ends the connection unanswered');
+    close $socket;
+    my ($result) = daemon_exchange(mount_socket($mnt_dir), $STATUS_COMMAND);
+    is($result, 0, 'fuse_command_unterminated: the daemon then answers a status');
+    unmount_or_bail('fuse_command_unterminated: the mount unmounts');
 }
 
 # -----------------------------------------------------------------------

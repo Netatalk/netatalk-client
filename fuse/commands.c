@@ -925,7 +925,8 @@ static int process_mount(struct afpfsd_client * c)
             goto error;
         }
 
-        report_fuse_errors(c);
+        report_fuse_errors(c, !starting && fuse_result == 0
+                           && volume->mounted != AFP_VOLUME_UNMOUNTED);
 
         /* A mount still starting may succeed: its result is not known yet. */
         if (starting) {
@@ -1123,17 +1124,20 @@ static size_t command_length(unsigned char command)
  *
  * @param[in,out] c  the client
  * @returns 0 once the command is whole, -1 when the connection ends or
- *          fails first
+ *          fails first, or for a command afpfsd_ipc_command_valid()
+ *          refuses
  */
 static int read_command(struct afpfsd_client * c)
 {
-    if (afpfsd_ipc_read_all(c->fd, c->incoming_string, 1) < 0) {
+    if (afpfsd_ipc_read_all(c->fd, c->incoming_string, 1) < 0
+            || afpfsd_ipc_read_all(c->fd, c->incoming_string + 1,
+                                   command_length((unsigned char)
+                                                  c->incoming_string[0]) - 1)
+            < 0) {
         return -1;
     }
 
-    return afpfsd_ipc_read_all(c->fd, c->incoming_string + 1,
-                               command_length((unsigned char)
-                                              c->incoming_string[0]) - 1);
+    return afpfsd_ipc_command_valid(c->incoming_string) ? 0 : -1;
 }
 
 /*!

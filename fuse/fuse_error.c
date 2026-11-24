@@ -3,6 +3,7 @@
  *
  *  Copyright (C) 2008 Alex deVries <alexthepuffin@gmail.com>
  *  Copyright (C) 2025-2026 Daniel Markstedt <daniel@mindani.net>
+ *  Copyright (C) 2026 Andy Lemin (andylemin)
  *
  *  This program can be distributed under the terms of the GNU GPL.
  *  See the file COPYING.
@@ -36,12 +37,21 @@
 static int captured_fd = -1;
 /* FD for captured stderr temp file */
 static int captured_stderr_fd = -1;
-static FILE *captured_stream = NULL;
 static fpos_t pos;
 
 #define FUSE_ERROR_PREFIX "FUSE error: "
+#define FUSE_OUTPUT_PREFIX "FUSE: "
 
-void report_fuse_errors(void *log_context)
+/*!
+ * @brief End the capture of standard error and log what it caught
+ *
+ * Output of a mount that has started, such as libfuse's debug output under
+ * -d, is logged at debug level; a failed or unfinished start's is an error.
+ *
+ * @param[in] log_context  the client the message goes to, or NULL
+ * @param[in] started      1 when the mount has started, 0 otherwise
+ */
+void report_fuse_errors(void *log_context, int started)
 {
     char buf[MAX_ERROR_LEN - sizeof(FUSE_ERROR_PREFIX)];
     char message[MAX_ERROR_LEN];
@@ -52,37 +62,28 @@ void report_fuse_errors(void *log_context)
     }
 
     fflush(stderr);
-
-    if (captured_stream) {
-        fclose(captured_stream);
-        captured_stream = NULL;
-    }
-
     dup2(captured_fd, fileno(stderr));
     close(captured_fd);
+    captured_fd = -1;
     clearerr(stderr);
     fsetpos(stderr, &pos);        /* for C9X */
-
-    /* Rewind the temp file and read captured output */
-    if (lseek(captured_stderr_fd, 0, SEEK_SET) < 0) {
-        close(captured_stderr_fd);
-        captured_stderr_fd = -1;
-        return;
-    }
-
-    memset(buf, 0, sizeof(buf));
-    len = read(captured_stderr_fd, buf, sizeof(buf) - 1);
+    len = lseek(captured_stderr_fd, 0, SEEK_SET) < 0 ? -1
+          : read(captured_stderr_fd, buf, sizeof(buf) - 1);
     close(captured_stderr_fd);
     captured_stderr_fd = -1;
 
     if (len > 0) {
         buf[len] = '\0';
-        snprintf(message, sizeof(message),
-                 "%s%s", FUSE_ERROR_PREFIX, buf);
-        (log_for_client)(log_context, AFPFSD, LOG_ERR, message);
+        snprintf(message, sizeof(message), "%s%s",
+                 started ? FUSE_OUTPUT_PREFIX : FUSE_ERROR_PREFIX, buf);
+        (log_for_client)(log_context, AFPFSD, started ? LOG_DEBUG : LOG_ERR,
+                         message);
     }
 }
 
+/*!
+ * @brief Send standard error to a capture until report_fuse_errors()
+ */
 void fuse_capture_stderr_start(void)
 {
     int fd;
@@ -94,27 +95,27 @@ void fuse_capture_stderr_start(void)
         return;
     }
 
+    /* The descriptor keeps the file until the capture closes it. */
+    unlink(tmpl);
     captured_stderr_fd = fd;
     fflush(stderr);
     fgetpos(stderr, &pos);
     captured_fd = dup(fileno(stderr));
 
     if (captured_fd >= 0) {
-        FILE *f = fdopen(fd, "w+");
-
-        if (f) {
-            captured_stream = f;
-            dup2(fileno(f), fileno(stderr));
-        } else {
-            close(fd);
-            captured_stderr_fd = -1;
-        }
+        dup2(fd, fileno(stderr));
     } else {
         close(fd);
         captured_stderr_fd = -1;
     }
 }
 
+/*!
+ * @brief Describe a result of fuse_main()
+ *
+ * @param[in] fuse_result  the result
+ * @returns its description
+ */
 const char *fuse_result_to_string(int fuse_result)
 {
     switch (fuse_result) {
@@ -147,6 +148,12 @@ const char *fuse_result_to_string(int fuse_result)
     }
 }
 
+/*!
+ * @brief Describe the errno of a failed mount, with a hint where one helps
+ *
+ * @param[in] err  the errno
+ * @returns its description
+ */
 const char *mount_errno_to_string(int err)
 {
     switch (err) {
