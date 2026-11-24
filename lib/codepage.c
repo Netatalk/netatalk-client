@@ -242,54 +242,28 @@ int convert_mac_roman_to_utf8(const char *src, int src_len,
  */
 static unsigned char unicode_to_mac_roman(char16 uc)
 {
-    unsigned char r;
-
-    if (uc >= 0x00A0 && uc <= 0x00FF) {
-        r = mac_roman_page00[uc - 0x00A0];
-
-        if (r) {
-            return r;
-        }
-    } else if (uc >= 0x0131 && uc <= 0x0192) {
-        r = mac_roman_page01[uc - 0x0131];
-
-        if (r) {
-            return r;
-        }
-    } else if (uc >= 0x02C6 && uc <= 0x02DD) {
-        r = mac_roman_page02[uc - 0x02C6];
-
-        if (r) {
-            return r;
-        }
+    if (uc >= 0x00A0 && uc < 0x0100) {
+        return mac_roman_page00[uc - 0x00A0];
+    } else if (uc >= 0x0130 && uc < 0x0198) {
+        return mac_roman_page01[uc - 0x0130];
+    } else if (uc >= 0x02C0 && uc < 0x02E0) {
+        return mac_roman_page02[uc - 0x02C0];
     } else if (uc == 0x03C0) {
         return 0xB9;
-    } else if (uc >= 0x2013 && uc <= 0x2044) {
-        r = mac_roman_page20[uc - 0x2013];
-
-        if (r) {
-            return r;
-        }
+    } else if (uc >= 0x2010 && uc < 0x2048) {
+        return mac_roman_page20[uc - 0x2010];
     } else if (uc == 0x20AC) {
-        return 0xDB;
-    } else if (uc >= 0x2122 && uc <= 0x2126) {
-        r = mac_roman_page21[uc - 0x2122];
-
-        if (r) {
-            return r;
-        }
-    } else if (uc >= 0x2202 && uc <= 0x2265) {
-        r = mac_roman_page22[uc - 0x2202];
-
-        if (r) {
-            return r;
-        }
+        return 0xDB; /* Netatalk uses this byte for U+00A4 (currency sign). */
+    } else if (uc >= 0x2120 && uc < 0x2128) {
+        return mac_roman_page21[uc - 0x2120];
+    } else if (uc >= 0x2200 && uc < 0x2268) {
+        return mac_roman_page22[uc - 0x2200];
     } else if (uc == 0x25CA) {
         return 0xD7;
     } else if (uc == 0xF8FF) {
         return 0xF0;
-    } else if (uc >= 0xFB01 && uc <= 0xFB02) {
-        return mac_roman_pagefb[uc - 0xFB01];
+    } else if (uc >= 0xFB00 && uc < 0xFB08) {
+        return mac_roman_pagefb[uc - 0xFB00];
     }
 
     return 0;
