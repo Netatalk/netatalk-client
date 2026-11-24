@@ -1330,13 +1330,7 @@ int afpc_dsi_getstatus(int fd, struct afp_server_status *status)
  */
 void afpc_dsi_incoming_closesession(struct afp_server *server)
 {
-    /* afpd closes a reconnect's own connection when it refuses its login,
-     * and the token's session lives on. */
-    if (__atomic_load_n(&server->connect_state, __ATOMIC_ACQUIRE)
-            == SERVER_STATE_CONNECTED) {
-        __atomic_store_n(&server->token_ended, 1, __ATOMIC_RELEASE);
-    }
-
+    afp_server_token_ended(server);
     /* A detach would wait on replies only this thread reads and free FUSE's
      * records; the volumes stay for a reconnect into a new session. */
     loop_disconnect(server);

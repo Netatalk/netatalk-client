@@ -111,9 +111,9 @@ struct afp_server *afp_server_complete_connection(
         log_for_client(priv, AFPFSD, LOG_ERR,
                        "Could not get server parameters");
         /* afpd keeps a closed connection's session for its disconnect time. */
-        afp_logout(server, DSI_DONT_WAIT);
+        afp_server_logout(server, DSI_DONT_WAIT);
         errno = EPROTO;
-        goto error;
+        return NULL;
     }
 
     /* If we haven't gotten a proper date back, so set it to the connect time. */

@@ -17,13 +17,6 @@
 
 #include "afp_internal.h"
 
-/* A resolved path: parent ID, last component in UNIX and wire form */
-struct ml_target {
-    unsigned int did;
-    char name[AFPC_MAX_NAME_BYTES];
-    char afp_name[AFPC_MAX_NAME_BYTES];
-};
-
 int ml_resolve(struct afp_volume *volume, const char *path,
                struct ml_target *t);
 int ml_resolve_fork(struct afp_volume *volume, const char *path,
@@ -130,9 +123,6 @@ int ml_exchange(struct afp_volume * vol,
                 const char *path_from, const char *path_to);
 
 int ml_statfs(struct afp_volume * vol, const char *path, struct statvfs *stat);
-
-int ml_passwd(struct afp_server *server,
-              char *username, char *oldpasswd, char *newpasswd);
 
 /* Extended Attributes (AFP 3.2+) */
 

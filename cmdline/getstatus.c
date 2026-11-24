@@ -175,16 +175,9 @@ static int getstatus(char *address_string, unsigned int port)
         return -1;
     }
 
-    if (res->ai_family == AF_INET6) {
-        printf("AFP response from [%s]:%d via IPv6\n", address_string, port);
-    } else if (res->ai_family == AF_INET) {
-        printf("AFP response from %s:%d via IPv4\n", address_string, port);
-    } else {
-        printf("AFP response from %s:%d via unknown address family\n",
-               address_string, port);
-    }
-
     if ((server = afp_server_init(res)) == NULL) {
+        fprintf(stderr, "Could not allocate the server for %s\n",
+                address_string);
         freeaddrinfo(res);
         return -1;
     }
@@ -197,6 +190,15 @@ static int getstatus(char *address_string, unsigned int port)
         afp_server_release(server);
         freeaddrinfo(res);
         return -1;
+    }
+
+    if (answered->ai_family == AF_INET6) {
+        printf("AFP response from [%s]:%d via IPv6\n", address_string, port);
+    } else if (answered->ai_family == AF_INET) {
+        printf("AFP response from %s:%d via IPv4\n", address_string, port);
+    } else {
+        printf("AFP response from %s:%d via unknown address family\n",
+               address_string, port);
     }
 
     afp_server_adopt_status(server, &status);
@@ -313,9 +315,8 @@ static int getstatus(char *address_string, unsigned int port)
         printf("\t%s\n", server->volumes[i].volume_name_printable);
     }
 
-    afp_logout(server, 1);
+    afp_server_logout(server, 1);
     freeaddrinfo(res);
-    afp_server_remove(server);
     return 0;
 }
 

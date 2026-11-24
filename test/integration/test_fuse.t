@@ -526,8 +526,25 @@ ok($status_close_ok, 'fuse_resume: status command exits successfully')
 like( $status, qr/connection: .*disconnected/,
       'fuse_resume: status reports disconnected server after suspend');
 
+# A suspended session sends no second sleep request.
+open(my $suspend_fh, '-|', 'afpc', 'fs', 'suspend', $mnt_dir)
+  or BAIL_OUT("Cannot run afpc fs suspend: $!");
+my $suspend_text = do { local $/; <$suspend_fh> };
+close $suspend_fh;
+isnt($?, 0, 'fuse_resume: a suspend of a suspended mount fails');
+like( $suspend_text // '', qr/Unable to suspend the connection for /,
+      'fuse_resume: and says that it failed');
+
 is(system('afpc', 'fs', 'resume', $mnt_dir), 0,
    'fuse_resume: authenticated resume succeeds without new password');
+
+open(my $resume_fh, '-|', 'afpc', 'fs', 'resume', $mnt_dir)
+  or BAIL_OUT("Cannot run afpc fs resume: $!");
+my $resume_text = do { local $/; <$resume_fh> };
+close $resume_fh;
+isnt($?, 0, 'fuse_resume: a resume of a mount that is not suspended fails');
+like( $resume_text // '', qr/The connection for .* is not suspended/,
+      'fuse_resume: and says why');
 
 open(my $resume_rfh, '<', "$mnt_dir/sample.txt")
   or BAIL_OUT("Cannot read file after resume: $!");

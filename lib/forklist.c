@@ -15,7 +15,7 @@
  *
  * The list of a volume's open forks, outside libafpclient's layers.
  * Lane: shared.
- * Northbound: the mid and low levels, and the session layer.
+ * Northbound: the mid and low levels, the session layer, and afpsld.
  * Southbound: the protocol layer and the DSI layer.
  */
 
@@ -26,6 +26,7 @@
 
 #include "afp_internal.h"
 #include "dsi.h"
+#include "forklist.h"
 #include "midlevel.h"
 #include "utils.h"
 
@@ -264,6 +265,31 @@ int other_fork_open(struct afp_volume * volume, struct afp_file_info * fp)
 int other_writer_open(struct afp_volume * volume, struct afp_file_info * fp)
 {
     return fork_of_file_open(volume, fp, 1);
+}
+
+/*!
+ * @brief Whether a record is on a volume's open-fork list
+ *
+ * @param[in] volume  the volume
+ * @param[in] fp      the record
+ * @returns 1 when listed, 0 when not
+ */
+int fork_is_listed(struct afp_volume *volume,
+                   const struct afp_file_info *fp)
+{
+    int listed = 0;
+    pthread_mutex_lock(&volume->open_forks_mutex);
+
+    for (const struct afp_file_info *p = volume->open_forks; p;
+            p = p->largelist_next) {
+        if (p == fp) {
+            listed = 1;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&volume->open_forks_mutex);
+    return listed;
 }
 
 /*!

@@ -39,15 +39,12 @@
 
 #include "afp_internal.h"
 #include "afp_protocol.h"
-#include "afp_replies.h"
 #include "client.h"
 #include "codepage.h"
 #include "compat.h"
 #include "did.h"
 #include "dsi.h"
-#include "dsi_protocol.h"
 #include "forklist.h"
-#include "server.h"
 #include "utils.h"
 
 struct afp_versions      afp_versions[] = {
@@ -63,9 +60,6 @@ struct afp_versions      afp_versions[] = {
     { NULL, 0 }
 };
 
-static int afp_blank_reply(struct afp_server *server, char *buf,
-                           unsigned int size, void *ignored);
-
 /*!
  * @brief Write a server signature as hexadecimal text
  *
@@ -78,110 +72,6 @@ static void format_server_signature(const char signature[AFP_SIGNATURE_LEN],
     for (size_t i = 0; i < AFP_SIGNATURE_LEN; i++) {
         snprintf(text + (i * 2), 3, "%02x", (unsigned char)signature[i]);
     }
-}
-
-int (*afp_replies[])(struct afp_server * server, char *buf, unsigned int len,
-                     void *other) = {
-    NULL, afp_byterangelock_reply, afp_blank_reply, NULL,
-    afp_blank_reply, afp_blank_reply, afp_createdir_reply, afp_blank_reply, /* 0 - 7 */
-    afp_blank_reply, afp_enumerate_reply, afp_blank_reply, afp_blank_reply,
-    NULL, NULL, NULL, NULL,                       /* 8 - 15 */
-    afp_getsrvrparms_reply, afp_getvolparms_reply, afp_login_reply, afp_login_reply,
-    afp_blank_reply, afp_mapid_reply, afp_mapname_reply, afp_blank_reply,  /*16 - 23 */
-    afp_volopen_reply, NULL, afp_openfork_reply, afp_read_reply,
-    afp_blank_reply, afp_blank_reply, afp_blank_reply, afp_blank_reply,    /*24 - 31 */
-    NULL, afp_write_reply, afp_getfiledirparms_reply, afp_blank_reply,
-    afp_changepassword_reply, afp_getuserinfo_reply, afp_getsrvrmsg_reply, NULL,      /*32 - 39 */
-
-    NULL, NULL, afp_blank_reply, NULL,
-    NULL, NULL, NULL, NULL,                       /*40 - 47 */
-    afp_opendt_reply, afp_blank_reply, NULL, afp_geticon_reply,
-    afp_geticoninfo_reply, NULL, NULL, afp_getappl_reply, /*48 - 55 */
-    afp_blank_reply, NULL, afp_getcomment_reply, afp_byterangelockext_reply,
-    afp_readext_reply, afp_writeext_reply,
-    NULL, afp_login_reply,            /*56 - 63 */
-    /* FPEnumerateExt's replies share FPEnumerateExt2's layout, a 16-bit length
-     * before each entry; the requests differ in index and size widths alone. */
-    afp_getsessiontoken_reply, afp_blank_reply, afp_enumerateext2_reply, NULL,
-    afp_enumerateext2_reply, afp_getextattr_reply, afp_blank_reply, afp_blank_reply, /*64 - 71 */
-    afp_listextattrs_reply, afp_blank_reply, afp_blank_reply, afp_blank_reply,
-    NULL, NULL, afp_blank_reply, afp_blank_reply,                       /*72 - 79 */
-
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,                       /* 80 - 99 */
-
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,                       /* 100 - 119 */
-
-    NULL, NULL, afp_blank_reply, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,                       /* 120 - 139 */
-
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL,
-
-};
-
-/*!
- * @brief Take the result of a reply that carries nothing more
- *
- * @param[in] server   unused
- * @param[in] buf      the reply
- * @param[in] size     unused
- * @param[in] ignored  unused
- * @returns the reply's error code
- */
-static int afp_blank_reply(
-    struct afp_server *server _U_,
-    char *buf,
-    unsigned int size _U_,
-    void *ignored _U_
-)
-{
-    struct {
-        struct dsi_header header __attribute__((__packed__));
-    } * reply = (void *) buf;
-    return reply->header.return_code.error_code;
 }
 
 /*!
@@ -310,39 +200,6 @@ static void address_text(const struct addrinfo *address,
         break;
     }
 }
-
-/*!
- * @brief Hand a reply to its command's parser
- *
- * @param[in]     subcommand  the AFP command the reply answers
- * @param[in,out] server      the server it came from
- * @param[in,out] other       the request's caller data
- * @returns the parser's result, 0 without a parser, or -1 for a reply
- *          shorter than a DSI header
- */
-int afp_reply(unsigned short subcommand, struct afp_server * server,
-              void *other)
-{
-    int ret = 0;
-
-    /* No AFP packet is valid if it is smaller than a DSI header. */
-
-    if ((unsigned long) server->data_read < sizeof(struct dsi_header)) {
-        return -1;
-    }
-
-    if (afp_replies[subcommand]) {
-        ret = (*afp_replies[subcommand])(server,
-                                         server->incoming_buffer,
-                                         server->data_read, other);
-    } else {
-        log_for_client(NULL, AFPFSD, LOG_WARNING,
-                       "AFP subcommand %d not supported", subcommand);
-    }
-
-    return ret;
-}
-
 
 static struct afp_server *server_base = NULL;
 static pthread_mutex_t server_list_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -857,8 +714,7 @@ int afp_detach_volume(struct afp_volume * volume)
     }
 
     if (auto_disconnect_on_unmount) {
-        afp_logout(server, DSI_DONT_WAIT /* don't wait */);
-        afp_server_remove(server);
+        afp_server_logout(server, DSI_DONT_WAIT);
     }
 
     return 0;
@@ -1032,6 +888,20 @@ int afp_server_remove(struct afp_server *s)
 }
 
 /*!
+ * @brief Log a server's session out and remove the server
+ *
+ * @param[in,out] s     the server, whose connection may be down and which
+ *                      may be off the list
+ * @param[in]     wait  the logout reply's wait, as afp_logout() takes it
+ * @returns afp_server_remove()'s result
+ */
+int afp_server_logout(struct afp_server *s, int wait)
+{
+    afp_logout(s, wait);
+    return afp_server_remove(s);
+}
+
+/*!
  * @brief Allocate a server for an address, neither listed nor connected
  *
  * @param[in] address  the server's address
@@ -1185,6 +1055,21 @@ void afp_server_take_token(struct afp_server *server)
 }
 
 /*!
+ * @brief Note a DSICloseSession: the session the token names has ended
+ *
+ * @param[in,out] server  server that closed the session
+ */
+void afp_server_token_ended(struct afp_server *server)
+{
+    /* afpd closes a reconnect's own connection when it refuses its login,
+     * and the token's session lives on. */
+    if (__atomic_load_n(&server->connect_state, __ATOMIC_ACQUIRE)
+            == SERVER_STATE_CONNECTED) {
+        __atomic_store_n(&server->token_ended, 1, __ATOMIC_RELEASE);
+    }
+}
+
+/*!
  * @brief Log in with the server's UAM, user name and password
  *
  * @param[in,out] server  server with a DSI session open
@@ -1261,6 +1146,22 @@ int afp_server_login(struct afp_server *server,
     return 0;
 error:
     return 1;
+}
+
+/*!
+ * @brief Change a user's password with the session's UAM
+ *
+ * @param[in] server     the server
+ * @param[in] username   the user
+ * @param[in] oldpasswd  the current password
+ * @param[in] newpasswd  the new one
+ * @returns afp_dopasswd()'s result
+ */
+int afp_server_passwd(struct afp_server *server,
+                      char *username, char *oldpasswd, char *newpasswd)
+{
+    return afp_dopasswd(server, server->using_uam, username, oldpasswd,
+                        newpasswd);
 }
 
 
@@ -1710,6 +1611,55 @@ int afp_server_reconnect(struct afp_server * s, char *mesg,
     }
 
     return ret;
+}
+
+/*!
+ * @brief Suspend a server's session
+ *
+ * The suspended mark stops a request from reconnecting the server.
+ *
+ * @param[in,out] s  the server
+ * @returns 0, or -1 when FPZzzzz is refused, not sent or not answered
+ */
+int afp_server_suspend(struct afp_server *s)
+{
+    if (afp_zzzzz(s)) {
+        return -1;
+    }
+
+    afp_server_set_suspended(s, 1);
+    loop_disconnect(s);
+    return 0;
+}
+
+/*!
+ * @brief Resume a suspended server's session with a reconnect
+ *
+ * A failed reconnect leaves the server suspended.
+ *
+ * @param[in,out] s     the server
+ * @param[out]    mesg  receives the reason for a failure
+ * @param[in,out] l     bytes of mesg in use
+ * @param[in]     max   capacity of mesg
+ * @returns -1 for a server that is not suspended, else
+ *          afp_server_reconnect()'s result
+ */
+int afp_server_resume(struct afp_server *s, char *mesg, unsigned int *l,
+                      unsigned int max)
+{
+    int rc;
+
+    if (!afp_server_take_suspended(s)) {
+        return -1;
+    }
+
+    rc = afp_server_reconnect(s, mesg, l, max);
+
+    if (rc) {
+        afp_server_set_suspended(s, 1);
+    }
+
+    return rc;
 }
 
 /* Run by afp_server_restart() once the password is written, or NULL. */

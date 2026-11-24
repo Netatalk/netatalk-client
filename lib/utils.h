@@ -50,8 +50,6 @@ unsigned short copy_to_pascal_two(char *dest, const char *src);
 void copy_path(const struct afp_volume *volume, char *dest,
                const char *pathname,
                size_t len);
-char *create_path(struct afp_server * server, char *pathname,
-                  unsigned short *len);
 
 int invalid_filename(const struct afp_volume *volume, const char *filename);
 

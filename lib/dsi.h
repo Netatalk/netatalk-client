@@ -33,7 +33,6 @@ struct dsi_request {
     struct afp_rx_buffer *stream_buffer;
 };
 
-int afpc_dsi_receive(struct afp_server *server, void *data, int size);
 int afpc_dsi_parse_status(const char *buf, size_t len,
                           struct afp_server_status *status);
 int afpc_dsi_getstatus(int fd, struct afp_server_status *status);
@@ -62,8 +61,6 @@ int afpc_dsi_send_with_reply(struct afp_server *server, char *msg, int size,
 int afpc_dsi_send_data(struct afp_server *server, char *msg, int size,
                        const char *data, size_t data_len, int wait,
                        unsigned char subcommand, void *other);
-struct dsi_session *afpc_dsi_create(struct afp_server *server);
-int afpc_dsi_restart(struct afp_server *server);
 int afpc_dsi_recv(struct afp_server *server);
 void afpc_dsi_incoming_closesession(struct afp_server *server);
 

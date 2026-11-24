@@ -130,6 +130,13 @@ struct afp_file_info {
     char basename[AFPC_MAX_NAME_BYTES];
 };
 
+/* A resolved path: parent ID, last component in UNIX and wire form */
+struct ml_target {
+    unsigned int did;
+    char name[AFPC_MAX_NAME_BYTES];
+    char afp_name[AFPC_MAX_NAME_BYTES];
+};
+
 /* A fork whose close never left, and the session it is in */
 struct afp_unclosed_fork {
     unsigned short forkid;
@@ -443,6 +450,12 @@ static inline int afp_server_is_suspended(const struct afp_server *server)
     return __atomic_load_n(&server->suspended, __ATOMIC_ACQUIRE) != 0;
 }
 
+/*! @brief Clear a server's suspended mark and return whether it was set */
+static inline int afp_server_take_suspended(struct afp_server *server)
+{
+    return __atomic_exchange_n(&server->suspended, 0, __ATOMIC_ACQ_REL) != 0;
+}
+
 static inline unsigned int afp_server_connection_generation(
     const struct afp_server *server)
 {
@@ -590,6 +603,9 @@ int pick_uam(unsigned int u1, unsigned int u2);
 int afp_server_login(struct afp_server *server,
                      char *mesg, unsigned int *l, unsigned int max);
 void afp_server_take_token(struct afp_server *server);
+void afp_server_token_ended(struct afp_server *server);
+int afp_server_passwd(struct afp_server *server,
+                      char *username, char *oldpasswd, char *newpasswd);
 
 
 int afp_dologin(struct afp_server *server,
@@ -609,10 +625,12 @@ struct addrinfo *afp_get_address(void *priv, const char *hostname,
 int afp_main_loop(int command_fd);
 int afp_main_quick_startup(pthread_t *thread);
 
-int afp_server_destroy(struct afp_server *s);
 int afp_server_reconnect(struct afp_server * s, char *mesg,
                          unsigned int *l, unsigned int max);
 int afp_server_reconnects_here(const struct afp_server *server);
+int afp_server_suspend(struct afp_server *s);
+int afp_server_resume(struct afp_server *s, char *mesg, unsigned int *l,
+                      unsigned int max);
 int afp_server_restart(struct afp_server *s, struct addrinfo *address,
                        const char *password, char *mesg, unsigned int *l,
                        unsigned int max);
@@ -646,8 +664,6 @@ int something_is_mounted(struct afp_server * server);
 int something_is_attached(struct afp_server * server);
 void afp_free_volumes(struct afp_volume *volumes, unsigned int count);
 
-int add_cache_entry(struct afp_file_info * file);
-struct afp_file_info *get_cache_by_name(char *name);
 struct afp_server *find_server_by_address(struct addrinfo * address);
 struct afp_server *find_server_by_pointer(struct afp_server * target);
 struct afp_server *find_server_by_signature(char *signature);
@@ -670,6 +686,7 @@ void afp_unlock_server_list(void);
 
 struct afp_server *get_server_base(void);
 int afp_server_remove(struct afp_server * server);
+int afp_server_logout(struct afp_server *s, int wait);
 
 int afp_detach_volume(struct afp_volume * volume);
 int afp_unmount_volume(struct afp_volume * volume);

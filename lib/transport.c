@@ -217,8 +217,7 @@ int afpc_transport_connect(const struct afpc_transport_options *options,
     result = calloc(1, sizeof(*result));
 
     if (!result) {
-        afp_logout(server, 1);
-        afp_server_remove(server);
+        afp_server_logout(server, 1);
         return -ENOMEM;
     }
 
@@ -239,8 +238,7 @@ void afpc_transport_close(struct afpc_transport **transport)
     *transport = NULL;
 
     if (current->server) {
-        afp_logout(current->server, 1);
-        afp_server_remove(current->server);
+        afp_server_logout(current->server, 1);
     }
 
     free(current);
