@@ -151,9 +151,6 @@ int main(int argc, char **argv)
         CHECK(convert_path_to_afp(kFPLongName, legacy_name,
                                   supplementary_name_255,
                                   sizeof(legacy_name)) < 0);
-        CHECK(convert_path_to_afp(kFPLongName, legacy_name, "\xe2\x82\xac",
-                                  sizeof(legacy_name)) == 0);
-        CHECK((unsigned char)legacy_name[0] == 0xdb);
         memset(legacy_long_source, 'a', UINT8_MAX + 1U);
         legacy_long_source[UINT8_MAX + 1U] = '\0';
         CHECK(convert_path_to_afp(kFPLongName, legacy_long_name,
@@ -166,6 +163,27 @@ int main(int argc, char **argv)
         CHECK(convert_path_to_afp(kFPUTF8Name, legacy_name, "\xc3\xa9",
                                   4) == 0);
         CHECK(strcmp(legacy_name, "e\xcc\x81") == 0);
+    }
+
+    {
+        /* Round-trip the euro sign, per mille sign, integral and
+         * almost equal sign using the client's Mac Roman mapping. */
+        const char utf8[] = "\xe2\x82\xac\xe2\x80\xb0\xe2\x88\xab\xe2\x89\x88";
+        const char mac_roman[] = "\xdb\xe4\xba\xc5";
+        char out[sizeof(utf8)];
+        CHECK(convert_path_to_afp(kFPLongName, out, utf8, sizeof(out)) == 0);
+        CHECK(strcmp(out, mac_roman) == 0);
+        CHECK(convert_name_to_unix(kFPLongName, mac_roman, sizeof(mac_roman) - 1U,
+                                   out, sizeof(out)) == 0);
+        CHECK(strcmp(out, utf8) == 0);
+        CHECK(convert_path_to_afp(kFPLongName, out, "\xc2\xa4",
+                                  sizeof(out)) < 0); /* U+00A4 */
+        CHECK(convert_path_to_afp(kFPLongName, out, "\xe2\x80\xae",
+                                  sizeof(out)) < 0); /* U+202E */
+        CHECK(convert_path_to_afp(kFPLongName, out, "\xe2\x88\xa9",
+                                  sizeof(out)) < 0); /* U+2229 */
+        CHECK(convert_path_to_afp(kFPLongName, out, "\xe2\x89\x86",
+                                  sizeof(out)) < 0); /* U+2246 */
     }
 
     /* U+0390 grows most, two bytes to six: 255 of them need three bytes per
